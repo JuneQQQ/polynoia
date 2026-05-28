@@ -30,3 +30,4 @@
 | 009 | [Manual mode: HTTP long-poll vs asyncio.Future](ADR-009-manual-mode-long-poll.md) | accepted | 2026-05-28 |
 | 010 | [Workspace file API + path safety](ADR-010-workspace-file-api.md) | accepted | 2026-05-28 |
 | 011 | [Right-side slide-in Drawer pattern](ADR-011-right-drawer-pattern.md) | accepted | 2026-05-29 |
+| 012 | [Context budget = max_context − Claude Code 35k overhead](ADR-012-context-budget-overhead.md) | accepted | 2026-05-29 |

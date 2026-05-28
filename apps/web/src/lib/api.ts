@@ -209,6 +209,7 @@ export const api = {
     color?: string;
     initials?: string;
     tagline?: string;
+    max_context_tokens?: number | null;
   }) => postJSON<{ contact: Agent }>("/api/contacts", body),
   updateContact: (
     id: string,
@@ -219,6 +220,7 @@ export const api = {
       color: string;
       initials: string;
       tagline: string;
+      max_context_tokens: number | null;
     }>,
   ) =>
     fetch(`/api/contacts/${id}`, {

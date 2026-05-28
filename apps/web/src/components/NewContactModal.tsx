@@ -31,6 +31,47 @@ const COLOR_OPTIONS = [
   "#E74C3C", // red
 ];
 
+// Mirror of backend KNOWN_MODEL_CONTEXT — same model id, same default.
+// Used only to show the placeholder "默认 256000" hint as the user types
+// the model id;the real fallback always happens server-side via
+// context.budget.lookup_default_context().
+const KNOWN_MODEL_DEFAULTS: Record<string, number> = {
+  // Anthropic [1m] variants — 1M-token beta. Plain id = 200k.
+  "claude-opus-4-7[1m]": 1_000_000,
+  "claude-opus-4-6[1m]": 1_000_000,
+  "claude-sonnet-4-6[1m]": 1_000_000,
+  "claude-opus-4-7": 200_000,
+  "claude-opus-4-6": 200_000,
+  "claude-sonnet-4-6": 200_000,
+  "claude-sonnet-4-5": 200_000,
+  "claude-haiku-4-5": 200_000,
+  "gpt-5.1": 256_000,
+  "gpt-5": 256_000,
+  "gpt-4o": 128_000,
+  "o1": 200_000,
+  "gemini-1.5-pro": 512_000,
+  "gemini-2.0-pro": 512_000,
+  "kimi-k2.5": 200_000,
+  "kimi-k2": 200_000,
+  "deepseek-v3.5": 128_000,
+  "deepseek-v4-flash": 128_000,
+  "mimo-v2.5": 262_144,
+  "mimo-v2.5-pro": 262_144,
+  "glm-4.5": 128_000,
+};
+
+function knownDefaultPlaceholder(model: string | null | undefined): string {
+  if (!model) return "默认 128000 (未知模型 fallback)";
+  const m = model.trim().toLowerCase();
+  const tail = m.includes("/") ? m.split("/").pop()! : m;
+  if (KNOWN_MODEL_DEFAULTS[m] !== undefined) return `默认 ${KNOWN_MODEL_DEFAULTS[m]} (本表知道这个模型)`;
+  if (KNOWN_MODEL_DEFAULTS[tail] !== undefined) return `默认 ${KNOWN_MODEL_DEFAULTS[tail]} (本表知道这个模型)`;
+  for (const [k, v] of Object.entries(KNOWN_MODEL_DEFAULTS)) {
+    if (m.includes(k) || k.includes(m)) return `默认 ${v} (模糊匹配 ${k})`;
+  }
+  return "默认 128000 (未知模型 fallback)";
+}
+
 type Props = {
   onClose: () => void;
   onOpenAdapterManager: () => void;
@@ -56,6 +97,14 @@ export function NewContactModal({
   const [adapterId, setAdapterId] = useState<string>(editing?.setup?.adapter_id ?? "");
   const [model, setModel] = useState<string>(editing?.setup?.model ?? "");
   const [customModel, setCustomModel] = useState(editing?.setup?.model ?? "");
+  // User-set context-window ceiling. Empty string = use server default
+  // (KNOWN_MODEL_CONTEXT table lookup). Critical for third-party proxy
+  // models where Claude Code's built-in tokenizer is wrong.
+  const [maxContextInput, setMaxContextInput] = useState<string>(
+    editing?.setup?.max_context_tokens != null
+      ? String(editing.setup.max_context_tokens)
+      : "",
+  );
   const [useCustomModel, setUseCustomModel] = useState(false);
   const [name, setName] = useState(editing?.name ?? "");
   const [systemPrompt, setSystemPrompt] = useState(editing?.system_prompt ?? "");
@@ -144,6 +193,14 @@ export function NewContactModal({
     setBusy(true);
     setErr(null);
     try {
+      // Parse max_context_tokens — empty / non-numeric = null = server fallback
+      const parsedMaxCtx = (() => {
+        const trimmed = maxContextInput.trim();
+        if (!trimmed) return null;
+        const n = parseInt(trimmed, 10);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      })();
+
       if (isEdit && editing) {
         // Edit mode — adapter is locked, only persona-level fields move.
         await api.updateContact(editing.id, {
@@ -151,6 +208,7 @@ export function NewContactModal({
           model: finalModel,
           system_prompt: systemPrompt.trim(),
           color,
+          max_context_tokens: parsedMaxCtx,
         });
       } else {
         await api.createContact({
@@ -159,6 +217,7 @@ export function NewContactModal({
           model: finalModel,
           system_prompt: systemPrompt.trim() || undefined,
           color,
+          max_context_tokens: parsedMaxCtx ?? undefined,
         });
       }
       await onCreated();
@@ -295,6 +354,25 @@ export function NewContactModal({
                       {adapterChoice.model_hint}
                     </div>
                   )}
+                </div>
+              </Field>
+
+              <Field label="模型最大上下文长度(可选)">
+                <div className="space-y-1.5">
+                  <input
+                    type="number"
+                    min={1024}
+                    step={1024}
+                    value={maxContextInput}
+                    onChange={(e) => setMaxContextInput(e.target.value)}
+                    placeholder={knownDefaultPlaceholder(finalModel)}
+                    className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
+                  />
+                  <div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
+                    第三方代理(LiteLLM / 小蜜蜜 / 月之暗面 等)的模型,Claude Code 自带的
+                    上下文估计经常不准。手填这里的总长度,Polynoia 会自动扣掉 Claude Code
+                    的固定开销(≈35k)再分给历史/会话/项目几层。留空 = 用我们的默认表。
+                  </div>
                 </div>
               </Field>
 

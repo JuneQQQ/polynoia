@@ -225,6 +225,9 @@ export type AgentSetup = {
   adapter_id?: string | null;
   /** Backend model id, e.g. "claude-sonnet-4-6" or "anthropic/claude-opus-4-7". */
   model?: string | null;
+  /** User-set model context-window ceiling, in tokens. When null, server
+   * falls back to KNOWN_MODEL_CONTEXT table. See ADR-012. */
+  max_context_tokens?: number | null;
 };
 
 export type Agent = {

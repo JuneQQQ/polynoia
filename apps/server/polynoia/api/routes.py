@@ -222,6 +222,7 @@ async def create_contact(body: dict):
             docs=tmpl.setup.docs if tmpl.setup else None,
             adapter_id=adapter_id,
             model=model,
+            max_context_tokens=body.get("max_context_tokens"),
         ),
     )
 
@@ -268,6 +269,12 @@ async def update_contact(contact_id: str, body: dict):
                 existing.setup = AgentSetup(model=model)
             else:
                 existing.setup.model = model
+        # max_context_tokens — allow setting (int) or clearing (null/None)
+        if "max_context_tokens" in body:
+            from polynoia.domain.entities import AgentSetup
+            if existing.setup is None:
+                existing.setup = AgentSetup()
+            existing.setup.max_context_tokens = body["max_context_tokens"]
         await storage_repo.upsert_agent(session, existing)
         await session.commit()
     # Invalidate cached sessions so the next turn re-spawns with new model/prompt.
@@ -1390,8 +1397,29 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             all_agents = await storage_repo.list_agents(session)
         agent_by_id = {a.id: a for a in all_agents}
         known_adapters = {"claudeCode", "opencoder", "codex"}
+
+        # Mention narrowing: if the user text contains @-mentions, ONLY
+        # dispatch to those targets. Otherwise (no @) fall back to fan-out
+        # across the whole conv. This matches Slack/Lark semantics — typing
+        # "@Alice 帮我 X" in a group should not auto-trigger Bob and Carol.
+        # Without this, fast adapters (OpenCode/MiMo) race ahead of slower
+        # ones (Opus) and answer before the mentioned person can think.
+        resolver = _build_mention_resolver(all_agents)
+        mentioned_ids = set(_parse_mentions(text, exclude=set(), resolver=resolver))
+
+        candidate_pool: list[str]
+        if mentioned_ids:
+            # Restrict to mentions that are also conv members AND backed by
+            # a known adapter. Ignore mentions of non-members(users can't
+            # summon someone outside the conv on the first dispatch level —
+            # chain-mention from inside an agent's reply does support that).
+            member_set = set(members)
+            candidate_pool = [m for m in mentioned_ids if m in member_set]
+        else:
+            candidate_pool = list(members)
+
         targets: list[str] = []
-        for m in members:
+        for m in candidate_pool:
             if m == "you":
                 continue
             agent = agent_by_id.get(m)

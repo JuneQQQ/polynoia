@@ -21,6 +21,7 @@ from polynoia.context.briefs import build_project_briefs_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
 from polynoia.context.ledger import build_activity_ledger_layer
+from polynoia.context.budget import compute_budget
 from polynoia.context.window import enforce_budgets
 from polynoia.storage.repo import list_agents
 
@@ -90,8 +91,16 @@ async def build_context_for_turn(
         )
     )
 
-    # 4. Per-kind budget enforcement
-    layers = enforce_budgets(layers)
+    # 4. Per-kind budget enforcement — derive from agent's model context
+    # ceiling minus Claude Code's ~35k overhead. Falls back to known-model
+    # defaults table when the user didn't explicitly set max_context_tokens.
+    # See context/budget.py + ADR-012.
+    setup = agent.setup
+    budget = compute_budget(
+        model=setup.model if setup else None,
+        max_context_override=setup.max_context_tokens if setup else None,
+    )
+    layers = enforce_budgets(layers, budget=budget)
 
     # 5. Stitch into final prompt — section separators are visible to the
     # agent so it knows what's history vs current.
