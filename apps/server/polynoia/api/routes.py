@@ -140,6 +140,7 @@ async def list_enabled_adapters():
     AgentRow/contacts. New contact creation pulls this list to populate
     the adapter dropdown.
     """
+    from polynoia.adapters.pool import _ensure_base_adapters
     from polynoia.api.agent_templates import (
         ADAPTER_AGENT_TEMPLATES,
         ADAPTER_DEFAULT_MODEL,
@@ -149,10 +150,25 @@ async def list_enabled_adapters():
 
     async with SessionLocal() as session:
         ids = await storage_repo.list_onboarded_adapters(session)
+
+    adapters_map = _ensure_base_adapters()
+
+    async def _models_for(adapter_id: str) -> list[str]:
+        # Prefer a live probe of the adapter's backend so the dropdown
+        # reflects what the user's local credentials/proxy actually grant.
+        # Static ADAPTER_MODELS is the fallback when the adapter has no
+        # probe (claudeCode / opencoder) or the probe failed.
+        ad = adapters_map.get(adapter_id)
+        if ad is not None and hasattr(ad, "list_models"):
+            probed = await ad.list_models()
+            if probed:
+                return probed
+        return ADAPTER_MODELS.get(adapter_id, [])
+
     return [
         {
             "id": adapter_id,
-            "models": ADAPTER_MODELS.get(adapter_id, []),
+            "models": await _models_for(adapter_id),
             "default_model": ADAPTER_DEFAULT_MODEL.get(adapter_id),
             "model_hint": ADAPTER_MODEL_HINT.get(adapter_id),
         }
@@ -1254,6 +1270,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         + json.dumps(f"{agent_id}: {exc}")
                         + "}\n\n"
                     )
+                # Evict the session so the next user message spawns a fresh one.
+                # Without this a connect-time failure (e.g. missing ~/.claude.json,
+                # MCP subprocess crash) gets latched in the pool and every later
+                # turn replays the same exception — the user sees the same error
+                # forever even after the underlying cause is fixed.
+                with suppress(Exception):
+                    await pool.close_session(agent_id, conv_id)
                 return
 
             # Turn finished cleanly. Persist to shared timeline + scan for

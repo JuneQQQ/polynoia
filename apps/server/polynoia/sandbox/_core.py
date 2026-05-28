@@ -289,6 +289,14 @@ class Sandbox:
                     "plugins",
                 ],
             ),
+            # Claude Code also reads ~/.claude.json (account metadata, project
+            # history, MCP server cache). Without it claude CLI starts in a
+            # half-bootstrapped state — initialize() can hang or fail, which
+            # surfaces upstream as "Not connected. Call connect() first."
+            Path.home(): (
+                "",
+                [".claude.json"],
+            ),
             # Codex: ~/.codex on both.
             Path.home() / ".codex": (
                 ".codex",
@@ -555,6 +563,20 @@ class Sandbox:
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
             "TERM": os.environ.get("TERM", "xterm-256color"),
+        }
+        # Inherit network egress proxies. These are not credentials — they're
+        # the egress configuration the host already trusts. Without them, agent
+        # subprocesses in WSL/corp-net/GFW environments can't reach the LLM
+        # endpoint and fail with "stream disconnected before completion". Both
+        # case forms exist in the wild; reqwest/golang/python all check both.
+        for k in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        ):
+            v = os.environ.get(k)
+            if v is not None:
+                env[k] = v
+        env.update({
             # ★ The trick: rewrite HOME (POSIX) so ~/.claude resolves into sandbox.
             "HOME": cred_home,
             "USER": os.environ.get("USER", os.environ.get("USERNAME", "polynoia")),
@@ -570,7 +592,7 @@ class Sandbox:
             # not a double-nested ``<parent>/<conv>/<conv>``.
             "POLYNOIA_CONV_ID": self.conv_id,
             "POLYNOIA_SANDBOX_ROOT": str(self.root.parent),
-        }
+        })
         # Workspace-shared mode: add WORKSPACE_ID + AGENT_ID + BRANCH so the
         # MCP subprocess + spawned tools know which (agent, conv, branch)
         # they're acting on top of.
