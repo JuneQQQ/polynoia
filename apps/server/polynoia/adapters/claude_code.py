@@ -158,7 +158,21 @@ class ClaudeCodeAdapter:
             },
         )
 
-        sandbox_env = sandbox.env_for_agent(env or {})
+        # IS_SANDBOX=1 tells the claude CLI it's running inside a wrapping
+        # sandbox, which suppresses its "--dangerously-skip-permissions cannot
+        # be used with root/sudo" safety abort. We legitimately need that flag
+        # (permission_mode="bypassPermissions" below) because Polynoia's MCP
+        # already enforces the write boundary — but the CLI refuses it under
+        # root unless this signal is set. Common case: WSL2 + dev-as-root.
+        #
+        # Narrowed to root-only because IS_SANDBOX is an undocumented CLI env
+        # knob — setting it unconditionally could change other CLI behavior
+        # (telemetry, prompts) for the majority of devs whose setup already
+        # works. Non-root keeps the unmodified original code path.
+        extra_env = dict(env or {})
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            extra_env.setdefault("IS_SANDBOX", "1")
+        sandbox_env = sandbox.env_for_agent(extra_env)
         # Default allowed_tools = all Polynoia MCP tools, so Claude Code's
         # permission prompt doesn't gate every tool call. The sandbox boundary
         # is already enforced by Polynoia MCP (writes confined to sandbox cwd).
@@ -204,6 +218,24 @@ class ClaudeCodeAdapter:
             }
         else:
             sys_prompt_param = None
+        # Capture claude CLI stderr so it can be surfaced in error messages.
+        # Default SDK behavior inherits stderr from the parent — useful when
+        # tailing the server terminal, useless when the error needs to reach
+        # the UI. We keep a per-session ring buffer AND echo to sys.stderr
+        # so the original terminal-debug visibility is preserved for devs who
+        # were watching the server log.
+        import sys as _sys
+        stderr_buf: list[str] = []
+
+        def _capture_stderr(line: str) -> None:
+            stderr_buf.append(line)
+            if len(stderr_buf) > 200:
+                del stderr_buf[: len(stderr_buf) - 200]
+            try:
+                _sys.stderr.write(line)
+            except Exception:  # noqa: BLE001 — best-effort tee
+                pass
+
         opts = ClaudeAgentOptions(
             cwd=effective_cwd,
             system_prompt=sys_prompt_param,
@@ -214,11 +246,13 @@ class ClaudeCodeAdapter:
             # 关键:开启流式 + include partial messages 让我们拿到 text-delta
             include_partial_messages=True,
             mcp_servers={"polynoia": polynoia_mcp},
+            stderr=_capture_stderr,
         )
         return ClaudeCodeSession(
             opts=opts,
             agent_id=self.meta.agent_id,
             sandbox=sandbox,
+            stderr_buf=stderr_buf,
         )
 
 
@@ -456,6 +490,7 @@ class ClaudeCodeSession:
         agent_id: str,
         sandbox: Sandbox | None = None,
         cleanup_on_close: bool = False,
+        stderr_buf: list[str] | None = None,
     ):
         self.session_id = _new_id()
         self.agent_id = agent_id
@@ -464,11 +499,42 @@ class ClaudeCodeSession:
         self._cleanup_on_close = cleanup_on_close
         self._client: ClaudeSDKClient | None = None
         self._lock = asyncio.Lock()  # serialize send() calls per session
+        # Tail of claude CLI stderr — populated by the stderr callback wired
+        # up in start_session. Used to enrich exceptions so the UI/log shows
+        # the actual CLI complaint instead of the SDK's "Check stderr" stub.
+        self._stderr_buf = stderr_buf if stderr_buf is not None else []
+
+    def _stderr_tail(self, max_chars: int = 800) -> str:
+        if not self._stderr_buf:
+            return ""
+        joined = "".join(self._stderr_buf).strip()
+        if len(joined) > max_chars:
+            return "…" + joined[-max_chars:]
+        return joined
 
     async def _ensure_client(self) -> ClaudeSDKClient:
         if self._client is None:
-            self._client = ClaudeSDKClient(options=self._opts)
-            await self._client.connect()
+            client = ClaudeSDKClient(options=self._opts)
+            # If connect() raises, the SDK internally calls disconnect() which
+            # leaves the object alive but with _transport=None. Caching that
+            # half-dead instance is fatal: every later query() hits the
+            # "Not connected. Call connect() first." guard, masking the real
+            # connect-time error forever. Only commit to self._client AFTER
+            # connect succeeds.
+            try:
+                await client.connect()
+            except BaseException as exc:
+                self._client = None
+                tail = self._stderr_tail()
+                if tail and isinstance(exc, Exception):
+                    # SDK's ProcessError says "Check stderr output for details"
+                    # but never actually surfaces stderr. Wrap so the real CLI
+                    # output reaches the UI error chunk.
+                    raise RuntimeError(
+                        f"{type(exc).__name__}: {exc} | claude stderr: {tail}"
+                    ) from exc
+                raise
+            self._client = client
         return self._client
 
     async def send(
