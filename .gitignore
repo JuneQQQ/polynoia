@@ -1,0 +1,65 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.pnp.*
+.pnpm-store/
+dist/
+build/
+.turbo/
+.next/
+.vite/
+out/
+coverage/
+
+# Polynoia — runtime / scratch / 上游 archives
+.scratch/
+sandbox/
+research/
+ui_design/
+.claude/
+
+# Local secrets / overrides
+*.local
+.env
+.env.local
+
+# DB (sqlite dev db + backups)
+*.sqlite
+*.sqlite3
+*.db
+*.db-backup
+data/
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.tsbuildinfo
+
+# Misc
+.cache/

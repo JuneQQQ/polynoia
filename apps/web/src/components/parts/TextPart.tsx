@@ -1,0 +1,293 @@
+/** TextPart — renders message body as Markdown(GFM)+ inline @mention chips
+ *  + syntax-highlighted code blocks.
+ *
+ *  Two body shapes supported (Polynoia 协议):
+ *    1. `c: string` — pure markdown, rendered straight through
+ *    2. `c: Array<{type:"text"|"mention", ...}>` — structured inline segments
+ *       (mock orchestrator uses this for @mention; future agents may too)
+ *
+ *  For (2) we flatten to markdown by replacing mention segments with a sentinel
+ *  token, then post-process the rendered tree to swap the sentinel for a chip.
+ *  Implementation:we pre-render structured content directly (no markdown
+ *  pass);for string content we go through react-markdown.
+ */
+import { Check, Copy } from "lucide-react";
+import { memo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
+import type { InlineSegment, TextPayload } from "../../lib/types";
+import { useStore } from "../../store";
+
+// Highlight.js styles — picked a warm-neutral light theme matching Polynoia palette
+import "highlight.js/styles/github.css";
+
+function Mention({ agentId }: { agentId: string }) {
+  const agents = useStore((s) => s.agents);
+  const agent = agents.find((a) => a.id === agentId);
+  return (
+    <span
+      className="inline-flex items-center px-1 mx-0.5 rounded font-medium align-baseline"
+      style={{
+        color: agent?.color ?? "var(--color-accent)",
+        background: agent?.bg ?? "var(--color-accent-soft)",
+        fontSize: "0.92em",
+      }}
+    >
+      @{agent?.name ?? agentId}
+    </span>
+  );
+}
+
+function CodeBlock({
+  className,
+  children,
+}: {
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  const [copied, setCopied] = useState(false);
+  // react-markdown v9 removed the `inline` prop. We detect inline vs block
+  // ourselves:
+  //   · `language-xxx` className → fenced code block (always block)
+  //   · multi-line content → must be block (inline can't contain newlines)
+  //   · otherwise → inline `…` backticks → render as <code> chip
+  // Without this branch, single-char inline backticks like `` `(` `` get
+  // rendered as a giant bordered block with "TEXT" + "复制" labels, which
+  // showed up in the user's leetcode-style prompt as garbled output.
+  const raw = String(children ?? "");
+  const hasLang = (className ?? "").startsWith("language-");
+  const isMultiline = raw.includes("\n");
+  const isInline = !hasLang && !isMultiline;
+  if (isInline) {
+    return (
+      <code className="px-1 py-0.5 mono text-[12px] rounded bg-[var(--color-surface-2)] text-[var(--color-fg-2)]">
+        {children}
+      </code>
+    );
+  }
+  const lang = /language-(\w+)/.exec(className ?? "")?.[1];
+  const text = raw.replace(/\n$/, "");
+  return (
+    <div className="relative group border border-[var(--color-line)] rounded-md overflow-hidden bg-[var(--color-surface-2)] my-2">
+      <div className="flex items-center gap-2 px-3 py-1 border-b border-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] mono">
+        <span className="uppercase tracking-wider">{lang || "text"}</span>
+        <button
+          type="button"
+          onClick={() => {
+            navigator.clipboard.writeText(text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+          className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-[var(--color-line)] transition opacity-0 group-hover:opacity-100"
+        >
+          {copied ? <Check size={10} /> : <Copy size={10} />}
+          {copied ? "已复制" : "复制"}
+        </button>
+      </div>
+      <pre className="mono text-[12px] leading-[1.55] p-3 overflow-x-auto m-0">
+        <code className={className}>{children}</code>
+      </pre>
+    </div>
+  );
+}
+
+/** Render a structured inline c: Array<InlineSegment>(non-markdown path). */
+function StructuredInline({ content }: { content: InlineSegment[] }) {
+  return (
+    <>
+      {content.map((seg, i) => {
+        if (seg.type === "text") return <span key={i}>{seg.text}</span>;
+        return <Mention key={i} agentId={seg.m} />;
+      })}
+    </>
+  );
+}
+
+const MARKDOWN_COMPONENTS = {
+  code: CodeBlock as any,
+  // Tables — make them look right with Polynoia palette
+  table: ({ children }: any) => (
+    <div className="overflow-x-auto my-2">
+      <table className="w-full text-[12px] border-collapse">{children}</table>
+    </div>
+  ),
+  thead: ({ children }: any) => (
+    <thead className="bg-[var(--color-surface-2)]">{children}</thead>
+  ),
+  th: ({ children }: any) => (
+    <th className="text-left px-2 py-1 border border-[var(--color-line)] font-semibold text-[10.5px] uppercase tracking-wider text-[var(--color-fg-3)]">
+      {children}
+    </th>
+  ),
+  td: ({ children }: any) => (
+    <td className="px-2 py-1 border border-[var(--color-line)]">{children}</td>
+  ),
+  a: ({ href, children }: any) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="text-[var(--color-accent)] underline underline-offset-2 hover:opacity-80"
+    >
+      {children}
+    </a>
+  ),
+  // Headings — markdown headers in chat look weird as h1/h2; tone them down
+  h1: ({ children }: any) => (
+    <div className="text-[15px] font-bold mt-3 mb-1.5">{children}</div>
+  ),
+  h2: ({ children }: any) => (
+    <div className="text-[14px] font-semibold mt-2.5 mb-1">{children}</div>
+  ),
+  h3: ({ children }: any) => (
+    <div className="text-[13px] font-semibold mt-2 mb-1 text-[var(--color-fg-2)]">{children}</div>
+  ),
+  ul: ({ children }: any) => <ul className="list-disc pl-5 my-1.5 space-y-0.5">{children}</ul>,
+  ol: ({ children }: any) => <ol className="list-decimal pl-5 my-1.5 space-y-0.5">{children}</ol>,
+  li: ({ children }: any) => <li className="leading-relaxed">{children}</li>,
+  blockquote: ({ children }: any) => (
+    <blockquote className="border-l-2 border-[var(--color-accent)] pl-3 my-1.5 text-[var(--color-fg-3)]">
+      {children}
+    </blockquote>
+  ),
+  hr: () => <hr className="my-3 border-[var(--color-line)]" />,
+  // react-markdown 9 + custom code components can put block-level code blocks
+  // (<div><pre>) inside <p>, triggering DOM nesting warnings. Render paragraph
+  // as <div> instead so any child is legal regardless of code-block detection.
+  p: ({ children }: any) => <div className="my-1 leading-relaxed">{children}</div>,
+  strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
+  em: ({ children }: any) => <em className="italic">{children}</em>,
+};
+
+/**
+ * Find a "safe split point" in streaming markdown — where the prefix above
+ * can be considered finalized (won't re-parse differently when more text
+ * arrives below). We use the LATEST `\n\n` (paragraph boundary) that is
+ * NOT inside an open code fence.
+ *
+ * Why this matters:
+ *   Markdown is context-sensitive. `---` alone on a line is an <hr> only
+ *   if it's followed by content that doesn't merge it into a setext heading
+ *   etc. As deltas arrive, parse can flip-flop. Rendering each delta
+ *   re-parses the whole text and the parse tree mutates — visible as the
+ *   "`--` → `<hr>` → `--`" wobble the user reported.
+ *
+ *   By splitting on the latest paragraph boundary, the prefix becomes a
+ *   closed markdown unit (the next paragraph below is independent), so
+ *   its render is stable. Only the tail (current in-flight paragraph)
+ *   stays raw / pre-wrap.
+ */
+/**
+ * Pre-process for CommonMark CJK gotcha:
+ *   `**第三人（最后面）**看了看` → `**` after `）` then `看` doesn't satisfy
+ *   the right-flanking delimiter run rules,so bold never closes,asterisks
+ *   leak as literals.
+ *
+ * Inject a U+200B zero-width space between CJK boundary char and the
+ * closing `**`/`__` so the delimiter is properly recognized.
+ *
+ * Cheap pre-process beats pulling in `remark-cjk-friendly` (which conflicts
+ * with this repo's workspace lockfile).
+ */
+const CJK_RE = /[一-鿿　-〿＀-￯]/;
+function fixCjkMarkdown(s: string): string {
+  // After `**` or `__` immediately followed by CJK,or preceded by CJK,
+  // insert ZWSP so the parser treats them as proper delimiter runs.
+  return s
+    .replace(/([一-鿿　-〿＀-￯])(\*\*|__)/g, "$1​$2")
+    .replace(/(\*\*|__)([一-鿿　-〿＀-￯])/g, "$1​$2");
+}
+void CJK_RE; // exported pattern reserved for future detectors
+
+function findSafeSplitPoint(text: string): number {
+  let pos = text.length;
+  while (pos > 0) {
+    const idx = text.lastIndexOf("\n\n", pos - 1);
+    if (idx === -1) return 0;
+    // Count ``` fences before this position. Odd = we're inside an open
+    // code block → can't split here.
+    const before = text.slice(0, idx);
+    const fenceCount = (before.match(/```/g) || []).length;
+    if (fenceCount % 2 === 0) {
+      return idx + 2; // safe split: right after the \n\n
+    }
+    pos = idx;
+  }
+  return 0;
+}
+
+/**
+ * StringBlock — renders one string-content text block.
+ *
+ * Two modes:
+ *   - WHILE streaming (`isStreaming=true`): split text into a *settled prefix*
+ *     (everything up to the latest `\n\n` outside a code fence) and a *tail*
+ *     (the still-appending current paragraph). Render prefix as markdown,
+ *     tail as raw `<div whitespace-pre-wrap>`. The prefix only ever grows,
+ *     never re-parses different shapes — so previously-rendered content
+ *     (e.g. an <hr> from `---`) stays put once it lands above a `\n\n`.
+ *   - AFTER streaming (`isStreaming=false`): full markdown over entire text.
+ */
+const StringBlock = memo(function StringBlock({
+  text,
+  isStreaming,
+}: {
+  text: string;
+  isStreaming?: boolean;
+}) {
+  if (!isStreaming) {
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+        components={MARKDOWN_COMPONENTS as any}
+      >
+        {fixCjkMarkdown(text)}
+      </ReactMarkdown>
+    );
+  }
+  // Streaming: prefix (settled) + tail (raw).
+  const split = findSafeSplitPoint(text);
+  const prefix = split > 0 ? text.slice(0, split) : "";
+  const tail = text.slice(split);
+  return (
+    <>
+      {prefix && (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+          components={MARKDOWN_COMPONENTS as any}
+        >
+          {fixCjkMarkdown(prefix)}
+        </ReactMarkdown>
+      )}
+      {tail && (
+        <div className="my-1 leading-relaxed whitespace-pre-wrap">{tail}</div>
+      )}
+    </>
+  );
+});
+
+export const TextPart = memo(function TextPart({
+  payload,
+  isStreaming,
+}: {
+  payload: TextPayload;
+  isStreaming?: boolean;
+}) {
+  return (
+    <div className="text-[13px] text-[var(--color-fg)]">
+      {payload.body.map((block, i) =>
+        typeof block.c === "string" ? (
+          <StringBlock key={i} text={block.c} isStreaming={isStreaming} />
+        ) : (
+          // Structured inline (mention-aware), no markdown pass
+          <p key={i} className="my-1 leading-relaxed">
+            <StructuredInline content={block.c} />
+          </p>
+        ),
+      )}
+    </div>
+  );
+});

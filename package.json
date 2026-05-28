@@ -1,0 +1,28 @@
+{
+  "name": "polynoia",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Polynoia (AgentHub) — IM-style multi-agent collaboration platform",
+  "workspaces": [
+    "apps/web",
+    "apps/desktop",
+    "apps/mobile",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "pnpm --filter @polynoia/web dev",
+    "build:web": "pnpm --filter @polynoia/web build",
+    "test:web": "pnpm --filter @polynoia/web test",
+    "lint:web": "pnpm --filter @polynoia/web lint",
+    "dev:desktop": "pnpm --filter @polynoia/desktop dev",
+    "build:desktop": "pnpm --filter @polynoia/desktop build",
+    "sync:mobile": "pnpm --filter @polynoia/mobile sync",
+    "run:mobile-ios": "pnpm --filter @polynoia/mobile run:ios",
+    "run:mobile-android": "pnpm --filter @polynoia/mobile run:android",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

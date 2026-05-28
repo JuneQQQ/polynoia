@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Polynoia · Agent 每次说话前看到啥</title>
+<style>
+  body {
+    margin: 0;
+    background: #FBFAF7;
+    color: #1F2937;
+    font-family: ui-sans-serif, system-ui, -apple-system, "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 36px 32px 96px; }
+
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  .sub { color: #6B7280; margin-bottom: 30px; font-size: 14px; }
+  h2 { font-size: 19px; margin: 44px 0 16px;
+       border-bottom: 1px solid #E5E7EB; padding-bottom: 8px; }
+
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+         background: #F0EDE5; padding: 1px 6px; border-radius: 3px; }
+
+  /* The 5-layer stack — the centerpiece */
+  .stack {
+    display: flex; flex-direction: column; gap: 4px;
+    max-width: 760px; margin: 0 auto;
+  }
+  .layer {
+    display: grid;
+    grid-template-columns: 60px 1fr 130px;
+    align-items: center;
+    padding: 14px 18px;
+    border-radius: 6px;
+    color: #fff;
+  }
+  .layer .lvl { font-size: 22px; font-weight: 700; }
+  .layer .ttl { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+  .layer .desc { font-size: 13px; opacity: 0.92; }
+  .layer .src  { font-size: 12px; opacity: 0.85; font-family: ui-monospace, monospace; }
+  .layer .bud  { font-size: 13px; text-align: right; opacity: 0.95;
+                 font-family: ui-monospace, monospace; }
+
+  .L1 { background: #8B6F47; }              /* 棕 identity */
+  .L2 { background: #5B8FF9; }              /* 蓝 briefs */
+  .L3 { background: #9B59B6; }              /* 紫 ledger ★ */
+  .L4 { background: #27AE60; }              /* 绿 history */
+  .L5 { background: #F2994A; }              /* 橙 user */
+
+  .star { display: inline-block; background: #FFF3D6; color: #B7791F;
+          font-size: 11px; font-weight: 700; padding: 1px 7px;
+          border-radius: 999px; margin-left: 6px; vertical-align: middle; }
+
+  .arrow { text-align: center; color: #9CA3AF; font-size: 16px;
+           margin: 10px 0; }
+  .arrow .pill { background: #1F2937; color: #fff; padding: 4px 12px;
+                 border-radius: 999px; font-size: 13px; font-weight: 600;
+                 font-family: ui-monospace, monospace; }
+
+  .final-box {
+    background: #1F2937; color: #E2E8F0; border-radius: 8px;
+    padding: 14px 18px; max-width: 760px; margin: 0 auto;
+    font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+    text-align: center;
+  }
+  .final-box .big { font-size: 16px; color: #fff; font-weight: 600; }
+
+  /* Example prompt rendering */
+  .example {
+    background: #fff; border: 1px solid #E5E7EB; border-radius: 8px;
+    padding: 0; overflow: hidden; max-width: 820px; margin: 0 auto;
+  }
+  .ex-line {
+    display: grid; grid-template-columns: 50px 1fr;
+    border-bottom: 1px solid #F3F0E8;
+  }
+  .ex-line:last-child { border-bottom: 0; }
+  .ex-tag {
+    color: #fff; font-weight: 700; font-size: 12px;
+    padding: 12px 6px; text-align: center;
+    font-family: ui-monospace, monospace;
+  }
+  .ex-tag.t1 { background: #8B6F47; }
+  .ex-tag.t2 { background: #5B8FF9; }
+  .ex-tag.t3 { background: #9B59B6; }
+  .ex-tag.t4 { background: #27AE60; }
+  .ex-tag.t5 { background: #F2994A; }
+  .ex-body { padding: 12px 16px; font-size: 13.5px;
+             font-family: ui-monospace, Menlo, monospace;
+             white-space: pre-wrap; line-height: 1.55; color: #1F2937; }
+  .ex-body .com { color: #6B7280; font-style: italic; }
+  .ex-body .me  { color: #9B59B6; font-weight: 600; }
+  .ex-body .you { color: #B7791F; font-weight: 600; }
+
+  /* Adapter comparison table */
+  table { width: 100%; border-collapse: collapse; background: #fff;
+          border: 1px solid #E5E7EB; border-radius: 8px; overflow: hidden;
+          font-size: 14px; }
+  th, td { padding: 12px 14px; text-align: left; vertical-align: top;
+           border-bottom: 1px solid #F3F0E8; }
+  thead th { background: #F4F1E9; font-size: 12px;
+             text-transform: uppercase; letter-spacing: 0.06em;
+             color: #6B7280; font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .row-label { background: #FAF8F1; font-weight: 600; width: 22%; }
+  .ok { color: #27AE60; font-weight: 600; }
+  .warn { color: #F2994A; font-weight: 600; }
+  .no { color: #E74C3C; font-weight: 600; }
+
+  /* Gap list */
+  .gaps { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .gap {
+    background: #fff; border: 1px solid #E5E7EB; border-radius: 6px;
+    padding: 12px 14px; font-size: 14px;
+  }
+  .gap .tag { font-size: 11px; font-weight: 700;
+              padding: 2px 8px; border-radius: 999px;
+              display: inline-block; margin-bottom: 6px; }
+  .gap .tag.q { background: #FEE2E2; color: #B91C1C; }     /* 缺 */
+  .gap .tag.s { background: #FEF3C7; color: #92400E; }     /* 半 */
+
+  /* Insight callouts */
+  .callout {
+    background: #FFF8E7; border-left: 4px solid #F2994A;
+    padding: 12px 16px; border-radius: 0 6px 6px 0;
+    font-size: 14px; margin: 14px 0;
+  }
+  .callout strong { color: #B7791F; }
+
+  ul { padding-left: 22px; }
+  ul li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Agent 每次说话前看到啥</h1>
+  <div class="sub">
+    Polynoia · 当前实装的 5 层 Context · 数据来自 <code>apps/server/polynoia/context/</code>(630 行,7 个文件)
+  </div>
+
+  <h2>① 一份 prompt = 五层叠起来</h2>
+  <p>用户敲完回车后,<code>build_context_for_turn()</code> 把下面五块拼起来,作为最终 prompt 喂给子进程:</p>
+
+  <div class="stack">
+    <div class="layer L1">
+      <div class="lvl">L1</div>
+      <div>
+        <div class="ttl">身份</div>
+        <div class="desc">"你是 @claudeCode,在 Polynoia 上担任..."</div>
+        <div class="src">来源:agents 表 · identity.py</div>
+      </div>
+      <div class="bud">2,000 tok</div>
+    </div>
+
+    <div class="layer L2">
+      <div class="lvl">L2</div>
+      <div>
+        <div class="ttl">项目简介</div>
+        <div class="desc">"当前在 #api-redesign,你也是 #billing / #infra 的成员"</div>
+        <div class="src">来源:workspaces 表 · briefs.py</div>
+      </div>
+      <div class="bud">3,000 tok</div>
+    </div>
+
+    <div class="layer L3">
+      <div class="lvl">L3</div>
+      <div>
+        <div class="ttl">跨 conv 活动账本 <span class="star">★ 关键</span></div>
+        <div class="desc">"3 天前在 #conv-tax-fix,用户让你修 round 调用,你改了 line 42"</div>
+        <div class="src">来源:messages 表跨 conv 查 · ledger.py(30 条 / 每群 8 条)</div>
+      </div>
+      <div class="bud">15,000 tok</div>
+    </div>
+
+    <div class="layer L4">
+      <div class="lvl">L4</div>
+      <div>
+        <div class="ttl">本 conv 历史</div>
+        <div class="desc">当前对话最近 30 条消息</div>
+        <div class="src">来源:messages 表本 conv 查 · history.py</div>
+      </div>
+      <div class="bud">35,000 tok</div>
+    </div>
+
+    <div class="layer L5">
+      <div class="lvl">L5</div>
+      <div>
+        <div class="ttl">当前用户消息</div>
+        <div class="desc">用户这一 turn 输入的原文</div>
+        <div class="src">来源:本次 WebSocket payload</div>
+      </div>
+      <div class="bud">5,000 tok</div>
+    </div>
+  </div>
+
+  <div class="arrow">
+    <span class="pill">window.py · 超 60k tok 就从老的开始截</span>
+  </div>
+
+  <div class="final-box">
+    <div class="big">最终 prompt 字符串</div>
+    <div style="opacity:.8;margin-top:4px;">用 <code style="background:#374151;color:#fff;">\n\n---\n\n</code> 拼接 5 层 → 喂给 adapter 的 <code style="background:#374151;color:#fff;">send(text=...)</code></div>
+  </div>
+
+  <div class="callout">
+    <strong>L3 才是让 Agent "像同事"的那一层。</strong> 之前没这层时,agent 每次见你都失忆;
+    现在它能说"上周你让我做 X,我交付了 Y" —— 不是真记忆,是每次说话前用 SQL 查出来重新喂。
+  </div>
+
+  <h2>② 一个真实例子:模型实际收到的 prompt</h2>
+
+  <div class="example">
+    <div class="ex-line">
+      <div class="ex-tag t1">L1</div>
+      <div class="ex-body"># 身份
+你是 <span class="me">@claudeCode</span>,Polynoia 上的 Anthropic 代码 Agent。
+擅长 React / TypeScript / 重构。</div>
+    </div>
+    <div class="ex-line">
+      <div class="ex-tag t2">L2</div>
+      <div class="ex-body"># 你的项目
+当前对话所在项目:<span class="you">#api-redesign</span>
+你也是这些项目的成员:#billing, #infra</div>
+    </div>
+    <div class="ex-line">
+      <div class="ex-tag t3">L3</div>
+      <div class="ex-body"># 你的近期活动
+
+## #billing · #conv-tax-fix (dm)
+- 3 天前 <span class="you">用户</span>: 帮我看 calculator.py 的 tax 计算
+- 3 天前 <span class="me">@claudeCode(你)</span>: [工具调用 edit/completed] 修 line 42
+- 3 天前 <span class="me">@claudeCode(你)</span>: 改完了,改成 ROUND_HALF_EVEN
+
+## #api-redesign · #conv-schema (group)
+- 昨天 <span class="you">用户</span>: 设计一下 invoice 的 schema
+- 昨天 <span class="me">@claudeCode(你)</span>: 我建了 5 个 Pydantic model: Invoice / LineItem / ...</div>
+    </div>
+    <div class="ex-line">
+      <div class="ex-tag t4">L4</div>
+      <div class="ex-body"># 本对话历史(最近 30 条)
+<span class="com">[当前 conv 的近期消息,本例略]</span></div>
+    </div>
+    <div class="ex-line">
+      <div class="ex-tag t5">L5</div>
+      <div class="ex-body"># 当前用户消息
+帮我加一下 invoice 的折扣逻辑</div>
+    </div>
+  </div>
+
+  <div class="callout">
+    模型看到这一坨之后心里:"哦是 billing.py 的 Invoice,昨天刚跟用户聊过 schema" →
+    直接在 LineItem 旁边加 discount 字段 + 沿用 tax 的 config.toml 模式 →
+    用户感觉"它真的记得我们聊过的东西"。
+  </div>
+
+  <h2>③ 这 5 层组装完之后 · 三个 adapter 怎么塞给子进程</h2>
+
+  <table>
+    <thead>
+      <tr><th></th><th>Claude Code</th><th>OpenCode</th><th>Codex</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="row-label">5 层 prompt 怎么进去</td>
+        <td>作为 <code>client.query(text)</code> 的 text 参数</td>
+        <td>ACP 协议 <code>session/prompt</code> 的 prompt 字段</td>
+        <td><code>codex exec</code> 的命令行 prompt 参数</td>
+      </tr>
+      <tr>
+        <td class="row-label">agent 自定义 persona 注入哪</td>
+        <td><span class="ok">SDK 原生字段(append 模式)</span><br/>不动 Claude Code 内置工具指引</td>
+        <td><span class="warn">拼 [SYSTEM]\n... 在首 turn</span><br/>OpenCode 内置 prompt 不动</td>
+        <td><span class="warn">拼 [SYSTEM]\n... 在首 turn</span><br/>Codex 内置 prompt 不动</td>
+      </tr>
+      <tr>
+        <td class="row-label">实装文件</td>
+        <td><code>claude_code.py:167-174</code></td>
+        <td><code>opencode.py:544-548</code></td>
+        <td><code>codex.py:261-264</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>本次更新的最大变化:</strong>Claude Code 不再用字符串直传(那样会把内置的工具使用指引整段删了),
+    改用 SDK 的 dict 形式 <code>{"type":"preset","preset":"claude_code","append":...}</code>。
+    内置的 5000+ token 工程师手册保留,你的 persona 追加在末尾。
+  </div>
+
+  <h2>④ 还缺什么</h2>
+
+  <div class="gaps">
+    <div class="gap">
+      <span class="tag q">缺</span>
+      <strong>Orchestrator 还在用老路径</strong>
+      <p>当前 sub-agent 直接路径有 5 层,跑 orchestrator 路径反而零 context。行为分裂。</p>
+    </div>
+    <div class="gap">
+      <span class="tag q">缺</span>
+      <strong>Prompt cache 标记</strong>
+      <p>L1+L2 几乎不变,但没打 <code>cache_control</code> 标记,每 turn 重发烧钱。</p>
+    </div>
+    <div class="gap">
+      <span class="tag s">半</span>
+      <strong>Git commit 集成到 L3</strong>
+      <p><code>ledger.py:6-8</code> 注释里规划了,但代码只查 messages 表,git log 没接。</p>
+    </div>
+    <div class="gap">
+      <span class="tag q">缺</span>
+      <strong>LLM 摘要压缩(P1)</strong>
+      <p>超 token 预算时只截断,不压缩。老消息直接没了,不像人脑会留下印象。</p>
+    </div>
+    <div class="gap">
+      <span class="tag s">半</span>
+      <strong>真 tokenizer</strong>
+      <p>现在用 <code>len(text)//3</code> 估算 token 数,中英混合边界 case 会偏。</p>
+    </div>
+    <div class="gap">
+      <span class="tag q">缺</span>
+      <strong>语义检索(spec 的 L5)</strong>
+      <p>没接 sqlite-vec,远期模糊召回("4 周前说过类似的事")做不到。</p>
+    </div>
+  </div>
+
+  <h2>⑤ 一句话评价</h2>
+  <p>
+    上次讨论里提的 episodic memory(<strong>L3 跨 conv 账本</strong>)和
+    Claude Code 的 <strong>append 模式</strong>都落地了,而且做得很干净:
+    <code>context/</code> 独立成包,有测试覆盖关键 invariant(同 adapter 多 contact 账本不串)。
+    后面接 Orchestrator + Prompt cache + Git log 这三件,会让产品质感再上一档。
+  </p>
+
+  <p style="color:#9CA3AF;font-size:12px;margin-top:36px;">
+    渲染于 2026-05-28 · 同目录另有 <code>current-context-pipeline.html</code>(更早版本,讲分支前的状态)
+  </p>
+
+</div>
+</body>
+</html>

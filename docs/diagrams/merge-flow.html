@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Polynoia · Merge 双模式完整流程(v2)</title>
+<style>
+  body {
+    margin: 0; background: #FBFAF7; color: #1F2937;
+    font-family: ui-sans-serif, system-ui, "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    line-height: 1.55; font-size: 14.5px;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 28px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: #6B7280; margin-bottom: 28px; font-size: 13.5px; }
+  h2 { font-size: 18px; margin: 32px 0 14px;
+       border-bottom: 1px solid #E5E7EB; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin: 14px 0 8px; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
+         background: #F0EDE5; padding: 1px 5px; border-radius: 3px; }
+
+  /* Shared phase blocks */
+  .phase {
+    background: #fff; border: 1px solid #E5E7EB; border-radius: 8px;
+    padding: 14px 18px; margin: 0 auto 8px; max-width: 720px;
+    position: relative;
+  }
+  .phase .num {
+    position: absolute; left: -16px; top: 12px;
+    width: 30px; height: 30px; border-radius: 50%;
+    background: #1F2937; color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .phase .role {
+    display: inline-block; font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 999px; margin-right: 6px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .role.user   { background: #FFF3D6; color: #B7791F; }
+  .role.orch   { background: #EDE7FA; color: #7A5AE0; }
+  .role.agent  { background: #DFEFE6; color: #2E9F73; }
+  .role.system { background: #DCEAF8; color: #3D7FD1; }
+
+  .phase .title { font-weight: 600; font-size: 15px; margin-left: 6px; }
+  .phase .body  { margin-top: 8px; font-size: 13.5px; }
+
+  .tools {
+    display: inline-block; background: #1F2937; color: #E2E8F0;
+    padding: 2px 8px; border-radius: 4px; font-family: monospace;
+    font-size: 11.5px; margin-top: 4px;
+  }
+  .tools.empty { background: #6B7280; color: #fff; }
+  .tools.full  { background: #9B59B6; color: #fff; }
+
+  .arrow {
+    text-align: center; color: #9CA3AF; font-size: 18px;
+    margin: 8px 0; line-height: 1;
+  }
+
+  /* Fork section */
+  .fork-label {
+    text-align: center; background: #FFF3D6; color: #B7791F;
+    padding: 8px 14px; border-radius: 8px; font-weight: 600;
+    font-size: 13px; max-width: 480px; margin: 4px auto 16px;
+    border: 1px dashed #E0B96D;
+  }
+  .fork {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+    max-width: 1180px; margin: 0 auto;
+  }
+  .lane {
+    background: #fff; border-radius: 10px; border: 1px solid #E5E7EB;
+    padding: 12px 16px 18px; position: relative;
+  }
+  .lane.manual { border-top: 4px solid #F2994A; }
+  .lane.auto   { border-top: 4px solid #9B59B6; }
+  .lane h3 {
+    margin: 4px 0 12px; font-size: 17px;
+  }
+  .lane .modetag {
+    display: inline-block; font-size: 10.5px; font-weight: 700;
+    padding: 2px 7px; border-radius: 3px; margin-left: 6px;
+    vertical-align: middle;
+  }
+  .lane.manual h3 .modetag { background: #FFEFD9; color: #B7791F; }
+  .lane.auto   h3 .modetag { background: #EDE7FA; color: #7A5AE0; }
+
+  .step {
+    background: #F8F7F2; border: 1px solid #E5E7EB; border-radius: 6px;
+    padding: 10px 14px; margin: 8px 0;
+    position: relative;
+  }
+  .step + .step::before {
+    content: "▼"; position: absolute; left: 50%; top: -12px;
+    transform: translateX(-50%); color: #9CA3AF; font-size: 10px;
+    background: #fff; padding: 0 4px;
+  }
+  .step .stitle { font-weight: 600; font-size: 14px; }
+  .step .sdesc  { font-size: 13px; color: #4B5563; margin-top: 4px; }
+
+  .step.orch  { background: #F6F3FB; border-color: #D4C4ED; }
+  .step.user  { background: #FFF8E7; border-color: #E0B96D; }
+  .step.pend  { background: #FFFBEB; border-color: #FCD34D; }
+  .step.fork  { background: #FDEEEE; border-color: #F5B0B0; }
+  .step.agent { background: #ECF9F1; border-color: #A5D6BB; }
+
+  /* Cursor-style diff card */
+  .diff-card {
+    background: #fff; border: 1px solid #E5E7EB; border-radius: 6px;
+    padding: 10px 12px; font-size: 12.5px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    margin: 8px 0;
+  }
+  .diff-card .dch {
+    display: flex; align-items: center; gap: 6px; font-family: monospace;
+    font-size: 11.5px; padding-bottom: 6px;
+    border-bottom: 1px solid #F0EDE5;
+  }
+  .diff-card .dch .plus { background: #DCFCE7; color: #166534; padding: 1px 5px; border-radius: 3px; }
+  .diff-card .dch .minus{ background: #FEE2E2; color: #991B1B; padding: 1px 5px; border-radius: 3px; }
+  .diff-card .dbody {
+    font-family: monospace; font-size: 11.5px; padding: 6px 0;
+  }
+  .diff-card .dbody .add { background: #ECFDF5; color: #166534; padding: 0 4px; display: block; }
+  .diff-card .dbody .del { background: #FEF2F2; color: #991B1B; padding: 0 4px; display: block; }
+  .diff-card .dbody .ctx { color: #6B7280; padding: 0 4px; display: block; }
+  .diff-card .dact {
+    display: flex; gap: 6px; padding-top: 8px;
+    border-top: 1px solid #F0EDE5;
+  }
+  .diff-card .btn {
+    font-size: 12px; padding: 3px 10px; border-radius: 4px; font-weight: 600;
+    cursor: pointer;
+  }
+  .diff-card .btn.ok { background: #16A34A; color: #fff; }
+  .diff-card .btn.no { background: #DC2626; color: #fff; }
+  .diff-card .pending-pill {
+    margin-left: auto; font-size: 11px; padding: 2px 8px;
+    background: #FEF3C7; color: #92400E; border-radius: 999px;
+    font-weight: 600;
+  }
+
+  /* Concurrency snapshot */
+  .concurrency {
+    background: #fff; border: 1px solid #E5E7EB; border-radius: 10px;
+    padding: 14px 18px; margin: 14px 0;
+  }
+  .conc-grid {
+    display: grid; grid-template-columns: 200px 1fr;
+    gap: 4px 12px; font-size: 13px; align-items: center;
+  }
+  .conc-grid .who { font-weight: 600; color: #1F2937; font-family: monospace; font-size: 12.5px; }
+  .conc-grid .what { padding: 4px 0; }
+  .conc-grid .lbl {
+    display: inline-block; font-family: monospace; font-size: 11.5px;
+    padding: 1px 6px; border-radius: 3px; margin-right: 6px;
+  }
+  .lbl.run  { background: #DCFCE7; color: #166534; }
+  .lbl.wait { background: #FEF3C7; color: #92400E; }
+
+  /* Git graph */
+  .git-state {
+    background: #1F2937; color: #E2E8F0; border-radius: 6px;
+    padding: 10px 14px; font-family: monospace; font-size: 12px;
+    margin: 8px 0; white-space: pre; line-height: 1.6;
+  }
+  .git-state .ok   { color: #6EE7B7; }
+  .git-state .warn { color: #FCA5A5; }
+  .git-state .br   { color: #93C5FD; }
+
+  /* Callouts */
+  .callout {
+    background: #FFF8E7; border-left: 4px solid #F2994A;
+    padding: 10px 14px; border-radius: 0 6px 6px 0;
+    font-size: 13px; margin: 10px 0;
+  }
+  .callout.auto {
+    background: #F6F3FB; border-left-color: #9B59B6;
+  }
+  .callout.fix {
+    background: #ECFDF5; border-left-color: #16A34A;
+  }
+  .callout strong { color: #B7791F; }
+  .callout.auto strong { color: #7A5AE0; }
+  .callout.fix strong { color: #166534; }
+
+  /* Comparison table */
+  table {
+    width: 100%; border-collapse: collapse; background: #fff;
+    border: 1px solid #E5E7EB; border-radius: 8px; overflow: hidden;
+    font-size: 13.5px; margin-top: 12px;
+  }
+  th, td { padding: 10px 12px; text-align: left; vertical-align: top;
+           border-bottom: 1px solid #F3F0E8; }
+  thead th { background: #F4F1E9; font-size: 11.5px;
+             text-transform: uppercase; letter-spacing: 0.05em;
+             color: #6B7280; }
+  td.label { background: #FAF8F1; font-weight: 600; width: 22%; }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  ul { padding-left: 20px; margin: 6px 0; }
+  ul li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Polynoia · Merge 双模式完整流程 <span style="font-size:14px;color:#9B59B6;">v2 修正版</span></h1>
+  <div class="sub">
+    Manual = <strong>Cursor 式 per-edit 实时审批</strong>(每个 edit 出来就批) · Auto = Orchestrator 一人扛 ·
+    切换字段 <code>conversation.merge_mode</code>
+  </div>
+
+  <div class="callout fix">
+    <strong>v2 修正了什么:</strong>
+    Manual 模式不是"等 sub-task 全完了再 review 一整条分支",而是 <strong>每个 edit 出现就立刻推卡片给用户审批</strong>(Cursor / Windsurf 那种)。
+    另外:"悬挂"<strong>只悬挂该 tool call 这一个 coroutine</strong>,事件循环正常跑,其它 agent / 其它 conv / 同 agent 的其它 tool call 都不受影响。
+  </div>
+
+  <h2>共用阶段(两模式相同)</h2>
+
+  <div class="phase">
+    <div class="num">1</div>
+    <span class="role user">用户</span>
+    <span class="title">发起任务</span>
+    <div class="body">
+      在 group conv 里:"@orchestrator 帮我给 Invoice 加折扣和币种字段"
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="phase">
+    <div class="num">2</div>
+    <span class="role orch">Orchestrator</span>
+    <span class="title">Decompose 阶段</span>
+    <div class="body">
+      <span class="tools empty">tools = []</span> · 只输出 JSON 任务列表<br/>
+      → <code>t1</code> @claudeCode 加 discount · <code>t2</code> @codex 加 currency(并行)
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="fork-label">
+    🔀 接下来按 <code>conv.merge_mode</code> 分两条不同的执行路径
+  </div>
+
+  <div class="fork">
+
+    <!-- ============ MANUAL MODE (Cursor-style) ============ -->
+    <div class="lane manual">
+      <h3>路径 A · Manual <span class="modetag">Per-edit 实时审批</span></h3>
+
+      <div class="step agent">
+        <div class="stitle">3M · Sub-agents 进入各自分支开始干活</div>
+        <div class="sdesc">
+          @claudeCode 在 <code>agent/claudeCode/conv-A</code> 上 ·
+          @codex 在 <code>agent/codex/conv-A</code> 上 ·
+          并行
+        </div>
+      </div>
+
+      <div class="step pend">
+        <div class="stitle">4M · @claudeCode 第 1 次 edit_file → MCP 悬挂这条 call</div>
+        <div class="sdesc">
+          差 diff 推送给 UI,变成一张待审批卡:
+          <div class="diff-card">
+            <div class="dch">
+              <span style="font-weight:600;">invoice.py</span>
+              <span class="plus">+2</span>
+              <span class="minus">−0</span>
+              <span class="pending-pill">⏳ 待审批</span>
+            </div>
+            <div class="dbody">
+              <span class="ctx">  amount: Decimal</span>
+              <span class="add">+ discount: Decimal = Decimal(0)</span>
+              <span class="ctx">  created_at: datetime</span>
+            </div>
+            <div class="dact">
+              <span class="btn ok">✓ 接受</span>
+              <span class="btn no">✗ 拒绝</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step user">
+        <div class="stitle">5M · 用户点击 ✓ 接受</div>
+        <div class="sdesc">
+          WebSocket 把 decision="accept" 推回服务端 →
+          悬挂的 edit_file coroutine 醒过来 → 真的写文件 + commit 到 @claudeCode 分支
+          → 返回成功结果给 LLM,@claudeCode 继续推理下一步
+        </div>
+      </div>
+
+      <div class="step agent">
+        <div class="stitle">6M · 多个 edit 串成一条审批流,中间用户可以拒绝</div>
+        <div class="sdesc">
+          @claudeCode 下一个 edit_file → 又一张卡 → 用户审批 ...<br/>
+          @codex 那边同时也在出卡(独立队列)<br/>
+          <strong>如果用户拒</strong>:工具返回 <code>{"error":"rejected by user"}</code>,
+          LLM 收到失败 → 重新想方案
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="stitle">7M · Sub-task 完成时,分支末端就是"用户已批准"的状态</div>
+        <div class="sdesc">
+          因为每个 commit 都是用户点过的,直接 <code>git merge --no-ff</code> 进 main,
+          <strong>不需要再来一次 branch-level review</strong>
+        </div>
+      </div>
+
+      <div class="callout">
+        <strong>特点:</strong>用户在每个 edit 出现的瞬间就介入,粒度最细。
+        Sub-task 完成时分支已是"过审"状态,合并到 main 是水到渠成。
+      </div>
+    </div>
+
+    <!-- ============ AUTO MODE ============ -->
+    <div class="lane auto">
+      <h3>路径 B · Auto <span class="modetag">Orchestrator 全权</span></h3>
+
+      <div class="step agent">
+        <div class="stitle">3A · Sub-agents 在各自分支飞奔</div>
+        <div class="sdesc">
+          edit_file 直接写,不悬挂 ·
+          diff 卡推到 UI 但只是通知,无按钮 ·
+          各自 commit 完结束 turn
+        </div>
+      </div>
+
+      <div class="step orch">
+        <div class="stitle">4A · Orchestrator 进入 Merge 阶段</div>
+        <div class="sdesc">
+          <span class="tools full">tools = [git_merge, git_status, read_file, edit_file, write, bash, ...]</span><br/>
+          收到所有完成分支的 commit 摘要 + main 当前 sha
+        </div>
+      </div>
+
+      <div class="step orch">
+        <div class="stitle">5A · 自己跑 git_merge,顺序自己决定</div>
+        <div class="sdesc">
+          <code>git_merge agent/claudeCode/conv-A --no-ff</code> → ✓ sha 111<br/>
+          <code>git_merge agent/codex/conv-A --no-ff</code> → ✗ conflict at invoice.py:42
+        </div>
+      </div>
+
+      <div class="step orch">
+        <div class="stitle">6A · 撞了 → Orchestrator 自己解决,不派人</div>
+        <div class="sdesc">
+          ① <code>read_file</code> 看冲突标记 <code>&lt;&lt;&lt;&lt;&lt;</code><br/>
+          ② 自己想清楚怎么合并<br/>
+          ③ <code>edit_file</code> 写合并版<br/>
+          ④ <code>bash("git add -A &amp;&amp; git commit")</code><br/>
+          ⑤ 继续下一个分支
+        </div>
+      </div>
+
+      <div class="step fork">
+        <div class="stitle">7A · 危险命令也是它说了算</div>
+        <div class="sdesc">
+          <code>git reset --hard</code> / <code>rm -rf</code> / squash commit / force update branch<br/>
+          它觉得该干就干。<strong>没有"升级用户"逃生通道</strong>。
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="stitle">8A · 全完了 → 发结果卡</div>
+        <div class="sdesc">
+          列每个分支合并状态 + Orchestrator 的判断解释 + main sha
+        </div>
+      </div>
+
+      <div class="callout auto">
+        <strong>特点:</strong>用户不介入,Orchestrator 全权。
+        它跟普通 specialist agent 拿同一套工具,身份在不同 phase 切换。
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow" style="margin-top:18px;">▼</div>
+
+  <div class="phase">
+    <div class="num">9</div>
+    <span class="role system">系统</span>
+    <span class="title">main 已更新 + 结果卡推到 conv</span>
+    <div class="body">
+      <div class="git-state">
+main:                      ●──●──M1──●──M2  <span class="ok">(已合并两条分支)</span>
+                                ╲    ╱     ╲
+                                 <span class="br">●─●</span>      <span class="br">●─●─●</span>
+                              claudeCode  codex</div>
+    </div>
+  </div>
+
+  <h2>关键澄清:"悬挂"具体悬挂的是啥</h2>
+  <p>
+    Manual 模式下 <code>edit_file</code> 调用 <code>await ctx.await_user_decision(...)</code>,只是把
+    <strong>这一个 coroutine</strong> 挂在 asyncio 事件循环上。事件循环上的其它任何 task 都正常跑。下面这张图是某一时刻的并发快照:
+  </p>
+
+  <div class="concurrency">
+    <div class="conc-grid">
+
+      <div class="who">conv-A · @claudeCode</div>
+      <div class="what">
+        <span class="lbl wait">⏳ 等待</span> edit_file("invoice.py") 悬挂等用户点
+      </div>
+
+      <div class="who">conv-A · @claudeCode</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> 同一 turn 内并行发起的 grep("Invoice"),返回中
+      </div>
+
+      <div class="who">conv-A · @claudeCode</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> read_file("models/__init__.py"),返回中
+      </div>
+
+      <div class="who">conv-A · @codex</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> 独立 subprocess,在自己分支改 currency 字段
+      </div>
+
+      <div class="who">conv-A · @designer</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> 在出色板,不受影响
+      </div>
+
+      <div class="who">conv-A · Orchestrator</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> 监控子任务进度,该派活继续派
+      </div>
+
+      <div class="who">conv-B</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> 完全无关的另一个对话,所有 agent 全速
+      </div>
+
+      <div class="who">apps/server FastAPI</div>
+      <div class="what">
+        <span class="lbl run">▶ 跑</span> 接收别的 WebSocket / HTTP 请求,毫无阻塞感
+      </div>
+
+    </div>
+  </div>
+
+  <div class="callout fix">
+    <strong>结论:</strong>"卡住"<strong>只卡住一个 await</strong> —— 该 tool call 后面那一步 LLM 推理可能要等用户。
+    系统资源、其它 agent、其它 conv,统统照跑。Polynoia 本来就是 multi-agent 多对话并发架构,
+    per-edit 审批落到这套架构上是天然适配的。
+  </div>
+
+  <h2>两模式逐项对比</h2>
+  <table>
+    <thead>
+      <tr>
+        <th></th>
+        <th>Manual(Cursor 式 per-edit)</th>
+        <th>Auto(Orchestrator 全权)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="label">edit_file 行为</td>
+        <td>悬挂等用户审批,过了才真写</td>
+        <td>立刻写文件 + commit</td>
+      </tr>
+      <tr>
+        <td class="label">用户介入粒度</td>
+        <td>每个 edit 一次</td>
+        <td>不介入</td>
+      </tr>
+      <tr>
+        <td class="label">Sub-task 完成时</td>
+        <td>分支末端 = 已批准状态,直接 merge</td>
+        <td>Orchestrator 进 Merge 阶段</td>
+      </tr>
+      <tr>
+        <td class="label">冲突谁解</td>
+        <td>通常不会发生(用户随时介入引导)。万一有,Orchestrator 同 auto 路径处理 or UI 介入</td>
+        <td>Orchestrator 自己 read + edit + commit</td>
+      </tr>
+      <tr>
+        <td class="label">危险命令</td>
+        <td>每次都要用户点</td>
+        <td>Orchestrator 自己拍板,不挡</td>
+      </tr>
+      <tr>
+        <td class="label">系统并发能力</td>
+        <td colspan="2">同一架构,完全相同 — 单个 await 的悬挂不影响整体</td>
+      </tr>
+      <tr>
+        <td class="label">切换方式</td>
+        <td colspan="2">conv header 一键切 · 只影响未来 edit/merge</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>P1.2 实装清单</h2>
+  <ul>
+    <li><strong>DB:</strong> <code>Conversation.merge_mode: "manual"|"auto"</code> · <code>Workspace.default_merge_mode</code></li>
+    <li><strong>MCP edit_file 改造:</strong>
+      <ul>
+        <li>检查 <code>ctx.merge_mode</code></li>
+        <li><code>manual</code>:推 <code>PendingEdit</code> 卡 + <code>asyncio.Future</code> 等审批回执 → accept 才执行</li>
+        <li><code>auto</code>:走现在的"立刻写"路径</li>
+      </ul>
+    </li>
+    <li><strong>PendingEdit 表 / 队列:</strong> (conv_id, agent_id, turn_id, tool_call_id, diff)</li>
+    <li><strong>WebSocket:</strong> 服务端 → 前端推 pending edit · 前端 → 服务端发 accept/reject</li>
+    <li><strong>前端 DiffPart.tsx:</strong> 当前"应用"按钮真接通 WebSocket;状态 ⏳ 待审批 / ✓ 已接受 / ✗ 已拒绝</li>
+    <li><strong>Orchestrator runtime:</strong>
+      <ul>
+        <li><code>run_merge_turn(branches)</code> 在所有 sub-task 完成后被调用</li>
+        <li>auto 模式:<code>pool.get_session("orchestrator", conv_id, phase="merge")</code> 给全套工具</li>
+      </ul>
+    </li>
+    <li><strong>超时策略:</strong> Manual 模式下,pending edit 超过 N 分钟无回应 → 自动 reject(可配)</li>
+  </ul>
+
+  <p style="color:#9CA3AF;font-size:12px;margin-top:32px;">
+    渲染于 2026-05-28 v2 · 同目录另有 <code>context-builder-current.html</code> · <code>current-context-pipeline.html</code>
+  </p>
+
+</div>
+</body>
+</html>

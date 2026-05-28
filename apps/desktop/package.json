@@ -1,0 +1,19 @@
+{
+  "name": "@polynoia/desktop",
+  "version": "0.1.0",
+  "description": "Polynoia desktop (Tauri 2) — thin native shell wrapping the @polynoia/web build.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:web-first": "pnpm --filter @polynoia/web build && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.0"
+  }
+}

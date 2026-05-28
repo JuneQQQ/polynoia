@@ -1,0 +1,31 @@
+{
+  "name": "@polynoia/mobile",
+  "version": "0.1.0",
+  "description": "Polynoia mobile (iOS / Android via Capacitor) — same web codebase as @polynoia/web with mobile layout adaptation.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "pnpm --filter @polynoia/web build",
+    "sync": "pnpm build:web && cap sync",
+    "add:ios": "cap add ios",
+    "add:android": "cap add android",
+    "open:ios": "cap open ios",
+    "open:android": "cap open android",
+    "run:ios": "cap run ios",
+    "run:android": "cap run android",
+    "live": "cap run android --livereload --external"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/keyboard": "^6.0.3",
+    "@capacitor/network": "^6.0.3",
+    "@capacitor/preferences": "^6.0.3",
+    "@capacitor/splash-screen": "^6.0.3",
+    "@capacitor/status-bar": "^6.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}

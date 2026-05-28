@@ -1,0 +1,263 @@
+"""SQLAlchemy 2 declarative models for Polynoia core entities.
+
+These mirror the Pydantic schemas in ``polynoia.domain.entities`` but with
+SQL-specific concerns:
+
+* ULID stored as ``String(26)`` PK
+* List fields (members, caps, tools_whitelist, etc.) stored as JSON columns
+* Foreign keys with cascade on delete
+* ``Message.payload`` stored as JSON (the 12-card discriminated union;
+  parsing back into ``MessagePayload`` happens at the application layer)
+
+Naming convention: ``XxxRow`` (e.g. ``AgentRow``) to keep them distinct from
+the Pydantic ``Xxx`` business models — converters live in ``polynoia.storage.repo``.
+"""
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from polynoia.storage.db import Base
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+# ── Provider ─────────────────────────────────────────────────────────
+
+
+class ProviderRow(Base):
+    __tablename__ = "providers"
+
+    # short id, e.g. "claude" / "codex" / "openai"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    vendor: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    online: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    color: Mapped[str] = mapped_column(String(16), default="#7A5AE0", nullable=False)
+    bg: Mapped[str] = mapped_column(String(16), default="#EFE9FB", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+# ── Agent ────────────────────────────────────────────────────────────
+
+
+class AgentRow(Base):
+    __tablename__ = "agents"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ULID
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider: Mapped[str] = mapped_column(
+        String(64), ForeignKey("providers.id", ondelete="RESTRICT"), nullable=False
+    )
+    handle: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    initials: Mapped[str] = mapped_column(String(8), nullable=False)
+    color: Mapped[str] = mapped_column(String(16), nullable=False)
+    bg: Mapped[str] = mapped_column(String(16), nullable=False)
+    tagline: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    caps: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    online: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    custom: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tools_whitelist: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    proxy_kind: Mapped[str] = mapped_column(String(16), default="system", nullable=False)
+    setup: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    human: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    foreign_from: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+# ── Server ───────────────────────────────────────────────────────────
+
+
+class ServerRow(Base):
+    __tablename__ = "servers"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(512), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # embedded|remote|tunnel
+    online: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    auth_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # encrypt at rest P1+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+# ── Workspace ────────────────────────────────────────────────────────
+
+
+class WorkspaceRow(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    server_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("servers.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    desc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    repo: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    color: Mapped[str] = mapped_column(String(16), default="#E07A3C", nullable=False)
+    role: Mapped[str] = mapped_column(String(16), default="Owner", nullable=False)
+    members: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # Default merge mode inherited by new convs in this workspace.
+    # "auto"   → orchestrator runs git_merge after sub-tasks finish
+    # "manual" → every edit_file is gated by user approval (per-edit)
+    default_merge_mode: Mapped[str] = mapped_column(
+        String(16), default="auto", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    conversations: Mapped[list["ConversationRow"]] = relationship(
+        "ConversationRow", cascade="all, delete-orphan", back_populates="workspace"
+    )
+
+
+# ── Conversation ─────────────────────────────────────────────────────
+
+
+class ConversationRow(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    members: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    direct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    group: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    orchestrator_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Per-conv role assignment for each member (agent_id → free-text role).
+    member_roles: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    # Which member is designated as orchestrator (None = flat group).
+    orchestrator_member_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    unread: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # P1.2 merge gate. Inherited from Workspace.default_merge_mode on create,
+    # then mutable per-conv via PATCH /api/conversations/{id}/merge_mode.
+    # See docs/diagrams/merge-flow.html.
+    merge_mode: Mapped[str] = mapped_column(String(16), default="auto", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    workspace: Mapped[WorkspaceRow | None] = relationship(
+        "WorkspaceRow", back_populates="conversations"
+    )
+    messages: Mapped[list["MessageRow"]] = relationship(
+        "MessageRow", cascade="all, delete-orphan", back_populates="conversation"
+    )
+    pins: Mapped[list["PinRow"]] = relationship(
+        "PinRow", cascade="all, delete-orphan", back_populates="conversation"
+    )
+
+
+# ── Pin ──────────────────────────────────────────────────────────────
+
+
+class PinRow(Base):
+    __tablename__ = "pins"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    conv_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # doc|color|user|ref
+    label: Mapped[str] = mapped_column(String(256), nullable=False)
+    ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    conversation: Mapped[ConversationRow] = relationship(
+        "ConversationRow", back_populates="pins"
+    )
+
+
+# ── Message ──────────────────────────────────────────────────────────
+
+
+class MessageRow(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)  # MessagePayload union
+    # User can pin a single message ("important question / answer") to elevate
+    # it in context recall + L3 ledger. Separate from PinRow (workspace-level
+    # long-term context like docs / brand colors).
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Reply-to threading: ULID of the message being replied to (no FK to keep
+    # cascade-delete on the conv simple). Frontend renders a "回复 @X" header.
+    in_reply_to: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False, index=True
+    )
+
+    conversation: Mapped[ConversationRow] = relationship(
+        "ConversationRow", back_populates="messages"
+    )
+
+
+# ── OnboardedAdapter ─────────────────────────────────────────────────
+#
+# Tracks which adapters (claudeCode / codex / opencoder) the user has
+# explicitly enabled in Polynoia. Decoupled from AgentRow so that "adapter
+# is enabled" doesn't imply "a contact exists" — users create contacts
+# manually via /api/contacts after enabling the underlying adapter.
+
+
+class OnboardedAdapterRow(Base):
+    __tablename__ = "onboarded_adapters"
+
+    adapter_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+
+
+# ── PendingEdit ──────────────────────────────────────────────────────
+#
+# Manual merge mode (P1.2): when conv.merge_mode == "manual", every agent
+# edit_file / write / apply_patch call gates here. MCP tool process creates
+# a row, then long-polls /api/pending-edits/{id}/wait. User clicks ✓/✗ in
+# UI → status flips → MCP unblocks → applies (accept) or returns error to
+# LLM (reject). See ADR-005 + docs/diagrams/merge-flow.html.
+class PendingEditRow(Base):
+    __tablename__ = "pending_edits"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ULID
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # "edit" / "write" / "apply_patch" — matches MCP tool name
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # Original MCP tool input args (JSON) — needed so we can re-execute on
+    # accept (the actual file write is deferred until user approves).
+    args_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    # "pending" / "accepted" / "rejected" / "timeout"
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -1,0 +1,294 @@
+/** AskFormsPanel — floating panel above Composer for agent-initiated
+ * questions (`<ask-form>` blocks).
+ *
+ * Mirrors PendingEditsPanel's UX (left orange stripe, mono caps eyebrow,
+ * card stack). Renders ONE active ask at a time; others queue dimmed.
+ * On submit:formats answers as a readable text reply and sends via WS
+ * sendUserMessage so the agent that asked sees the answer in next turn's
+ * L4 history.
+ */
+import { Check, MessageCircleQuestion, Send } from "lucide-react";
+import { useState } from "react";
+import { useStore, type AskFormEntry } from "../store";
+import { ConvWebSocket } from "../lib/ws";
+
+type Props = {
+  convId: string;
+  members: string[];
+  ws: ConvWebSocket | null;
+};
+
+export function AskFormsPanel({ convId, members, ws }: Props) {
+  const list = useStore((s) => s.askFormsByConv.get(convId) ?? EMPTY);
+  const dequeue = useStore((s) => s.dequeueAskForm);
+  const appendUserMessage = useStore((s) => s.appendUserMessage);
+  const agents = useStore((s) => s.agents);
+
+  if (list.length === 0) return null;
+  const [active, ...queued] = list;
+
+  const onAnswered = (af: AskFormEntry, answerText: string) => {
+    // 1) Render the answer as a user message
+    appendUserMessage(convId, answerText);
+    // 2) Send via WS so the conv keeps moving (asking agent's next turn
+    //    sees it in L4 history). Address @ that asking agent so the conv
+    //    routes back to them.
+    const asker = agents.find((a) => a.id === af.agent_id);
+    const tagged = asker ? `@${asker.name} ${answerText}` : answerText;
+    ws?.sendUserMessage(tagged, members);
+    // 3) Drop the card
+    dequeue(convId, af.id);
+  };
+
+  return (
+    <div className="px-6 pb-3 pt-3 space-y-2 border-t border-[var(--color-line)] bg-[var(--color-accent-soft)]/20">
+      <div className="flex items-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-accent)] font-medium">
+        <MessageCircleQuestion size={11} />
+        <span>Awaiting your input · {list.length}</span>
+      </div>
+      <AskCard af={active} agents={agents} onAnswered={onAnswered} active />
+      {queued.length > 0 && (
+        <>
+          <div className="flex items-center gap-2 mt-3 text-[9.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)]">
+            <span className="h-px flex-1 bg-[var(--color-line)]" />
+            <span>Queued · {queued.length}</span>
+            <span className="h-px flex-1 bg-[var(--color-line)]" />
+          </div>
+          {queued.map((af) => (
+            <AskCard
+              key={af.id}
+              af={af}
+              agents={agents}
+              onAnswered={onAnswered}
+              active={false}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+const EMPTY: readonly AskFormEntry[] = [];
+
+function AskCard({
+  af,
+  agents,
+  onAnswered,
+  active,
+}: {
+  af: AskFormEntry;
+  agents: { id: string; name: string; color: string; initials: string }[];
+  onAnswered: (af: AskFormEntry, answer: string) => void;
+  active: boolean;
+}) {
+  // Per-question answer state, keyed by q.id
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>(() => {
+    const init: Record<string, string | string[]> = {};
+    for (const q of af.questions) {
+      if (q.kind === "multi") init[q.id] = [];
+      else init[q.id] = "";
+    }
+    return init;
+  });
+
+  const asker = agents.find((a) => a.id === af.agent_id);
+
+  const setSingle = (qid: string, v: string) =>
+    setAnswers((a) => ({ ...a, [qid]: v }));
+  const setFill = (qid: string, v: string) =>
+    setAnswers((a) => ({ ...a, [qid]: v }));
+  const toggleMulti = (qid: string, v: string) => {
+    setAnswers((a) => {
+      const cur = new Set((a[qid] as string[]) ?? []);
+      cur.has(v) ? cur.delete(v) : cur.add(v);
+      return { ...a, [qid]: [...cur] };
+    });
+  };
+
+  const isAnswered = af.questions.every((q) => {
+    if (q.optional) return true;
+    const v = answers[q.id];
+    if (q.kind === "single") return typeof v === "string" && v.length > 0;
+    if (q.kind === "multi") return Array.isArray(v) && v.length > 0;
+    return typeof v === "string" && v.trim().length > 0;
+  });
+
+  const submit = () => {
+    if (!isAnswered || !active) return;
+    // Format answers as compact readable text:
+    //   "v1.0 范围澄清: 主要面向? · Python 开发者 · slogan? · Compose AI agents..."
+    const parts: string[] = [];
+    if (af.title) parts.push(af.title + ":");
+    for (const q of af.questions) {
+      const v = answers[q.id];
+      if (q.kind === "single") {
+        const opt = q.options?.find((o) => o.value === v);
+        parts.push(`${q.label} · ${opt?.label ?? v}`);
+      } else if (q.kind === "multi") {
+        const labels = (v as string[]).map(
+          (vv) => q.options?.find((o) => o.value === vv)?.label ?? vv,
+        );
+        parts.push(`${q.label} · ${labels.join(" + ")}`);
+      } else {
+        parts.push(`${q.label} · ${v || "(未填)"}`);
+      }
+    }
+    onAnswered(af, parts.join(" · "));
+  };
+
+  return (
+    <div
+      className={`relative bg-[var(--color-surface)] rounded-md overflow-hidden border border-[var(--color-line)] ${
+        active ? "" : "opacity-50"
+      }`}
+    >
+      {/* 4px left accent stripe */}
+      <span
+        aria-hidden
+        className="absolute left-0 top-0 bottom-0 w-[4px]"
+        style={{ background: "var(--color-accent)" }}
+      />
+      {/* Header */}
+      <div className="flex items-center gap-2 pl-4 pr-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
+        <MessageCircleQuestion size={12} className="text-[var(--color-accent)]" />
+        <span className="font-display text-[13px] text-[var(--color-fg)] truncate flex-1">
+          {af.title || "Agent needs input"}
+        </span>
+        {asker && (
+          <span className="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--color-fg-2)]">
+            <span
+              className="w-4 h-4 rounded-full grid place-items-center text-white text-[8px] font-medium"
+              style={{ background: asker.color }}
+            >
+              {asker.initials}
+            </span>
+            <span>{asker.name}</span>
+          </span>
+        )}
+      </div>
+
+      {/* Questions */}
+      <div className="pl-4 pr-3 py-3 space-y-3">
+        {af.questions.map((q, qi) => (
+          <div key={q.id}>
+            <div className="flex items-baseline gap-2 mb-1.5">
+              <span className="w-5 h-5 rounded-full grid place-items-center text-[10px] font-medium bg-[var(--color-accent-soft)] text-[var(--color-accent)] flex-shrink-0">
+                {qi + 1}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="text-[12.5px] font-medium text-[var(--color-fg)] flex items-center gap-1.5">
+                  {q.label}
+                  {q.optional && (
+                    <span className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-4)]">
+                      Optional
+                    </span>
+                  )}
+                </div>
+                {q.sub && (
+                  <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
+                    {q.sub}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="pl-7 space-y-1.5">
+              {q.kind === "single" && q.options?.map((opt) => {
+                const picked = answers[q.id] === opt.value;
+                return (
+                  <button
+                    type="button"
+                    key={opt.value}
+                    onClick={() => active && setSingle(q.id, opt.value)}
+                    disabled={!active}
+                    className={`w-full flex items-start gap-2 px-2.5 py-2 rounded-md text-left border transition ${
+                      picked
+                        ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
+                        : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
+                    }`}
+                  >
+                    <span
+                      className="w-3.5 h-3.5 rounded-full border-[1.5px] mt-0.5 flex-shrink-0"
+                      style={{
+                        borderColor: picked ? "var(--color-accent)" : "var(--color-line-strong)",
+                        background: picked ? "var(--color-accent)" : "transparent",
+                      }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-medium text-[var(--color-fg)]">
+                        {opt.label}
+                      </div>
+                      {opt.desc && (
+                        <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
+                          {opt.desc}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+              {q.kind === "multi" && q.options?.map((opt) => {
+                const picked = ((answers[q.id] as string[]) ?? []).includes(opt.value);
+                return (
+                  <button
+                    type="button"
+                    key={opt.value}
+                    onClick={() => active && toggleMulti(q.id, opt.value)}
+                    disabled={!active}
+                    className={`w-full flex items-start gap-2 px-2.5 py-2 rounded-md text-left border transition ${
+                      picked
+                        ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
+                        : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
+                    }`}
+                  >
+                    <span
+                      className="w-3.5 h-3.5 rounded-[3px] border-[1.5px] grid place-items-center mt-0.5 flex-shrink-0"
+                      style={{
+                        borderColor: picked ? "var(--color-accent)" : "var(--color-line-strong)",
+                        background: picked ? "var(--color-accent)" : "transparent",
+                      }}
+                    >
+                      {picked && <Check size={9} color="#fff" strokeWidth={3} />}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-medium text-[var(--color-fg)]">
+                        {opt.label}
+                      </div>
+                      {opt.desc && (
+                        <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
+                          {opt.desc}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+              {q.kind === "fill" && (
+                <textarea
+                  value={(answers[q.id] as string) ?? ""}
+                  onChange={(e) => setFill(q.id, e.target.value)}
+                  placeholder={q.placeholder ?? ""}
+                  rows={2}
+                  disabled={!active}
+                  className="w-full px-2.5 py-2 text-[12.5px] rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
+                />
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Footer */}
+      <div className="flex items-center gap-2 pl-4 pr-3 py-2.5 bg-[var(--color-surface-2)] border-t border-[var(--color-line)]">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!isAnswered || !active}
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Send size={12} /> Send answer
+        </button>
+      </div>
+    </div>
+  );
+}
