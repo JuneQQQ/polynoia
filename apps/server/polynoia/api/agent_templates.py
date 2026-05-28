@@ -35,9 +35,16 @@ from polynoia.domain.entities import Agent, AgentSetup
 ADAPTER_MODELS: dict[str, list[str]] = {
     "claudeCode": [],
     "opencoder": [],
+    # Fallback only — the runtime route prefers ``CodexAdapter.list_models()``
+    # which probes the actual backend (laogou8 by default). These ids match
+    # what laogou8 verifiably exposes today; if the probe is reachable, the
+    # dropdown shows the live list instead.
     "codex": [
-        "gpt-5.1",
-        "gpt-5",
+        "gpt-5.5",
+        "gpt-5.2",
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-mini",
     ],
 }
 
@@ -49,7 +56,7 @@ ADAPTER_MODELS: dict[str, list[str]] = {
 ADAPTER_DEFAULT_MODEL: dict[str, str] = {
     "claudeCode": "claude-sonnet-4-6",
     "opencoder": "anthropic/claude-sonnet-4-6",
-    "codex": "gpt-5.1",
+    "codex": "gpt-5.5",
 }
 
 
@@ -67,8 +74,10 @@ ADAPTER_MODEL_HINT: dict[str, str] = {
         "`anthropic/claude-opus-4-7`。用 `opencode models` 查你本机的全量列表。"
     ),
     "codex": (
-        "Codex 默认走 OpenAI;通过 ~/.codex/config.toml 可接其它 OpenAI 兼容 "
-        "endpoint(laogou8 / Bedrock 等)。"
+        "下拉来自你 ~/.codex/config.toml 指定的 backend 的 /v1/models — "
+        "这是后端**广告**的清单,不保证每个都有可用 channel。"
+        "若选了某 model 出现 503 / 'no available channel',换一个;"
+        "若整个清单都不对,在 ~/.codex/config.toml 改 model_provider。"
     ),
 }
 
