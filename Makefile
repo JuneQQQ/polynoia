@@ -1,9 +1,21 @@
 .PHONY: help dev server web build test test-server test-web lint format types migrate clean install
 
+# Auto-detect the JS package manager. Prefer pnpm (canonical), fall back
+# to npm workspaces (npm 7+ supports the same package.json layout). All
+# JS-side targets go through $(PM_WEB) so team members without pnpm can
+# still `make dev`.
+ifneq (,$(shell command -v pnpm 2>/dev/null))
+  PM_WEB  := pnpm --filter @polynoia/web
+  PM_EXEC := pnpm exec
+else
+  PM_WEB  := npm --workspace=@polynoia/web run
+  PM_EXEC := npx
+endif
+
 help:
 	@echo "Polynoia development commands:"
 	@echo ""
-	@echo "  make install        Install all dependencies (uv + pnpm)"
+	@echo "  make install        Install all dependencies (uv + pnpm/npm)"
 	@echo "  make dev            Run server + web in parallel"
 	@echo "  make server         Run server only (uvicorn --reload)"
 	@echo "  make web            Run web only (vite dev)"
@@ -36,11 +48,11 @@ server:
 	cd apps/server && uv run uvicorn polynoia.main:app --reload --host 0.0.0.0 --port 7780
 
 web:
-	pnpm --filter @polynoia/web dev
+	$(PM_WEB) dev
 
 build:
 	cd apps/server && uv build
-	pnpm --filter @polynoia/web build
+	$(PM_WEB) build
 
 types:
 	cd apps/server && uv run python -m scripts.gen_ts_types ../../packages/shared/src/
@@ -51,15 +63,15 @@ test-server:
 	cd apps/server && uv run pytest
 
 test-web:
-	pnpm --filter @polynoia/web test
+	$(PM_WEB) test
 
 lint:
 	cd apps/server && uv run ruff check .
-	pnpm --filter @polynoia/web lint
+	$(PM_WEB) lint
 
 format:
 	cd apps/server && uv run ruff format .
-	pnpm exec biome format --write .
+	$(PM_EXEC) biome format --write .
 
 migrate:
 	cd apps/server && uv run alembic upgrade head
