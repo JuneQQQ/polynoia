@@ -18,17 +18,13 @@ help:
 install:
 	# Backend: --extra dev pulls pytest/ruff/mypy so `make test` works
 	cd apps/server && uv sync --extra dev
-	# Frontend: auto-bootstrap pnpm via corepack(ships with Node 16+),
-	# falls back to npm workspaces if corepack unavailable.
+	# Frontend: prefer pnpm; fall back to npm workspaces if pnpm isn't
+	# installed (npm 7+ natively supports the same workspace layout).
 	@if command -v pnpm >/dev/null 2>&1; then \
 		pnpm install; \
-	elif command -v corepack >/dev/null 2>&1; then \
-		echo "→ Activating pnpm via corepack..."; \
-		corepack enable; \
-		corepack prepare pnpm@9.0.0 --activate; \
-		pnpm install; \
 	else \
-		echo "⚠ pnpm not found and corepack unavailable, falling back to npm"; \
+		echo "ℹ pnpm not found, using npm workspaces (slower but works)"; \
+		echo "  for the canonical experience: 'npm i -g pnpm' before next time"; \
 		npm install; \
 	fi
 
