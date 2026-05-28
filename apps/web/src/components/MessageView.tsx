@@ -18,9 +18,13 @@ type Props = {
    * from the same sender — hide avatar + name + timestamp for visual
    * grouping (tool-call + text from the same agent turn render as one block). */
   isGrouped?: boolean;
+  /** Lane-compact mode (TasksBurstPart): skip avatar column, skip sender
+   * name (lane header already shows the agent), tighter padding. Payload
+   * + action row (reply/copy/pin/regenerate) still rendered. */
+  compact?: boolean;
 };
 
-function MessageViewInner({ convId, msgId, isGrouped }: Props) {
+function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
   // Per-message subscription: ChatPane gives us stable ids, store mutates
   // msgById entries in place; this hook only fires when THIS message changes.
   const msg = useStore((s) => selectMessageById(s, convId, msgId));
@@ -66,15 +70,19 @@ function MessageViewInner({ convId, msgId, isGrouped }: Props) {
   return (
     <div
       data-msg-id={msg.id}
-      className={`anim-fade-up group/msg flex gap-3 px-6 transition-colors duration-200 ${
-        isGrouped ? "pt-0.5 pb-0.5" : "pt-3 pb-1.5"
+      className={`anim-fade-up group/msg flex gap-3 transition-colors duration-200 ${
+        compact ? "px-3" : "px-6"
+      } ${
+        isGrouped ? "pt-0.5 pb-0.5" : compact ? "pt-2 pb-1" : "pt-3 pb-1.5"
       } ${
         isYou
           ? "bg-[var(--color-surface-2)]/40 hover:bg-[var(--color-surface-2)]/60"
           : "hover:bg-[var(--color-surface-2)]/25"
       }`}
     >
-      {/* Avatar column — keep width to preserve indent when grouped */}
+      {/* Avatar column — skip entirely in compact mode (lane header
+          already shows agent). Keep for normal/grouped to preserve indent. */}
+      {!compact && (
       <div className="w-8 flex-shrink-0">
         {!isGrouped && (
           (isYou || isSystem) ? (
@@ -99,8 +107,11 @@ function MessageViewInner({ convId, msgId, isGrouped }: Props) {
           )
         )}
       </div>
+      )}
       <div className="flex-1 min-w-0">
-        {!isGrouped && (
+        {/* Header row: hidden in compact (lane already names the agent),
+            also hidden when grouped (continuation of same sender). */}
+        {!isGrouped && !compact && (
           <div className="flex items-baseline gap-2 mb-1">
             {(isYou || isSystem) ? (
               <span className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide">

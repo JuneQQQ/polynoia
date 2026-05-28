@@ -4,12 +4,15 @@ import { useShallow } from "zustand/react/shallow";
 import { api, type ConversationSummary } from "../lib/api";
 import { ConvWebSocket } from "../lib/ws";
 import { selectAgentStatuses, selectMessages, useStore, type AgentStatusValue } from "../store";
+import { computeBursts } from "../lib/burstClaim";
+import type { Message, TasksPayload } from "../lib/types";
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { ConvRolesModal } from "./ConvRolesModal";
 import { MessageView } from "./MessageView";
 import { PendingEditsPanel } from "./PendingEditsPanel";
 import { ConvScopeProvider } from "./parts/_context";
+import { TasksBurstPart } from "./parts/TasksBurstPart";
 
 type Props = {
   convId: string;
@@ -503,23 +506,56 @@ export function ChatPane({ convId, members, title }: Props) {
             </div>
           </div>
         )}
-        {messages.map((m, i) => {
-          // Group consecutive same-sender messages into one visual bubble:
-          // avatar + name + timestamp only on the FIRST message of a run.
-          // Tool calls + text from the same agent turn (which arrive as
-          // separate messages in the store because of distinct message_ids)
-          // now visually read as one continuous reply.
-          const prev = i > 0 ? messages[i - 1] : null;
-          const isGrouped = !!prev && prev.sender_id === m.sender_id;
-          return (
-            <MessageView
-              key={m.id}
-              convId={convId}
-              msgId={m.id}
-              isGrouped={isGrouped}
-            />
+        {(() => {
+          // Burst-aware render: orchestrator's tasks card anchors a burst;
+          // subsequent messages from assigned sub-agents are claimed into
+          // lanes and rendered inside TasksBurstPart (NOT in the linear
+          // stream). User messages, system events, and the orchestrator's
+          // own summary stay linear.
+          //
+          // Recompute only when messageOrder length OR last msg id changes
+          // (status flip on the same tasks card is fine — Burst subscribes
+          // to msgById through useStore and re-renders in place).
+          const orchestratorIds = [
+            "orchestrator",
+            ...(convSummary?.orchestrator_member_id
+              ? [convSummary.orchestrator_member_id]
+              : []),
+          ];
+          const msgByIdLive = useStore.getState().convs.get(convId)?.msgById
+            ?? new Map<string, Message>();
+          const { burstByAnchorId, claimedSet } = computeBursts(
+            messages.map((m) => m.id),
+            msgByIdLive,
+            orchestratorIds,
           );
-        })}
+
+          return messages.map((m, i) => {
+            if (claimedSet.has(m.id)) return null;  // rendered in a lane
+            const burst = burstByAnchorId.get(m.id);
+            if (burst) {
+              return (
+                <TasksBurstPart
+                  key={m.id}
+                  payload={m.payload as TasksPayload}
+                  burstInfo={burst}
+                  convId={convId}
+                />
+              );
+            }
+            // Normal linear MessageView
+            const prev = i > 0 ? messages[i - 1] : null;
+            const isGrouped = !!prev && prev.sender_id === m.sender_id;
+            return (
+              <MessageView
+                key={m.id}
+                convId={convId}
+                msgId={m.id}
+                isGrouped={isGrouped}
+              />
+            );
+          });
+        })()}
       </div>
       </ConvScopeProvider>
       </div>
