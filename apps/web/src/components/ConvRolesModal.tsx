@@ -103,16 +103,29 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
           )}
           {memberAgents.map((a) => (
             <div key={a.id} className="flex items-center gap-3">
-              <div
-                className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium flex-shrink-0"
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  useStore.getState().openAgentDetail(a.id);
+                }}
+                className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium flex-shrink-0 transition-all hover:scale-[1.08] hover:shadow-md"
                 style={{ background: a.color }}
+                title={`查看 ${a.name} 详情`}
               >
                 {a.initials}
-              </div>
+              </button>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] text-[var(--color-fg)] truncate leading-snug">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    useStore.getState().openAgentDetail(a.id);
+                  }}
+                  className="text-[13px] text-[var(--color-fg)] truncate leading-snug hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
+                >
                   {a.name}
-                </div>
+                </button>
                 <input
                   type="text"
                   value={draft[a.id] ?? ""}

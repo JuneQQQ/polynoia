@@ -1,7 +1,9 @@
 import { Menu } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatPane } from "./components/ChatPane";
+import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { PreviewPane } from "./components/preview/PreviewPane";
+import { RightDrawer } from "./components/RightDrawer";
 import { Sidebar } from "./components/Sidebar";
 import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
@@ -174,6 +176,12 @@ export function App() {
       />
       {renderMain()}
       {previewOpen && view === "chat" && activeConv && <PreviewPane />}
+      {/* Right-side info drawer (agent detail / members list). Globally
+          mounted so it can be opened from anywhere — sidebar, chat header,
+          message bubble, roles modal. */}
+      <RightDrawer />
+      {/* Search overlay — Cmd+K global hotkey + header 🔍 button */}
+      <ChatSearchOverlay />
     </div>
   );
 }

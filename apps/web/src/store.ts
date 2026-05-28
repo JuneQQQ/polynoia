@@ -194,6 +194,21 @@ type Store = {
   openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
   closePreview: () => void;
   setPreviewTab: (tab: PreviewTab) => void;
+
+  /** Right-side info drawer — separate from PreviewPane.
+   * `kind = null` = closed. Opening any kind auto-closes PreviewPane
+   * (they share right-edge real estate). */
+  rightDrawer: {
+    kind: "agent-detail" | "members" | null;
+    agentId?: string;
+  };
+  openAgentDetail: (agentId: string) => void;
+  openMembersList: () => void;
+  closeRightDrawer: () => void;
+
+  /** Cmd+K / search button → full-screen search overlay. */
+  searchOverlayOpen: boolean;
+  setSearchOverlayOpen: (v: boolean) => void;
 };
 
 export type ChunkAction =
@@ -252,10 +267,28 @@ export const useStore = create<Store>((set, get) => ({
 
   openPreview: (tab, data) =>
     set((s) => ({
+      // Mutual-exclude with RightDrawer (both occupy right edge)
+      rightDrawer: { kind: null },
       preview: { open: true, tab, data: { ...s.preview.data, ...(data ?? {}) } },
     })),
   closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),
   setPreviewTab: (tab) => set((s) => ({ preview: { ...s.preview, tab } })),
+
+  rightDrawer: { kind: null },
+  openAgentDetail: (agentId) =>
+    set((s) => ({
+      rightDrawer: { kind: "agent-detail", agentId },
+      preview: { ...s.preview, open: false },  // mutual-exclude with PreviewPane
+    })),
+  openMembersList: () =>
+    set((s) => ({
+      rightDrawer: { kind: "members" },
+      preview: { ...s.preview, open: false },
+    })),
+  closeRightDrawer: () => set({ rightDrawer: { kind: null } }),
+
+  searchOverlayOpen: false,
+  setSearchOverlayOpen: (v) => set({ searchOverlayOpen: v }),
 
   setSeed: (s) => set(s),
   setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),

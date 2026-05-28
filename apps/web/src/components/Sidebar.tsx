@@ -51,6 +51,21 @@ export function Sidebar({
   // 通过 editingContact 区分:null = 创建,有值 = 编辑。
   const [newContactOpen, setNewContactOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Agent | null>(null);
+
+  // Listen for "edit-contact" events from AgentDetailView. Window event
+  // chosen over prop drilling because the drawer is mounted globally in
+  // App.tsx while editingContact state lives here.
+  useEffect(() => {
+    const onEdit = (e: Event) => {
+      const detail = (e as CustomEvent<{ agent: Agent }>).detail;
+      if (detail?.agent) {
+        setEditingContact(detail.agent);
+        setNewContactOpen(true);
+      }
+    };
+    window.addEventListener("polynoia:edit-contact", onEdit);
+    return () => window.removeEventListener("polynoia:edit-contact", onEdit);
+  }, []);
   // 适配器管理(原 OnboardingModal)— 二级,从 NewContactModal footer / 联系人空状态进入
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 

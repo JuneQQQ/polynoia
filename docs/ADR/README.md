@@ -29,3 +29,4 @@
 | 008 | [Contact decoupled from Adapter](ADR-008-contact-adapter-decoupling.md) | accepted | 2026-05-27 |
 | 009 | [Manual mode: HTTP long-poll vs asyncio.Future](ADR-009-manual-mode-long-poll.md) | accepted | 2026-05-28 |
 | 010 | [Workspace file API + path safety](ADR-010-workspace-file-api.md) | accepted | 2026-05-28 |
+| 011 | [Right-side slide-in Drawer pattern](ADR-011-right-drawer-pattern.md) | accepted | 2026-05-29 |

@@ -327,9 +327,14 @@ export function ChatPane({ convId, members, title }: Props) {
               {title}
             </span>
             {isGroup && (
-              <span className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)]">
+              <button
+                type="button"
+                onClick={() => useStore.getState().openMembersList()}
+                className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
+                title="查看成员"
+              >
                 {memberAgents.length + 1} 成员
-              </span>
+              </button>
             )}
           </div>
           <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
@@ -346,14 +351,16 @@ export function ChatPane({ convId, members, title }: Props) {
           {memberAgents.slice(0, 5).map(
             (a) =>
               a && (
-                <div
+                <button
+                  type="button"
                   key={a.id}
-                  className="w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium border-2 border-[var(--color-surface)] transition-transform duration-200 hover:scale-[1.08] hover:z-10"
+                  onClick={() => useStore.getState().openAgentDetail(a.id)}
+                  className="w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium border-2 border-[var(--color-surface)] transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10"
                   style={{ background: a.color }}
-                  title={a.name}
+                  title={`查看 ${a.name} 详情`}
                 >
                   {a.initials}
-                </div>
+                </button>
               ),
           )}
         </div>
@@ -392,8 +399,9 @@ export function ChatPane({ convId, members, title }: Props) {
         <div className="flex items-center gap-1 ml-2">
           <button
             type="button"
-            className="p-1.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
-            title="搜索"
+            onClick={() => useStore.getState().setSearchOverlayOpen(true)}
+            className="p-1.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
+            title="搜索 (⌘K / Ctrl+K)"
           >
             <Search size={14} />
           </button>

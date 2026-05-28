@@ -77,26 +77,45 @@ function MessageViewInner({ convId, msgId, isGrouped }: Props) {
       {/* Avatar column — keep width to preserve indent when grouped */}
       <div className="w-8 flex-shrink-0">
         {!isGrouped && (
-          <div
-            className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm transition-transform duration-200 group-hover/msg:scale-[1.04]"
-            style={{
-              background: isYou
-                ? "#5E5749"
-                : isSystem
-                  ? "var(--color-red)"
-                  : (agent?.color ?? "var(--color-fg-3)"),
-            }}
-          >
-            {isYou ? "我" : isSystem ? "!" : (agent?.initials ?? "?")}
-          </div>
+          (isYou || isSystem) ? (
+            <div
+              className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm transition-transform duration-200 group-hover/msg:scale-[1.04]"
+              style={{
+                background: isYou ? "#5E5749" : "var(--color-red)",
+              }}
+            >
+              {isYou ? "我" : "!"}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => agent && useStore.getState().openAgentDetail(agent.id)}
+              className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm transition-all duration-200 group-hover/msg:scale-[1.04] hover:shadow-md hover:ring-2 hover:ring-[var(--color-accent-soft)]"
+              style={{ background: agent?.color ?? "var(--color-fg-3)" }}
+              title={`查看 ${agent?.name ?? "Agent"} 详情`}
+            >
+              {agent?.initials ?? "?"}
+            </button>
+          )
         )}
       </div>
       <div className="flex-1 min-w-0">
         {!isGrouped && (
           <div className="flex items-baseline gap-2 mb-1">
-            <span className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide">
-              {isYou ? "我" : isSystem ? "System" : (agent?.name ?? "Agent")}
-            </span>
+            {(isYou || isSystem) ? (
+              <span className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide">
+                {isYou ? "我" : "System"}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => agent && useStore.getState().openAgentDetail(agent.id)}
+                className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
+                title="查看详情"
+              >
+                {agent?.name ?? "Agent"}
+              </button>
+            )}
             {!isYou && !isSystem && agent?.id === "orchestrator" && (
               <span
                 className="text-[9px] font-mono uppercase tracking-[0.18em] px-1.5 py-[1px] rounded-sm font-medium"
