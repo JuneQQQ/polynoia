@@ -6,21 +6,27 @@ IM 形态的多 Agent 协作平台。详见 [`docs/superpowers/specs/2026-05-23-
 
 ### 前置(一次性)
 
-```bash
-# Node 22+ / Python 3.12+ / uv / pnpm
-# 若 pnpm 没装:
-npm config set prefix ~/.npm-global && export PATH=$HOME/.npm-global/bin:$PATH
-npm install -g pnpm
+| 工具 | 要求 | 装法 |
+|---|---|---|
+| Python | 3.12+ | 系统包管理器 |
+| Node | 22+ | nvm / 系统包 |
+| uv | 最新 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Claude Code CLI | 已登录 | `npm install -g @anthropic-ai/claude-code` + `claude` 登录 |
+| (可选)OpenCode CLI | — | `npm install -g opencode-ai` + `opencode auth login` |
+| pnpm | 9.x | **`make install` 会自动用 corepack 装,无需手动** |
 
-# 国内 npm 源(国外网络不稳)
-pnpm config set registry https://registry.npmmirror.com
-```
+> 国内网络可设 npm 国内源:`npm config set registry https://registry.npmmirror.com`
 
 ### 装依赖
 
 ```bash
 make install
 ```
+
+`make install` 会:
+1. `uv sync --extra dev`(后端 + pytest/ruff/mypy)
+2. 自动检测 pnpm,没有则用 `corepack` 拉一个,再 `pnpm install`
+3. 都不可用时退到 `npm install`(npm 7+ workspaces 也支持)
 
 ### 跑起来
 

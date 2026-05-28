@@ -16,8 +16,21 @@ help:
 	@echo "  make clean          Remove build artifacts + caches"
 
 install:
-	cd apps/server && uv sync
-	pnpm install
+	# Backend: --extra dev pulls pytest/ruff/mypy so `make test` works
+	cd apps/server && uv sync --extra dev
+	# Frontend: auto-bootstrap pnpm via corepack(ships with Node 16+),
+	# falls back to npm workspaces if corepack unavailable.
+	@if command -v pnpm >/dev/null 2>&1; then \
+		pnpm install; \
+	elif command -v corepack >/dev/null 2>&1; then \
+		echo "→ Activating pnpm via corepack..."; \
+		corepack enable; \
+		corepack prepare pnpm@9.0.0 --activate; \
+		pnpm install; \
+	else \
+		echo "⚠ pnpm not found and corepack unavailable, falling back to npm"; \
+		npm install; \
+	fi
 
 dev:
 	@trap 'kill 0' INT; \
