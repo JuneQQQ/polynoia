@@ -4,6 +4,8 @@
 > Spec:`docs/superpowers/specs/2026-05-23-polynoia-design.md`
 > 调研基线:`docs/research/00-SYNTHESIS.md`
 
+> ⚠️ **活跃功能边界(动代码前必看)**:`feature/diff_dev` 正在建「冲突闭环」。**在改 `api/routes.py` 合并/burst 区、`sandbox/_core.py` git helper、pending-edit 轨道、前端 store/PreviewPane/PARTS_REGISTRY 之前**(即使你在做无关任务),先读 [`docs/design/conflict-closed-loop-CHARTER.md`](docs/design/conflict-closed-loop-CHARTER.md) —— 它划清了哪些是共享承重符号(碰了会炸)、哪些可自由动。完整设计见 [`docs/design/conflict-closed-loop-2026-05-30.md`](docs/design/conflict-closed-loop-2026-05-30.md)。
+
 ## 1. 项目是什么
 
 **Polynoia**(对外品牌 / 课题代号 AgentHub):IM 形态的多 Agent 协作平台。用户像用 Slack/Lark/微信一样和多个 AI Agent 共处一个对话,Orchestrator 自动拆解任务并并行调度。
