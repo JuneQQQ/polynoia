@@ -1,8 +1,13 @@
 import {
+  Archive,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Compass,
+  Inbox,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plug,
   Plus,
@@ -27,6 +32,7 @@ const ADAPTER_LABEL: Record<string, string> = {
 import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { OnboardingModal } from "./OnboardingModal";
+import { ThemeToggle } from "./ThemeToggle";
 
 export function Sidebar({
   activeConvId,
@@ -39,6 +45,11 @@ export function Sidebar({
   const workspaces = useStore((s) => s.workspaces);
   const servers = useStore((s) => s.servers);
   const setView = useStore((s) => s.setView);
+  const view = useStore((s) => s.view);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
+  const setSearchOverlayOpen = useStore((s) => s.setSearchOverlayOpen);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const lang = useStore((s) => s.lang);
@@ -75,6 +86,85 @@ export function Sidebar({
 
   // 顶级 search 输入(过滤 projects + contacts)
   const [query, setQuery] = useState("");
+
+  // ── Resizable width (drag the right edge; persisted) ──────────────
+  const [sbWidth, setSbWidth] = useState(() => {
+    const saved = parseInt(localStorage.getItem("polynoia:sb-w") || "0", 10);
+    return saved >= 200 && saved <= 460 ? saved : 260;
+  });
+  useEffect(() => {
+    localStorage.setItem("polynoia:sb-w", String(sbWidth));
+  }, [sbWidth]);
+  // Drag the right edge to resize. Drag LEFT past COLLAPSE_AT (below the 200px
+  // min) → snap into the collapsed icon rail (VS Code feel).
+  const COLLAPSE_AT = 160;
+  const startSbResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    document.body.classList.add("polynoia-resizing");
+    const startX = e.clientX;
+    const startW = sbWidth;
+    const onUp = () => {
+      document.body.classList.remove("polynoia-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    const onMove = (ev: MouseEvent) => {
+      const w = startW + (ev.clientX - startX);
+      if (w < COLLAPSE_AT) {
+        // End the drag first — the full sidebar (and this handle) unmounts as
+        // it becomes the rail.
+        onUp();
+        setSidebarCollapsed(true);
+        return;
+      }
+      setSbWidth(Math.max(200, Math.min(460, w)));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  const sbResizeHandle = (
+    <div
+      onMouseDown={startSbResize}
+      onDoubleClick={() => setSbWidth(260)}
+      title="拖动调节侧栏宽度(双击复位)"
+      className="absolute top-0 right-0 bottom-0 w-1.5 cursor-col-resize z-30 group"
+    >
+      <div className="absolute inset-y-0 right-0 w-0.5 bg-transparent group-hover:bg-[var(--color-accent)] transition-colors duration-150" />
+    </div>
+  );
+
+  // Collapsed rail: drag its right edge RIGHT past EXPAND_AT to restore the
+  // full sidebar (symmetric with drag-left-to-collapse). Double-click expands
+  // too. The restored width is whatever sbWidth held.
+  const startRailExpand = (e: React.MouseEvent) => {
+    e.preventDefault();
+    document.body.classList.add("polynoia-resizing");
+    const startX = e.clientX;
+    const EXPAND_AT = 40;
+    const onUp = () => {
+      document.body.classList.remove("polynoia-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    const onMove = (ev: MouseEvent) => {
+      if (ev.clientX - startX > EXPAND_AT) {
+        onUp();
+        setSidebarCollapsed(false);
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  const railResizeHandle = (
+    <div
+      onMouseDown={startRailExpand}
+      onDoubleClick={() => setSidebarCollapsed(false)}
+      title="向右拖动 / 双击展开侧栏"
+      className="absolute top-0 right-0 bottom-0 w-1.5 cursor-col-resize z-30 group"
+    >
+      <div className="absolute inset-y-0 right-0 w-0.5 bg-transparent group-hover:bg-[var(--color-accent)] transition-colors duration-150" />
+    </div>
+  );
 
   // Workspace-scoped conversation list (fetched on demand)
   const [wsConvs, setWsConvs] = useState<ConversationSummary[]>([]);
@@ -189,21 +279,154 @@ export function Sidebar({
 
   const inWorkspace = !!activeWorkspaceId;
 
+  // ─── Collapsed: narrow icon rail (VS Code activity-bar style) ───
+  // Doesn't disappear — shrinks to icon width: expand button + monogram +
+  // search + a column of conversation/project avatars + theme toggle.
+  if (sidebarCollapsed) {
+    return (
+      <aside className="relative w-[52px] flex-shrink-0 flex flex-col items-center gap-1 py-3 bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] border-r border-[var(--color-sidebar-line)]">
+        {railResizeHandle}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          title="展开侧栏 (⌘/Ctrl+B)"
+          aria-label="展开侧栏"
+          className="p-2 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors"
+        >
+          <PanelLeftOpen size={18} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setSearchOverlayOpen(true)}
+          title="搜索 (⌘/Ctrl+K)"
+          aria-label="搜索"
+          className="p-2 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors"
+        >
+          <Search size={17} />
+        </button>
+        {/* Nav (same targets as the expanded Footer strip) */}
+        {([
+          { key: "inbox", icon: Inbox, label: "收件箱" },
+          { key: "marketplace", icon: Compass, label: "广场" },
+          { key: "archive", icon: Archive, label: "归档" },
+        ] as const).map((n) => {
+          const active = view === n.key;
+          return (
+            <button
+              key={n.key}
+              type="button"
+              onClick={() => setView(active ? "chat" : (n.key as typeof view))}
+              title={n.label}
+              aria-label={n.label}
+              aria-pressed={active}
+              className={`p-2 rounded-md transition-colors ${
+                active
+                  ? "bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-fg)]"
+                  : "text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)]"
+              }`}
+            >
+              <n.icon size={16} />
+            </button>
+          );
+        })}
+        <div className="w-7 h-px bg-[var(--color-sidebar-line)] my-1" />
+
+        {/* Primary column. Keeps the SAME relative order as the expanded
+            sidebar: workspace → conversations; global → 联系人 first, then
+            项目 (a small gap divides the two groups). py-1 so top/bottom
+            avatars + their active ring aren't clipped by overflow. */}
+        <div className="flex-1 w-full min-h-0 overflow-y-auto flex flex-col items-center gap-1.5 py-1">
+          {inWorkspace
+            ? wsConvs.map((c) => {
+                const first = c.members
+                  .filter((m) => m !== "you")
+                  .map((id) => agents.find((a) => a.id === id))
+                  .find(Boolean);
+                const active = c.id === activeConvId;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => onSelectConv(c.id, c.members, c.title)}
+                    title={c.title}
+                    className={`w-7 h-7 rounded-full grid place-items-center text-white text-[9.5px] font-medium transition flex-shrink-0 ${
+                      active
+                        ? "ring-2 ring-[var(--color-accent)]"
+                        : "ring-1 ring-[var(--color-sidebar-line)] hover:ring-[var(--color-sidebar-muted)]"
+                    }`}
+                    style={{ background: first?.color ?? "var(--color-sidebar-muted)" }}
+                  >
+                    {first?.initials ?? c.title.slice(0, 1)}
+                  </button>
+                );
+              })
+            : // Global: 联系人(圆,上) → 小间隔 → 项目(方,下) — mirrors the
+              // expanded sidebar's order so collapsing doesn't reshuffle.
+              [
+                ...contacts.map((a) => {
+                  const active = activeConvId === `dm-${a.id}`;
+                  return (
+                    <button
+                      key={`c-${a.id}`}
+                      type="button"
+                      onClick={() => onSelectConv(`dm-${a.id}`, [a.id, "you"], a.name)}
+                      title={a.name}
+                      className={`w-7 h-7 rounded-full grid place-items-center text-white text-[9.5px] font-medium transition flex-shrink-0 ${
+                        active
+                          ? "ring-2 ring-[var(--color-accent)]"
+                          : "ring-1 ring-[var(--color-sidebar-line)] hover:ring-[var(--color-sidebar-muted)]"
+                      }`}
+                      style={{ background: a.color }}
+                    >
+                      {a.initials}
+                    </button>
+                  );
+                }),
+                workspaces.length > 0 && contacts.length > 0 ? (
+                  <div
+                    key="rail-sep"
+                    className="w-6 h-px bg-[var(--color-sidebar-line)] my-0.5 flex-shrink-0"
+                  />
+                ) : null,
+                ...workspaces.map((w) => (
+                  <button
+                    key={`ws-${w.id}`}
+                    type="button"
+                    onClick={() => setActiveWorkspace(w.id)}
+                    title={w.name}
+                    className="w-7 h-7 rounded-lg grid place-items-center text-[11px] font-display font-semibold text-[var(--color-sidebar-fg)] bg-[var(--color-sidebar-hover)] ring-1 ring-[var(--color-sidebar-line)] hover:ring-[var(--color-sidebar-muted)] transition flex-shrink-0"
+                  >
+                    {w.name.slice(0, 1)}
+                  </button>
+                )),
+              ]}
+        </div>
+
+        <div className="w-7 h-px bg-[var(--color-sidebar-line)] my-1" />
+        <ThemeToggle />
+      </aside>
+    );
+  }
+
   // ─── Layer 2: workspace 内对话列表 ───
   if (inWorkspace) {
     const ws = workspaces.find((w) => w.id === activeWorkspaceId);
     const srv = servers.find((s) => s.id === ws?.server_id);
 
     return (
-      <aside className="w-[260px] bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0">
-        <header className="flex items-center gap-2 px-3 py-3 border-b border-black/30">
+      <aside
+        className="relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0"
+        style={{ width: sbWidth }}
+      >
+        {sbResizeHandle}
+        <header className="flex items-center gap-2 px-3 py-3 border-b border-[var(--color-sidebar-line)]">
           <button
             type="button"
             onClick={() => {
               setActiveWorkspace(null);
               setView("chat");
             }}
-            className="p-1 -ml-1 hover:bg-white/5 rounded"
+            className="p-1 -ml-1 hover:bg-[var(--color-sidebar-hover)] rounded"
           >
             <ChevronLeft size={14} />
           </button>
@@ -217,6 +440,24 @@ export function Sidebar({
               {ws?.role} {srv && `· ${srv.name}`}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            title="收起侧栏 (⌘/Ctrl+B)"
+            aria-label="收起侧栏"
+            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors flex-shrink-0"
+          >
+            <PanelLeftClose size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSearchOverlayOpen(true)}
+            title="搜索 (⌘/Ctrl+K)"
+            aria-label="搜索"
+            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors flex-shrink-0"
+          >
+            <Search size={15} />
+          </button>
         </header>
 
         {srv && !srv.online && (
@@ -233,7 +474,7 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => setNewConvOpen(true)}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[12px] rounded bg-white/5 hover:bg-white/10"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[12px] rounded bg-[var(--color-sidebar-hover)] hover:bg-[var(--color-sidebar-active)]"
             >
               <Plus size={12} /> 新建对话
             </button>
@@ -327,10 +568,25 @@ export function Sidebar({
 
   // ─── Layer 1: 顶级 ───
   return (
-    <aside className="w-[260px] bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0 overflow-hidden">
+    <aside
+      className="relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0 overflow-hidden"
+      style={{ width: sbWidth }}
+    >
+      {sbResizeHandle}
       {/* Wordmark — editorial,横向呼吸大,底部一根橙色 hair-line 作为
           整个 sidebar 的"标题章"暗示。不再用黑色 border 硬切。 */}
       <header className="relative flex flex-col items-start gap-3 px-5 pt-5 pb-5">
+        {/* Collapse the whole sidebar (VS Code Cmd+B). Re-open via the chat
+            header's expand button or Cmd+B. */}
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          title="收起侧栏 (⌘/Ctrl+B)"
+          aria-label="收起侧栏"
+          className="absolute top-4 right-4 p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors"
+        >
+          <PanelLeftClose size={16} />
+        </button>
         {/* Monogram — stacked ABOVE the wordmark per Polynoia.html mockup
             (40×40 rx=9 orange square w/ centered "P", with wordmark on
             next line). Bigger than my earlier inline version. */}
@@ -449,7 +705,7 @@ export function Sidebar({
         <button
           type="button"
           onClick={() => setNewContactOpen(true)}
-          className="group press-down w-full flex items-center gap-2 px-3 py-2 text-[14px] text-[var(--color-sidebar-fg)] rounded-sm bg-transparent hover:bg-white/[0.04] focus:bg-white/[0.04] outline-none transition-colors duration-150"
+          className="group press-down w-full flex items-center gap-2 px-3 py-2 text-[14px] text-[var(--color-sidebar-fg)] rounded-sm bg-transparent hover:bg-[var(--color-sidebar-hover)] focus:bg-[var(--color-sidebar-hover)] outline-none transition-colors duration-150"
         >
           <Sparkles
             size={14}
@@ -471,7 +727,7 @@ export function Sidebar({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("searchSession", lang)}
-            className="w-full pl-[34px] pr-3 py-2 text-[14px] bg-transparent rounded-sm outline-none placeholder:text-[var(--color-sidebar-muted)] text-[var(--color-sidebar-fg)] hover:bg-white/[0.04] focus:bg-white/[0.04] transition-colors duration-150"
+            className="w-full pl-[34px] pr-3 py-2 text-[14px] bg-transparent rounded-sm outline-none placeholder:text-[var(--color-sidebar-muted)] text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] focus:bg-[var(--color-sidebar-hover)] transition-colors duration-150"
           />
         </div>
       </div>
@@ -491,7 +747,7 @@ export function Sidebar({
                 key={c.id}
                 type="button"
                 onClick={() => onSelectConv(c.id, c.members, c.title)}
-                className="w-full text-left pl-4 pr-3 py-2 rounded-sm hover:bg-white/[0.035] transition-colors duration-200"
+                className="w-full text-left pl-4 pr-3 py-2 rounded-sm hover:bg-[var(--color-sidebar-hover)] transition-colors duration-200"
               >
                 <div className="text-[13px] truncate text-[var(--color-sidebar-fg)] leading-snug">
                   {c.title}
@@ -526,7 +782,7 @@ export function Sidebar({
                 <button
                   type="button"
                   onClick={() => setNewContactOpen(true)}
-                  className="group w-full mx-0 mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm border border-dashed border-[rgba(233,226,213,0.18)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-white/[0.025] transition-all duration-200"
+                  className="group w-full mx-0 mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm border border-dashed border-[var(--color-sidebar-line)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-200"
                 >
                   <Plus
                     size={11}
@@ -549,8 +805,8 @@ export function Sidebar({
                     }}
                     className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left transition-all duration-200 ${
                       active
-                        ? "bg-white/[0.06]"
-                        : "hover:bg-white/[0.035] hover:translate-x-[2px]"
+                        ? "bg-[var(--color-sidebar-active)]"
+                        : "hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px]"
                     }`}
                   >
                     {/* 2px 左侧 active 标记 */}
@@ -629,7 +885,7 @@ export function Sidebar({
                             setNewContactOpen(true);
                           }
                         }}
-                        className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-white/10 transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
+                        className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
                       >
                         <Pencil size={11} className="text-[var(--color-sidebar-muted)]" />
                       </span>
@@ -657,7 +913,7 @@ export function Sidebar({
                 <button
                   type="button"
                   onClick={() => setNewProjectOpen(true)}
-                  className="group w-full mx-0 mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm border border-dashed border-[rgba(233,226,213,0.18)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-white/[0.025] transition-all duration-200"
+                  className="group w-full mx-0 mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm border border-dashed border-[var(--color-sidebar-line)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-200"
                 >
                   <Plus
                     size={11}
@@ -676,7 +932,7 @@ export function Sidebar({
                     style={{
                       animationDelay: `${idx * 30}ms`,
                     }}
-                    className="anim-stagger group w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left hover:bg-white/[0.035] hover:translate-x-[2px] transition-all duration-200"
+                    className="anim-stagger group w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px] transition-all duration-200"
                   >
                     {/* 项目色块 sits in the SAME 32-px column as contact
                         circles, so contacts and projects align vertically as
@@ -781,6 +1037,17 @@ function ConvRow({
   const [busy, setBusy] = useState(false);
   const kindLabel = conv.direct ? "单聊" : conv.group ? "群聊" : "对话";
 
+  // Up to 3 teammate avatars as the row's visual identity — text-only rows
+  // read as empty/sparse. Exclude "you"; group convs benefit most but a
+  // single-agent DM gets one avatar too.
+  const agents = useStore((s) => s.agents);
+  const memberAgents = conv.members
+    .filter((m) => m !== "you")
+    .map((id) => agents.find((a) => a.id === id))
+    .filter((a): a is NonNullable<typeof a> => Boolean(a));
+  const shownAvatars = memberAgents.slice(0, 3);
+  const overflow = memberAgents.length - shownAvatars.length;
+
   // Close menu when clicking outside
   useEffect(() => {
     if (!menuOpen) return;
@@ -803,21 +1070,59 @@ function ConvRow({
     }
   };
 
+  const handleArchive = async () => {
+    setMenuOpen(false);
+    setBusy(true);
+    try {
+      await (conv.archived ? api.unarchiveConv(conv.id) : api.archiveConv(conv.id));
+      onDeleted();  // refresh the list — archived convs drop out of the main list
+    } catch (e) {
+      window.alert(`归档失败:${e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       className={`group relative rounded ${
-        active ? "bg-white/10" : "hover:bg-white/5"
+        active ? "bg-[var(--color-sidebar-active)]" : "hover:bg-[var(--color-sidebar-hover)]"
       } ${busy ? "opacity-60" : ""}`}
     >
       <button
         type="button"
         onClick={onOpen}
         disabled={busy}
-        className="w-full text-left pl-2 pr-8 py-2 text-[12.5px]"
+        className="w-full text-left pl-2 pr-8 py-2 text-[12.5px] flex items-center gap-2.5"
       >
-        <div className="font-medium truncate">{conv.title}</div>
-        <div className="text-[10.5px] text-[var(--color-sidebar-muted)] mt-0.5">
-          {kindLabel} · {conv.members.length} 成员{conv.unread > 0 && ` · ${conv.unread} 未读`}
+        {shownAvatars.length > 0 && (
+          <div className="flex-shrink-0 flex items-center">
+            {shownAvatars.map((a, i) => (
+              <span
+                key={a.id}
+                className="w-6 h-6 rounded-full grid place-items-center text-white text-[9px] font-medium ring-2 ring-[var(--color-sidebar)]"
+                style={{ background: a.color, marginLeft: i === 0 ? 0 : -8 }}
+                title={a.name}
+              >
+                {a.initials}
+              </span>
+            ))}
+            {overflow > 0 && (
+              <span
+                className="w-6 h-6 rounded-full grid place-items-center text-[8.5px] font-medium ring-2 ring-[var(--color-sidebar)] bg-[var(--color-sidebar-2)] text-[var(--color-sidebar-muted)]"
+                style={{ marginLeft: -8 }}
+                title={`还有 ${overflow} 人`}
+              >
+                +{overflow}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="font-medium truncate">{conv.title}</div>
+          <div className="text-[10.5px] text-[var(--color-sidebar-muted)] mt-0.5 truncate">
+            {kindLabel} · {conv.members.length} 成员{conv.unread > 0 && ` · ${conv.unread} 未读`}
+          </div>
         </div>
       </button>
       <button
@@ -826,7 +1131,7 @@ function ConvRow({
           e.stopPropagation();
           setMenuOpen((v) => !v);
         }}
-        className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-white/10 text-[var(--color-sidebar-muted)] transition"
+        className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-muted)] transition"
         aria-label="会话操作"
       >
         <MoreHorizontal size={13} />
@@ -836,6 +1141,14 @@ function ConvRow({
           onClick={(e) => e.stopPropagation()}
           className="absolute right-1 top-full mt-0.5 z-10 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
         >
+          <button
+            type="button"
+            onClick={handleArchive}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left"
+          >
+            <Archive size={12} />
+            {conv.archived ? "取消归档" : "归档会话"}
+          </button>
           <button
             type="button"
             onClick={handleDelete}
@@ -898,7 +1211,7 @@ function SectionHeader({
           type="button"
           onClick={onAction}
           title={actionTitle}
-          className="press-down p-1 rounded opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 focus:opacity-100 hover:bg-white/10 text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] transition-all duration-200"
+          className="press-down p-1 rounded opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 focus:opacity-100 hover:bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] transition-all duration-200"
         >
           <Plus size={12} className="transition-transform duration-300 hover:rotate-90" />
         </button>
@@ -916,15 +1229,47 @@ function Footer({
 }) {
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
   const status = adapterStatus ?? { enabled: 0, total: 0 };
   const hasEnabled = status.enabled > 0;
+  const navItems = [
+    { key: "inbox", icon: Inbox, label: lang === "zh" ? "收件箱" : "Inbox" },
+    { key: "marketplace", icon: Compass, label: lang === "zh" ? "广场" : "Discover" },
+    { key: "archive", icon: Archive, label: lang === "zh" ? "归档" : "Archive" },
+  ] as const;
   return (
     <footer className="relative px-3 pt-2.5 pb-3">
       {/* hair-line 替代黑色硬切 border */}
       <span
         aria-hidden
-        className="absolute left-3 right-3 top-0 h-px bg-white/[0.06]"
+        className="absolute left-3 right-3 top-0 h-px bg-[var(--color-sidebar-active)]"
       />
+      {/* Nav strip — reach the Inbox / Discover (CreateHub) / Archive views.
+          Active view is highlighted; clicking again from chat goes there, and
+          opening a conv from those views returns to chat. */}
+      <nav className="flex items-center gap-1 mb-2">
+        {navItems.map((n) => {
+          const active = view === n.key;
+          return (
+            <button
+              key={n.key}
+              type="button"
+              onClick={() => setView(active ? "chat" : (n.key as typeof view))}
+              title={n.label}
+              aria-pressed={active}
+              className={`flex-1 inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm text-[11px] transition-colors ${
+                active
+                  ? "bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-fg)]"
+                  : "text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)]"
+              }`}
+            >
+              <n.icon size={13} />
+              <span>{n.label}</span>
+            </button>
+          );
+        })}
+      </nav>
       <div className="flex items-center gap-2.5">
         <div
           className="w-7 h-7 rounded-sm grid place-items-center text-white text-[11px] font-medium flex-shrink-0 transition-transform duration-200 hover:scale-[1.04]"
@@ -941,7 +1286,7 @@ function Footer({
           <button
             type="button"
             onClick={onOpenAdapters}
-            className="group inline-flex items-center gap-1 mt-0.5 -ml-0.5 px-1 py-0.5 rounded-sm text-[10px] hover:bg-white/5 transition-all duration-300"
+            className="group inline-flex items-center gap-1 mt-0.5 -ml-0.5 px-1 py-0.5 rounded-sm text-[10px] hover:bg-[var(--color-sidebar-hover)] transition-all duration-300"
             title={t("manageAdapters", lang)}
           >
             <Plug
@@ -976,17 +1321,20 @@ function Footer({
             />
           </button>
         </div>
+        <ThemeToggle />
         <button
           type="button"
           onClick={() => setLang(lang === "zh" ? "en" : "zh")}
           title={lang === "zh" ? "Switch to English" : "切换到中文"}
-          className="press-down px-1.5 py-1 text-[10.5px] font-mono rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-white/[0.05] transition-all duration-150"
+          className="press-down px-1.5 py-1 text-[10.5px] font-mono rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-150"
         >
           {lang === "zh" ? "中" : "EN"}
         </button>
         <button
           type="button"
-          className="press-down p-1.5 hover:bg-white/[0.05] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:rotate-45 transition-all duration-300"
+          onClick={onOpenAdapters}
+          title={t("manageAdapters", lang)}
+          className="press-down p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:rotate-45 transition-all duration-300"
         >
           <Settings size={13} />
         </button>

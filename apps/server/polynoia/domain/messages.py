@@ -54,6 +54,20 @@ class TextPayload(BaseModel):
     body: list[TextBlock]
 
 
+class ReasoningPayload(BaseModel):
+    """Model's internal thinking / reasoning (Claude thinking, Codex reasoning,
+    OpenCode agent_thought). Streamed live, then folded away in the UI — shown
+    again only on user click, and visually de-emphasized. Same body shape as
+    text so it reuses the streaming + persistence path."""
+
+    kind: Literal["reasoning"] = "reasoning"
+    body: list[TextBlock]
+    # How long the model thought, in seconds — set when the block completes so
+    # the folded strip reads "思考 N 秒" even AFTER a refresh (the live client-side
+    # timer is gone on reload, so this must be persisted for faithful 回显).
+    seconds: int | None = None
+
+
 class TaskItem(BaseModel):
     """One task in the orchestrator's task board."""
 
@@ -274,6 +288,10 @@ class ToolCallPayload(BaseModel):
     is_error: bool = False
     duration_ms: int | None = None
     summary: str | None = None  # one-line human description, e.g. "读取 src/x.py"
+    # Live-streaming raw args (partial JSON) shown in the EXPANDED body while the
+    # model is still generating the tool input — so a big `dispatch` shows its
+    # args building inside the fold. Cleared once `input` is final.
+    input_preview: str | None = None
 
 
 class AskQuestion(BaseModel):
@@ -340,6 +358,7 @@ class ImagePayload(BaseModel):
 MessagePayload = Annotated[
     Union[
         TextPayload,
+        ReasoningPayload,
         TasksPayload,
         DiffPayload,
         WebPayload,

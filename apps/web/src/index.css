@@ -13,9 +13,9 @@
 
 @theme {
   /* ── 字体 ─────────────────────────────────────────────────────── */
-  /* Body — 中英混排清晰,字面平衡 */
+  /* Body — 中英混排清晰,字面平衡。Noto Sans SC 的中文字面比 Plex 更舒展耐看 */
   --font-ui:
-    "IBM Plex Sans SC", "IBM Plex Sans", "PingFang SC", "Noto Sans SC",
+    "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
     -apple-system, system-ui, sans-serif;
   /* Display — 标题层,衬线宋。中文先;英文 fallback 用 Plex Serif */
   --font-display:
@@ -27,12 +27,12 @@
 
   /* ── 字号阶梯 (vertical rhythm 锚点) ──────────────────────────── */
   /* 每档使用场景写在注释里。组件类只能从这 6 个里挑,不允许填 px。 */
-  --text-caption: 10.5px;   /* 极小辅助:section header / 时间戳 */
-  --text-meta: 12px;        /* 元数据:tagline / 一行说明 / footer */
-  --text-body: 14px;        /* 默认正文 / 按钮 / 列表项 */
-  --text-lead: 16px;        /* 强调正文 / chat 消息主体 */
-  --text-title: 20px;       /* modal 标题 / section title */
-  --text-display: 28px;     /* page hero / 空状态文案 */
+  --text-caption: 11.5px;   /* 极小辅助:section header / 时间戳 */
+  --text-meta: 13px;        /* 元数据:tagline / 一行说明 / footer */
+  --text-body: 15px;        /* 默认正文 / 按钮 / 列表项 */
+  --text-lead: 17px;        /* 强调正文 / chat 消息主体 */
+  --text-title: 22px;       /* modal 标题 / section title */
+  --text-display: 31px;     /* page hero / 空状态文案 */
 
   --leading-tight: 1.35;
   --leading-normal: 1.55;
@@ -44,12 +44,14 @@
   --color-surface-2: #fbf7f0;
   --color-surface-3: #f0eadc;
 
-  --color-sidebar: #2a2520;
-  --color-sidebar-2: #221e1a;
-  --color-sidebar-line: rgba(233, 226, 213, 0.08);  /* 替代散乱的 white/5 */
-  --color-sidebar-hover: rgba(233, 226, 213, 0.06);
-  --color-sidebar-fg: #e9e2d5;
-  --color-sidebar-muted: #9a8f7e;
+  /* 亮色:侧栏跟随主题 —— 暖羊皮纸面板(比 bg 略深,读作面板) */
+  --color-sidebar: #ece4d3;
+  --color-sidebar-2: #e3dac6;
+  --color-sidebar-line: rgba(31, 27, 22, 0.10);
+  --color-sidebar-hover: rgba(31, 27, 22, 0.05);
+  --color-sidebar-active: rgba(31, 27, 22, 0.09);
+  --color-sidebar-fg: #2a241c;
+  --color-sidebar-muted: #897f6c;
 
   --color-line: #ece5d8;
   --color-line-2: #e0d8c6;
@@ -65,6 +67,9 @@
   --color-accent: #e07a3c;
   --color-accent-soft: #fbe6d6;
   --color-accent-dim: #c46330;
+  /* 行内代码 `code` — 暖色微底 + 同色边,与正文区分但不喧宾夺主 */
+  --color-code-bg: rgba(224, 122, 60, 0.09);
+  --color-code-fg: #9c4f24;
 
   /* 语义色 (warning / error / success / info — 与 accent 不冲突) */
   --color-green: #2e7f5b;
@@ -82,27 +87,95 @@
   --shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.04);
   --shadow-md: 0 12px 32px rgba(60, 40, 20, 0.08),
                0 2px 6px rgba(60, 40, 20, 0.04);
+  --shadow-lg: 0 24px 60px -12px rgba(60, 40, 20, 0.18),
+               0 6px 16px -6px rgba(60, 40, 20, 0.10);
   /* hair-line: 用于 modal 顶/底 / divider */
   --rule-hair: 0.5px solid var(--color-line-hair);
 
+  /* ── Atelier 深度 (内高光 + 焦点环 + 卡片浮起 + accent 辉光) ──
+     亮色下内高光是白边、暗色下是更亮的暖白边;卡片"浮起"= 投影 + 顶部内高光。*/
+  --ring-inset: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  --shadow-card: var(--shadow-sm), var(--ring-inset);
+  --color-focus: rgba(224, 122, 60, 0.55);
+  --ring-focus: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-focus);
+  --glow-accent: 0 0 0 1px rgba(224, 122, 60, 0.30),
+                 0 6px 22px -8px rgba(224, 122, 60, 0.35);
+  /* 输入聚焦 — Stripe/Vercel 风:紧贴形状的低透明柔环,不要大投影 glow。
+     跟随 border-radius,读作"聚焦光晕"而非橙色涂抹。*/
+  --ring-input-focus: 0 0 0 3px rgba(224, 122, 60, 0.13), var(--shadow-sm);
+
+  /* ── 氛围 (径向 mesh + 纸面颗粒) ─────────────────────────────
+     mesh 是 2-3 团极低饱和暖色径向渐变,静态不动画(性能)。*/
+  --mesh-1: rgba(224, 122, 60, 0.05);   /* 暖橙团,锚 top-left */
+  --mesh-2: rgba(120, 90, 60, 0.04);    /* 暖棕团,锚 bottom-right */
+  --mesh-3: rgba(180, 150, 110, 0.03);  /* 中性暖,中部 */
+  --grain-opacity: 0.035;
+  --grain-blend: multiply;
+
   /* ── 动画 timing ────────────────────────────────────────────── */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* 状态翻转的轻微回弹 */
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   Atelier 暗色 — 默认主调。深色暖纸(炭棕/墨豆)+ 单一暖橙强重音。
+   层叠 surface 渐亮制造深度;前景暖奶白;线条暖、低对比。
+   ───────────────────────────────────────────────────────────────── */
 [data-theme="dark"] {
-  --color-bg: #16130f;
-  --color-surface: #1e1a15;
-  --color-surface-2: #1a1612;
-  --color-surface-3: #161310;
-  --color-line: #2a241d;
-  --color-line-2: #34291f;
-  --color-line-strong: #443728;
-  --color-line-hair: rgba(237, 229, 213, 0.08);
-  --color-sidebar: #0f0d0a;
-  --color-fg: #ede5d5;
-  --color-fg-2: #c0b6a2;
-  --color-fg-3: #897f6e;
-  --color-fg-4: #5e5749;
+  --color-bg: #14110c;          /* 最深暖墨豆底 */
+  --color-surface: #1f1a14;     /* 卡片/聊天面 */
+  --color-surface-2: #1a160f;   /* 略沉 */
+  --color-surface-3: #17130d;   /* 最沉嵌入面 */
+
+  --color-sidebar: #0e0b07;     /* 比 bg 还深,锚定左栏 */
+  --color-sidebar-2: #0a0805;
+  --color-sidebar-line: rgba(237, 229, 213, 0.07);
+  --color-sidebar-hover: rgba(237, 229, 213, 0.05);
+  --color-sidebar-active: rgba(237, 229, 213, 0.10);
+  --color-sidebar-fg: #ece3d2;
+  --color-sidebar-muted: #8a8170;
+
+  --color-line: #2c251b;
+  --color-line-2: #382f22;
+  --color-line-strong: #4c3f2d;
+  --color-line-hair: rgba(237, 229, 213, 0.09);
+
+  --color-fg: #ece3d2;          /* 暖奶白 */
+  --color-fg-2: #c2b8a3;
+  --color-fg-3: #8c8270;
+  --color-fg-4: #62594a;
+
+  /* accent 暗底微提亮 + soft 改低透明橙 wash(不能用奶油) */
+  --color-accent: #ec8a4c;
+  --color-accent-soft: rgba(236, 138, 76, 0.14);
+  --color-accent-dim: #c8703a;
+  --color-code-bg: rgba(236, 138, 76, 0.13);
+  --color-code-fg: #e2a06e;
+
+  /* 语义色:暗底提亮主色,-soft 改同色相低透明 tint(徽章全靠它) */
+  --color-green: #4faf86;       --color-green-soft: rgba(79, 175, 134, 0.15);
+  --color-amber: #d9a441;       --color-amber-soft: rgba(217, 164, 65, 0.15);
+  --color-red: #d6695a;         --color-red-soft: rgba(214, 105, 90, 0.16);
+  --color-blue: #5b8fc9;        --color-blue-soft: rgba(91, 143, 201, 0.15);
+  --color-purple: #9b7ee0;      --color-purple-soft: rgba(155, 126, 224, 0.15);
+
+  /* 深度:暗底纯投影偏弱,靠顶部内高光"抬起" */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-md: 0 16px 40px rgba(0, 0, 0, 0.50), 0 3px 10px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.62), 0 8px 22px -8px rgba(0, 0, 0, 0.45);
+  --ring-inset: inset 0 1px 0 rgba(255, 240, 220, 0.06);
+  --shadow-card: var(--shadow-sm), var(--ring-inset);
+  --color-focus: rgba(236, 138, 76, 0.55);
+  --glow-accent: 0 0 0 1px rgba(236, 138, 76, 0.35),
+                 0 6px 26px -8px rgba(236, 138, 76, 0.45);
+  --ring-input-focus: 0 0 0 3px rgba(236, 138, 76, 0.16), var(--shadow-sm);
+
+  /* 氛围:暗底 mesh 更明显些,grain 用 soft-light(multiply 在暗底不可见) */
+  --mesh-1: rgba(236, 138, 76, 0.07);
+  --mesh-2: rgba(150, 110, 70, 0.06);
+  --mesh-3: rgba(90, 110, 130, 0.035);
+  --grain-opacity: 0.05;
+  --grain-blend: soft-light;
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -127,15 +200,28 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* 暖纸面噪点 — 微弱 0.04 opacity,在 cream bg 上提供"纸"的质感 */
+/* 氛围层 1 — 径向 mesh:2-3 团极低饱和暖色渐变制造深度。静态、不动画。 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(60% 50% at 8% 0%, var(--mesh-1) 0%, transparent 70%),
+    radial-gradient(55% 55% at 100% 100%, var(--mesh-2) 0%, transparent 70%),
+    radial-gradient(80% 60% at 50% 40%, var(--mesh-3) 0%, transparent 75%);
+}
+
+/* 氛围层 2 — 纸面颗粒:暖纸质感。亮色 multiply,暗色 soft-light。 */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.035;
-  mix-blend-mode: multiply;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: var(--grain-blend);
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='5'/><feColorMatrix values='0 0 0 0 0.18  0 0 0 0 0.14  0 0 0 0 0.09  0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
   background-size: 200px 200px;
 }
@@ -143,6 +229,18 @@ body::before {
 #root {
   position: relative;
   z-index: 1;
+}
+
+/* 键盘焦点环 — 只作用于按钮/链接等可点元素。
+   文本输入(input/textarea/contenteditable)自己管聚焦样式,绝不在它们上面
+   画这个 ring —— 否则会在 textarea 上叠一个四四方方的框,极丑。 */
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+  border-radius: 6px;
 }
 
 /* Tailwind v4 preflight strips the default `cursor: pointer` from <button>
@@ -224,10 +322,18 @@ button:disabled,
 .modal-card {
   background: var(--color-surface);
   border: 1px solid var(--color-line-strong);
-  border-radius: 2px;       /* 几乎直角,只保 2px 防割眼 */
-  box-shadow: var(--shadow-md);
+  border-radius: 10px;      /* Atelier:柔和圆角而非硬直角,配深色更精致 */
+  box-shadow: var(--shadow-lg);
   position: relative;
   overflow: hidden;
+}
+.modal-card::after {  /* 顶部内高光,暗底下让卡片"浮起" */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: var(--ring-inset);
+  pointer-events: none;
 }
 .modal-card::before {
   content: "";
@@ -469,3 +575,94 @@ a.editorial:hover,
 .bg-sidebar::-webkit-scrollbar-thumb {
   background: var(--color-sidebar-line);
 }
+
+/* 拖拽调宽时:全局锁 col-resize 光标 + 禁选,避免选中文字/闪烁。
+   侧栏与产物面板共用(此前被引用但从未定义)。 */
+body.polynoia-resizing,
+body.polynoia-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Atelier motion 扩展 — 编排式高光时刻
+   ───────────────────────────────────────────────────────────────── */
+
+/* 回复跳转高亮 — 此前 .flash-target 被引用但从未定义,补上(accent 环脉冲,
+   ~1200ms 对齐 MessageView/ChatSearchOverlay 的 setTimeout 移除时机)。*/
+@keyframes flash-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(224, 122, 60, 0.0); background-color: transparent; }
+  18%  { box-shadow: 0 0 0 3px var(--color-accent-soft), var(--glow-accent); background-color: var(--color-accent-soft); }
+  100% { box-shadow: 0 0 0 0 rgba(224, 122, 60, 0.0); background-color: transparent; }
+}
+.flash-target {
+  animation: flash-ring 1200ms var(--ease-out-soft);
+  border-radius: 8px;
+}
+
+/* BurstCard 泳道揭示 — 从左滑入(Framer Motion 用 JS stagger;此为 CSS 兜底/降级) */
+@keyframes lane-reveal {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+.anim-lane-reveal { animation: lane-reveal 400ms var(--ease-out-soft) both; }
+
+/* 状态徽章翻转 — 轻微回弹 scale-pop(Waiting→Running→Done) */
+@keyframes state-flip {
+  0%   { transform: scale(0.8); }
+  60%  { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.anim-state-flip { animation: state-flip 280ms var(--ease-spring); }
+
+/* done 态泳道的一次性暖光确认 */
+@keyframes done-glow {
+  0%   { box-shadow: 0 0 0 0 transparent; }
+  40%  { box-shadow: var(--glow-accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.anim-done-glow { animation: done-glow 900ms var(--ease-out-soft); }
+
+/* ── 降级守卫:尊重 prefers-reduced-motion,中和所有 transform/动画 ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  body::after { display: none; }  /* mesh 静态本就无害,但减少绘制 */
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   代码高亮 — highlight.js github.css 是亮色主题,硬编码 import 无法切换。
+   暗色下用 .hljs token 覆盖映射到 Atelier 暗色,保持 import 不动(逻辑安全)。
+   ───────────────────────────────────────────────────────────────── */
+[data-theme="dark"] .hljs {
+  background: transparent;
+  color: var(--color-fg-2);
+}
+[data-theme="dark"] .hljs-comment,
+[data-theme="dark"] .hljs-quote { color: var(--color-fg-4); font-style: italic; }
+[data-theme="dark"] .hljs-keyword,
+[data-theme="dark"] .hljs-selector-tag,
+[data-theme="dark"] .hljs-literal,
+[data-theme="dark"] .hljs-built_in,
+[data-theme="dark"] .hljs-name { color: var(--color-accent); }
+[data-theme="dark"] .hljs-string,
+[data-theme="dark"] .hljs-attr,
+[data-theme="dark"] .hljs-regexp,
+[data-theme="dark"] .hljs-addition { color: var(--color-green); }
+[data-theme="dark"] .hljs-number,
+[data-theme="dark"] .hljs-symbol,
+[data-theme="dark"] .hljs-bullet { color: var(--color-amber); }
+[data-theme="dark"] .hljs-title,
+[data-theme="dark"] .hljs-section,
+[data-theme="dark"] .hljs-function .hljs-title { color: var(--color-blue); }
+[data-theme="dark"] .hljs-type,
+[data-theme="dark"] .hljs-class .hljs-title { color: var(--color-purple); }
+[data-theme="dark"] .hljs-deletion { color: var(--color-red); }
+[data-theme="dark"] .hljs-emphasis { font-style: italic; }
+[data-theme="dark"] .hljs-strong { font-weight: 600; }

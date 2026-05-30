@@ -3,37 +3,40 @@
 Spawns ``codex exec --json`` per turn (Codex's non-interactive mode emits JSONL
 events on stdout). Multi-turn continuity uses ``codex exec resume <thread_id>``.
 
-laogou8 backend (verified 2026-05-27)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Credential model — backend-agnostic (ADR §11.2)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-laogou8 (``api.laogou8.com``) is the Codex backend. It exposes the OpenAI
-Responses API on ``/v1/responses`` (SSE stream), which is exactly what
-Codex CLI 0.118.0 needs (``model-provider-info`` v1 only speaks the
-Responses wire api for custom providers). Verified end-to-end with
-``codex exec``, ``codex exec --json``, and multi-tool flows.
+Polynoia does **not** know or care which backend Codex talks to. The *user*
+configures Codex however they like — ``codex login`` (official OpenAI /
+ChatGPT, writes ``~/.codex/auth.json``) or a hand-written ``~/.codex/config.toml``
+pointing at any OpenAI-Responses-compatible third-party endpoint. We never
+hardcode a provider, base_url, model, or API key.
 
-* model: ``gpt-5.5`` (or any of gpt-5.2 / gpt-5.3-codex / gpt-5.4 / gpt-5.4-mini /
-  Claude-series available on laogou8)
-* auth: ``Authorization: Bearer <key>`` via env_key ``LAOGOU8_KEY``
+How the credential gets reused:
 
-Earlier we tried xiaomimimo (api.xiaomimimo.com), which only exposes
-Chat Completions + Anthropic format — no /v1/responses → incompatible
-with Codex CLI. laogou8 was the working alternative.
+1. ``Sandbox.create`` / ``create_workspace_sandbox`` already snapshots the
+   host's ``~/.codex/{config.toml, auth.json, sessions}`` into
+   ``<sandbox>/.polynoia/credentials/.codex/`` (see ``Sandbox._cred_allowlist``).
+   ``env_for_agent`` points ``CODEX_HOME`` at that copy, so codex reads exactly
+   the credential the user configured — verbatim.
 
-This adapter:
+2. ``start_session`` then **merges only** a ``[mcp_servers.polynoia]`` block
+   onto that copied ``config.toml`` (idempotent — never touches the user's
+   ``model`` / ``model_provider`` / auth). The credential travels entirely in
+   the copied files: ``codex login`` writes ``auth.json``; a custom provider
+   stores its key inline via ``experimental_bearer_token`` in ``config.toml``.
+   Either way codex runs purely off the copied files — no env var required.
 
-1. On ``start_session``: creates a Polynoia ``Sandbox`` for the conv, then
-   writes ``<sandbox>/.polynoia/credentials/.codex/config.toml`` to:
+3. On each ``send``: spawns ``codex exec [--json | exec resume <tid>] ...``
+   with ``env=sandbox.env_for_agent(...)`` so ``CODEX_HOME`` / ``HOME`` resolve
+   inside the sandbox.
 
-      - select the laogou8 backend (``model_provider = "laogou8"``)
-      - register the Polynoia MCP server (``mcp_servers.polynoia``)
-
-2. On each ``send``: spawns ``codex exec [--json | exec resume <tid>] ...``
-   with ``env=sandbox.env_for_agent(...)`` so ``CODEX_HOME`` and ``HOME``
-   point inside the sandbox (codex reads the config.toml we wrote there).
-
-3. Translates Codex JSONL events (``thread.started`` / ``turn.*`` /
+4. Translates Codex JSONL events (``thread.started`` / ``turn.*`` /
    ``item.*``) into PAP ``AdapterEvent``s.
+
+If the user has not configured any credential, codex fails with its own
+"missing auth" error, surfaced as a normal turn failure. We do not paper over
+it with a fallback backend.
 
 JSONL event schema (from G.2 research)::
 
@@ -69,75 +72,85 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import subprocess
+import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
 
-from polynoia.adapters._utils import _new_id, _stringify_tool_output
+from polynoia.adapters._utils import _new_id, _reasoning_seconds, _stringify_tool_output
 from polynoia.adapters.base import (
     AdapterCapabilities,
     AdapterEvent,
     AdapterMeta,
     PartCompletedEvent,
+    PartDeltaEvent,
+    PartStartedEvent,
     TurnCompletedEvent,
     TurnFailedEvent,
     TurnStartedEvent,
 )
 from polynoia.domain.messages import TextBlock as PNTextBlock
-from polynoia.domain.messages import TextPayload, ToolCallPayload
+from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.sandbox import Sandbox
+from polynoia.settings import settings
 
 ToolCallState = Literal["pending", "running", "completed", "error"]
 
 
-# ── Backend config (laogou8) ─────────────────────────────────────────
+# ── Polynoia MCP block (the only thing we inject) ────────────────────
+
+# Marker so merging is idempotent — we never append the block twice.
+_MCP_BLOCK_MARKER = "[mcp_servers.polynoia]"
 
 
-# Discovery (2026-05-27, updated):
-# laogou8 (api.laogou8.com) was confirmed working with Codex CLI:
-# - https://api.laogou8.com/v1/responses  (Responses API — SUPPORTED, SSE stream)
-# - model: gpt-5.5 (others available: gpt-5.2, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, Claude series)
-# - auth: "Authorization: Bearer <key>"  via env_key LAOGOU8_KEY
-#
-# Verified end-to-end with `codex exec`, `codex exec --json`, multi-tool flows.
-# Minor non-fatal WARN about missing `models` field on /v1/models endpoint
-# (doesn't affect runtime).
-#
-# Note (historical): xiaomimimo (api.xiaomimimo.com) also supports Anthropic
-# format but lacks /v1/responses, so Codex needs laogou8 instead.
-LAOGOU8_BASE_URL = "https://api.laogou8.com/v1"
-LAOGOU8_MODEL = "gpt-5.5"
-LAOGOU8_API_KEY = "sk-Ld7DUSF11YuHm3gGwZUweYdCKenoazwsEMOs2qD9EnafuEJ2"
-
-
-def _codex_config_toml(
+def _polynoia_mcp_block(
     *, conv_id: str, agent_id: str, pythonpath: str, sandbox_root: str,
+    tool_role: str = "generalist", api_base: str = "",
+    worktree_root: str = "", workspace_root: str = "",
 ) -> str:
-    """Build a Codex config.toml pointing at laogou8 + Polynoia MCP."""
-    return f'''# Auto-generated by Polynoia CodexAdapter for conv {conv_id}
-model = "{LAOGOU8_MODEL}"
-model_provider = "laogou8"
-model_reasoning_effort = "medium"
-disable_response_storage = true
-preferred_auth_method = "apikey"
+    """Build the ``[mcp_servers.polynoia]`` TOML block.
 
-[model_providers.laogou8]
-name = "laogou8 (Polynoia-configured)"
-base_url = "{LAOGOU8_BASE_URL}"
-env_key = "LAOGOU8_KEY"
-wire_api = "responses"
-
-[mcp_servers.polynoia]
+    This is the *only* thing Polynoia adds to the user's Codex config — it
+    registers the Polynoia MCP server (which exposes role-gated tools). The
+    user's model / provider / auth are never touched.
+    """
+    worktree_lines = ""
+    if worktree_root and workspace_root:
+        worktree_lines = (
+            f'POLYNOIA_WORKTREE_ROOT = "{worktree_root}"\n'
+            f'POLYNOIA_WORKSPACE_ROOT = "{workspace_root}"\n'
+        )
+    return f'''
+# ── Injected by Polynoia CodexAdapter for conv {conv_id} (MCP only) ──
+{_MCP_BLOCK_MARKER}
 command = "python"
 args = ["-m", "polynoia.mcp"]
 
 [mcp_servers.polynoia.env]
 POLYNOIA_CONV_ID = "{conv_id}"
 POLYNOIA_AGENT_ID = "{agent_id}"
+POLYNOIA_AGENT_ROLE = "{tool_role}"
+POLYNOIA_API_BASE = "{api_base}"
 POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
-PYTHONPATH = "{pythonpath}"
+{worktree_lines}PYTHONPATH = "{pythonpath}"
 '''
+
+
+def _merge_mcp_into_config(existing: str, mcp_block: str) -> str:
+    """Append ``mcp_block`` to the user's ``existing`` config.toml.
+
+    Idempotent: if a ``[mcp_servers.polynoia]`` table is already present (e.g.
+    the user's own copy already had one, or a previous run wrote it) we leave
+    the file untouched. TOML tables are order-independent, so appending at the
+    end is always valid.
+    """
+    if _MCP_BLOCK_MARKER in existing:
+        return existing
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    return existing + mcp_block
 
 
 # ── Adapter ──────────────────────────────────────────────────────────
@@ -151,9 +164,13 @@ class CodexAdapter:
             agent_id="codex",
             cli_command="codex",
             detected=False,
-            auth_kinds=["api-key"],
-            base_model=LAOGOU8_MODEL,
-            docs="https://api.laogou8.com",
+            # Either cli-login (`codex login` → auth.json) or a custom
+            # llm-endpoint configured in the user's ~/.codex/config.toml.
+            auth_kinds=["cli-login", "llm-endpoint"],
+            # Backend-agnostic: the model comes from the user's own Codex
+            # config / the contact's setup.model, never hardcoded here.
+            base_model="",
+            docs="https://developers.openai.com/codex",
             capabilities=AdapterCapabilities(
                 streaming=True,
                 tool_calling="native",
@@ -197,7 +214,8 @@ class CodexAdapter:
         env: dict[str, str] | None = None,
         workspace_id: str | None = None,
         agent_id: str | None = None,
-        merge_mode: str = "auto",  # P1.2 — Codex doesn't use Polynoia MCP, so gating doesn't apply here
+        merge_mode: str = "auto",  # P1.2 — Codex does use Polynoia MCP via config.toml; merge_mode reserved
+        tool_role: str = "generalist",
     ) -> CodexSession:
         # P1.1 routing — see workspace-shared-git.md
         if workspace_id and agent_id:
@@ -207,29 +225,42 @@ class CodexAdapter:
         else:
             sandbox = await Sandbox.create(conv_id)
 
-        # Write the Codex config.toml inside the sandbox's isolated CODEX_HOME.
-        # sandbox.env_for_agent() sets CODEX_HOME=<sandbox>/.polynoia/credentials/.codex
-        # so codex reads exactly the file we drop here.
+        # The sandbox has already snapshotted the user's ~/.codex/{config.toml,
+        # auth.json, sessions} into this CODEX_HOME (Sandbox._copy_host_credentials).
+        # env_for_agent() sets CODEX_HOME=<sandbox>/.polynoia/credentials/.codex,
+        # so codex reads exactly the credential the user configured. We only
+        # MERGE the Polynoia MCP block onto whatever config.toml is there
+        # (creating a minimal one if the user had none, e.g. login-only auth).
         codex_home = sandbox.credentials_home / ".codex"
         codex_home.mkdir(parents=True, exist_ok=True)
+        config_path = codex_home / "config.toml"
+
+        existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+
         # Pass PYTHONPATH so the MCP subprocess can `import polynoia` (the
         # polynoia package is installed at the polynoia server's source root,
         # NOT inside the sandbox).
         from pathlib import Path as _Path
         server_pkg_root = str(_Path(__file__).parent.parent.parent)
-        (codex_home / "config.toml").write_text(
-            _codex_config_toml(
-                conv_id=conv_id,
-                agent_id=self.meta.agent_id,
-                pythonpath=server_pkg_root,
-                sandbox_root=str(sandbox.root.parent),
+        mcp_block = _polynoia_mcp_block(
+            conv_id=conv_id,
+            agent_id=self.meta.agent_id,
+            pythonpath=server_pkg_root,
+            sandbox_root=str(sandbox.root.parent),
+            tool_role=tool_role,
+            api_base=os.environ.get(
+                "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
             ),
-            encoding="utf-8",
+            worktree_root=(str(sandbox.root) if sandbox.workspace_root else ""),
+            workspace_root=(str(sandbox.workspace_root) if sandbox.workspace_root else ""),
+        )
+        config_path.write_text(
+            _merge_mcp_into_config(existing, mcp_block), encoding="utf-8"
         )
 
         return CodexSession(
             sandbox=sandbox,
-            model=model or LAOGOU8_MODEL,
+            model=model,
             system_prompt=system_prompt,
             extra_env=env or {},
             agent_id=self.meta.agent_id,
@@ -251,7 +282,7 @@ class CodexSession:
         self,
         *,
         sandbox: Sandbox,
-        model: str,
+        model: str | None,
         system_prompt: str | None,
         extra_env: dict[str, str],
         agent_id: str,
@@ -284,19 +315,22 @@ class CodexSession:
             "--dangerously-bypass-approvals-and-sandbox",
             "--color", "never",
             "--cd", str(self._sandbox.root),
-            "--model", self._model,
         ]
+        # Only override the model when the contact explicitly pinned one.
+        # Otherwise codex uses the model from the user's own config.toml.
+        if self._model:
+            base += ["--model", self._model]
         if self._thread_id is not None:
             base += ["resume", self._thread_id]
         base.append(self._maybe_prepend_system(prompt))
         return base
 
     def _env(self) -> dict[str, str]:
-        # Must match config.toml's `env_key = "LAOGOU8_KEY"`.
-        return self._sandbox.env_for_agent({
-            **self._extra_env,
-            "LAOGOU8_KEY": LAOGOU8_API_KEY,
-        })
+        # ``_extra_env`` already carries any env_key-referenced credentials the
+        # adapter forwarded from the host (see CodexAdapter.start_session). The
+        # actual auth (auth.json / config.toml) lives in the sandbox CODEX_HOME
+        # that env_for_agent points at. Nothing backend-specific is hardcoded.
+        return self._sandbox.env_for_agent(self._extra_env)
 
     async def send(
         self,
@@ -483,6 +517,10 @@ async def _translate_codex_stream(
     simulate a crashed subprocess).
     """
     item_keys: dict[str, tuple[str, str]] = {}
+    # reasoning item_id → accumulated text so far, so item.updated (which carries
+    # the cumulative reasoning) can be emitted as a suffix delta, not a re-send.
+    reasoning_text: dict[str, str] = {}
+    reasoning_start: dict[str, float] = {}  # item_id → monotonic start (for "思考 N 秒")
     turn_failed_seen = False
     turn_completed_seen = False
     usage: dict[str, Any] = {}
@@ -559,7 +597,39 @@ async def _translate_codex_stream(
                     part=TextPayload(body=[PNTextBlock(c=text_body)]),
                 )
             elif inner == "reasoning":
-                # P0 skip reasoning — no PAP event
+                # Stream Codex's reasoning as a ReasoningPayload part (started →
+                # suffix deltas → completed). item.updated carries the CUMULATIVE
+                # reasoning text, so we diff against what we've emitted to send
+                # only the new suffix. The UI streams it, then folds it away.
+                cur = item.get("text") or item.get("summary") or ""
+                if etype == "item.started":
+                    reasoning_text[item_id] = ""
+                    reasoning_start[item_id] = time.monotonic()
+                    yield PartStartedEvent(
+                        turn_id=turn_id,
+                        task_id=task_id,
+                        message_id=mid,
+                        part_id=pid,
+                        part=ReasoningPayload(body=[PNTextBlock(c="")]),
+                    )
+                elif etype == "item.updated":
+                    prev = reasoning_text.get(item_id, "")
+                    suffix = cur[len(prev):] if cur.startswith(prev) else cur
+                    reasoning_text[item_id] = cur
+                    if suffix:
+                        yield PartDeltaEvent(
+                            message_id=mid,
+                            part_id=pid,
+                            delta={"text": suffix},
+                        )
+                else:  # item.completed
+                    reasoning_text.pop(item_id, None)
+                    secs = _reasoning_seconds(reasoning_start.pop(item_id, None))
+                    yield PartCompletedEvent(
+                        message_id=mid,
+                        part_id=pid,
+                        part=ReasoningPayload(body=[PNTextBlock(c=cur)], seconds=secs),
+                    )
                 continue
             elif inner == "command_execution":
                 yield PartCompletedEvent(

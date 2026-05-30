@@ -17,6 +17,14 @@ export type UIMessageChunk =
     }
   | { type: "text-delta"; id: string; delta: string }
   | { type: "text-end"; id: string }
+  | {
+      type: "reasoning-start";
+      id: string;
+      sender_id?: string | null;
+      sender_label?: string | null;
+    }
+  | { type: "reasoning-delta"; id: string; delta: string }
+  | { type: "reasoning-end"; id: string }
   | { type: "message-metadata"; message_metadata: Record<string, unknown> }
   | {
       type: `data-${string}`;

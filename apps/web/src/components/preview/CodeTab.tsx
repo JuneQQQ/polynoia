@@ -7,13 +7,27 @@
  */
 import { javascript } from "@codemirror/lang-javascript";
 import { markdown } from "@codemirror/lang-markdown";
+import { openSearchPanel } from "@codemirror/search";
+import { type Extension, Prec } from "@codemirror/state";
+import { type EditorView, keymap } from "@codemirror/view";
+import { showMinimap } from "@replit/codemirror-minimap";
+import { vscodeKeymap } from "@replit/codemirror-vscode-keymap";
 import CodeMirror from "@uiw/react-codemirror";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  ChevronDown, ChevronRight, File, Folder, Loader2, RefreshCw, Save, X,
+  Check, ChevronDown, ChevronRight, File, Folder, Loader2, Map as MapIcon,
+  PanelLeftClose, PanelLeftOpen, RefreshCw, Save, Search, X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
+
+// VSCode-style minimap (static config — `create` is called lazily on mount).
+const MINIMAP_EXT: Extension = showMinimap.compute([], () => ({
+  create: () => ({ dom: document.createElement("div") }),
+  displayText: "blocks",
+  showOverlay: "always",
+}));
 
 type DirEntry = {
   name: string;
@@ -63,12 +77,53 @@ export function CodeTab() {
   const [activePath, setActivePath] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
-  const editorRef = useRef<HTMLDivElement>(null);
+  const [refreshing, setRefreshing] = useState(false);   // spinner during root fetch
+  const [justRefreshed, setJustRefreshed] = useState(false);  // green-check success pulse
+  const [minimapOn, setMinimapOn] = useState(
+    () => localStorage.getItem("polynoia:code-minimap") !== "0",
+  );
+  useEffect(() => {
+    localStorage.setItem("polynoia:code-minimap", minimapOn ? "1" : "0");
+  }, [minimapOn]);
+  const cmViewRef = useRef<EditorView | null>(null);
 
-  // Load a directory (idempotent — if cached, no-op).
-  const loadDir = useCallback(async (dirPath: string) => {
+  // File-tree column: two states only (shown / fully collapsed — no icon rail),
+  // with a draggable width. Both persisted.
+  const [treeCollapsed, setTreeCollapsed] = useState(
+    () => localStorage.getItem("polynoia:codetree-collapsed") === "1",
+  );
+  const [treeWidth, setTreeWidth] = useState(() => {
+    const w = Number.parseInt(localStorage.getItem("polynoia:codetree-w") || "0", 10);
+    return w >= 140 && w <= 480 ? w : 220;
+  });
+  useEffect(() => {
+    localStorage.setItem("polynoia:codetree-collapsed", treeCollapsed ? "1" : "0");
+  }, [treeCollapsed]);
+  useEffect(() => {
+    localStorage.setItem("polynoia:codetree-w", String(treeWidth));
+  }, [treeWidth]);
+  const startTreeResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = treeWidth;
+    document.body.classList.add("polynoia-resizing");
+    const onMove = (ev: MouseEvent) =>
+      setTreeWidth(Math.max(140, Math.min(480, startW + (ev.clientX - startX))));
+    const onUp = () => {
+      document.body.classList.remove("polynoia-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Load a directory. Cached by default; `force` re-fetches (used by refresh,
+  // which clears dirs then calls this — the stale closure must NOT short-circuit
+  // on the pre-clear "loaded" flag, or the tree hangs on 加载中 forever).
+  const loadDir = useCallback(async (dirPath: string, force = false) => {
     if (!workspaceId) return;
-    if (dirs[dirPath]?.loaded) return;
+    if (!force && dirs[dirPath]?.loaded) return;
     try {
       const res = await api.workspaceFiles(workspaceId, dirPath);
       setDirs((prev) => ({
@@ -81,14 +136,35 @@ export function CodeTab() {
     }
   }, [workspaceId, dirs]);
 
-  // Initial root load + refresh trigger
+  // Initial root load + refresh trigger. Drives the refresh button's spinner
+  // (min ~420ms so a fast fetch still reads as a deliberate spin) and, on a
+  // user-triggered refresh (refreshTick>0), a brief green-check success pulse.
   useEffect(() => {
     if (!workspaceId) return;
     setDirs({});
     setOpenFiles([]);
     setActivePath(null);
     setExpanded(new Set([""]));
-    loadDir("");
+    let alive = true;
+    const userTriggered = refreshTick > 0;
+    const started = performance.now();
+    setRefreshing(true);
+    setJustRefreshed(false);
+    // force re-fetch root (bypass the stale "loaded" guard)
+    loadDir("", true).finally(() => {
+      const wait = Math.max(0, 420 - (performance.now() - started));
+      window.setTimeout(() => {
+        if (!alive) return;
+        setRefreshing(false);
+        if (userTriggered) {
+          setJustRefreshed(true);
+          window.setTimeout(() => alive && setJustRefreshed(false), 1100);
+        }
+      }, wait);
+    });
+    return () => {
+      alive = false;
+    };
   }, [workspaceId, refreshTick]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleDir = (dirPath: string) => {
@@ -168,19 +244,37 @@ export function CodeTab() {
     }
   }, [workspaceId, activeFile, saving]);
 
-  // Ctrl+S / Cmd+S — save active tab.
+  // Keep the latest save() reachable from the editor keymap without rebuilding
+  // the whole extension set on every keystroke (which would lose editor state).
+  const saveRef = useRef(save);
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        save();
-      }
-    };
-    const el = editorRef.current;
-    if (!el) return;
-    el.addEventListener("keydown", handler);
-    return () => el.removeEventListener("keydown", handler);
+    saveRef.current = save;
   }, [save]);
+
+  // Editor extensions: VSCode keymap (priority over CM defaults) + Ctrl+S save
+  // + per-file language + optional minimap. Find/replace (Ctrl+F) is already
+  // provided by @uiw's basicSetup; the toolbar button just surfaces it.
+  const editorExtensions = useMemo<Extension[]>(() => {
+    const exts: Extension[] = [
+      Prec.highest(
+        keymap.of([
+          {
+            key: "Mod-s",
+            preventDefault: true,
+            run: () => {
+              saveRef.current();
+              return true;
+            },
+          },
+        ]),
+      ),
+      Prec.high(keymap.of(vscodeKeymap)),
+    ];
+    const lang = activePath ? langExtForPath(activePath) : undefined;
+    if (lang) exts.push(lang);
+    if (minimapOn) exts.push(MINIMAP_EXT);
+    return exts;
+  }, [activePath, minimapOn]);
 
   if (!workspaceId) {
     return (
@@ -199,33 +293,89 @@ export function CodeTab() {
 
   return (
     <div className="flex h-full">
-      {/* File tree */}
-      <aside className="w-[220px] border-r border-[var(--color-line)] bg-[var(--color-surface-2)] overflow-y-auto py-2 px-1 flex-shrink-0">
-        <div className="px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold">
-          <span className="truncate flex-1">workspace</span>
-          <button
-            type="button"
-            onClick={() => setRefreshTick((n) => n + 1)}
-            className="p-0.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
-            title="刷新"
+      {/* File tree — collapsible (fully hidden, no icon rail) + resizable width */}
+      {!treeCollapsed && (
+        <aside
+          className="relative border-r border-[var(--color-line)] bg-[var(--color-surface-2)] overflow-y-auto py-2 px-1 flex-shrink-0"
+          style={{ width: treeWidth }}
+        >
+          <div className="px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold">
+            <span className="truncate flex-1">workspace</span>
+            <button
+              type="button"
+              onClick={() => setRefreshTick((n) => n + 1)}
+              disabled={refreshing}
+              className={`p-0.5 rounded transition-colors ${
+                justRefreshed
+                  ? "text-emerald-400"
+                  : "text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
+              }`}
+              title={refreshing ? "刷新中…" : justRefreshed ? "已刷新 ✓" : "刷新"}
+              aria-label="刷新文件列表"
+            >
+              <AnimatePresence mode="wait" initial={false}>
+                {justRefreshed ? (
+                  <motion.span
+                    key="ok"
+                    className="inline-flex"
+                    initial={{ scale: 0, rotate: -45 }}
+                    animate={{ scale: 1, rotate: 0 }}
+                    exit={{ scale: 0, opacity: 0 }}
+                    transition={{ type: "spring", stiffness: 520, damping: 16 }}
+                  >
+                    <Check size={11} strokeWidth={3} />
+                  </motion.span>
+                ) : (
+                  <motion.span key="rf" className="inline-flex" exit={{ opacity: 0 }}>
+                    <RefreshCw size={10} className={refreshing ? "animate-spin" : ""} />
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTreeCollapsed(true)}
+              className="p-0.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
+              title="收起文件列表"
+              aria-label="收起文件列表"
+            >
+              <PanelLeftClose size={11} />
+            </button>
+          </div>
+          <DirTree
+            dirPath=""
+            depth={0}
+            dirs={dirs}
+            expanded={expanded}
+            activePath={activePath}
+            onToggle={toggleDir}
+            onSelect={openFile}
+          />
+          {/* Width drag handle on the right edge */}
+          <div
+            onMouseDown={startTreeResize}
+            title="拖动调节文件列表宽度"
+            className="absolute top-0 right-0 bottom-0 w-1.5 cursor-col-resize group z-10"
           >
-            <RefreshCw size={10} />
-          </button>
-        </div>
-        <DirTree
-          dirPath=""
-          depth={0}
-          dirs={dirs}
-          expanded={expanded}
-          activePath={activePath}
-          onToggle={toggleDir}
-          onSelect={openFile}
-        />
-      </aside>
+            <div className="absolute top-0 bottom-0 right-0 w-0.5 bg-transparent group-hover:bg-[var(--color-accent)] transition-colors" />
+          </div>
+        </aside>
+      )}
 
       {/* Editor */}
-      <div ref={editorRef} className="flex-1 flex flex-col min-w-0 bg-[var(--color-surface)]">
+      <div className="flex-1 flex flex-col min-w-0 bg-[var(--color-surface)]">
         <div className="flex items-center gap-0 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] overflow-x-auto">
+          {treeCollapsed && (
+            <button
+              type="button"
+              onClick={() => setTreeCollapsed(false)}
+              className="flex-shrink-0 px-2.5 py-2 text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface)] border-r border-[var(--color-line)]"
+              title="展开文件列表"
+              aria-label="展开文件列表"
+            >
+              <PanelLeftOpen size={13} />
+            </button>
+          )}
           {openFiles.map((f) => {
             const isActive = f.path === activePath;
             const fdirty = f.content !== f.originalContent;
@@ -262,6 +412,35 @@ export function CodeTab() {
           <div className="ml-auto flex items-center gap-1 px-3">
             <button
               type="button"
+              onClick={() => {
+                const v = cmViewRef.current;
+                if (v) {
+                  v.focus();
+                  openSearchPanel(v);
+                }
+              }}
+              className="p-1.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface)]"
+              title="查找 / 替换 (Ctrl+F)"
+              aria-label="查找替换"
+            >
+              <Search size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMinimapOn((v) => !v)}
+              aria-pressed={minimapOn}
+              className={`p-1.5 rounded hover:bg-[var(--color-surface)] ${
+                minimapOn
+                  ? "text-[var(--color-accent)]"
+                  : "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
+              }`}
+              title={minimapOn ? "隐藏小地图" : "显示小地图"}
+              aria-label="小地图"
+            >
+              <MapIcon size={12} />
+            </button>
+            <button
+              type="button"
               onClick={save}
               disabled={!dirty || saving}
               className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
@@ -281,8 +460,11 @@ export function CodeTab() {
             ) : (
               <CodeMirror
                 value={activeFile.content}
-                extensions={langExtForPath(activeFile.path) ? [langExtForPath(activeFile.path)!] : []}
+                extensions={editorExtensions}
                 theme="light"
+                onCreateEditor={(view) => {
+                  cmViewRef.current = view;
+                }}
                 onChange={(val) => {
                   setOpenFiles((prev) => prev.map((f) =>
                     f.path === activeFile.path ? { ...f, content: val } : f,

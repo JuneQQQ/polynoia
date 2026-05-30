@@ -42,10 +42,8 @@ export function NewProjectModal({ onClose, onCreated }: Props) {
   const [err, setErr] = useState<string | null>(null);
 
   // Only user-created / adapter-backed contacts can be project members.
-  // Orchestrator is intentionally excluded — it's a role assigned per group
-  // chat, not a project member.
   const pickable: Agent[] = agents.filter((a) => {
-    if (a.id === "you" || a.id === "orchestrator") return false;
+    if (a.id === "you") return false;
     return !!a.setup?.adapter_id || !!a.custom;
   });
 

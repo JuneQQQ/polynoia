@@ -261,7 +261,13 @@ function GroupTab({
     setRoles((r) => ({ ...r, [id]: role }));
   };
 
-  const canCreate = title.trim().length > 0 && selected.size >= 2 && !busy;
+  // A group chat must designate exactly one orchestrator, picked from its own
+  // members. No orchestrator → can't create (mirrors the server-side rule).
+  const canCreate =
+    title.trim().length > 0 &&
+    selected.size >= 2 &&
+    orchestratorId !== null &&
+    !busy;
 
   const create = async () => {
     if (!canCreate) return;
@@ -343,7 +349,7 @@ function GroupTab({
           {selected.size > 0 && (
             <div className="space-y-1.5 border border-[var(--color-line)] rounded p-2.5 bg-[var(--color-surface-2)]/60">
               <div className="section-eyebrow mb-2">
-                成员角色 · 协调器
+                成员角色 · 协调器(必选)
               </div>
               {Array.from(selected).map((id) => {
                 const a = agents.find((x) => x.id === id);
@@ -380,14 +386,10 @@ function GroupTab({
                   </div>
                 );
               })}
-              {orchestratorId && (
-                <button
-                  type="button"
-                  onClick={() => setOrchestratorId(null)}
-                  className="text-[10px] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:underline mt-1"
-                >
-                  清除协调器 · 群聊将无协调员
-                </button>
+              {orchestratorId === null && (
+                <div className="text-[10px] text-[var(--color-fg-3)] mt-1">
+                  请从成员中指定一位协调器 —— 群聊由 ta 拆解任务并并行调度。
+                </div>
               )}
             </div>
           )}

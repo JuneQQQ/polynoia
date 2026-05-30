@@ -80,6 +80,15 @@ class Agent(BaseModel):
     custom: bool = False
     system_prompt: str | None = None
     tools_whitelist: list[str] = []
+    # Coarse-grained MCP tool exposure role.
+    # orchestrator → read-only + call_agent (no edit/write/bash)
+    # coder        → full toolset (read/edit/write/apply_patch/bash/grep/glob/revert)
+    # designer     → read/edit/write/grep/glob (no bash, no apply_patch, no revert)
+    # writer       → read/edit/write/grep/glob (same as designer)
+    # generalist   → everything except call_agent (default for back-compat)
+    tool_role: Literal[
+        "orchestrator", "coder", "designer", "writer", "generalist",
+    ] = "generalist"
     proxy: str | None = None
     proxy_kind: Literal["system", "direct", "custom"] = "system"
     setup: AgentSetup | None = None

@@ -6,7 +6,8 @@ AI SDK 6 的 UIMessageChunk SSE 协议。本模块负责中间翻译。
 映射:
   TurnStartedEvent     → start
   PartStartedEvent(text) → text-start
-  PartDeltaEvent       → text-delta
+  PartStartedEvent(reasoning) → reasoning-start (folded thinking)
+  PartDeltaEvent       → text-delta / reasoning-delta (by open part)
   PartStartedEvent / PartCompletedEvent(card) → data-<kind>
   TurnCompletedEvent   → finish
   TurnFailedEvent      → error
@@ -31,6 +32,9 @@ from polynoia.transport.ui_message_chunk import (
     ErrorChunk,
     FinishChunk,
     MessageMetadataChunk,
+    ReasoningDeltaChunk,
+    ReasoningEndChunk,
+    ReasoningStartChunk,
     StartChunk,
     TextDeltaChunk,
     TextEndChunk,
@@ -39,6 +43,23 @@ from polynoia.transport.ui_message_chunk import (
     encode_done,
     encode_polynoia_card,
 )
+
+
+def _part_body_text(part) -> str:
+    """Flatten a text/reasoning part's body (list[TextBlock]) into a string —
+    used to synthesize a single delta when a part arrives already-completed
+    (no start+deltas were streamed)."""
+    final_text = ""
+    for blk in getattr(part, "body", []) or []:
+        c = getattr(blk, "c", "")
+        if isinstance(c, str):
+            final_text += c
+        elif isinstance(c, list):
+            for seg in c:
+                txt = getattr(seg, "text", None)
+                if txt:
+                    final_text += txt
+    return final_text
 
 
 async def adapter_events_to_chunks(
@@ -65,6 +86,7 @@ async def adapter_events_to_chunks(
     started_msg = False
     meta_emitted = False
     open_text_parts: set[str] = set()
+    open_reasoning_parts: set[str] = set()
 
     async for ev in events:
         t = ev.type
@@ -110,6 +132,13 @@ async def adapter_events_to_chunks(
                     sender_label=sender_label or agent_id,
                 ))
                 open_text_parts.add(ev.part_id)
+            elif part_kind == "reasoning":
+                yield encode_chunk(ReasoningStartChunk(
+                    id=ev.part_id,
+                    sender_id=agent_id,
+                    sender_label=sender_label or agent_id,
+                ))
+                open_reasoning_parts.add(ev.part_id)
             else:
                 yield encode_polynoia_card(
                     part_kind,
@@ -121,10 +150,14 @@ async def adapter_events_to_chunks(
             continue
 
         if t == "part.delta":
-            # Only meaningful for text streaming
+            # Text + reasoning both stream as {"text": ...} deltas; route by
+            # whether the open part is a reasoning part.
             txt = ev.delta.get("text") if isinstance(ev.delta, dict) else None
             if txt is not None:
-                yield encode_chunk(TextDeltaChunk(id=ev.part_id, delta=txt))
+                if ev.part_id in open_reasoning_parts:
+                    yield encode_chunk(ReasoningDeltaChunk(id=ev.part_id, delta=txt))
+                else:
+                    yield encode_chunk(TextDeltaChunk(id=ev.part_id, delta=txt))
             continue
 
         if t == "part.completed":
@@ -148,20 +181,26 @@ async def adapter_events_to_chunks(
                         sender_id=agent_id,
                         sender_label=sender_label or agent_id,
                     ))
-                    body = getattr(ev.part, "body", []) or []
-                    final_text = ""
-                    for blk in body:
-                        c = getattr(blk, "c", "")
-                        if isinstance(c, str):
-                            final_text += c
-                        elif isinstance(c, list):
-                            for seg in c:
-                                txt = getattr(seg, "text", None)
-                                if txt:
-                                    final_text += txt
+                    final_text = _part_body_text(ev.part)
                     if final_text:
                         yield encode_chunk(TextDeltaChunk(id=ev.part_id, delta=final_text))
                     yield encode_chunk(TextEndChunk(id=ev.part_id))
+            elif part_kind == "reasoning":
+                # Same two paths as text: A) deltas already streamed → just end;
+                # B) arrived already-completed → synthesize start+delta+end.
+                if ev.part_id in open_reasoning_parts:
+                    yield encode_chunk(ReasoningEndChunk(id=ev.part_id))
+                    open_reasoning_parts.discard(ev.part_id)
+                else:
+                    yield encode_chunk(ReasoningStartChunk(
+                        id=ev.part_id,
+                        sender_id=agent_id,
+                        sender_label=sender_label or agent_id,
+                    ))
+                    final_text = _part_body_text(ev.part)
+                    if final_text:
+                        yield encode_chunk(ReasoningDeltaChunk(id=ev.part_id, delta=final_text))
+                    yield encode_chunk(ReasoningEndChunk(id=ev.part_id))
             else:
                 yield encode_polynoia_card(
                     part_kind,
@@ -173,10 +212,13 @@ async def adapter_events_to_chunks(
             continue
 
         if t == "turn.completed":
-            # Close any open text parts that didn't see explicit completion
+            # Close any open text / reasoning parts that didn't see explicit completion
             for pid in list(open_text_parts):
                 yield encode_chunk(TextEndChunk(id=pid))
             open_text_parts.clear()
+            for pid in list(open_reasoning_parts):
+                yield encode_chunk(ReasoningEndChunk(id=pid))
+            open_reasoning_parts.clear()
             yield encode_chunk(FinishChunk())
             if is_final:
                 yield encode_done()

@@ -35,6 +35,27 @@ class TextEndChunk(BaseModel):
     id: str
 
 
+class ReasoningStartChunk(BaseModel):
+    """Model's thinking/reasoning stream — mirrors text-* but the UI streams it
+    then folds it away (shown again only on click, de-emphasized)."""
+
+    type: Literal["reasoning-start"] = "reasoning-start"
+    id: str  # part_id
+    sender_id: str | None = None  # Polynoia ext: agent_id for atomic sender binding
+    sender_label: str | None = None
+
+
+class ReasoningDeltaChunk(BaseModel):
+    type: Literal["reasoning-delta"] = "reasoning-delta"
+    id: str
+    delta: str
+
+
+class ReasoningEndChunk(BaseModel):
+    type: Literal["reasoning-end"] = "reasoning-end"
+    id: str
+
+
 class DataChunk(BaseModel):
     """Custom typed-card chunk: type="data-<name>", e.g. data-diff, data-tasks."""
 

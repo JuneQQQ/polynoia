@@ -42,7 +42,7 @@ export function DiffPart({ payload }: { payload: DiffPayload }) {
     }
   };
   return (
-    <div className="border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface)] max-w-[640px]">
+    <div className="border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] max-w-[640px]">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
         <DiffIcon size={14} className="text-[var(--color-fg-3)]" />

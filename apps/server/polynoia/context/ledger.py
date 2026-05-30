@@ -59,6 +59,12 @@ async def _pull_git_log_for_conv(
 # placeholders so the agent at least sees that something happened.
 def _format_message_body(payload: dict) -> str:
     kind = payload.get("kind", "")
+    if kind == "reasoning":
+        # Reasoning (model thinking) is persisted for the UI (folded-on-refresh)
+        # but deliberately EXCLUDED from context: re-feeding one agent's raw
+        # chain-of-thought into later prompts is noise + token bloat, and leaks
+        # private thinking across agents. Empty body → history/ledger skip it.
+        return ""
     if kind == "text":
         body = payload.get("body") or []
         parts: list[str] = []
@@ -75,7 +81,19 @@ def _format_message_body(payload: dict) -> str:
     if kind == "tool-call":
         name = payload.get("name", "?")
         state = payload.get("state", "?")
-        summary = payload.get("summary") or payload.get("output") or ""
+        # `summary`/`output_text` are strings; `output` may be a structured
+        # dict (e.g. {"kind":"wrote",...}). Coerce to str before slicing —
+        # otherwise `dict[:120]` raises KeyError and blows up the whole
+        # history layer (which is how a persisted tool-call row silently
+        # killed the orchestrator's summary turn).
+        summary = (
+            payload.get("summary")
+            or payload.get("output_text")
+            or payload.get("output")
+            or ""
+        )
+        if not isinstance(summary, str):
+            summary = str(summary)
         return f"[工具调用 {name}/{state}] {summary[:120]}"
     if kind == "diff":
         # Show file paths + insertion/deletion totals — not the full hunks

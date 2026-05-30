@@ -1,12 +1,22 @@
 """Shared helpers for adapter implementations."""
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any
 
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _reasoning_seconds(started: float | None) -> int | None:
+    """Whole seconds the model thought (>=1), from a ``time.monotonic()`` start —
+    stamped onto a completed ReasoningPayload so "思考 N 秒" survives a refresh.
+    None when the start wasn't recorded. Shared by all three adapters."""
+    if started is None:
+        return None
+    return max(1, round(time.monotonic() - started))
 
 
 def _tool_summary(name: str, input_: dict[str, Any] | None) -> str:

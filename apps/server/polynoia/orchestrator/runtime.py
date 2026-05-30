@@ -54,19 +54,16 @@ from polynoia.adapters.base import (
     AdapterEvent,
     PartCompletedEvent,
     PartDeltaEvent,
-    PartStartedEvent,
     TurnCompletedEvent,
     TurnFailedEvent,
 )
 from polynoia.adapters.pool import AdapterPool
-from polynoia.api.seed import seed_agents
+from polynoia.api.seed import ORCHESTRATOR_PROMPT
 from polynoia.domain.messages import (
     DiffPayload,
     MessagePayload,
     TaskItem,
     TasksPayload,
-    TextBlock,
-    TextPayload,
 )
 from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
 from polynoia.transport.ui_message_chunk import (
@@ -178,8 +175,13 @@ class OrchestratorRuntime:
         conv_id: str,
         pool: AdapterPool,
         emit: EmitFn,
-        orch_agent_id: str = "orchestrator",
+        orch_agent_id: str,
     ):
+        # ``orch_agent_id`` is the conversation's designated orchestrator member
+        # (Conversation.orchestrator_member_id). There is no built-in/implicit
+        # orchestrator — the caller only constructs this runtime when a member
+        # has been explicitly designated. That member is a normal contact; we
+        # prepend ORCHESTRATOR_PROMPT to its coordinating turns.
         self.conv_id = conv_id
         self.pool = pool
         self.emit = emit
@@ -188,23 +190,56 @@ class OrchestratorRuntime:
         self.tasks_card_msg_id: str | None = None
         self.cancel = asyncio.Event()
         self.cost_total = 0.0
+        # Populated by _load_members() at the start of run_turn: the conv's
+        # real member contacts (id → Agent), their per-conv role notes, and the
+        # display label for the orchestrator member.
+        self._members: dict[str, Any] = {}
+        self._member_roles: dict[str, str] = {}
+        self._orch_label: str = orch_agent_id
+
+    async def _load_members(self) -> None:
+        """Load the conversation's real members from the DB.
+
+        The specialist roster (who the orchestrator can dispatch to) and all
+        display names come from here — not from any seed list. Excludes ``you``
+        and the orchestrator member itself when building the roster.
+        """
+        from polynoia.storage.db import SessionLocal
+        from polynoia.storage.repo import get_conversation, list_agents
+
+        async with SessionLocal() as db:
+            conv = await get_conversation(db, self.conv_id)
+            rows = await list_agents(db)
+        member_ids = set(conv.members if conv else [])
+        self._members = {r.id: r for r in rows if r.id in member_ids}
+        self._member_roles = dict(conv.member_roles) if conv else {}
+        orch = self._members.get(self.orch_agent)
+        self._orch_label = orch.name if orch else self.orch_agent
+
+    def _display_name(self, agent_id: str) -> str:
+        """Friendly chat-sender label for a member id (falls back to the id)."""
+        a = self._members.get(agent_id)
+        return a.name if a else agent_id
 
     # ─────── 主入口 ───────
 
     async def run_turn(self, user_text: str) -> None:
         """One full turn: decompose → dispatch → barrier → aggregate."""
-        # 1. INTENT_PARSE — Orchestrator agent
+        # 0. Load the conv's real members (roster + display names come from DB).
+        await self._load_members()
+
+        # 1. INTENT_PARSE — orchestrator member
         plan_text, specs = await self._decompose(user_text)
 
         # If we couldn't get a task list, fall back to direct reply.
         if not specs:
             if plan_text:
                 # The "plan" text becomes the actual reply.
-                await self._stream_text(self.orch_agent, "Orchestrator", plan_text)
+                await self._stream_text(self.orch_agent, self._orch_label, plan_text)
             else:
                 await self._stream_text(
                     self.orch_agent,
-                    "Orchestrator",
+                    self._orch_label,
                     "我没能拆出可并行的子任务。请重述请求,或直接 @ 某个 specialist agent。",
                 )
             await self.emit(encode_chunk(FinishChunk()))
@@ -223,12 +258,12 @@ class OrchestratorRuntime:
         conflicts = self._detect_conflicts()
         for c in conflicts:
             await self._stream_text(
-                self.orch_agent, "Orchestrator", f"⚠ 冲突检测:{c}"
+                self.orch_agent, self._orch_label, f"⚠ 冲突检测:{c}"
             )
 
         summary = await self._aggregate(user_text, conflicts)
         if summary:
-            await self._stream_text(self.orch_agent, "Orchestrator", summary)
+            await self._stream_text(self.orch_agent, self._orch_label, summary)
 
         # 5. EMIT_PREVIEW(P0:有 diff 时给个 mock 预览卡)
         await self._maybe_emit_preview()
@@ -249,18 +284,25 @@ class OrchestratorRuntime:
         Streams the *natural-language plan* prefix to chat in real time. The JSON
         block is parsed silently after the turn completes.
         """
-        # Build the agent roster for the Orchestrator's prompt
+        # Build the specialist roster from the conv's REAL members (DB), not a
+        # seed list. Exclude `you` and the orchestrator member itself.
         roster = []
-        for a in seed_agents():
-            if a.id in ("you", "orchestrator"):
+        for aid, a in self._members.items():
+            if aid in ("you", self.orch_agent):
                 continue
-            roster.append(f"- `{a.id}` ({a.name}) — {a.tagline or a.role or ''} · caps: {', '.join(a.caps or []) or '通用'}")
-        roster_text = "\n".join(roster)
+            note = self._member_roles.get(aid) or a.tagline or a.role or ""
+            caps = ", ".join(a.caps or []) or "通用"
+            roster.append(f"- `{aid}` ({a.name}) — {note} · caps: {caps}")
+        roster_text = "\n".join(roster) or "(本对话暂无其他可分派成员)"
 
+        # The orchestrator member is a normal contact whose session carries its
+        # OWN system prompt — so we prepend ORCHESTRATOR_PROMPT here to confer
+        # the coordinating persona + the expected (plan + ```json```) format.
         full_prompt = (
+            f"{ORCHESTRATOR_PROMPT}\n\n"
             f"# 用户请求\n{user_text}\n\n"
             f"# 可用 specialist agents\n{roster_text}\n\n"
-            "请按 system prompt 格式响应。"
+            "请按上面的格式响应。"
         )
 
         sess = await self.pool.get_session(self.orch_agent, self.conv_id)
@@ -273,15 +315,14 @@ class OrchestratorRuntime:
         plan_msg_id = f"orch-plan-{uuid.uuid4().hex[:8]}"
         plan_part_id = f"{plan_msg_id}-text"
 
-        await self._emit_meta(self.orch_agent, "Orchestrator")
+        await self._emit_meta(self.orch_agent, self._orch_label)
         await self.emit(encode_chunk(StartChunk(message_id=plan_msg_id)))
         await self.emit(encode_chunk(TextStartChunk(
-            id=plan_part_id, sender_id=self.orch_agent, sender_label="Orchestrator",
+            id=plan_part_id, sender_id=self.orch_agent, sender_label=self._orch_label,
         )))
 
         full_text = ""
         seen_fence = False
-        suppress_buf = ""  # buffer chars after fence in case it's a false alarm
 
         try:
             async for ev in sess.send(task_id=f"decompose-{self.conv_id}", text=full_prompt):
@@ -429,7 +470,7 @@ class OrchestratorRuntime:
             else rt.spec.prompt
         )
 
-        agent_name = _agent_display_name(rt.spec.agent)
+        agent_name = self._display_name(rt.spec.agent)
 
         # Tap: pass events through to chunker AND collect into rt.outputs
         async def tap() -> AsyncIterator[AdapterEvent]:
@@ -507,7 +548,7 @@ class OrchestratorRuntime:
             "# 子任务输出",
         ]
         for rt in self.tasks.values():
-            agent_disp = _agent_display_name(rt.spec.agent)
+            agent_disp = self._display_name(rt.spec.agent)
             lines.append(f"\n## `{rt.spec.label}` · {agent_disp} · state={rt.state}")
             if rt.error:
                 lines.append(f"  ERROR: {rt.error}")
@@ -547,10 +588,10 @@ class OrchestratorRuntime:
         # Actually since the caller does _stream_text after, we want this fn
         # to RETURN the summary string and let caller emit it. But that buffers.
         # Better: stream inline AND return empty string.
-        await self._emit_meta(self.orch_agent, "Orchestrator")
+        await self._emit_meta(self.orch_agent, self._orch_label)
         await self.emit(encode_chunk(StartChunk(message_id=msg_id)))
         await self.emit(encode_chunk(TextStartChunk(
-            id=part_id, sender_id=self.orch_agent, sender_label="Orchestrator",
+            id=part_id, sender_id=self.orch_agent, sender_label=self._orch_label,
         )))
 
         try:
@@ -592,7 +633,7 @@ class OrchestratorRuntime:
         msg_id = f"orch-web-{uuid.uuid4().hex[:8]}"
         await self.emit(encode_polynoia_card(
             "web", web.model_dump(), msg_id,
-            sender_id=self.orch_agent, sender_label="Orchestrator",
+            sender_id=self.orch_agent, sender_label=self._orch_label,
         ))
 
     # ─────── Phase 6: MERGE(auto mode)───────
@@ -669,7 +710,7 @@ class OrchestratorRuntime:
             for cline in r["log"][:2]:
                 summary_lines.append(f"     · {cline}")
         await self._stream_text(
-            self.orch_agent, "Orchestrator", "\n".join(summary_lines)
+            self.orch_agent, self._orch_label, "\n".join(summary_lines)
         )
 
     # ─────── 冲突检测 ───────
@@ -698,7 +739,7 @@ class OrchestratorRuntime:
         """Re-render the tasks card. Same message_id → frontend store updates in place."""
         if self.tasks_card_msg_id is None:
             self.tasks_card_msg_id = f"orch-tasks-{uuid.uuid4().hex[:8]}"
-            await self._emit_meta(self.orch_agent, "Orchestrator")
+            await self._emit_meta(self.orch_agent, self._orch_label)
 
         payload = TasksPayload(
             title=f"任务编排 · {len(self.tasks)} 子任务 · ${self.cost_total:.4f}",
@@ -721,7 +762,7 @@ class OrchestratorRuntime:
                 payload.model_dump(),
                 self.tasks_card_msg_id,
                 sender_id=self.orch_agent,
-                sender_label="Orchestrator",
+                sender_label=self._orch_label,
             )
         )
 
@@ -749,11 +790,3 @@ class OrchestratorRuntime:
         )))
         await self.emit(encode_chunk(TextDeltaChunk(id=part_id, delta=text)))
         await self.emit(encode_chunk(TextEndChunk(id=part_id)))
-
-
-def _agent_display_name(agent_id: str) -> str:
-    """Friendly name for chat sender label."""
-    for a in seed_agents():
-        if a.id == agent_id:
-            return a.name
-    return agent_id

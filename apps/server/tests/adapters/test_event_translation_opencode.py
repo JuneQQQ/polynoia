@@ -161,12 +161,6 @@ async def test_translate_unknown_update_type_skipped() -> None:
         {
             "jsonrpc": "2.0",
             "method": "session/update",
-            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
-                "messageId": "x", "content": {"type": "text", "text": "thinking..."}}},
-        },
-        {
-            "jsonrpc": "2.0",
-            "method": "session/update",
             "params": {"sessionId": "s", "update": {"sessionUpdate": "usage_update",
                 "used": 1, "size": 100, "cost": {"amount": 0, "currency": "USD"}}},
         },
@@ -180,3 +174,67 @@ async def test_translate_unknown_update_type_skipped() -> None:
         )
     )
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_translate_agent_thought_chunk_to_reasoning() -> None:
+    # agent_thought_chunk streams the model's thinking → ReasoningPayload part:
+    # first chunk opens it (start + delta), subsequent chunks append deltas, and
+    # the part closes as ReasoningPayload when the stream ends.
+    thoughts = [
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
+                "messageId": "m1", "content": {"type": "text", "text": "let me "}}},
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
+                "messageId": "m1", "content": {"type": "text", "text": "think"}}},
+        },
+    ]
+    events = await _collect(
+        _translate_acp_stream_to_pap(_aiter(thoughts), turn_id="turn1", task_id="task1")
+    )
+    # start(reasoning) + delta + delta + completed(reasoning)
+    assert [e.type for e in events] == [
+        "part.started", "part.delta", "part.delta", "part.completed",
+    ]
+    assert events[0].part.kind == "reasoning"
+    assert events[1].delta == {"text": "let me "}
+    assert events[2].delta == {"text": "think"}
+    assert events[3].part.kind == "reasoning"
+    assert events[3].part.body[0].c == "let me think"
+
+
+@pytest.mark.asyncio
+async def test_thought_folds_incrementally_when_tool_starts() -> None:
+    # A thought block must COMPLETE (fold) as soon as the model moves on to a
+    # tool call — not stay open until turn end. Otherwise OpenCode lanes show a
+    # wall of expanded thinking for the whole run (unlike Claude's per-block
+    # folding). So the reasoning part.completed must arrive BEFORE the tool card.
+    stream = [
+        {
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
+                "messageId": "t1", "content": {"type": "text", "text": "I'll read the file"}}},
+        },
+        {
+            "jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s", "update": {"sessionUpdate": "tool_call",
+                "toolCallId": "tc1", "title": "read", "rawInput": {"path": "x.py"}}},
+        },
+    ]
+    events = await _collect(
+        _translate_acp_stream_to_pap(_aiter(stream), turn_id="turn1", task_id="task1")
+    )
+    types = [e.type for e in events]
+    # reasoning start + delta, then reasoning COMPLETED (folded), THEN the tool card
+    assert types == ["part.started", "part.delta", "part.completed", "part.completed"]
+    assert events[0].part.kind == "reasoning"
+    assert events[2].part.kind == "reasoning"      # thought folded first…
+    assert events[2].part.body[0].c == "I'll read the file"
+    assert events[3].part.kind == "tool-call"      # …before the tool executes
+    assert events[3].part.name == "read"

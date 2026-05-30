@@ -90,3 +90,49 @@ async def test_set_merge_mode_missing_conv_returns_false(fresh_db) -> None:
     async with SessionLocal() as db:
         ok = await storage_repo.set_merge_mode(db, "not-a-real-id", "auto")
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_set_members_add_dedupe_keep_you(fresh_db) -> None:
+    cid = new_ulid()
+    conv = Conversation(id=cid, title="t", members=["you", "a"])
+    async with SessionLocal() as db:
+        await storage_repo.create_conversation(db, conv)
+        await db.commit()
+    async with SessionLocal() as db:
+        # add "b" + a duplicate "a"; "you" implicit
+        ok, before, after = await storage_repo.set_members(db, cid, ["a", "b", "a"])
+        await db.commit()
+    assert ok
+    assert "you" in after and after.count("a") == 1 and "b" in after
+    assert set(before) == {"you", "a"}
+
+
+@pytest.mark.asyncio
+async def test_set_members_prunes_roles_and_clears_orphan_orch(fresh_db) -> None:
+    cid = new_ulid()
+    conv = Conversation(
+        id=cid, title="t", members=["you", "a", "b"],
+        member_roles={"a": "coder", "b": "writer"},
+        orchestrator_member_id="b",
+    )
+    async with SessionLocal() as db:
+        await storage_repo.create_conversation(db, conv)
+        await db.commit()
+    async with SessionLocal() as db:
+        # remove "b" (the orchestrator) → its role pruned + orchestrator cleared
+        ok, _before, after = await storage_repo.set_members(db, cid, ["you", "a"])
+        await db.commit()
+    assert ok and "b" not in after
+    async with SessionLocal() as db:
+        loaded = await storage_repo.get_conversation(db, cid)
+    assert loaded is not None
+    assert "b" not in (loaded.member_roles or {})
+    assert loaded.orchestrator_member_id is None
+
+
+@pytest.mark.asyncio
+async def test_set_members_missing_conv_returns_false(fresh_db) -> None:
+    async with SessionLocal() as db:
+        ok, _b, _a = await storage_repo.set_members(db, "not-a-real-id", ["you"])
+    assert ok is False

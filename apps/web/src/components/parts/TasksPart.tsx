@@ -19,7 +19,7 @@ export function TasksPart({ payload }: { payload: TasksPayload }) {
   const agents = useStore((s) => s.agents);
   const openPreview = useStore((s) => s.openPreview);
   return (
-    <div className="border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface)] max-w-[560px]">
+    <div className="border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] max-w-[560px]">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
         <span className="text-xs font-semibold">{payload.title}</span>
         <span className="text-[10px] uppercase tracking-wide text-[var(--color-fg-3)]">

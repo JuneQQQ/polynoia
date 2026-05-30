@@ -21,22 +21,38 @@ import {
   Settings,
   Terminal,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ToolCallPayload } from "../../lib/types";
 
+/** Strip MCP/server prefixes so users see a clean verb.
+ *   mcp__polynoia__write → write   (Claude Code MCP naming)
+ *   polynoia_read        → read    (OpenCode naming)
+ *   read                 → read    (built-in, unchanged)
+ */
+function cleanToolName(raw: string): string {
+  return raw
+    .replace(/^mcp__[^_]+__/, "")  // mcp__<server>__tool
+    .replace(/^[a-z0-9]+__/i, "")  // <server>__tool (double-underscore)
+    .replace(/^polynoia_+/i, "");  // polynoia_tool (single-underscore)
+}
+
+// Keyed by the CLEANED, lowercased tool name.
 const TOOL_ICONS: Record<string, LucideIcon> = {
-  Bash: Terminal,
-  Shell: Terminal,
-  Read: FileSearch,
-  FileRead: FileSearch,
-  Edit: Edit,
-  FileEdit: Edit,
-  Write: Pencil,
-  FileWrite: Pencil,
-  Grep: Search,
-  Glob: Search,
-  WebFetch: Globe,
-  WebSearch: Globe,
+  bash: Terminal,
+  shell: Terminal,
+  read: FileSearch,
+  fileread: FileSearch,
+  edit: Edit,
+  fileedit: Edit,
+  write: Pencil,
+  filewrite: Pencil,
+  apply_patch: Pencil,
+  grep: Search,
+  glob: Search,
+  dispatch: Globe,
+  call_agent: Globe,
+  webfetch: Globe,
+  websearch: Globe,
 };
 
 const STATE_STYLE = (state: ToolCallPayload["state"]) => {
@@ -72,20 +88,36 @@ function prettyJSON(obj: unknown): string {
 
 export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
   const [expanded, setExpanded] = useState(false);
-  const ToolIcon = TOOL_ICONS[payload.name] ?? Settings;
+  const userTouched = useRef(false);
+  const displayName = cleanToolName(payload.name);
+  const ToolIcon = TOOL_ICONS[displayName.toLowerCase()] ?? Settings;
   const ss = STATE_STYLE(payload.state);
   const hasInput = payload.input && Object.keys(payload.input).length > 0;
+  // Args still streaming in (big dispatch) → show the raw partial JSON in the
+  // EXPANDED body, and auto-open so the user watches them build (like Cursor).
+  const streamingArgs = payload.state === "running" && !!payload.input_preview;
+  const prevStreaming = useRef(streamingArgs);
+  useEffect(() => {
+    if (userTouched.current) return;
+    if (streamingArgs) setExpanded(true);
+    else if (prevStreaming.current) setExpanded(false); // args done → tuck back
+    prevStreaming.current = streamingArgs;
+  }, [streamingArgs]);
   const outText = payload.output_text;
   const outIsString = typeof outText === "string" && outText.length > 0;
   const outIsObject =
     !outIsString && payload.output != null && typeof payload.output !== "string";
+  const hasPreview = !hasInput && !!payload.input_preview;
 
   return (
-    <div className="border border-[var(--color-line)] rounded-md overflow-hidden bg-[var(--color-surface)] max-w-[680px] text-[12px]">
+    <div className="border border-[var(--color-line)] rounded-md overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] max-w-[680px] text-[12px]">
       {/* Header — clickable to toggle */}
       <button
         type="button"
-        onClick={() => setExpanded((e) => !e)}
+        onClick={() => {
+          userTouched.current = true;
+          setExpanded((e) => !e);
+        }}
         className="flex items-center gap-2 w-full px-2.5 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
       >
         {expanded ? (
@@ -94,7 +126,7 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
           <ChevronRight size={11} className="text-[var(--color-fg-4)]" />
         )}
         <ToolIcon size={12} className="text-[var(--color-fg-3)] flex-shrink-0" />
-        <span className="mono font-semibold text-[11.5px]">{payload.name}</span>
+        <span className="mono font-semibold text-[11.5px]">{displayName}</span>
         {payload.summary && (
           <span className="mono text-[11px] text-[var(--color-fg-3)] truncate flex-1">
             {payload.summary}
@@ -123,6 +155,19 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
               </div>
               <pre className="mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto bg-[var(--color-surface)] text-[var(--color-fg-2)]">
                 {prettyJSON(payload.input)}
+              </pre>
+            </div>
+          )}
+          {/* Live-streaming raw args (before the input is final) — watch them
+              build inside the fold. */}
+          {hasPreview && (
+            <div>
+              <div className="px-2.5 py-1 bg-[var(--color-surface-2)] text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold flex items-center gap-1.5">
+                <Loader2 size={9} className="animate-spin text-[var(--color-accent)]" />
+                输入(生成中)
+              </div>
+              <pre className="mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto max-h-[260px] overflow-y-auto whitespace-pre-wrap bg-[var(--color-surface)] text-[var(--color-fg-3)]">
+                {payload.input_preview}
               </pre>
             </div>
           )}

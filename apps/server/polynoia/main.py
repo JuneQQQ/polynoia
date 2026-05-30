@@ -1,5 +1,6 @@
 """Polynoia FastAPI app entry."""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,15 @@ from polynoia.api.routes import router
 from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import dispose_engine
+
+# App-level logging. uvicorn configures only its own loggers and leaves the
+# root handler-less, so our `logging.getLogger("polynoia.*")` calls would be
+# swallowed. Install a root StreamHandler at INFO so app logs (orchestration
+# lifecycle, etc.) actually surface in the server output.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager

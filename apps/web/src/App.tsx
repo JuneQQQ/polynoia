@@ -19,6 +19,7 @@ export function App() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
   const previewOpen = useStore((s) => s.preview.open);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const [activeConv, setActiveConv] = useState<{
     id: string;
     members: string[];
@@ -37,25 +38,48 @@ export function App() {
       .catch((e) => console.error("seed fetch failed", e));
   }, [setSeed]);
 
-  // 进 workspace 自动选默认 conv
+  // VS Code idiom: Cmd/Ctrl+B toggles the left sidebar (desktop only).
+  useEffect(() => {
+    if (mobile) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobile, toggleSidebar]);
+
+  // Entering a project no longer fabricates a "主对话" — conversations are
+  // strictly user-created. Clear any stale selection; the workspace sidebar
+  // lists real convs to pick (or create) from.
   useEffect(() => {
     if (activeWorkspaceId) {
-      const ws = workspaces.find((w) => w.id === activeWorkspaceId);
-      if (ws) {
-        setActiveConv({
-          id: `conv-${ws.id}`,
-          members: ws.members ?? [],
-          title: `${ws.name} · 主对话`,
-        });
-        setView("chat");
-      }
+      setActiveConv(null);
+      setView("chat");
     }
-  }, [activeWorkspaceId, workspaces, setView]);
+  }, [activeWorkspaceId, setView]);
 
   const openConvAndSwitchToChat = (id: string, members: string[], title: string) => {
     setActiveConv({ id, members, title });
     setView("chat");
   };
+
+  // Members changed in the drawer (add/remove) → keep the active conv's member
+  // list in sync so ChatPane's @mention + dispatch target the new roster
+  // without a reload (closed loop).
+  useEffect(() => {
+    const onMembers = (ev: Event) => {
+      const ce = ev as CustomEvent<{ convId: string; members: string[] }>;
+      if (!ce.detail) return;
+      setActiveConv((cur) =>
+        cur && cur.id === ce.detail.convId ? { ...cur, members: ce.detail.members } : cur,
+      );
+    };
+    window.addEventListener("polynoia:conv-members-changed", onMembers);
+    return () => window.removeEventListener("polynoia:conv-members-changed", onMembers);
+  }, []);
 
   const renderMain = () => {
     if (view === "chat" && activeConv) {
@@ -167,6 +191,8 @@ export function App() {
   // ── Desktop / browser layout (Tauri or normal browser) ───────────
   return (
     <div className="h-screen flex overflow-hidden">
+      {/* Sidebar self-manages full vs collapsed icon-rail (reads
+          sidebarCollapsed internally) — always mounted. */}
       <Sidebar
         activeConvId={activeConv?.id ?? null}
         onSelectConv={(id, members, title) => {

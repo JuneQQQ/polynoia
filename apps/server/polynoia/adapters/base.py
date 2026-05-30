@@ -221,6 +221,7 @@ class Adapter(Protocol):
         workspace_id: str | None = None,
         agent_id: str | None = None,
         merge_mode: str = "auto",
+        tool_role: str = "generalist",
     ) -> AdapterSession:
         """Start a fresh session.
 

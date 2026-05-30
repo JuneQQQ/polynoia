@@ -21,6 +21,7 @@ from polynoia.context.briefs import build_project_briefs_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
 from polynoia.context.ledger import build_activity_ledger_layer
+from polynoia.context.shared import build_shared_memory_layer
 from polynoia.context.budget import compute_budget
 from polynoia.context.window import enforce_budgets
 from polynoia.storage.repo import list_agents
@@ -73,6 +74,12 @@ async def build_context_for_turn(
     )
     if ledger is not None:
         layers.append(ledger)
+
+    # L2.5 — conv-scoped shared memory (locked contract / decisions / artifacts
+    # every teammate must honor). ADR-014.
+    shared = await build_shared_memory_layer(db, conv_id)
+    if shared is not None:
+        layers.append(shared)
 
     history = await build_conv_history_layer(db, agent_id, conv_id)
     if history is not None:

@@ -442,6 +442,44 @@ async def test_diff_payload_renders_with_file_info(clean_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_call_payload_with_dict_output_does_not_crash(clean_db) -> None:
+    """Regression: a persisted tool-call row whose `output` is a structured
+    dict (e.g. {"kind":"wrote",...}, no `summary`) must not crash history
+    formatting. `_format_message_body` previously did `dict[:120]` → KeyError,
+    which silently killed the orchestrator's summary turn (its context build
+    includes the workers' persisted tool-call rows)."""
+    alice = await _seed_agent("Alice")
+    conv = await _seed_conv("Tool test", members=["you", alice.id], direct=True)
+    tool_payload = {
+        "kind": "tool-call",
+        "tool_call_id": "tc1",
+        "name": "write",
+        "state": "completed",
+        # No `summary` → falls back to `output`, which is a dict here.
+        "output": {"kind": "wrote", "path": "api.py", "created": True, "bytes": 51},
+    }
+    async with db_module.SessionLocal() as session:
+        session.add(
+            MessageRow(
+                id=new_ulid(),
+                conv_id=conv.id,
+                sender_id=alice.id,
+                payload=tool_payload,
+                created_at=datetime.utcnow() - timedelta(minutes=5),
+            )
+        )
+        await session.commit()
+
+    other_conv = await _seed_conv("Other2", members=["you", alice.id], direct=True)
+    async with db_module.SessionLocal() as db:
+        # Must not raise (was KeyError before the str-coerce fix).
+        prompt = await build_context_for_turn(
+            db, agent_id=alice.id, conv_id=other_conv.id, user_text="?"
+        )
+    assert "工具调用 write/completed" in prompt
+
+
+@pytest.mark.asyncio
 async def test_huge_single_message_gets_folded(clean_db) -> None:
     """A single mega-message is folded by per-message cap (head+tail kept),
     NOT by layer-budget truncation. Per-message cap fires first, so the
@@ -467,3 +505,31 @@ async def test_huge_single_message_gets_folded(clean_db) -> None:
     assert "tail msg 4" in prompt
     # Anchor message at the start should still be visible
     assert "context starts here" in prompt
+
+
+@pytest.mark.asyncio
+async def test_shared_memory_layer_injected(clean_db) -> None:
+    """ADR-014: conv-scoped shared memory (contract/decision/artifact) is
+    injected into the prompt for any member's turn."""
+    from polynoia.storage.repo import add_conv_memory
+
+    alice = await _seed_agent("Alice")
+    conv = await _seed_conv("Shared mem", members=["you", alice.id], direct=True)
+    async with db_module.SessionLocal() as session:
+        await add_conv_memory(
+            session, conv_id=conv.id, author_agent_id="you",
+            kind="contract", content="字段 id/title/done;GET|POST /todos;端口 8000",
+        )
+        await add_conv_memory(
+            session, conv_id=conv.id, author_agent_id=alice.id,
+            kind="artifact", content="Alice → api.py",
+        )
+        await session.commit()
+
+    async with db_module.SessionLocal() as db:
+        prompt = await build_context_for_turn(
+            db, agent_id=alice.id, conv_id=conv.id, user_text="继续",
+        )
+    assert "<shared_memory>" in prompt
+    assert "[契约]" in prompt and "端口 8000" in prompt
+    assert "[产物] Alice → api.py" in prompt

@@ -41,7 +41,7 @@ type ConvState = {
    * hex). Each entry tracks its parent message_id so a delta can be matched
    * back to its placeholder.
    */
-  streamingTexts: Map<string, { messageId: string; senderId: string; text: string }>;
+  streamingTexts: Map<string, { messageId: string; senderId: string; text: string; kind: "text" | "reasoning" }>;
   /** Latest message metadata (from message-metadata chunks) until next text-start */
   pendingMeta: Record<string, unknown> | null;
   /**
@@ -66,12 +66,25 @@ type ConvState = {
 };
 
 export type AgentStatusValue = "idle" | "starting" | "streaming" | "aborted" | "error";
+/** Fine-grained phase WITHIN "streaming" (what the agent is doing right now). */
+export type AgentPhase = "thinking" | "executing" | "replying";
 
 export type AgentStatus = {
   status: AgentStatusValue;
+  phase?: AgentPhase;
+  /** Tool name when phase==="executing" (e.g. "Write"). */
+  tool?: string;
   message?: string;
   ts: number;
 };
+
+/** Coarse phase → Chinese status label (shared by the running pill + member dots). */
+export function phaseLabel(phase?: AgentPhase, tool?: string): string {
+  if (phase === "thinking") return "正在思考";
+  if (phase === "executing") return tool ? `正在执行 ${tool}` : "正在执行任务";
+  if (phase === "replying") return "正在回复";
+  return "运行中";
+}
 
 export type PreviewTab = "web" | "code" | "diff" | "tasks";
 
@@ -120,6 +133,13 @@ type Store = {
 
   // Preview right-rail state
   preview: PreviewState;
+
+  /** Left sidebar fully collapsed (VS Code Cmd+B style). Persisted to
+   * localStorage so it survives reloads. When true, App renders no sidebar
+   * and the chat header shows an "expand" affordance. */
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (v: boolean) => void;
+  toggleSidebar: () => void;
 
   // Actions
   setSeed: (s: {
@@ -216,6 +236,9 @@ export type ChunkAction =
   | { kind: "text-start"; partId: string; messageId: string; senderId?: string | null }
   | { kind: "text-delta"; partId: string; delta: string }
   | { kind: "text-end"; partId: string }
+  | { kind: "reasoning-start"; partId: string; messageId: string; senderId?: string | null }
+  | { kind: "reasoning-delta"; partId: string; delta: string }
+  | { kind: "reasoning-end"; partId: string }
   | { kind: "card"; cardKind: string; payload: MessagePayload; messageId: string; senderId?: string | null };
 
 export const useStore = create<Store>((set, get) => ({
@@ -263,16 +286,36 @@ export const useStore = create<Store>((set, get) => ({
     set({ pendingEditsByConv: m });
   },
 
-  preview: { open: false, tab: "web", data: {} },
+  // The right rail is now a code-only panel (file tree + open file). `tab`
+  // is fixed to "code" — PreviewPane ignores it and always renders CodeTab.
+  preview: { open: false, tab: "code", data: {} },
 
-  openPreview: (tab, data) =>
+  openPreview: (_tab, data) =>
     set((s) => ({
       // Mutual-exclude with RightDrawer (both occupy right edge)
       rightDrawer: { kind: null },
-      preview: { open: true, tab, data: { ...s.preview.data, ...(data ?? {}) } },
+      preview: { open: true, tab: "code", data: { ...s.preview.data, ...(data ?? {}) } },
     })),
   closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),
-  setPreviewTab: (tab) => set((s) => ({ preview: { ...s.preview, tab } })),
+  setPreviewTab: () => set((s) => ({ preview: { ...s.preview, tab: "code" } })),
+
+  // Left sidebar full-collapse (persisted). VS Code Cmd+B idiom.
+  sidebarCollapsed:
+    typeof window !== "undefined" &&
+    window.localStorage.getItem("polynoia:sb-collapsed") === "1",
+  setSidebarCollapsed: (v) => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("polynoia:sb-collapsed", v ? "1" : "0");
+    }
+    set({ sidebarCollapsed: v });
+  },
+  toggleSidebar: () => {
+    const next = !get().sidebarCollapsed;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("polynoia:sb-collapsed", next ? "1" : "0");
+    }
+    set({ sidebarCollapsed: next });
+  },
 
   rightDrawer: { kind: null },
   openAgentDetail: (agentId) =>
@@ -419,20 +462,23 @@ export const useStore = create<Store>((set, get) => ({
 
     const fallbackSender = (cur.pendingMeta?.agent_id as string) ?? "claudeCode";
 
-    if (action.kind === "text-start") {
+    if (action.kind === "text-start" || action.kind === "reasoning-start") {
+      // Reasoning streams through the SAME mechanism as text — only the payload
+      // kind differs (so PARTS_REGISTRY routes it to ReasoningPart, which folds).
+      const partKind = action.kind === "reasoning-start" ? "reasoning" : "text";
       const senderId = action.senderId || fallbackSender;
       const streamKey = `${senderId}::${action.partId}`;  // collision-safe across agents
       const placeholder: Message = {
         id: action.messageId,
         conv_id: convId,
         sender_id: senderId,
-        payload: { kind: "text", body: [{ t: "p", c: "" }] },
+        payload: { kind: partKind, body: [{ t: "p", c: "" }] },
         created_at: new Date().toISOString(),
       };
       const nextById = new Map(cur.msgById);
       nextById.set(action.messageId, placeholder);
       const newStreaming = new Map(cur.streamingTexts);
-      newStreaming.set(streamKey, { messageId: action.messageId, senderId, text: "" });
+      newStreaming.set(streamKey, { messageId: action.messageId, senderId, text: "", kind: partKind });
       convs.set(convId, {
         ...cur,
         messageOrder: [...cur.messageOrder, action.messageId],
@@ -444,12 +490,12 @@ export const useStore = create<Store>((set, get) => ({
       return;
     }
 
-    if (action.kind === "text-delta") {
+    if (action.kind === "text-delta" || action.kind === "reasoning-delta") {
       // Find the matching stream entry — its key includes senderId, but the
       // delta chunk only has partId, so we scan for the unique suffix match.
       // (In practice <5 in-flight streams per conv → linear scan is fine.)
       let foundKey: string | undefined;
-      let entry: { messageId: string; senderId: string; text: string } | undefined;
+      let entry: { messageId: string; senderId: string; text: string; kind: "text" | "reasoning" } | undefined;
       for (const [k, v] of cur.streamingTexts) {
         if (k.endsWith(`::${action.partId}`)) {
           foundKey = k;
@@ -466,7 +512,7 @@ export const useStore = create<Store>((set, get) => ({
       const nextById = new Map(cur.msgById);
       nextById.set(entry.messageId, {
         ...oldMsg,
-        payload: { kind: "text", body: [{ t: "p", c: newText }] },
+        payload: { kind: entry.kind, body: [{ t: "p", c: newText }] },
       });
       const newStreaming = new Map(cur.streamingTexts);
       newStreaming.set(foundKey, { ...entry, text: newText });
@@ -480,7 +526,7 @@ export const useStore = create<Store>((set, get) => ({
       return;
     }
 
-    if (action.kind === "text-end") {
+    if (action.kind === "text-end" || action.kind === "reasoning-end") {
       // Drop the stream-buffer entry (text is already in msgById).
       const newStreaming = new Map(cur.streamingTexts);
       for (const k of newStreaming.keys()) {
@@ -506,7 +552,13 @@ export const useStore = create<Store>((set, get) => ({
         const agentId = data.agent_id as string;
         const status = data.status as AgentStatusValue;
         const newStatus = new Map(cur.agentStatus);
-        newStatus.set(agentId, { status, message: data.message, ts: Date.now() });
+        newStatus.set(agentId, {
+          status,
+          phase: data.phase as AgentPhase | undefined,
+          tool: data.tool as string | undefined,
+          message: data.message,
+          ts: Date.now(),
+        });
         convs.set(convId, { ...cur, agentStatus: newStatus });
         set({ convs });
         return;

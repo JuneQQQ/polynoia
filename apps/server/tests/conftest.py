@@ -6,6 +6,16 @@ import shutil
 import tempfile
 from pathlib import Path
 
+# CRITICAL: isolate the test DB from the dev/production ./polynoia.db BEFORE
+# any polynoia module imports. `polynoia.storage.db` builds its engine +
+# SessionLocal at import time from settings.db_url (env_prefix POLYNOIA_), so
+# this MUST be set first. Without it, the storage tests' Base.metadata.drop_all
+# runs against the live engine and wipes seeded contacts/convs every run.
+os.environ.setdefault(
+    "POLYNOIA_DB_URL",
+    f"sqlite+aiosqlite:///{tempfile.gettempdir()}/polynoia-pytest-{os.getpid()}.db",
+)
+
 import pytest
 
 
