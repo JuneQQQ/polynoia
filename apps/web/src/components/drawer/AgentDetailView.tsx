@@ -8,7 +8,7 @@
  *   5. Recent activity in this conv — last 5 sender_id matches
  *   6. Action bar: 单独私聊 / 编辑联系人
  */
-import { ChevronDown, ChevronRight, MessageCircle, Pencil, User } from "lucide-react";
+import { ChevronDown, ChevronRight, MessageCircle, Pencil, Trash2, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
@@ -194,6 +194,26 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
             >
               <Pencil size={12} />
               编辑联系人
+            </button>
+          )}
+          {agent.custom && (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm(`删除联系人「${agent.name}」?该操作不可撤销。`)) return;
+                try {
+                  await api.deleteContact(agent.id);
+                  const list = await api.agents();
+                  useStore.setState({ agents: list });
+                } catch {
+                  // best-effort — row stays if delete failed
+                }
+                closeDrawer();
+              }}
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-red)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition font-medium"
+            >
+              <Trash2 size={12} />
+              删除联系人
             </button>
           )}
         </div>
