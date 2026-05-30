@@ -51,6 +51,9 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
   const persona = agent.system_prompt ?? "";
   const personaPreview = persona.length > 240 ? persona.slice(0, 240) + "…" : persona;
   const roleInConv = convSummary?.member_roles?.[agent.id];
+  // This agent coordinates the current conv → show a marker when opened.
+  const isOrchestrator =
+    !!convSummary && convSummary.orchestrator_member_id === agent.id;
 
   // Recent activity in current conv: filter messageOrder for this sender,
   // newest 5, render with payload-aware summary.
@@ -86,6 +89,11 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
           <div className="font-display text-[22px] font-medium text-[var(--color-fg)] leading-tight">
             {agent.name}
           </div>
+          {isOrchestrator && (
+            <span className="inline-flex items-center mt-2 text-[10.5px] font-medium text-[var(--color-purple)] bg-[var(--color-purple)]/12 border border-[var(--color-purple)]/25 rounded-full px-2 py-0.5">
+              本群协调者 · Orchestrator
+            </span>
+          )}
           {agent.tagline && (
             <div className="text-[11.5px] text-[var(--color-fg-3)] mt-1.5 leading-relaxed">
               {agent.tagline}
@@ -102,9 +110,6 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
           )}
           {setup.model && <Badge label="Model" value={setup.model} mono />}
           {agent.custom && <Badge label="Type" value="Custom" accent />}
-          {agent.id === "orchestrator" && (
-            <Badge label="Role" value="Orchestrator" accent />
-          )}
         </div>
       )}
 

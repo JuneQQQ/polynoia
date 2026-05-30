@@ -7,8 +7,9 @@
  *   - 插入后光标位置正确;同一行可多次 @
  *   - picker 列表:本 conv 的 members + 所有 enabled adapter agents(全局可召唤)
  */
-import { AtSign, Paperclip, Reply, Send, X } from "lucide-react";
+import { ArrowUp, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../lib/api";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
 
@@ -34,6 +35,11 @@ type Props = {
     media_type?: string;
     size_bytes?: number;
   }) => void;
+  /** Merge-mode toggle (workspace group convs only). Logic stays in ChatPane;
+   * Composer just renders the Auto/Manual control in its docked bar. */
+  showMergeToggle?: boolean;
+  mergeMode?: "auto" | "manual";
+  onToggleMergeMode?: () => void;
 };
 
 /**
@@ -85,7 +91,16 @@ function fuzzyScore(needle: string, hay: string): number {
   return i === n.length ? 40 : -1;
 }
 
-export function Composer({ onSend, members, convId, onAttachImage, onAttachFile }: Props) {
+export function Composer({
+  onSend,
+  members,
+  convId,
+  onAttachImage,
+  onAttachFile,
+  showMergeToggle = false,
+  mergeMode = "auto",
+  onToggleMergeMode,
+}: Props) {
   const [text, setText] = useState("");
   const agents = useStore((s) => s.agents);
   const replyingToRaw = useStore((s) => s.replyingTo);
@@ -101,23 +116,20 @@ export function Composer({ onSend, members, convId, onAttachImage, onAttachFile 
   const [mention, setMention] = useState<{ atIndex: number; query: string } | null>(null);
   const [pickerIdx, setPickerIdx] = useState(0);
 
-  // Candidates pool: this conv's members + every enabled adapter agent
-  // (so user can summon someone NOT in the conv yet — server side already
-  // accepts mention chain to any agent).
+  // Candidates pool — ONLY this conversation's members. You can't summon an
+  // agent who isn't in the conv (add them via the members panel instead).
+  // In a 1v1 direct chat there are no other members to @, so the picker is
+  // empty and never opens — @ is meaningless when talking to a single agent.
   const candidates: Agent[] = useMemo(() => {
+    if (!isGroup) return [];
     const out = new Map<string, Agent>();
     for (const id of members) {
-      if (id === "you") continue;
+      if (id === "you" || id === "system") continue;
       const a = agents.find((x) => x.id === id);
       if (a) out.set(a.id, a);
     }
-    for (const a of agents) {
-      if (a.id === "you" || a.id === "system") continue;
-      if (a.enabled === false) continue;
-      out.set(a.id, a);
-    }
     return Array.from(out.values());
-  }, [members, agents]);
+  }, [members, agents, isGroup]);
 
   // Filtered + scored candidates given current query
   const filtered = useMemo(() => {
@@ -160,40 +172,34 @@ export function Composer({ onSend, members, convId, onAttachImage, onAttachFile 
     setMention(detectMentionContext(v, caret));
   };
 
-  // Generic file-to-data-URL pipeline shared by paste + picker. Returns
-  // a Promise so callers can chain. Caps at 5MB to keep sqlite payload
-  // column reasonable (P0 inline; P1+ real upload endpoint).
-  const fileToDataUrl = (file: File): Promise<string | null> =>
-    new Promise((resolve) => {
-      if (file.size > 5 * 1024 * 1024) {
-        console.warn(`polynoia: ${file.name} > 5MB skipped`);
-        resolve(null);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const v = String(reader.result || "");
-        resolve(v.startsWith("data:") ? v : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(file);
-    });
-
-  // Dispatch a file to the right handler based on MIME type.
+  // Upload an attachment to the server and hand back a short URL (NOT a fat
+  // base64 data: URL). Keeps DB rows small + lets the attachment re-render
+  // after a refresh from /api/files/<id>/raw. Surfaces failures (no silent
+  // swallow). 25MB cap matches the server.
   const dispatchAttachment = async (file: File) => {
-    const src = await fileToDataUrl(file);
-    if (!src) return;
+    if (file.size > 25 * 1024 * 1024) {
+      window.alert(`${file.name} 超过 25MB,未上传`);
+      return;
+    }
+    let url: string;
+    try {
+      const res = await api.upload(file, file.name || "attachment");
+      url = res.url;
+    } catch {
+      window.alert(`上传失败:${file.name}`);
+      return;
+    }
     if (file.type.startsWith("image/") && onAttachImage) {
       onAttachImage({
         kind: "image",
-        src,
+        src: url,
         name: file.name || "pasted-image",
         media_type: file.type,
       });
     } else if (onAttachFile) {
       onAttachFile({
         kind: "file",
-        src,
+        src: url,
         name: file.name || "attachment",
         media_type: file.type || undefined,
         size_bytes: file.size,
@@ -288,9 +294,18 @@ export function Composer({ onSend, members, convId, onAttachImage, onAttachFile 
     }
   };
 
+  // Auto-grow the textarea with content (ChatGPT/Claude feel), capped at 200px
+  // then it scrolls internally. Presentation behavior only.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  }, [text]);
+
   const placeholder = isGroup
-    ? "发消息给群聊 · 输入 @ 召唤 Agent"
-    : `发消息给 ${otherAgent?.name ?? "Agent"} · 输入 @ 召唤其他 Agent`;
+    ? "发消息给群聊 · 输入 @ 召唤成员"
+    : `发消息给 ${otherAgent?.name ?? "Agent"}`;
 
   return (
     <div className="border-t border-[var(--color-line-hair)] bg-[var(--color-bg)]">
@@ -373,10 +388,10 @@ export function Composer({ onSend, members, convId, onAttachImage, onAttachFile 
           </div>
         )}
 
-        {/* Editorial-style input: no chunky border, just a hair-line bottom
-            that turns orange on focus. Surface stays bg color so the input
-            visually belongs to the page, not to a "control container". */}
-        <div className="relative">
+        {/* Unified composer — ChatGPT/Claude style: one rounded container with
+            the textarea on top and all controls (attach · mode · send) docked
+            along its bottom edge. Focus lifts the whole box with an accent ring. */}
+        <div className="rounded-[22px] border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-card)] px-2.5 pt-2 pb-2 transition-colors duration-200 focus-within:border-[var(--color-accent)]/55">
           <textarea
             ref={taRef}
             value={text}
@@ -386,52 +401,88 @@ export function Composer({ onSend, members, convId, onAttachImage, onAttachFile 
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={placeholder}
-            rows={2}
-            className="w-full resize-none bg-transparent outline-none text-[14px] leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] min-h-[52px] max-h-[200px] pb-2 pt-1 pr-2 border-b border-[var(--color-line-strong)] focus:border-[var(--color-accent)] transition-colors"
+            rows={1}
+            className="w-full resize-none bg-transparent outline-none text-[14px] leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] min-h-[40px] max-h-[200px] px-2 py-1.5"
           />
-        </div>
-        <div className="flex items-center gap-2 mt-3">
-          {isGroup ? (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] px-2 py-1 text-[var(--color-fg-3)]">
-              <AtSign size={11} className="text-[var(--color-purple)]" />
-              <span className="font-mono">orchestrator</span>
-              <span className="text-[var(--color-fg-4)]">· 自动分派</span>
-            </span>
-          ) : otherAgent ? (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] px-2 py-1 text-[var(--color-fg-2)]">
-              <span
-                className="w-3.5 h-3.5 rounded text-[9px] text-white grid place-items-center"
-                style={{ background: otherAgent.color }}
+          {/* Docked control bar — sits INSIDE the box, ChatGPT/Claude-style */}
+          <div className="flex items-center gap-1.5 px-0.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={onPickFiles}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="w-8 h-8 grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-colors duration-150"
+              title="添加附件(也支持粘贴)"
+            >
+              <Paperclip size={16} />
+            </button>
+            {/* Merge-mode toggle — relocated from the header into the composer */}
+            {showMergeToggle && onToggleMergeMode && (
+              <div
+                className="flex items-stretch rounded-full border border-[var(--color-line)] overflow-hidden text-[10px] font-mono uppercase tracking-[0.16em] font-medium"
+                role="group"
+                aria-label="merge mode"
               >
-                {otherAgent.initials}
+                <button
+                  type="button"
+                  onClick={() => mergeMode !== "auto" && onToggleMergeMode()}
+                  className={`px-2.5 py-1 transition-colors duration-150 ${
+                    mergeMode === "auto"
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)]"
+                  }`}
+                  title="Auto · 子任务完成后自动合并到 main"
+                >
+                  Auto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => mergeMode !== "manual" && onToggleMergeMode()}
+                  className={`px-2.5 py-1 border-l border-[var(--color-line)] transition-colors duration-150 ${
+                    mergeMode === "manual"
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)]"
+                  }`}
+                  title="Manual · 每个 edit 都需你确认才落盘"
+                >
+                  Manual
+                </button>
+              </div>
+            )}
+            {/* Group: who-coordinates is shown in the header (first avatar +
+                ring), NOT here — keep the composer bar clean. Only the 1v1 DM
+                chip remains, to label who you're talking to. */}
+            {!isGroup && otherAgent ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-full text-[var(--color-fg-2)]">
+                <span
+                  className="w-3.5 h-3.5 rounded text-[9px] text-white grid place-items-center"
+                  style={{ background: otherAgent.color }}
+                >
+                  {otherAgent.initials}
+                </span>
+                {otherAgent.name}
+                <span className="text-[var(--color-fg-4)]">· 1v1</span>
               </span>
-              {otherAgent.name}
-              <span className="text-[var(--color-fg-4)]">· 1v1</span>
-            </span>
-          ) : null}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={onPickFiles}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="ml-auto p-1.5 rounded hover:bg-[var(--color-surface-2)] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
-            title="添加附件(也支持粘贴)"
-          >
-            <Paperclip size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!text.trim()}
-            className="btn-primary text-[12.5px] py-1.5 px-3.5"
-          >
-            发送 <Send size={11} />
-          </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!text.trim()}
+              title="发送 (Enter)"
+              className={`ml-auto w-8 h-8 grid place-items-center rounded-full transition-all duration-150 ${
+                text.trim()
+                  ? "bg-[var(--color-accent)] text-white hover:brightness-110 press-down"
+                  : "bg-[var(--color-surface-3)] text-[var(--color-fg-4)] cursor-not-allowed"
+              }`}
+            >
+              <ArrowUp size={17} strokeWidth={2.4} />
+            </button>
+          </div>
         </div>
       </div>
     </div>

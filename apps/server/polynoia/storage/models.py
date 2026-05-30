@@ -67,6 +67,12 @@ class AgentRow(Base):
     custom: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     tools_whitelist: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # Coarse-grained MCP tool exposure role. Drives which subset of polynoia
+    # MCP tools this agent can call. See `polynoia.mcp.tools.ROLE_TOOLS`.
+    # Values: orchestrator | coder | designer | writer | generalist.
+    tool_role: Mapped[str] = mapped_column(
+        String(16), default="generalist", nullable=False,
+    )
     proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
     proxy_kind: Mapped[str] = mapped_column(String(16), default="system", nullable=False)
     setup: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -210,6 +216,35 @@ class MessageRow(Base):
 
     conversation: Mapped[ConversationRow] = relationship(
         "ConversationRow", back_populates="messages"
+    )
+
+
+class ConvMemoryRow(Base):
+    """Shared, conv-scoped memory (ADR-014, inspired by RuFlo's shared context).
+
+    A curated store of cross-agent facts — the locked handoff contract, key
+    decisions, delivered artifacts — that the context assembler injects into
+    EVERY turn's prompt so teammates don't re-derive or contradict each other.
+    Distinct from MessageRow (the chat timeline) and PinRow (workspace-level
+    long-term context). P1 keeps it simple text rows; no vector search yet.
+    """
+
+    __tablename__ = "conv_memory"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ULID
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Who recorded it ("you" / an agent ULID). Informational.
+    author_agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # contract | decision | artifact — drives rendering/grouping in the layer.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="decision")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False, index=True
     )
 
 

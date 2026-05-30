@@ -12,7 +12,7 @@
  *  pass);for string content we go through react-markdown.
  */
 import { Check, Copy } from "lucide-react";
-import { memo, useState } from "react";
+import { Children, memo, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -25,17 +25,76 @@ import "highlight.js/styles/github.css";
 function Mention({ agentId }: { agentId: string }) {
   const agents = useStore((s) => s.agents);
   const agent = agents.find((a) => a.id === agentId);
+  // Unrecognized → plain muted text (no emphasis). Recognized member →
+  // prominent chip: colored dot + member color + soft bg + tinted border.
+  if (!agent) {
+    return <span className="text-[var(--color-fg-3)] font-medium">@{agentId}</span>;
+  }
+  const c = agent.color || "var(--color-accent)";
   return (
     <span
-      className="inline-flex items-center px-1 mx-0.5 rounded font-medium align-baseline"
+      className="inline-flex items-center gap-1 px-1.5 py-[1px] mx-[1px] rounded-md font-semibold align-baseline whitespace-nowrap border"
       style={{
-        color: agent?.color ?? "var(--color-accent)",
-        background: agent?.bg ?? "var(--color-accent-soft)",
-        fontSize: "0.92em",
+        color: c,
+        background: agent.bg ?? "var(--color-accent-soft)",
+        borderColor: agent.color ? `${agent.color}55` : "var(--color-accent)",
+        fontSize: "0.9em",
       }}
+      title={`@${agent.name}`}
     >
-      @{agent?.name ?? agentId}
+      <span
+        className="w-[5px] h-[5px] rounded-full flex-shrink-0"
+        style={{ background: c }}
+      />
+      @{agent.name}
     </span>
+  );
+}
+
+// Build a regex over known member names so plain-text "@林知夏" in a markdown
+// string also renders as a recognized-member chip (not only structured segments).
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function useMentionSplitter() {
+  const agents = useStore((s) => s.agents);
+  return useMemo(() => {
+    const named = agents.filter((a) => a.name);
+    const byName = new Map(named.map((a) => [a.name, a]));
+    // longest-first so a name that prefixes another still wins the greedy match
+    const names = named.map((a) => a.name).sort((a, b) => b.length - a.length);
+    const re = names.length
+      ? new RegExp(`@(${names.map(escapeRe).join("|")})`, "g")
+      : null;
+    return { re, byName };
+  }, [agents]);
+}
+
+/** Split string children on recognized @member names → emphasized Mention chips. */
+function MentionAware({ children }: { children: React.ReactNode }) {
+  const { re, byName } = useMentionSplitter();
+  if (!re) return <>{children}</>;
+  return (
+    <>
+      {Children.map(children, (child) => {
+        if (typeof child !== "string") return child;
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null = re.exec(child);
+        if (m === null) return child;
+        const parts: React.ReactNode[] = [];
+        let last = 0;
+        let k = 0;
+        while (m !== null) {
+          if (m.index > last) parts.push(child.slice(last, m.index));
+          const agent = byName.get(m[1]);
+          parts.push(<Mention key={`m${k++}`} agentId={agent ? agent.id : m[1]} />);
+          last = m.index + m[0].length;
+          m = re.exec(child);
+        }
+        if (last < child.length) parts.push(child.slice(last));
+        return <>{parts}</>;
+      })}
+    </>
   );
 }
 
@@ -61,7 +120,7 @@ function CodeBlock({
   const isInline = !hasLang && !isMultiline;
   if (isInline) {
     return (
-      <code className="px-1 py-0.5 mono text-[12px] rounded bg-[var(--color-surface-2)] text-[var(--color-fg-2)]">
+      <code className="mx-[1px] px-1.5 py-[1.5px] rounded-[5px] font-mono text-[0.85em] leading-none align-[0.06em] bg-[var(--color-code-bg)] text-[var(--color-code-fg)] border border-[var(--color-accent)]/15 break-words">
         {children}
       </code>
     );
@@ -69,7 +128,7 @@ function CodeBlock({
   const lang = /language-(\w+)/.exec(className ?? "")?.[1];
   const text = raw.replace(/\n$/, "");
   return (
-    <div className="relative group border border-[var(--color-line)] rounded-md overflow-hidden bg-[var(--color-surface-2)] my-2">
+    <div className="relative group border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface-3)] shadow-[var(--shadow-sm)] my-2">
       <div className="flex items-center gap-2 px-3 py-1 border-b border-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] mono">
         <span className="uppercase tracking-wider">{lang || "text"}</span>
         <button
@@ -145,7 +204,11 @@ const MARKDOWN_COMPONENTS = {
   ),
   ul: ({ children }: any) => <ul className="list-disc pl-5 my-1.5 space-y-0.5">{children}</ul>,
   ol: ({ children }: any) => <ol className="list-decimal pl-5 my-1.5 space-y-0.5">{children}</ol>,
-  li: ({ children }: any) => <li className="leading-relaxed">{children}</li>,
+  li: ({ children }: any) => (
+    <li className="leading-relaxed">
+      <MentionAware>{children}</MentionAware>
+    </li>
+  ),
   blockquote: ({ children }: any) => (
     <blockquote className="border-l-2 border-[var(--color-accent)] pl-3 my-1.5 text-[var(--color-fg-3)]">
       {children}
@@ -155,7 +218,11 @@ const MARKDOWN_COMPONENTS = {
   // react-markdown 9 + custom code components can put block-level code blocks
   // (<div><pre>) inside <p>, triggering DOM nesting warnings. Render paragraph
   // as <div> instead so any child is legal regardless of code-block detection.
-  p: ({ children }: any) => <div className="my-1 leading-relaxed">{children}</div>,
+  p: ({ children }: any) => (
+    <div className="my-1 leading-relaxed">
+      <MentionAware>{children}</MentionAware>
+    </div>
+  ),
   strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }: any) => <em className="italic">{children}</em>,
 };
@@ -251,9 +318,14 @@ const StringBlock = memo(function StringBlock({
   const split = findSafeSplitPoint(text);
   const prefix = split > 0 ? text.slice(0, split) : "";
   const tail = text.slice(split);
-  return (
-    <>
-      {prefix && (
+  // The settled prefix is append-only and only grows when `split` advances past
+  // a new \n\n boundary. Memoize the (expensive) ReactMarkdown + rehypeHighlight
+  // parse on `split`, so streaming deltas only re-render the cheap pre-wrap tail
+  // instead of re-parsing the whole prefix every delta (O(L²) → O(L)).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prefix is a pure function of `split` (append-only text); split is the minimal stable key.
+  const prefixMd = useMemo(
+    () =>
+      prefix ? (
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
@@ -261,9 +333,16 @@ const StringBlock = memo(function StringBlock({
         >
           {fixCjkMarkdown(prefix)}
         </ReactMarkdown>
-      )}
+      ) : null,
+    [split],
+  );
+  return (
+    <>
+      {prefixMd}
       {tail && (
-        <div className="my-1 leading-relaxed whitespace-pre-wrap">{tail}</div>
+        <div className="my-1 leading-relaxed whitespace-pre-wrap">
+          <MentionAware>{tail}</MentionAware>
+        </div>
       )}
     </>
   );

@@ -8,7 +8,9 @@
  * L4 history.
  */
 import { Check, MessageCircleQuestion, Send } from "lucide-react";
+import { useEffect } from "react";
 import { useState } from "react";
+import { api } from "../lib/api";
 import { useStore, type AskFormEntry } from "../store";
 import { ConvWebSocket } from "../lib/ws";
 
@@ -21,8 +23,28 @@ type Props = {
 export function AskFormsPanel({ convId, members, ws }: Props) {
   const list = useStore((s) => s.askFormsByConv.get(convId) ?? EMPTY);
   const dequeue = useStore((s) => s.dequeueAskForm);
+  const enqueue = useStore((s) => s.enqueueAskForm);
   const appendUserMessage = useStore((s) => s.appendUserMessage);
   const agents = useStore((s) => s.agents);
+
+  // Re-hydrate still-open ask-forms after a refresh (the live data-ask-form
+  // chunk is gone, but the question was persisted). Dedup against whatever is
+  // already queued from the live stream.
+  useEffect(() => {
+    let alive = true;
+    api.openAskForms(convId)
+      .then((res) => {
+        if (!alive) return;
+        const present = new Set(
+          (useStore.getState().askFormsByConv.get(convId) ?? []).map((f) => f.id),
+        );
+        for (const af of res.ask_forms) {
+          if (!present.has(af.id)) enqueue(convId, af as unknown as AskFormEntry);
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [convId, enqueue]);
 
   if (list.length === 0) return null;
   const [active, ...queued] = list;

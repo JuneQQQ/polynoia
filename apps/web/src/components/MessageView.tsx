@@ -36,6 +36,30 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
   const isSystem = msg.sender_id === "system";
   const agent = isSystem ? undefined : agents.find((a) => a.id === msg.sender_id);
 
+  // System events (role changes, etc.) are NOT participants — render them as a
+  // quiet centered timeline marker (hairline + muted mono) rather than a
+  // bubble with a "System" avatar. Merge events are already silent server-side.
+  if (isSystem) {
+    const p = msg.payload as { kind: string; body?: Array<{ c: string }> };
+    const text =
+      p.kind === "text" && Array.isArray(p.body)
+        ? p.body.map((b) => b.c).join(" ")
+        : "";
+    if (!text) return null;
+    return (
+      <div
+        data-msg-id={msg.id}
+        className="anim-fade-up flex items-center gap-3 px-8 py-2 select-none"
+      >
+        <span aria-hidden className="h-px flex-1 bg-[var(--color-line)]" />
+        <span className="text-[10.5px] font-mono tracking-[0.06em] text-[var(--color-fg-4)] whitespace-nowrap">
+          {text}
+        </span>
+        <span aria-hidden className="h-px flex-1 bg-[var(--color-line)]" />
+      </div>
+    );
+  }
+
   // If this message is a reply, resolve the target for the "回复 @X" header.
   // We peek at the store snapshot (not a subscription) — the parent message
   // doesn't change after creation, so no re-render dependency needed.
@@ -98,7 +122,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
             <button
               type="button"
               onClick={() => agent && useStore.getState().openAgentDetail(agent.id)}
-              className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm transition-all duration-200 group-hover/msg:scale-[1.04] hover:shadow-md hover:ring-2 hover:ring-[var(--color-accent-soft)]"
+              className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-all duration-200 group-hover/msg:scale-[1.04] hover:shadow-[var(--glow-accent)]"
               style={{ background: agent?.color ?? "var(--color-fg-3)" }}
               title={`查看 ${agent?.name ?? "Agent"} 详情`}
             >
@@ -183,7 +207,12 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
             <span className="truncate opacity-70">{replyTargetSnippet}</span>
           </button>
         )}
-        <MessagePart payload={msg.payload} isStreaming={isStreaming} />
+        <MessagePart
+          payload={msg.payload}
+          isStreaming={isStreaming}
+          convId={convId}
+          msgId={msg.id}
+        />
       </div>
     </div>
   );

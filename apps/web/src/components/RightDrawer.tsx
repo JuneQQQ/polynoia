@@ -48,25 +48,27 @@ export function RightDrawer() {
         }`}
       />
       <aside
-        className={`fixed top-0 right-0 bottom-0 w-[420px] max-w-[90vw] z-50 bg-[var(--color-surface)] border-l border-[var(--color-line)] shadow-xl flex flex-col transition-transform duration-200 ease-out`}
+        className={`fixed top-0 right-0 bottom-0 w-[420px] max-w-[90vw] z-50 bg-[var(--color-surface)] border-l border-[var(--color-line)] shadow-[var(--shadow-lg)] flex flex-col transition-transform duration-200 ease-out`}
         style={{
           transform: open ? "translateX(0)" : "translateX(100%)",
         }}
         aria-hidden={!open}
       >
-        <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-line)] flex-shrink-0">
+        {/* Left-edge accent hairline — signals the drawer as a distinct surface */}
+        <span aria-hidden className="absolute inset-y-0 left-0 w-px bg-gradient-to-b from-transparent via-[var(--color-accent)]/30 to-transparent" />
+        <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] flex-shrink-0">
           {/* Back arrow only when on agent-detail AND coming from members */}
           {drawer.kind === "agent-detail" && (
             <button
               type="button"
               onClick={() => openMembers()}
-              className="p-1 -ml-1 rounded hover:bg-[var(--color-surface-2)] text-[var(--color-fg-3)] transition"
+              className="p-1 -ml-1 rounded hover:bg-[var(--color-surface-3)] text-[var(--color-fg-3)] transition"
               title="返回成员列表"
             >
               <ArrowLeft size={14} />
             </button>
           )}
-          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[var(--color-fg-3)] font-medium flex-1">
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[var(--color-accent)] font-medium flex-1">
             {drawer.kind === "agent-detail" && "Agent Detail"}
             {drawer.kind === "members" && "Members"}
           </span>

@@ -24,7 +24,6 @@ type LocalHit = {
 
 export function ChatSearchOverlay() {
   const open = useStore((s) => s.searchOverlayOpen);
-  const close = useStore((s) => useStore.setState({ searchOverlayOpen: false }));
   const setSearchOverlayOpen = useStore((s) => s.setSearchOverlayOpen);
   const activeConvId = useStore((s) => s.activeConvId);
   const setActiveConv = useStore((s) => s.setActiveConv);

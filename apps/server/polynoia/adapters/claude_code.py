@@ -23,6 +23,7 @@ import contextlib
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 
-from polynoia.adapters._utils import _new_id, _stringify_tool_output, _tool_summary
+from polynoia.adapters._utils import _new_id, _reasoning_seconds, _stringify_tool_output, _tool_summary
 from polynoia.adapters.base import (
     AdapterCapabilities,
     AdapterEvent,
@@ -55,8 +56,10 @@ from polynoia.adapters.base import (
     TurnStartedEvent,
 )
 from polynoia.domain.messages import TextBlock as PNTextBlock
-from polynoia.domain.messages import TextPayload, ToolCallPayload
+from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
+from polynoia.mcp.tools import tools_for_role
 from polynoia.sandbox import Sandbox
+from polynoia.settings import settings
 
 
 class ClaudeCodeAdapter:
@@ -123,6 +126,7 @@ class ClaudeCodeAdapter:
         workspace_id: str | None = None,
         agent_id: str | None = None,
         merge_mode: str = "auto",
+        tool_role: str = "generalist",
     ) -> ClaudeCodeSession:
         # P1.1 routing — group convs in a workspace share git via worktrees,
         # everything else uses legacy per-conv sandbox.
@@ -140,9 +144,12 @@ class ClaudeCodeAdapter:
         # import the polynoia package even though it inherits a sandboxed HOME.
         server_pkg_root = str(Path(__file__).parent.parent.parent)
         # POLYNOIA_API_BASE lets MCP tools call back into the FastAPI server
-        # (needed for manual-mode pending-edit gating; see ADR-005).
-        # Default to local 8000 — adapter consumers can override via env.
-        api_base = os.environ.get("POLYNOIA_API_BASE", "http://127.0.0.1:8000")
+        # (manual-mode pending-edit gating + the `dispatch` tool). Default is
+        # derived from settings.port (the canonical port, 7780) so it's correct
+        # regardless of launch method; an explicit env var still overrides.
+        api_base = os.environ.get(
+            "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
+        )
         polynoia_mcp = McpStdioServerConfig(
             type="stdio",
             command="python",
@@ -150,9 +157,21 @@ class ClaudeCodeAdapter:
             env={
                 "POLYNOIA_CONV_ID": conv_id,
                 "POLYNOIA_AGENT_ID": self.meta.agent_id,
+                "POLYNOIA_AGENT_ROLE": tool_role,
                 # IMPORTANT: MCP subprocess inherits Claude SDK's sandboxed
                 # HOME, so Path.home() resolves wrong. Pin sandbox_root via env.
                 "POLYNOIA_SANDBOX_ROOT": str(sandbox.root.parent),
+                # The EXACT worktree this agent runs in, so MCP tools write +
+                # commit to the agent's own branch (not a separate per-conv
+                # sandbox). Only set in workspace mode.
+                **(
+                    {
+                        "POLYNOIA_WORKTREE_ROOT": str(sandbox.root),
+                        "POLYNOIA_WORKSPACE_ROOT": str(sandbox.workspace_root),
+                    }
+                    if sandbox.workspace_root
+                    else {}
+                ),
                 "POLYNOIA_API_BASE": api_base,
                 "PYTHONPATH": server_pkg_root,
             },
@@ -173,6 +192,8 @@ class ClaudeCodeAdapter:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             extra_env.setdefault("IS_SANDBOX", "1")
         sandbox_env = sandbox.env_for_agent(extra_env)
+        # ── merged: feat used `env_for_agent(env or {})`; main's root-aware
+        #    IS_SANDBOX path above is a strict superset, so it wins. ──
         # Default allowed_tools = all Polynoia MCP tools, so Claude Code's
         # permission prompt doesn't gate every tool call. The sandbox boundary
         # is already enforced by Polynoia MCP (writes confined to sandbox cwd).
@@ -188,22 +209,25 @@ class ClaudeCodeAdapter:
         # an explicit parameter for future divergence (e.g. allow auto-mode
         # users to opt into built-in tools for performance).
         _ = merge_mode  # currently informational, see comment above
-        default_allowed = [
-            # Polynoia MCP tools — sandboxed + auditable + gateable
-            "mcp__polynoia__read",
-            "mcp__polynoia__edit",
-            "mcp__polynoia__write",
-            "mcp__polynoia__apply_patch",
-            "mcp__polynoia__bash",
-            "mcp__polynoia__grep",
-            "mcp__polynoia__glob",
-            "mcp__polynoia__revert",
-            "mcp__polynoia__call_agent",
-            # Built-in web tools — free for Pro, read-only so gate-irrelevant
-            "WebFetch",
-            "WebSearch",
+        # The ONLY tools an agent may use are the role-scoped Polynoia MCP
+        # tools. `allowed_tools` is just a permission whitelist (auto-approve);
+        # it does NOT restrict availability. Availability is governed by:
+        #   · tools=[]            → disable every built-in (Bash/Read/Edit/
+        #                           Skill/ToolSearch/WebFetch/…). Without this
+        #                           the agent inherits the full Claude Code
+        #                           toolset and any user-installed skills.
+        #   · setting_sources=[]  → don't load ~/.claude settings, so the
+        #                           parent's plugins/skills (e.g. karpathy)
+        #                           never leak into the sub-agent.
+        #   · strict_mcp_config   → ignore project/user/plugin MCP servers;
+        #                           only our `polynoia` server is mounted.
+        # Net effect: every file mutation flows through mcp__polynoia__* —
+        # audited (.polynoia/audit.jsonl), sandbox-bounded, gateable (ADR-005),
+        # and role-filtered (ADR-013).
+        role_tool_names = set(tools_for_role(tool_role).keys())
+        effective_allowed = allowed_tools if allowed_tools else [
+            f"mcp__polynoia__{name}" for name in sorted(role_tool_names)
         ]
-        effective_allowed = allowed_tools if allowed_tools else default_allowed
         # System prompt strategy: NEVER override Claude Code's built-in default
         # (which contains tool-use instructions, TodoList behavior, file ops
         # convention, etc.). Instead use the SDK's `preset + append` form so
@@ -239,12 +263,22 @@ class ClaudeCodeAdapter:
         opts = ClaudeAgentOptions(
             cwd=effective_cwd,
             system_prompt=sys_prompt_param,
+            tools=[],                       # no built-ins — MCP tools only
             allowed_tools=effective_allowed,
+            setting_sources=[],             # don't inherit parent skills/plugins
+            strict_mcp_config=True,         # only the `polynoia` MCP server
             permission_mode="bypassPermissions",   # MCP boundary suffices
             model=model,
             env=sandbox_env,
             # 关键:开启流式 + include partial messages 让我们拿到 text-delta
             include_partial_messages=True,
+            # Extended thinking ON with a healthy budget. With tools, recent
+            # Claude models INTERLEAVE thinking between tool calls — so an
+            # orchestrator that hits a tool error (or finishes a dispatch) emits
+            # fresh, visible thinking before its next action instead of a silent
+            # gap. Combined with the streaming reasoning ticker, the long pauses
+            # users perceived as "卡" get filled with live activity.
+            thinking={"type": "enabled", "budget_tokens": 8000},
             mcp_servers={"polynoia": polynoia_mcp},
             stderr=_capture_stderr,
         )
@@ -297,10 +331,21 @@ async def _translate_claude_stream(
     # block_idx → part_id (one per content block in current assistant message)
     block_to_part: dict[int, str] = {}
     block_text: dict[int, str] = {}
+    # Which block indices are `thinking` blocks → completed as ReasoningPayload
+    # (not TextPayload). Streamed live so the UI can show "正在思考" + fold it.
+    reasoning_blocks: set[int] = set()
+    reasoning_start: dict[int, float] = {}   # block_idx → monotonic start (for "思考 N 秒")
     # tool_call_id → (message_id, part_id) so we can complete the same card
     # when the user message (tool_result) comes back from Claude Code.
     tool_call_part_id: dict[str, tuple[str, str]] = {}
     tool_call_payload: dict[str, ToolCallPayload] = {}
+    # Live tool-ARGUMENT streaming: a tool_use block's input arrives as
+    # input_json_delta fragments (partial JSON). We accumulate per block_idx and
+    # re-emit the running card with a growing preview so the user watches the
+    # args build (esp. a big `dispatch`) instead of staring at an empty card.
+    block_tool_id: dict[int, str] = {}      # block_idx → tool_call_id
+    tool_input_buf: dict[int, str] = {}     # block_idx → accumulated partial JSON
+    tool_input_sent: dict[int, int] = {}    # block_idx → last-emitted length (throttle)
 
     # Diagnostic: when POLYNOIA_LOG_CLAUDE_EVENTS=1, print every SDK message
     # type as it arrives. Useful for debugging "lost streaming" — if we see
@@ -327,6 +372,11 @@ async def _translate_claude_stream(
                 )
                 block_to_part.clear()
                 block_text.clear()
+                reasoning_blocks.clear()
+                reasoning_start.clear()
+                block_tool_id.clear()
+                tool_input_buf.clear()
+                tool_input_sent.clear()
             elif ev_type == "content_block_start":
                 idx = ev.get("index", 0)
                 block = ev.get("content_block", {})
@@ -342,29 +392,121 @@ async def _translate_claude_stream(
                         part_id=part_id,
                         part=TextPayload(body=[PNTextBlock(c="")]),
                     )
-                # thinking / tool_use: 先不发 part.started,等结束后看 AssistantMessage 整体发卡
+                elif btype == "thinking":
+                    # Stream the model's thinking like text (start → deltas →
+                    # stop), but tagged reasoning so the UI folds it away.
+                    part_id = _new_id()
+                    block_to_part[idx] = part_id
+                    block_text[idx] = ""
+                    reasoning_blocks.add(idx)
+                    reasoning_start[idx] = time.monotonic()
+                    yield PartStartedEvent(
+                        turn_id=turn_id,
+                        task_id=task_id,
+                        message_id=current_message_id or _new_id(),
+                        part_id=part_id,
+                        part=ReasoningPayload(body=[PNTextBlock(c="")]),
+                    )
+                elif btype == "tool_use":
+                    # Emit a RUNNING tool card the instant the tool block opens
+                    # — BEFORE Claude finishes generating the (potentially huge)
+                    # arguments. Otherwise a big `dispatch` call shows nothing for
+                    # the ~20-30s it takes to write the args, which reads as the
+                    # system hanging. We reuse this (msg_id, part_id) when the
+                    # final ToolUseBlock lands so the card updates in place.
+                    tool_id = block.get("id") or _new_id()
+                    tool_name = block.get("name", "tool")
+                    tc_msg_id = _new_id()
+                    tc_part_id = _new_id()
+                    tool_call_part_id[tool_id] = (tc_msg_id, tc_part_id)
+                    block_tool_id[idx] = tool_id
+                    tool_input_buf[idx] = ""
+                    tool_input_sent[idx] = 0
+                    running = ToolCallPayload(
+                        tool_call_id=tool_id,
+                        name=tool_name,
+                        input={},
+                        state="running",
+                        summary=_tool_summary(tool_name, {}),
+                    )
+                    tool_call_payload[tool_id] = running
+                    yield PartCompletedEvent(
+                        message_id=tc_msg_id,
+                        part_id=tc_part_id,
+                        part=running,
+                    )
             elif ev_type == "content_block_delta":
                 idx = ev.get("index", 0)
                 delta = ev.get("delta", {})
-                if delta.get("type") == "text_delta":
+                # text_delta carries `text`; thinking_delta carries `thinking`.
+                # Both stream into the same part as {"text": ...} deltas.
+                dtype = delta.get("type")
+                if dtype in ("text_delta", "thinking_delta"):
                     existing_part_id = block_to_part.get(idx)
                     if existing_part_id:
-                        chunk = delta.get("text", "")
+                        chunk = (
+                            delta.get("thinking", "")
+                            if dtype == "thinking_delta"
+                            else delta.get("text", "")
+                        )
                         block_text[idx] = block_text.get(idx, "") + chunk
                         yield PartDeltaEvent(
                             message_id=current_message_id or _new_id(),
                             part_id=existing_part_id,
                             delta={"text": chunk},
                         )
+                elif dtype == "input_json_delta":
+                    # Tool ARGS streaming in (partial JSON). Accumulate + re-emit
+                    # the running card with a growing preview, throttled to every
+                    # ~64 new chars so a big `dispatch` shows its args building
+                    # instead of a frozen empty card. Final input lands via the
+                    # AssistantMessage ToolUseBlock (which replaces the preview).
+                    tool_id = block_tool_id.get(idx)
+                    if tool_id:
+                        tool_input_buf[idx] = tool_input_buf.get(idx, "") + (
+                            delta.get("partial_json", "") or ""
+                        )
+                        buf = tool_input_buf[idx]
+                        if len(buf) - tool_input_sent.get(idx, 0) >= 64:
+                            tool_input_sent[idx] = len(buf)
+                            prev = tool_call_payload.get(tool_id)
+                            meta = tool_call_part_id.get(tool_id)
+                            if prev is not None and meta is not None:
+                                # Stream the raw args into the EXPANDABLE body
+                                # (input_preview), not the one-line summary, so
+                                # the user can open the fold and watch them build.
+                                # Send only the TAIL (last ~2k chars) so a multi-KB
+                                # dispatch doesn't re-push the whole growing buffer
+                                # every tick (O(N²) → O(N)); the full input lands
+                                # on completion anyway.
+                                preview = buf if len(buf) <= 2000 else ("…" + buf[-2000:])
+                                updated = prev.model_copy(update={
+                                    "input_preview": preview,
+                                    "summary": "生成参数中…",
+                                })
+                                tool_call_payload[tool_id] = updated
+                                yield PartCompletedEvent(
+                                    message_id=meta[0], part_id=meta[1], part=updated,
+                                )
+                # signature_delta (thinking signature): ignored — UI-irrelevant.
             elif ev_type == "content_block_stop":
                 idx = ev.get("index", 0)
                 existing_part_id = block_to_part.get(idx)
                 if existing_part_id:
                     final_text = block_text.get(idx, "")
+                    if idx in reasoning_blocks:
+                        # Stamp how long the model thought so "思考 N 秒" persists
+                        # + survives a refresh (the live client timer is gone then).
+                        secs = _reasoning_seconds(reasoning_start.get(idx))
+                        part: TextPayload | ReasoningPayload = ReasoningPayload(
+                            body=[PNTextBlock(c=final_text)], seconds=secs,
+                        )
+                    else:
+                        part = TextPayload(body=[PNTextBlock(c=final_text)])
                     yield PartCompletedEvent(
                         message_id=current_message_id or _new_id(),
                         part_id=existing_part_id,
-                        part=TextPayload(body=[PNTextBlock(c=final_text)]),
+                        part=part,
                     )
             # message_delta / message_stop: 不发(等 ResultMessage)
             continue
@@ -375,9 +517,18 @@ async def _translate_claude_stream(
             for block in msg.content:
                 if isinstance(block, ToolUseBlock):
                     # 通用 tool-call 卡,state=running(等 tool_result 来再改 completed)
-                    # 每个 tool 自己的 message_id — 否则同一 turn 多个 tool 会在前端 store 互相覆盖
-                    tc_msg_id = _new_id()
-                    part_id = _new_id()
+                    # REUSE the (msg_id, part_id) we may have already emitted at
+                    # content_block_start (the running card shown during arg
+                    # generation) so the card updates IN PLACE with the full
+                    # input instead of spawning a duplicate. Each tool keeps its
+                    # own message_id so concurrent tools don't overwrite in store.
+                    meta = tool_call_part_id.get(block.id)
+                    if meta is not None:
+                        tc_msg_id, part_id = meta
+                    else:
+                        tc_msg_id = _new_id()
+                        part_id = _new_id()
+                        tool_call_part_id[block.id] = (tc_msg_id, part_id)
                     payload = ToolCallPayload(
                         tool_call_id=block.id,
                         name=block.name,
@@ -385,7 +536,6 @@ async def _translate_claude_stream(
                         state="running",
                         summary=_tool_summary(block.name, block.input),
                     )
-                    tool_call_part_id[block.id] = (tc_msg_id, part_id)
                     tool_call_payload[block.id] = payload
                     yield PartCompletedEvent(
                         message_id=tc_msg_id,
@@ -393,7 +543,9 @@ async def _translate_claude_stream(
                         part=payload,
                     )
                 elif isinstance(block, ThinkingBlock):
-                    # P0:暂不渲(P1 加 thinking part type)
+                    # Already streamed via StreamEvent (content_block_start/
+                    # delta/stop, btype=="thinking") as a ReasoningPayload part.
+                    # Skip here to avoid emitting it twice (same as TextBlock).
                     pass
                 elif isinstance(block, TextBlock):
                     # 已经经 stream_event 流出过了,跳过避免重复
@@ -436,6 +588,15 @@ async def _translate_claude_stream(
         # ── ResultMessage: turn 终结 ────
         if isinstance(msg, ResultMessage):
             if msg.is_error:
+                # `error_during_execution` = the SDK client/session is broken
+                # (half-aborted from a prior cancel, cwd vanished, etc.), NOT a
+                # content/API failure. Raise instead of yielding a dead-end
+                # TurnFailedEvent so the WS layer evicts the session + respawns
+                # a fresh one and retries. (api_error_status is unset here.)
+                if msg.subtype == "error_during_execution" and not getattr(
+                    msg, "api_error_status", None
+                ):
+                    raise RuntimeError("claude session error_during_execution — respawn")
                 # SDK quirk (v0.2.87+ ResultMessage spec):
                 #   When the upstream Anthropic API call itself failed (429,
                 #   500, 529, ...), the SDK emits:

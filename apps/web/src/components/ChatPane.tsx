@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { api, type ConversationSummary } from "../lib/api";
 import { ConvWebSocket } from "../lib/ws";
-import { selectAgentStatuses, selectMessages, useStore, type AgentStatusValue } from "../store";
+import { phaseLabel, selectAgentStatuses, selectMessages, useStore, type AgentPhase, type AgentStatusValue } from "../store";
 import { computeBursts } from "../lib/burstClaim";
 import type { Message, TasksPayload } from "../lib/types";
 import { AskFormsPanel } from "./AskFormsPanel";
@@ -97,6 +97,20 @@ export function ChatPane({ convId, members, title }: Props) {
         case "text-end":
           applyChunkToConv(convId, { kind: "text-end", partId: chunk.id });
           break;
+        case "reasoning-start":
+          applyChunkToConv(convId, {
+            kind: "reasoning-start",
+            partId: chunk.id,
+            messageId: `rsn-${chunk.id}`,
+            senderId: chunk.sender_id ?? null,
+          });
+          break;
+        case "reasoning-delta":
+          applyChunkToConv(convId, { kind: "reasoning-delta", partId: chunk.id, delta: chunk.delta });
+          break;
+        case "reasoning-end":
+          applyChunkToConv(convId, { kind: "reasoning-end", partId: chunk.id });
+          break;
         default:
           if (chunk.type === "data-pending-edit") {
             // Manual-mode approval card. Route to pendingEditsByConv —
@@ -105,11 +119,21 @@ export function ChatPane({ convId, members, title }: Props) {
             const anyChunk = chunk as any;
             const edit = anyChunk.data;
             if (edit && edit.id && edit.conv_id) {
-              useStore.getState().upsertPendingEdit(edit);
+              const st = useStore.getState();
+              st.upsertPendingEdit(edit);
+              // Surface the Cursor-style green/red review in the code area —
+              // auto-open the preview (workspace convs only; it needs a workspace).
+              if (st.preview.data?.workspaceId && !st.preview.open) {
+                st.openPreview("code");
+              }
             }
           } else if (chunk.type === "data-chain-link") {
             // Transient meta — actual B bubble appears right after A in the
             // stream; this link is redundant UI noise. Silently drop.
+          } else if (chunk.type === "data-conv-cleared") {
+            // Conv was wiped server-side (POST /clear). Drop the in-memory
+            // timeline so the open chat empties without a refresh.
+            hydrateMessages(convId, [], { mode: "replace", hasMore: false });
           } else if (chunk.type === "data-ask-form") {
             // Agent emitted an <ask-form> block. Route to the floating
             // panel above Composer (NOT into the message stream). User
@@ -237,13 +261,25 @@ export function ChatPane({ convId, members, title }: Props) {
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
+  // Follow-scroll, but rAF-throttled: streamTick bumps on every delta (×N
+  // concurrent lanes during a burst), and an unguarded `el.scrollTop =
+  // el.scrollHeight` forces a synchronous layout/reflow each time. Coalesce all
+  // deltas in a frame into a single scroll write (≤1 reflow/frame).
+  const scrollRafRef = useRef<number | null>(null);
   useLayoutEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    if (wasAtBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
+    if (scrollRafRef.current != null) return; // already scheduled this frame
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = bodyRef.current;
+      if (el && wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
   }, [messages.length, streamTick]);
+  useEffect(
+    () => () => {
+      if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
+    },
+    [],
+  );
 
   // Listen for "regenerate" events fired by MessageView's action button.
   // The event carries (convId, text) — we filter on convId and resend
@@ -260,6 +296,19 @@ export function ChatPane({ convId, members, title }: Props) {
     return () => window.removeEventListener("polynoia:regenerate", onRegen);
   }, [convId, members, appendUserMessage]);
 
+  // Per-lane stop: a burst lane (TasksBurstPart) dispatches this to terminate
+  // just that worker (Agent-level). Same window-event idiom as regenerate to
+  // avoid threading wsRef down into the burst card.
+  useEffect(() => {
+    const onAbortAgent = (ev: Event) => {
+      const ce = ev as CustomEvent<{ convId: string; agentId: string }>;
+      if (!ce.detail || ce.detail.convId !== convId) return;
+      wsRef.current?.abort(ce.detail.agentId);
+    };
+    window.addEventListener("polynoia:abort-agent", onAbortAgent);
+    return () => window.removeEventListener("polynoia:abort-agent", onAbortAgent);
+  }, [convId]);
+
   const memberAgents = useMemo(
     () => members.filter((m) => m !== "you").map((id) => agents.find((a) => a.id === id)).filter(Boolean),
     [members, agents],
@@ -275,8 +324,10 @@ export function ChatPane({ convId, members, title }: Props) {
     api.getConv(convId).then((c) => {
       if (!alive) return;
       setConvSummary(c);
-      // Push workspaceId into the preview state so Web/Code tabs can load
-      // the right workspace's files when the user opens the right rail.
+      // Push workspaceId into the preview state so the code panel loads the
+      // right workspace's files WHEN the user opens it. The code area does NOT
+      // auto-open — it stays closed until the user clicks the panel button
+      // (header) and reflects whatever open/closed state they last chose.
       useStore.setState((s) => ({
         preview: {
           ...s.preview,
@@ -307,22 +358,38 @@ export function ChatPane({ convId, members, title }: Props) {
 
   // List of agents currently doing work (starting/streaming) — for the status row
   const activeAgents = useMemo(() => {
-    const out: { id: string; status: AgentStatusValue; message?: string }[] = [];
+    const out: { id: string; status: AgentStatusValue; phase?: AgentPhase; tool?: string }[] = [];
     for (const [id, st] of agentStatuses) {
       if (st.status === "starting" || st.status === "streaming") {
-        out.push({ id, status: st.status, message: st.message });
+        out.push({ id, status: st.status, phase: st.phase, tool: st.tool });
       }
     }
     return out;
   }, [agentStatuses]);
 
+  // Burst membership (which messages fold into the orchestrator's lanes) changes
+  // ONLY when a message is appended — never on streaming text/reasoning deltas.
+  // Memoize on a structural signature (count + last id) so the O(N) forward scan
+  // + Map/Set allocations don't re-run on every delta. This is the core of the
+  // "派活后很卡" fix: a 3-lane burst fans out ~6 concurrent delta streams, and
+  // without this each delta re-ran computeBursts over the whole conversation.
+  const burstSig = `${messages.length}:${messages.length ? messages[messages.length - 1].id : ""}`;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: burstSig captures the structural change; `messages` ref churns every delta by design, so it must NOT be a dep.
+  const { burstByAnchorId, claimedSet } = useMemo(() => {
+    const ids = messages.map((m) => m.id);
+    const msgByIdLive = useStore.getState().convs.get(convId)?.msgById ?? new Map<string, Message>();
+    // burst membership is anchored on the tasks card (orchestrator identity no
+    // longer drives it — computeBursts ignores its old 3rd arg).
+    return computeBursts(ids, msgByIdLive);
+  }, [burstSig, convId]);
+
   return (
     <main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)]">
-      {/* Chat header — editorial: serif title + hair-line meta, no chunky pill */}
-      <header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)]">
+      {/* Chat header — editorial masthead: serif title + gradient hair-line */}
+      <header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
         <span
           aria-hidden
-          className="absolute left-0 right-0 bottom-0 h-px bg-[var(--color-line)]"
+          className="absolute left-0 right-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[var(--color-line-strong)] to-transparent"
         />
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2.5">
@@ -340,65 +407,47 @@ export function ChatPane({ convId, members, title }: Props) {
               </button>
             )}
           </div>
-          <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
-            {isGroup ? (
-              <>
-                主 Agent · <b className="text-[var(--color-purple)] font-medium">Orchestrator</b>
-              </>
-            ) : (
-              memberAgents[0]?.tagline ?? "Agent"
-            )}
-          </div>
+          {/* Group: coordinator identity now lives in the avatar cluster
+              (first avatar + purple ring), so no subtitle. DM: show tagline. */}
+          {!isGroup && (
+            <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
+              {memberAgents[0]?.tagline ?? "Agent"}
+            </div>
+          )}
         </div>
         <div className="flex -space-x-1.5">
-          {memberAgents.slice(0, 5).map(
-            (a) =>
-              a && (
+          {/* Coordinator-first: the conv's orchestrator is ranked #1 in the
+              cluster and wears a purple ring, so "first avatar = 协调者" reads
+              at a glance. Click any avatar → AgentDetail (which shows the
+              coordinator badge). */}
+          {[...memberAgents]
+            .filter((a): a is NonNullable<typeof a> => !!a)
+            .sort(
+              (a, b) =>
+                (b.id === convSummary?.orchestrator_member_id ? 1 : 0) -
+                (a.id === convSummary?.orchestrator_member_id ? 1 : 0),
+            )
+            .slice(0, 5)
+            .map((a) => {
+              const isOrch = a.id === convSummary?.orchestrator_member_id;
+              return (
                 <button
                   type="button"
                   key={a.id}
                   onClick={() => useStore.getState().openAgentDetail(a.id)}
-                  className="w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium border-2 border-[var(--color-surface)] transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10"
+                  className={`w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10 ${
+                    isOrch
+                      ? "ring-2 ring-[var(--color-purple)] border-2 border-[var(--color-surface)] z-10"
+                      : "border-2 border-[var(--color-surface)]"
+                  }`}
                   style={{ background: a.color }}
-                  title={`查看 ${a.name} 详情`}
+                  title={isOrch ? `${a.name} · 本群协调者` : `查看 ${a.name} 详情`}
                 >
                   {a.initials}
                 </button>
-              ),
-          )}
+              );
+            })}
         </div>
-        {inWorkspace && (
-          <div
-            className="ml-3 flex items-stretch rounded-md border border-[var(--color-line)] overflow-hidden text-[11px] font-mono uppercase tracking-[0.18em] font-medium"
-            role="group"
-            aria-label="merge mode"
-          >
-            <button
-              type="button"
-              onClick={() => mergeMode !== "auto" && toggleMergeMode()}
-              className={`px-3.5 py-1.5 transition-colors duration-150 ${
-                mergeMode === "auto"
-                  ? "bg-[var(--color-accent)] text-white"
-                  : "bg-transparent text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)]"
-              }`}
-              title="Auto · 子任务完成后 Orchestrator 自动合并到 main"
-            >
-              Auto
-            </button>
-            <button
-              type="button"
-              onClick={() => mergeMode !== "manual" && toggleMergeMode()}
-              className={`px-3.5 py-1.5 transition-colors duration-150 border-l border-[var(--color-line)] ${
-                mergeMode === "manual"
-                  ? "bg-[var(--color-accent)] text-white"
-                  : "bg-transparent text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)]"
-              }`}
-              title="Manual · 每个 edit 都需要你点确认才落盘"
-            >
-              Manual
-            </button>
-          </div>
-        )}
         <div className="flex items-center gap-1 ml-2">
           <button
             type="button"
@@ -445,9 +494,9 @@ export function ChatPane({ convId, members, title }: Props) {
             when it ends. */}
         {activeAgents.length > 0 && (
           <div className="anim-fade-up pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/90 backdrop-blur-sm border border-[var(--color-line)] shadow-sm text-[11.5px]">
-            <span className="text-[var(--color-fg-3)] pointer-events-none">运行中</span>
             {activeAgents.map((a) => {
               const agent = agents.find((x) => x.id === a.id);
+              const label = a.status === "starting" ? "准备中" : phaseLabel(a.phase, a.tool);
               return (
                 <button
                   type="button"
@@ -459,9 +508,10 @@ export function ChatPane({ convId, members, title }: Props) {
                 >
                   <Loader2 size={10} className="animate-spin" style={{ color: agent?.color ?? "#666" }} />
                   <span style={{ color: agent?.color ?? "var(--color-fg-2)" }}>{agent?.name ?? a.id}</span>
+                  <span className="text-[var(--color-fg-3)] group-hover:hidden">· {label}</span>
                   <Square
                     size={10}
-                    className="ml-0.5 opacity-0 group-hover:opacity-100 transition"
+                    className="ml-0.5 hidden group-hover:inline"
                     style={{ color: "var(--color-red)" }}
                   />
                 </button>
@@ -500,62 +550,43 @@ export function ChatPane({ convId, members, title }: Props) {
         {!messages.length && (
           <div className="text-center text-[var(--color-fg-3)] text-[12px] py-12">
             还没有消息 · 试试发送一条
-            <div className="mt-3 text-[11px] text-[var(--color-fg-4)]">
-              输入 <span className="px-1 py-0.5 rounded bg-[var(--color-surface-2)]">@</span> 可
-              选择特定 agent 直接对话
-            </div>
+            {isGroup && (
+              <div className="mt-3 text-[11px] text-[var(--color-fg-4)]">
+                输入 <span className="px-1 py-0.5 rounded bg-[var(--color-surface-2)]">@</span>{" "}
+                召唤群里的某位成员
+              </div>
+            )}
           </div>
         )}
-        {(() => {
-          // Burst-aware render: orchestrator's tasks card anchors a burst;
-          // subsequent messages from assigned sub-agents are claimed into
-          // lanes and rendered inside TasksBurstPart (NOT in the linear
-          // stream). User messages, system events, and the orchestrator's
-          // own summary stay linear.
-          //
-          // Recompute only when messageOrder length OR last msg id changes
-          // (status flip on the same tasks card is fine — Burst subscribes
-          // to msgById through useStore and re-renders in place).
-          const orchestratorIds = [
-            "orchestrator",
-            ...(convSummary?.orchestrator_member_id
-              ? [convSummary.orchestrator_member_id]
-              : []),
-          ];
-          const msgByIdLive = useStore.getState().convs.get(convId)?.msgById
-            ?? new Map<string, Message>();
-          const { burstByAnchorId, claimedSet } = computeBursts(
-            messages.map((m) => m.id),
-            msgByIdLive,
-            orchestratorIds,
-          );
-
-          return messages.map((m, i) => {
-            if (claimedSet.has(m.id)) return null;  // rendered in a lane
-            const burst = burstByAnchorId.get(m.id);
-            if (burst) {
-              return (
-                <TasksBurstPart
-                  key={m.id}
-                  payload={m.payload as TasksPayload}
-                  burstInfo={burst}
-                  convId={convId}
-                />
-              );
-            }
-            // Normal linear MessageView
-            const prev = i > 0 ? messages[i - 1] : null;
-            const isGrouped = !!prev && prev.sender_id === m.sender_id;
+        {/* Burst-aware render: the orchestrator's tasks card anchors a burst;
+            sub-agent messages are claimed into lanes (rendered inside
+            TasksBurstPart), not the linear stream. Membership comes from the
+            memoized burstByAnchorId/claimedSet above (delta-invariant). */}
+        {messages.map((m, i) => {
+          if (claimedSet.has(m.id)) return null;  // rendered in a lane
+          const burst = burstByAnchorId.get(m.id);
+          if (burst) {
             return (
-              <MessageView
+              <TasksBurstPart
                 key={m.id}
+                payload={m.payload as TasksPayload}
+                burstInfo={burst}
                 convId={convId}
-                msgId={m.id}
-                isGrouped={isGrouped}
               />
             );
-          });
-        })()}
+          }
+          // Normal linear MessageView
+          const prev = i > 0 ? messages[i - 1] : null;
+          const isGrouped = !!prev && prev.sender_id === m.sender_id;
+          return (
+            <MessageView
+              key={m.id}
+              convId={convId}
+              msgId={m.id}
+              isGrouped={isGrouped}
+            />
+          );
+        })}
       </div>
       </ConvScopeProvider>
       </div>
@@ -570,10 +601,13 @@ export function ChatPane({ convId, members, title }: Props) {
       <Composer
         convId={convId}
         members={members}
+        showMergeToggle={inWorkspace}
+        mergeMode={mergeMode}
+        onToggleMergeMode={toggleMergeMode}
         onAttachImage={(img) => {
-          // Optimistic UI append + fire-and-forget persistence. Data URL
-          // is currently inlined in the row's payload column (sqlite JSON);
-          // P1+ upgrade to upload endpoint returning short URL.
+          // Optimistic UI append + fire-and-forget persistence. `img.src` is a
+          // server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
+          // the DB row stays small and the image re-renders after a refresh.
           appendUserImage(convId, {
             src: img.src,
             name: img.name,

@@ -1,96 +1,108 @@
-import { Check, Send } from "lucide-react";
-import { useMemo, useState } from "react";
-import type { AskFormPayload, AskQuestion } from "../../lib/types";
+/** AskFormPart — inline record of an agent's `<ask-form>` question inside the
+ * message bubble.
+ *
+ * This is a READ-ONLY record, NOT a second answer surface — you answer in the
+ * floating AskFormsPanel above the Composer (which sends + dequeues). The bug
+ * this fixes: the inline form used to keep purely-local `submitted`/`answers`
+ * state, so after you answered (in the panel) it still showed "需要你回复" and
+ * re-prompted, losing your pick. Now it derives the answered-state + the picked
+ * option from the persisted conversation — an ask-form counts as answered once
+ * any `you` message follows it (the same rule the server uses) — so it survives
+ * refresh and echoes your choice.
+ */
+import { Check, MessageCircleQuestion } from "lucide-react";
+import { useMemo } from "react";
+import type { AskFormPayload, MessagePayload } from "../../lib/types";
+import { useStore } from "../../store";
 
-type Answers = Record<string, string | string[] | null>;
-
-function isAnswered(q: AskQuestion, v: Answers[string]): boolean {
-  if (q.optional) return true;
-  if (q.kind === "single") return v != null;
-  if (q.kind === "multi") return Array.isArray(v) && v.length > 0;
-  if (q.kind === "fill") return typeof v === "string" && v.trim().length > 0;
-  return true;
+function extractText(payload: MessagePayload): string {
+  if (payload.kind !== "text") return "";
+  return payload.body
+    .map((b) =>
+      typeof b.c === "string"
+        ? b.c
+        : b.c.map((seg) => (seg.type === "text" ? seg.text : "")).join(""),
+    )
+    .join(" ");
 }
 
-export function AskFormPart({ payload }: { payload: AskFormPayload }) {
-  const [answers, setAnswers] = useState<Answers>(() => {
-    const init: Answers = {};
-    for (const q of payload.questions) {
-      if (q.default_value !== undefined && q.default_value !== null) {
-        init[q.id] = q.default_value as any;
-      } else if (q.kind === "multi") init[q.id] = [];
-      else init[q.id] = q.kind === "fill" ? "" : null;
+export function AskFormPart({
+  payload,
+  convId,
+  msgId,
+}: {
+  payload: AskFormPayload;
+  convId?: string;
+  msgId?: string;
+}) {
+  // Answered ⟺ a `you` message follows this ask-form in the conversation.
+  // Capture that reply's text so we can echo / highlight the chosen option.
+  const answerText = useStore((s) => {
+    if (!convId || !msgId) return null;
+    const conv = s.convs.get(convId);
+    if (!conv) return null;
+    const idx = conv.messageOrder.indexOf(msgId);
+    if (idx < 0) return null;
+    for (let i = idx + 1; i < conv.messageOrder.length; i++) {
+      const m = conv.msgById.get(conv.messageOrder[i]);
+      if (m && m.sender_id === "you") return extractText(m.payload);
     }
-    return init;
+    return null;
   });
-  const [submitted, setSubmitted] = useState(false);
+  const answered = answerText != null;
 
-  const requiredCount = useMemo(
-    () => payload.questions.filter((q) => !q.optional).length,
-    [payload.questions],
-  );
-
-  const allRequiredAnswered = useMemo(
-    () => payload.questions.every((q) => isAnswered(q, answers[q.id])),
-    [answers, payload.questions],
-  );
-
-  const setSingle = (qid: string, val: string) =>
-    setAnswers((a) => ({ ...a, [qid]: val }));
-  const toggleMulti = (qid: string, val: string) =>
-    setAnswers((a) => {
-      const cur = new Set((a[qid] as string[]) ?? []);
-      cur.has(val) ? cur.delete(val) : cur.add(val);
-      return { ...a, [qid]: [...cur] };
-    });
-  const setFill = (qid: string, val: string) =>
-    setAnswers((a) => ({ ...a, [qid]: val }));
+  // Best-effort: recover each single-choice pick by matching the option label
+  // inside the reply text (the panel formats answers as "… · {opt.label} · …").
+  const picks = useMemo(() => {
+    const out: Record<string, string> = {};
+    if (!answerText) return out;
+    for (const q of payload.questions) {
+      if (q.kind === "single" && q.options) {
+        const hit = q.options.find((o) => o.label && answerText.includes(o.label));
+        if (hit) out[q.id] = hit.value;
+      }
+    }
+    return out;
+  }, [answerText, payload.questions]);
 
   return (
     <div
       className={`border-2 rounded-xl overflow-hidden bg-[var(--color-surface)] max-w-[640px] transition ${
-        submitted ? "border-[var(--color-green)]/40" : "border-[var(--color-accent)]/50"
+        answered ? "border-[var(--color-green)]/40" : "border-[var(--color-accent)]/50"
       }`}
     >
       {/* Header */}
       <div
         className="flex items-center gap-2 px-3 py-2"
         style={{
-          background: submitted
-            ? "var(--color-green-soft)"
-            : "var(--color-accent-soft)",
+          background: answered ? "var(--color-green-soft)" : "var(--color-accent-soft)",
         }}
       >
         <span
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-semibold uppercase tracking-wider"
           style={{
-            background: submitted ? "var(--color-green)" : "var(--color-accent)",
+            background: answered ? "var(--color-green)" : "var(--color-accent)",
             color: "#fff",
           }}
         >
-          {!submitted && (
+          {answered ? (
+            <Check size={11} strokeWidth={3} />
+          ) : (
             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
           )}
-          {submitted ? "已回复" : "需要你回复"}
+          {answered ? "已回复" : "需要你回复"}
         </span>
         <span className="text-xs font-medium flex-1 truncate">
           {payload.title || "Agent 需要确认"}
         </span>
-        {!submitted && (
-          <span className="text-[10.5px] text-[var(--color-fg-3)]">
-            {requiredCount} 必答
-            {payload.questions.length > requiredCount &&
-              ` · ${payload.questions.length - requiredCount} 可选`}
-          </span>
-        )}
       </div>
 
-      {/* Body */}
+      {/* Body — read-only record */}
       <div className="p-3 space-y-3">
         {payload.questions.map((q, qi) => {
-          const v = answers[q.id];
+          const picked = picks[q.id];
           return (
-            <div key={q.id} className={submitted ? "opacity-70 pointer-events-none" : ""}>
+            <div key={q.id}>
               <div className="flex items-start gap-2 mb-1.5">
                 <span
                   className="w-5 h-5 rounded-full grid place-items-center text-[10px] font-bold flex-shrink-0 mt-0.5"
@@ -102,14 +114,7 @@ export function AskFormPart({ payload }: { payload: AskFormPayload }) {
                   {qi + 1}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-[12.5px] font-medium flex items-center gap-1.5">
-                    {q.label}
-                    {q.optional && (
-                      <span className="text-[9.5px] text-[var(--color-fg-4)] uppercase tracking-wider">
-                        可选
-                      </span>
-                    )}
-                  </div>
+                  <div className="text-[12.5px] font-medium">{q.label}</div>
                   {q.sub && (
                     <div className="text-[10.5px] text-[var(--color-fg-3)] mt-0.5">
                       {q.sub}
@@ -121,38 +126,38 @@ export function AskFormPart({ payload }: { payload: AskFormPayload }) {
               {q.kind === "single" && q.options && (
                 <div className="space-y-1.5 pl-7">
                   {q.options.map((opt) => {
-                    const picked = v === opt.value;
+                    const isPick = picked === opt.value;
                     return (
-                      <label
+                      <div
                         key={opt.value}
-                        className={`flex items-start gap-2 px-2.5 py-2 rounded-md cursor-pointer border ${
-                          picked
-                            ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
-                            : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
+                        className={`flex items-start gap-2 px-2.5 py-2 rounded-md border transition ${
+                          isPick
+                            ? "bg-[var(--color-green-soft)] border-[var(--color-green)]"
+                            : answered
+                              ? "border-[var(--color-line)] opacity-40"
+                              : "border-[var(--color-line)]"
                         }`}
-                        onClick={() => !submitted && setSingle(q.id, opt.value)}
                       >
                         <span
-                          className="w-4 h-4 mt-0.5 rounded-full border-[1.5px] flex-shrink-0"
+                          className="w-4 h-4 mt-0.5 rounded-full border-[1.5px] grid place-items-center flex-shrink-0"
                           style={{
-                            borderColor: picked
-                              ? "var(--color-accent)"
+                            borderColor: isPick
+                              ? "var(--color-green)"
                               : "var(--color-line-strong)",
-                            background: picked ? "var(--color-accent)" : "transparent",
+                            background: isPick ? "var(--color-green)" : "transparent",
                           }}
-                        />
+                        >
+                          {isPick && <Check size={10} color="#fff" strokeWidth={3} />}
+                        </span>
                         <div className="flex-1 min-w-0">
                           <div className="text-[12px] flex items-center gap-1.5">
                             <span className="font-medium">{opt.label}</span>
-                            {opt.tag && (
+                            {isPick && (
                               <span
-                                className="text-[10px] px-1.5 py-0 rounded-full"
-                                style={{
-                                  background: "var(--color-accent-soft)",
-                                  color: "var(--color-accent)",
-                                }}
+                                className="text-[9.5px] uppercase tracking-wider font-semibold"
+                                style={{ color: "var(--color-green)" }}
                               >
-                                {opt.tag}
+                                你的选择
                               </span>
                             )}
                           </div>
@@ -162,62 +167,20 @@ export function AskFormPart({ payload }: { payload: AskFormPayload }) {
                             </div>
                           )}
                         </div>
-                      </label>
+                      </div>
                     );
                   })}
                 </div>
               )}
 
               {q.kind === "multi" && q.options && (
-                <div className="space-y-1.5 pl-7">
-                  {q.options.map((opt) => {
-                    const arr = (v as string[]) ?? [];
-                    const picked = arr.includes(opt.value);
-                    return (
-                      <label
-                        key={opt.value}
-                        className={`flex items-start gap-2 px-2.5 py-2 rounded-md cursor-pointer border ${
-                          picked
-                            ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
-                            : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
-                        }`}
-                        onClick={() => !submitted && toggleMulti(q.id, opt.value)}
-                      >
-                        <span
-                          className="w-4 h-4 mt-0.5 rounded-[3px] border-[1.5px] grid place-items-center flex-shrink-0"
-                          style={{
-                            borderColor: picked
-                              ? "var(--color-accent)"
-                              : "var(--color-line-strong)",
-                            background: picked ? "var(--color-accent)" : "transparent",
-                          }}
-                        >
-                          {picked && <Check size={10} color="#fff" strokeWidth={3} />}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[12px] font-medium">{opt.label}</div>
-                          {opt.desc && (
-                            <div className="text-[10.5px] text-[var(--color-fg-3)] mt-0.5">
-                              {opt.desc}
-                            </div>
-                          )}
-                        </div>
-                      </label>
-                    );
-                  })}
+                <div className="pl-7 text-[11px] text-[var(--color-fg-3)]">
+                  {q.options.map((o) => o.label).join(" / ")}
                 </div>
               )}
-
-              {q.kind === "fill" && (
-                <div className="pl-7">
-                  <textarea
-                    value={(v as string) ?? ""}
-                    onChange={(e) => setFill(q.id, e.target.value)}
-                    placeholder={q.placeholder ?? ""}
-                    rows={2}
-                    disabled={submitted}
-                    className="w-full px-2.5 py-2 text-[12px] border border-[var(--color-line)] rounded-md focus:border-[var(--color-accent)] outline-none resize-none"
-                  />
+              {q.kind === "fill" && q.placeholder && (
+                <div className="pl-7 text-[11px] text-[var(--color-fg-4)] italic">
+                  {q.placeholder}
                 </div>
               )}
             </div>
@@ -226,40 +189,20 @@ export function AskFormPart({ payload }: { payload: AskFormPayload }) {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 px-3 py-2 border-t border-[var(--color-line)] bg-[var(--color-surface-2)]">
-        {submitted ? (
-          <>
-            <span
-              className="inline-flex items-center gap-1 text-[11px] font-medium"
-              style={{ color: "var(--color-green)" }}
-            >
-              <Check size={11} /> 已发送你的回复 · {payload.questions.length} 项
-            </span>
-            <button
-              type="button"
-              onClick={() => setSubmitted(false)}
-              className="ml-auto px-2.5 py-1 text-[11px] rounded hover:bg-[var(--color-line)]"
-            >
-              修改回复
-            </button>
-          </>
+      <div className="flex items-center gap-2 px-3 py-2 border-t border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px]">
+        {answered ? (
+          <span
+            className="inline-flex items-center gap-1.5 font-medium min-w-0"
+            style={{ color: "var(--color-green)" }}
+          >
+            <Check size={11} strokeWidth={3} className="flex-shrink-0" />
+            <span className="truncate">已回复：{answerText}</span>
+          </span>
         ) : (
-          <>
-            <button
-              type="button"
-              className="px-2.5 py-1 text-[11px] rounded text-[var(--color-fg-3)] hover:bg-[var(--color-line)]"
-            >
-              稍后
-            </button>
-            <button
-              type="button"
-              disabled={!allRequiredAnswered}
-              onClick={() => setSubmitted(true)}
-              className="ml-auto inline-flex items-center gap-1 px-3 py-1.5 text-[11.5px] font-medium rounded bg-[var(--color-accent)] text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Send size={11} /> 提交回复
-            </button>
-          </>
+          <span className="inline-flex items-center gap-1.5 text-[var(--color-fg-3)]">
+            <MessageCircleQuestion size={12} className="text-[var(--color-accent)] flex-shrink-0" />
+            请在下方「Awaiting your input」面板作答
+          </span>
         )}
       </div>
     </div>

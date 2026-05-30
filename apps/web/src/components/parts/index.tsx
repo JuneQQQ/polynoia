@@ -13,6 +13,7 @@ import { FilePart } from "./FilePart";
 import { ImagePart } from "./ImagePart";
 import { LogsPart } from "./LogsPart";
 import { MetricsPart } from "./MetricsPart";
+import { ReasoningPart } from "./ReasoningPart";
 import { SchemaPart } from "./SchemaPart";
 import { SqlPart } from "./SqlPart";
 import { SwatchesPart } from "./SwatchesPart";
@@ -27,10 +28,16 @@ type PartProps<K extends MessagePayload["kind"]> = {
   /** Optional: parts can branch on streaming state (e.g. TextPart skips
    * markdown rendering while the stream is still actively appending). */
   isStreaming?: boolean;
+  /** Optional message context — used by AskFormPart to locate its own reply
+   * in the conversation (answered-state + picked option survive refresh). */
+  convId?: string;
+  msgId?: string;
 };
 type AnyPartComponent = ComponentType<{
   payload: MessagePayload;
   isStreaming?: boolean;
+  convId?: string;
+  msgId?: string;
 }>;
 
 // 完整 12 + ask-form schema preserved (P0 不主动发出但渲染完整)
@@ -38,6 +45,7 @@ export const PARTS_REGISTRY: Partial<{
   [K in MessagePayload["kind"]]: ComponentType<PartProps<K>>;
 }> = {
   text: TextPart,
+  reasoning: ReasoningPart,
   tasks: TasksPart,
   diff: DiffPart,
   web: WebPart,
@@ -58,9 +66,13 @@ export const PARTS_REGISTRY: Partial<{
 export function MessagePart({
   payload,
   isStreaming,
+  convId,
+  msgId,
 }: {
   payload: MessagePayload;
   isStreaming?: boolean;
+  convId?: string;
+  msgId?: string;
 }) {
   const Component = PARTS_REGISTRY[payload.kind] as AnyPartComponent | undefined;
   if (!Component) {
@@ -74,6 +86,8 @@ export function MessagePart({
     <Component
       payload={payload as Extract<MessagePayload, { kind: typeof payload.kind }>}
       isStreaming={isStreaming}
+      convId={convId}
+      msgId={msgId}
     />
   );
 }

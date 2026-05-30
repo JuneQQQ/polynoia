@@ -49,6 +49,17 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function patchJSON<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  // surface the server's error detail (e.g. "cannot remove the orchestrator")
+  if (!res.ok) throw new Error((await res.text().catch(() => "")) || `${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
 async function deleteJSON<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -135,7 +146,24 @@ export const api = {
   }) => postJSON<ConversationSummary>("/api/conversations", body),
   deleteConv: (convId: string) => deleteJSON<{ ok: boolean }>(`/api/conversations/${convId}`),
   /** Single-conv summary fetch. Returns the same shape as the list endpoint. */
+  /** Upload an attachment (raw bytes) → returns a server URL to reference in
+   * the message payload (instead of inlining base64). */
+  upload: (file: File, name: string) =>
+    fetch(`/api/upload?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "content-type": file.type || "application/octet-stream" },
+      body: file,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.text().catch(() => "")) || `${r.status} ${r.statusText}`);
+      return r.json() as Promise<{ id: string; url: string; name: string; media_type: string; size_bytes: number }>;
+    }),
   getConv: (convId: string) => getJSON<ConversationSummary>(`/api/conversations/${convId}`),
+  /** Still-open ask-forms (agent questions awaiting an answer) — used to
+   * re-hydrate the floating panel after a refresh. */
+  openAskForms: (convId: string) =>
+    getJSON<{ ask_forms: Array<{ id: string; agent_id: string; kind: "ask-form"; title: string; blocking: boolean; questions: unknown[] }> }>(
+      `/api/conversations/${convId}/ask-forms`,
+    ),
   /** Paginated message fetch. `before` is an ISO timestamp cursor —
    * `null` for the latest page, then pass back the oldest message's
    * `created_at` to walk further into the past. */
@@ -167,24 +195,14 @@ export const api = {
    * a system-event message describing the diff, which agents pick up via
    * L4 history on the next turn. Returns the updated conv summary. */
   setMemberRoles: (convId: string, roles: Record<string, string>) =>
-    fetch(`/api/conversations/${convId}/member_roles`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ roles }),
-    }).then((r) => {
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-      return r.json() as Promise<ConversationSummary>;
-    }),
+    patchJSON<ConversationSummary>(`/api/conversations/${convId}/member_roles`, { roles }),
+  /** Replace a group conv's FULL member list (add/remove). The designated
+   * orchestrator must stay in the list. Returns the updated conv summary. */
+  setConvMembers: (convId: string, members: string[]) =>
+    patchJSON<ConversationSummary>(`/api/conversations/${convId}/members`, { members }),
   /** Flip a conv's merge gate. Returns the updated conv summary. */
   setMergeMode: (convId: string, mode: "auto" | "manual") =>
-    fetch(`/api/conversations/${convId}/merge_mode`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ mode }),
-    }).then((r) => {
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-      return r.json() as Promise<ConversationSummary>;
-    }),
+    patchJSON<ConversationSummary>(`/api/conversations/${convId}/merge_mode`, { mode }),
 
   // Onboarding — adapter layer
   probeAdapters: () => getJSON<AdapterProbe[]>("/api/onboarding/adapters"),

@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from datetime import datetime
 from typing import cast
@@ -17,13 +19,14 @@ from fastapi.responses import PlainTextResponse, Response
 
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
-from polynoia.orchestrator.runtime import OrchestratorRuntime
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import WorkspaceRow
 from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
+
+log = logging.getLogger("polynoia.routes")
 
 # Mention router — agent-to-agent @ in conv timeline.
 # Match @AgentId (camelCase or snake) anywhere in agent's response.
@@ -36,12 +39,116 @@ _MENTION_RE = re.compile(
 )
 _ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
 _MAX_MENTION_CHAIN_DEPTH = 5
+# If an agent produces NO output for this long, treat its turn as hung (slow/
+# dead model backend, wedged CLI session) → fail the turn instead of freezing
+# the burst lane forever. Idle-based (not total) so productive long turns live.
+_AGENT_IDLE_TIMEOUT = 120.0
 
 # Cross-handler conv broadcaster: HTTP endpoints (e.g. /api/pending-edits POST)
 # need to push WS chunks to all clients tailing a conv. Each ws_conv handler
 # registers its send_queue here on accept + unregisters on disconnect.
 # Multiple queues per conv = multiple tabs/clients open on the same conv.
 _conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = {}
+
+# Pending dispatch batches recorded by the `dispatch` MCP tool DURING an
+# in-flight orchestrator turn. The tool POSTs here mid-turn; the orchestrator's
+# `run_adapter_turn` drains this at turn-end (it has the dispatcher's agent_id
+# + resolver in scope) → builds the BurstCard + spawns each worker. Keyed by
+# conv_id; each entry is one `dispatch` call's batch.
+# `tasks` are raw `{agent, label, note}` dicts — resolution happens at drain.
+_pending_dispatches: dict[str, list[dict]] = {}
+
+# Conversation-scoped execution state — lives at MODULE level (per conv_id), NOT
+# per WS connection. This is what makes execution backend-driven + refresh-safe:
+# a browser refresh/disconnect tears down that connection's send_queue but the
+# running agent tasks, their per-agent locks, and in-flight burst registries
+# persist here and keep running. A reconnecting client re-attaches and (because
+# `emit` broadcasts to all current connections) keeps receiving the live stream.
+# Only an explicit `abort` command cancels a task. Pruned when a conv goes fully
+# idle with no connections (see ws_conv finally).
+_conv_agent_tasks: dict[str, dict[str, asyncio.Task]] = {}   # conv_id → agent_id → task (abort/status handle)
+_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = {}   # conv_id → agent_id → lock
+_conv_bursts: dict[str, dict[str, dict]] = {}                # conv_id → tp_id → burst reg
+# Strong refs to EVERY live turn task (workers, follow-ups, summaries, orch). The
+# by-id `_conv_agent_tasks` map is last-writer-wins, so when two turns share an
+# agent_id (dup teammate in a batch, worker→chain-follow-up, orch turn vs its
+# burst summary) the earlier task would lose its only strong ref and could be
+# GC-cancelled mid-run ("Task was destroyed but it is pending"). This set keeps
+# all of them alive until they actually finish.
+_conv_inflight: dict[str, set[asyncio.Task]] = {}            # conv_id → {live turn tasks}
+# In-flight dispatcher tasks (the not-yet-awaited `dispatch_user_message`). The
+# disconnect-prune must not free a conv's dicts while a dispatcher is still in
+# its pre-registration await window (get_conversation / append user msg), or it
+# would orphan the agent_tasks dict the dispatcher then writes into.
+_conv_dispatchers: dict[str, set[asyncio.Task]] = {}         # conv_id → {dispatcher tasks}
+
+
+def _maybe_prune_conv(conv_id: str) -> None:
+    """Free a conv's module-level execution state once it is fully idle AND has
+    no attached clients. Called from every turn/dispatcher task's done-callback
+    (so the LAST finisher reclaims, even if all clients already left) and from
+    ws_conv's finally (so a disconnect reclaims an already-idle conv)."""
+    if _conv_inflight.get(conv_id):
+        return
+    if _conv_dispatchers.get(conv_id):
+        return
+    if conv_id in _conv_outboxes:
+        return
+    _conv_agent_tasks.pop(conv_id, None)
+    _conv_agent_locks.pop(conv_id, None)
+    _conv_bursts.pop(conv_id, None)
+    _conv_inflight.pop(conv_id, None)
+    _conv_dispatchers.pop(conv_id, None)
+    _pending_dispatches.pop(conv_id, None)
+
+
+def _spawn_turn(conv_id: str, agent_id: str, coro) -> asyncio.Task:
+    """Spawn a turn task with a durable strong ref + self-pruning.
+
+    - keeps a strong ref in `_conv_inflight[conv_id]` (survives by-id overwrite),
+    - exposes it by agent_id in `_conv_agent_tasks[conv_id]` for abort/status
+      (last-writer-wins — abort targets the agent's most recent turn),
+    - on completion: drops the inflight ref, clears the by-id slot iff it still
+      points to this task, releases the agent's unused lock, and prunes the conv
+      if it just went idle."""
+    tasks = _conv_agent_tasks.setdefault(conv_id, {})
+    inflight = _conv_inflight.setdefault(conv_id, set())
+    t = asyncio.create_task(coro)
+    tasks[agent_id] = t
+    inflight.add(t)
+
+    def _done(done: asyncio.Task, *, _c=conv_id, _a=agent_id) -> None:
+        _conv_inflight.get(_c, set()).discard(done)
+        slot = _conv_agent_tasks.get(_c, {})
+        if slot.get(_a) is done:
+            slot.pop(_a, None)
+        # Drop the per-agent lock if it exists, is unlocked, and the agent has no
+        # other live task — keeps agent_locks proportional to active agents.
+        locks = _conv_agent_locks.get(_c)
+        if locks is not None and _a not in slot:
+            lk = locks.get(_a)
+            if lk is not None and not lk.locked():
+                locks.pop(_a, None)
+        _maybe_prune_conv(_c)
+
+    t.add_done_callback(_done)
+    return t
+
+
+def _spawn_dispatcher(conv_id: str, coro) -> asyncio.Task:
+    """Spawn the per-message orchestrator dispatcher with a conv-scoped strong
+    ref, so (a) it isn't GC'd and (b) the disconnect-prune can see it is still
+    in-flight and not orphan the agent_tasks dict it will register into."""
+    dispatchers = _conv_dispatchers.setdefault(conv_id, set())
+    t = asyncio.create_task(coro)
+    dispatchers.add(t)
+
+    def _done(done: asyncio.Task, *, _c=conv_id) -> None:
+        _conv_dispatchers.get(_c, set()).discard(done)
+        _maybe_prune_conv(_c)
+
+    t.add_done_callback(_done)
+    return t
 
 
 def _register_conv_outbox(conv_id: str, queue: asyncio.Queue[str | None]) -> None:
@@ -127,6 +234,23 @@ async def disable_adapter(agent_id: str):
         ok = await storage_repo.remove_onboarded_adapter(session, agent_id)
         await session.commit()
     return {"adapter_id": agent_id, "enabled": False, "removed": ok}
+
+
+_VALID_TOOL_ROLES = frozenset({
+    "orchestrator", "coder", "designer", "writer", "generalist",
+})
+
+
+def _validate_tool_role(raw: object) -> str:
+    """Validate REST input. Empty → generalist; unknown → 400 fail-closed."""
+    if raw is None or raw == "":
+        return "generalist"
+    if not isinstance(raw, str) or raw not in _VALID_TOOL_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid tool_role: {raw!r}. Must be one of {sorted(_VALID_TOOL_ROLES)}",
+        )
+    return raw
 
 
 # ── Contacts (user-created agents using an enabled adapter) ─────────
@@ -231,6 +355,7 @@ async def create_contact(body: dict):
         enabled=True,
         custom=True,
         system_prompt=body.get("system_prompt") or tmpl.system_prompt,
+        tool_role=_validate_tool_role(body.get("tool_role")),
         setup=AgentSetup(
             cli_command=tmpl.setup.cli_command if tmpl.setup else None,
             detected=True,
@@ -258,9 +383,9 @@ async def update_contact(contact_id: str, body: dict):
     """Update a contact: change model / name / system_prompt / color / initials.
 
     Cannot change adapter_id (would invalidate session lineage).
-    Builtins (you / orchestrator) cannot be edited.
+    The `you` builtin cannot be edited.
     """
-    if contact_id in {"you", "orchestrator"}:
+    if contact_id == "you":
         return {"error": f"cannot edit builtin: {contact_id}"}, 400
     async with SessionLocal() as session:
         rows = await storage_repo.list_agents(session)
@@ -279,6 +404,8 @@ async def update_contact(contact_id: str, body: dict):
             existing.tagline = tagline
         if (sp := body.get("system_prompt")) is not None:
             existing.system_prompt = sp
+        if (tr := body.get("tool_role")) is not None:
+            existing.tool_role = _validate_tool_role(tr)
         if (model := body.get("model")) is not None:
             if existing.setup is None:
                 from polynoia.domain.entities import AgentSetup
@@ -301,8 +428,8 @@ async def update_contact(contact_id: str, body: dict):
 
 @router.delete("/api/contacts/{contact_id}")
 async def delete_contact(contact_id: str):
-    """Delete a contact. Builtins cannot be removed."""
-    if contact_id in {"you", "orchestrator"}:
+    """Delete a contact. The `you` builtin cannot be removed."""
+    if contact_id == "you":
         return {"error": f"cannot delete builtin: {contact_id}"}, 400
     async with SessionLocal() as session:
         ok = await storage_repo.delete_agent(session, contact_id)
@@ -412,6 +539,18 @@ async def create_conversation_endpoint(body: dict):
     orchestrator_member_id = body.get("orchestrator_member_id")
     if orchestrator_member_id and orchestrator_member_id not in members:
         orchestrator_member_id = None
+    # A group chat MUST have an orchestrator, and it must be one of its own
+    # members (a real user-created contact). There is no auto-assignment and
+    # no built-in coordinator — designating the orchestrator is an explicit
+    # user choice made at creation. DMs (direct) never have one.
+    if not direct and not orchestrator_member_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "group conversation requires an orchestrator_member_id "
+                "that is one of its members"
+            ),
+        )
     # Inherit workspace.default_merge_mode for workspace convs; DMs default "auto".
     workspace_id = body.get("workspace_id")
     inherited_merge_mode = "auto"
@@ -476,7 +615,10 @@ async def get_conversation(conv_id: str):
     async with SessionLocal() as session:
         c = await storage_repo.get_conversation(session, conv_id)
         if not c:
-            return {"error": "not found"}, 404
+            # NB: `return {...}, 404` does NOT set the status in FastAPI — it
+            # serializes the tuple as a 200 JSON array, which downstream JSON
+            # consumers (e.g. the MCP write-gate) then choke on. Raise instead.
+            raise HTTPException(status_code=404, detail="conversation not found")
         return c.model_dump(mode="json")
 
 
@@ -559,6 +701,211 @@ async def mark_conv_read(conv_id: str):
     return {"ok": True}
 
 
+@router.post("/api/conversations/{conv_id}/clear")
+async def clear_conv(conv_id: str):
+    """Wipe a conversation's messages (keep the conv + members + roles).
+
+    Resets a demo/test conv to an empty timeline without changing its id.
+    Broadcasts `data-conv-cleared` so any open client drops its in-memory
+    message list immediately.
+    """
+    async with SessionLocal() as session:
+        removed = await storage_repo.clear_conversation_messages(session, conv_id)
+        await storage_repo.reset_unread(session, conv_id)
+        await session.commit()
+    await _broadcast_to_conv(
+        conv_id,
+        'data: {"type":"data-conv-cleared","data":{"conv_id":'
+        + json.dumps(conv_id) + "}}\n\n",
+    )
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/api/conversations/{conv_id}/dispatch")
+async def record_dispatch(conv_id: str, body: dict):
+    """Record a `dispatch` MCP tool call from an orchestrator's in-flight turn.
+
+    The orchestrator (e.g. 林知夏) calls ``mcp__polynoia__dispatch`` to fan
+    work out to teammates. The MCP subprocess POSTs the batch here mid-turn;
+    we stash it on ``_pending_dispatches[conv_id]``. The orchestrator's
+    ``run_adapter_turn`` drains it at turn-end and does the real work (build
+    BurstCard, spawn workers) — that scope has the dispatcher's agent_id +
+    mention resolver, which this HTTP context lacks.
+
+    Returns synthetic task_ids so the tool gives the LLM something concrete
+    back; the same ids are reused when the batch is drained.
+    """
+    raw_tasks = body.get("tasks") or []
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise HTTPException(status_code=400, detail="tasks must be a non-empty array")
+    task_ids = [f"t-{uuid.uuid4().hex[:8]}" for _ in raw_tasks]
+    _pending_dispatches.setdefault(conv_id, []).append({
+        "title": (body.get("title") or "").strip(),
+        "contract": (body.get("contract") or "").strip(),
+        "tasks": raw_tasks,
+        "task_ids": task_ids,
+        # Who called dispatch. Recorded here so attribution doesn't depend on
+        # which agent's turn later drains this per-conv queue (ADR-014 follow-up).
+        "author_agent_id": (body.get("author_agent_id") or "").strip(),
+    })
+    return {
+        "kind": "dispatched",
+        "task_ids": task_ids,
+        "count": len(task_ids),
+        "note": "Teammates are now working in parallel. Stop here; verify their output in a later turn.",
+    }
+
+
+@router.post("/api/conversations/{conv_id}/memory")
+async def record_conv_memory(conv_id: str, body: dict):
+    """Persist one shared-memory entry (ADR-014).
+
+    Called by the `remember` MCP tool (agents recording a decision/artifact)
+    and by the dispatch drain auto-seeding the locked contract. The entry is
+    injected into every subsequent turn's prompt via the shared-memory layer.
+    """
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    kind = (body.get("kind") or "decision").strip()
+    author = (body.get("author_agent_id") or "").strip() or "agent"
+    async with SessionLocal() as session:
+        mid = await storage_repo.add_conv_memory(
+            session, conv_id=conv_id, author_agent_id=author,
+            kind=kind, content=content,
+        )
+        await session.commit()
+    return {"kind": "remembered", "id": mid}
+
+
+@router.get("/api/conversations/{conv_id}/memory")
+async def get_conv_memory(conv_id: str, kind: str | None = None):
+    """Read shared memory (ADR-014) — backs the `recall` MCP tool so an agent can
+    consult the locked contract / teammates' decisions+artifacts MID-task without
+    waiting for its next turn. Optional ?kind= filter (contract/decision/artifact)."""
+    async with SessionLocal() as session:
+        rows = await storage_repo.list_conv_memory(session, conv_id, limit=100)
+    entries = [
+        {"id": r.id, "kind": r.kind, "content": r.content, "author_agent_id": r.author_agent_id}
+        for r in rows
+        if not kind or r.kind == kind
+    ]
+    return {"conv_id": conv_id, "entries": entries, "count": len(entries)}
+
+
+@router.get("/api/conversations/{conv_id}/ask-forms")
+async def get_open_ask_forms(conv_id: str):
+    """Re-hydrate still-OPEN ask-forms after a refresh.
+
+    An ask-form is "open" until the user replies — so we return ask-form
+    messages that appear AFTER the last user ("you") message (any user reply
+    is treated as having answered the prior questions, matching the live
+    dequeue-on-answer behavior). Shape matches the frontend AskFormEntry.
+    """
+    async with SessionLocal() as session:
+        msgs, _more = await storage_repo.list_messages(session, conv_id, limit=200)
+    last_user_idx = -1
+    for i, m in enumerate(msgs):
+        if m.get("sender_id") == "you":
+            last_user_idx = i
+    open_forms = []
+    for i, m in enumerate(msgs):
+        payload = m.get("payload") or {}
+        if payload.get("kind") == "ask-form" and i > last_user_idx:
+            open_forms.append({
+                "id": m.get("id"),
+                "agent_id": m.get("sender_id"),
+                "kind": "ask-form",
+                "title": payload.get("title", ""),
+                "blocking": bool(payload.get("blocking", True)),
+                "questions": payload.get("questions", []),
+            })
+    return {"ask_forms": open_forms}
+
+
+@router.post("/api/conversations/{conv_id}/report")
+async def record_handoff_report(conv_id: str, body: dict):
+    """Worker's closed-loop completion ACK + self-verdict (RuFlo handoff).
+
+    Called by the `report` MCP tool at the end of a dispatched subtask. We record
+    the verdict into SHARED MEMORY as a kind=artifact entry, so the orchestrator's
+    auto-summary turn reads each teammate's self-attested verdict back (via the
+    shared-memory context layer) and verifies against it instead of guessing —
+    and it survives a refresh. Returns the parsed verdict.
+    """
+    author = (body.get("author_agent_id") or "").strip() or "agent"
+    deliverables = (body.get("deliverables") or "").strip()
+    if not deliverables:
+        raise HTTPException(status_code=400, detail="deliverables required")
+    status = (body.get("status") or "ok").strip()
+    contract_ok = bool(body.get("contract_ok", False))
+    notes = (body.get("notes") or "").strip()
+    line = (
+        f"[{author} 自评:{status} · {'契约符合' if contract_ok else '契约未确认'}] "
+        f"{deliverables}" + (f" — {notes}" if notes else "")
+    )
+    async with SessionLocal() as session:
+        mid = await storage_repo.add_conv_memory(
+            session, conv_id=conv_id, author_agent_id=author,
+            kind="artifact", content=line,
+        )
+        await session.commit()
+    log.info("handoff report by %s in %s: status=%s contract_ok=%s",
+             author, conv_id, status, contract_ok)
+    return {"kind": "reported", "id": mid,
+            "verdict": {"status": status, "contract_ok": contract_ok}}
+
+
+@router.post("/api/upload")
+async def upload_file(request: Request, name: str = "file"):
+    """Store an uploaded attachment and return a server URL to reference.
+
+    Raw bytes in the body; media-type from the Content-Type header; original
+    filename in ?name=. The message payload then stores the returned `url`
+    (e.g. /api/files/<id>/raw) in its `src` instead of inlining a fat base64
+    data: URL — small DB rows + the attachment re-renders after a refresh.
+    """
+    import mimetypes
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="file too large (25MB max)")
+    media_type = (request.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+    ext = mimetypes.guess_extension(media_type) or ""
+    fid = uuid.uuid4().hex[:20]
+    from polynoia.settings import settings as _settings
+    updir = _settings.sandbox_root / "uploads"
+    updir.mkdir(parents=True, exist_ok=True)
+    (updir / f"{fid}{ext}").write_bytes(data)
+    return {
+        "id": fid,
+        "url": f"/api/files/{fid}/raw",
+        "name": name,
+        "media_type": media_type,
+        "size_bytes": len(data),
+    }
+
+
+@router.get("/api/files/{file_id}/raw")
+async def serve_uploaded_file(file_id: str):
+    """Serve a previously-uploaded attachment by id (backs ImagePayload/
+    FilePayload `src` URLs, so attachments survive a refresh)."""
+    import mimetypes
+
+    if not file_id.isalnum():  # our ids are hex — reject any path separators
+        raise HTTPException(status_code=400, detail="bad file id")
+    from polynoia.settings import settings as _settings
+    updir = _settings.sandbox_root / "uploads"
+    matches = list(updir.glob(f"{file_id}.*")) + list(updir.glob(file_id))
+    if not matches:
+        raise HTTPException(status_code=404, detail="file not found")
+    target = matches[0]
+    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    return Response(content=target.read_bytes(), media_type=media_type)
+
+
 @router.post("/api/diff/apply")
 async def apply_diff(body: dict):
     """Apply a Diff card's hunks to the conv's sandbox + commit.
@@ -590,13 +937,15 @@ async def apply_diff(body: dict):
         return {"ok": False, "error": "conversation not found"}
 
     if conv.workspace_id and conv.group:
-        # Apply on the orchestrator's worktree for this conv — that branch
-        # represents the user's review surface. (P1.2 manual is per-edit at
-        # the originating agent's branch; for now we land on orch's branch.)
+        # Apply on the designated orchestrator member's worktree for this conv —
+        # that branch represents the user's review surface. If no orchestrator
+        # is designated, land on `you`'s worktree. (P1.2 manual is per-edit at
+        # the originating agent's branch; for now we land on this review branch.)
+        review_agent = conv.orchestrator_member_id or "you"
         sandbox = await Sandbox.create_workspace_sandbox(
             workspace_id=conv.workspace_id,
             conv_id=conv_id,
-            agent_id="orchestrator",
+            agent_id=review_agent,
         )
     else:
         sandbox = await Sandbox.create(conv_id)
@@ -1030,6 +1379,62 @@ async def set_conv_member_roles(conv_id: str, body: dict):
         return conv.model_dump(mode="json") if conv else {"ok": True}
 
 
+@router.patch("/api/conversations/{conv_id}/members")
+async def set_conv_members(conv_id: str, body: dict):
+    """Add/remove members of a group conv.
+
+    Body: ``{ "members": ["<agent_id>", ...] }`` — the FULL desired member list.
+    Re-validates the group invariant (the designated orchestrator must remain a
+    member — reassign it first if you want it gone), persists, appends a `system`
+    event summarizing who joined/left (so the next turn's context sees it), and
+    broadcasts a conv-updated hint so other open tabs refresh.
+    """
+    raw = body.get("members")
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="members must be a list")
+    members = [str(m) for m in raw if m]
+    async with SessionLocal() as session:
+        conv0 = await storage_repo.get_conversation(session, conv_id)
+        if conv0 is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        orch = conv0.orchestrator_member_id
+        if orch and orch not in members:
+            raise HTTPException(
+                status_code=400,
+                detail="cannot remove the orchestrator member; reassign the orchestrator first",
+            )
+        ok, before, after = await storage_repo.set_members(session, conv_id, members)
+        if not ok:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        agents_lookup = {a.id: a for a in await storage_repo.list_agents(session)}
+
+        def _disp(aid: str) -> str:
+            return agents_lookup[aid].name if aid in agents_lookup else aid
+
+        added = [_disp(m) for m in after if m not in before and m != "you"]
+        removed = [_disp(m) for m in before if m not in after and m != "you"]
+        bits = []
+        if added:
+            bits.append("加入 " + "、".join(f"@{x}" for x in added))
+        if removed:
+            bits.append("移出 " + "、".join(f"@{x}" for x in removed))
+        if bits:
+            await storage_repo.append_message(
+                session, conv_id=conv_id, sender_id="system",
+                payload={"kind": "text", "body": [{"t": "p", "c": "👥 成员变更 — " + " · ".join(bits)}]},
+            )
+        await session.commit()
+        conv = await storage_repo.get_conversation(session, conv_id)
+    if bits:
+        # nudge any open tabs to refresh this conv's member list
+        with suppress(Exception):
+            await _broadcast_to_conv(
+                conv_id,
+                'data: {"type":"data-conv-updated","data":' + json.dumps({"conv_id": conv_id}) + "}\n\n",
+            )
+    return conv.model_dump(mode="json") if conv else {"ok": True}
+
+
 @router.patch("/api/conversations/{conv_id}/merge_mode")
 async def set_conv_merge_mode(conv_id: str, body: dict):
     """Flip a conversation's merge gate.
@@ -1114,8 +1519,6 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         on that agent's serial pipeline. Send ``abort`` first to cancel.
     """
     await websocket.accept()
-    # Top-of-function reference set so dispatcher tasks aren't GC'd mid-flight
-    _dispatcher_tasks: set[asyncio.Task] = set()
 
     # ── Outbound: single queue → single sender ─────────────────
     send_queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -1124,28 +1527,41 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     _register_conv_outbox(conv_id, send_queue)
 
     async def sender_loop() -> None:
-        while True:
-            frame = await send_queue.get()
-            if frame is None:  # shutdown sentinel
-                return
-            try:
-                await websocket.send_text(frame)
-            except RuntimeError:
-                # WS closed mid-send — drain rest silently
-                return
+        try:
+            while True:
+                frame = await send_queue.get()
+                if frame is None:  # shutdown sentinel
+                    return
+                try:
+                    await websocket.send_text(frame)
+                except (RuntimeError, WebSocketDisconnect):
+                    # WS closed mid-send. Starlette wraps the underlying
+                    # OSError as WebSocketDisconnect (NOT RuntimeError), so we
+                    # must catch both or this task dies with an unhandled
+                    # exception and stops draining.
+                    return
+        finally:
+            # Proactively drop this dead connection's queue so background agent
+            # tasks broadcasting via emit() can't keep enqueuing onto a queue
+            # with no consumer (unbounded growth on a half-closed socket). The
+            # receive-loop finally also unregisters — both are idempotent.
+            _unregister_conv_outbox(conv_id, send_queue)
 
     sender = asyncio.create_task(sender_loop())
 
     async def emit(chunk: str) -> None:
-        await send_queue.put(chunk)
+        # Broadcast to ALL current connections of this conv (not just this
+        # socket's queue). So an agent task spawned by a now-closed connection
+        # still reaches whoever is currently attached — refresh-safe streaming.
+        await _broadcast_to_conv(conv_id, chunk)
 
-    # ── Per-agent task state ───────────────────────────────────
+    # ── Conv-scoped execution state (module-level, survives this connection) ──
     # agent_id → asyncio.Task running adapter_events_to_chunks(...)
-    agent_tasks: dict[str, asyncio.Task] = {}
+    agent_tasks = _conv_agent_tasks.setdefault(conv_id, {})
     # agent_id → asyncio.Lock so back-to-back user messages to the SAME agent
-    # serialize on that agent's adapter session (the session itself also has
-    # an internal lock; this just avoids racing the task creation).
-    agent_locks: dict[str, asyncio.Lock] = {}
+    # serialize on that agent's adapter session. Conv-scoped so two tabs /
+    # a reconnect don't race the same agent's session.
+    agent_locks = _conv_agent_locks.setdefault(conv_id, {})
 
     async def emit_agent_status(agent_id: str, status: str, extra: dict | None = None) -> None:
         """Emit a polynoia-private agent.status chunk for UI status chips."""
@@ -1171,6 +1587,120 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         )
         await emit(frame)
 
+    # ── Burst (dispatch) lifecycle ─────────────────────────────────
+    # tp_id → {payload, pending:set[task_id], orch:agent_id, workspace_id}
+    # A dispatch batch registers here; each spawned worker carries its
+    # (burst_card_id, burst_task_id) so its completion flips that task's
+    # state to done/failed, re-emits the card, and — once all tasks land —
+    # merges the agent branches into main (hiding per-branch detail).
+    # Conv-scoped (module-level) so an in-flight burst survives a refresh.
+    burst_registry = _conv_bursts.setdefault(conv_id, {})
+
+    async def _mark_burst_task(tp_id: str, task_id: str, state: str) -> None:
+        reg = burst_registry.get(tp_id)
+        if not reg:
+            return
+        payload = reg["payload"]
+        for t in payload["tasks"]:
+            if t["id"] == task_id and t["state"] not in ("done", "failed"):
+                t["state"] = state
+        reg["pending"].discard(task_id)
+        # Claim "I'm the last worker" SYNCHRONOUSLY (before any await), then
+        # pop the registry so a concurrently-finishing worker can't also see
+        # pending-empty and double-fire the merge/summary.
+        is_last = not reg["pending"]
+        if is_last:
+            burst_registry.pop(tp_id, None)
+        async with SessionLocal() as _db:
+            await storage_repo.update_message_payload(_db, tp_id, payload)
+            await _db.commit()
+        # Re-emit with the SAME id → frontend updates the card in place.
+        await emit(
+            'data: {"type":"data-tasks","data":'
+            + json.dumps(payload, ensure_ascii=False)
+            + ',"id":' + json.dumps(tp_id)
+            + ',"sender_id":' + json.dumps(reg["orch"])
+            + "}\n\n"
+        )
+        if is_last:
+            log.info("burst %s: last task landed → merge + summary", tp_id)
+            # Merge must never block the wrap-up: if folding branches into main
+            # throws, we still want the orchestrator's summary turn to fire.
+            try:
+                await _merge_burst_to_main(reg)
+            except Exception:
+                log.exception("burst %s: merge_to_main failed (continuing to summary)", tp_id)
+            orch_id = reg["orch"]
+            # Default wrap-up: the orchestrator summarizes the finished burst
+            # (otherwise it ends abruptly). A fresh, history-aware turn —
+            # nudged to summarize only, NOT to dispatch again. Fire-and-forget.
+            done_n = sum(1 for t in payload["tasks"] if t["state"] == "done")
+            failed_n = sum(1 for t in payload["tasks"] if t["state"] == "failed")
+            _contract = (reg.get("contract") or "").strip()
+            _contract_clause = (
+                f"\n\n# 本批接口契约(逐条核对各产物是否符合,不符就明确指出)\n{_contract}"
+                if _contract else ""
+            )
+            # Closed-loop verification (RuFlo): direct the orchestrator to
+            # cross-check each teammate's self-reported verdict (recorded via the
+            # `report` tool, surfaced in shared memory above). A lane with NO
+            # report is "unverified" — must be called out, not assumed-good. On
+            # any failure, the wrap-up ESCALATES (names the failure) rather than
+            # implying everything shipped.
+            _verify_clause = (
+                "\n\n# 验收(闭环)\n"
+                "上方共享记忆里有每位队友用 `report` 提交的自评 verdict(status + "
+                "deliverables + contract_ok)。逐条核对:① 有没有人没 report(按\"未验证\"对待,"
+                "点名要求补);② 自评 contract_ok 的,用 `read` 抽查产物是否真符合契约,别盲信;"
+                "③ 任何 partial/failed/未验证项必须在汇总里**显式点出**,不要笼统说\"已完成\"。"
+            )
+            _escalation = (
+                "**有失败/未验证项——这是问题汇报,不是庆功。明确说清哪条没成、影响什么、下一步建议。**"
+                if failed_n else
+                "谁交付了什么(文件名),以及任何风险/漏项。"
+            )
+            nudge = (
+                "上面这批并行子任务已全部结束"
+                f"({done_n} 成功" + (f"、{failed_n} 失败" if failed_n else "") + ")"
+                "。请用 1-3 句话向用户收尾汇总:" + _escalation
+                + "不要重复实现细节,**不要再调 dispatch 派活**,只汇报。"
+                + _verify_clause
+                + _contract_clause
+            )
+            log.info("burst %s: spawning summary turn for orchestrator %s", tp_id, orch_id)
+            _spawn_turn(
+                conv_id, orch_id,
+                run_adapter_turn(
+                    orch_id, nudge, depth=1, parent_agent_id=None,
+                    inject_history=True,
+                    # Terminal turn: no new dispatch, no @mention chain — a
+                    # summary must not kick off another round (which caused
+                    # the burst cascade + chain-depth-5 loop).
+                    suppress_dispatch=True,
+                ),
+            )
+
+    async def _merge_burst_to_main(reg: dict) -> None:
+        """All burst workers done → fold their branches into main so the user
+        only ever reviews main.
+
+        SILENT by design: branch juggling + merge is an internal mechanism the
+        user shouldn't see (no `system` chatter). Files just appear on main;
+        the orchestrator's summary turn is the only user-facing wrap-up.
+        """
+        ws_id = reg.get("workspace_id")
+        if not ws_id:
+            return
+        ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
+        if ws_sandbox is None:
+            return
+        # Capture native-tool writes that never got auto-committed (OpenCode)
+        # so they exist as commits before we merge their branches into main.
+        await ws_sandbox.commit_pending_worktrees(conv_id)
+        for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
+            if await ws_sandbox.branch_ahead_of_main(b) > 0:
+                await ws_sandbox.merge_branch_into_main(b)
+
     async def run_adapter_turn(
         agent_id: str,
         text: str,
@@ -1178,16 +1708,30 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         depth: int = 0,
         parent_agent_id: str | None = None,
         inject_history: bool = True,
+        suppress_dispatch: bool = False,
+        burst_card_id: str | None = None,
+        burst_task_id: str | None = None,
+        is_dispatcher: bool = False,
     ) -> None:
         """Run one turn against one agent, streaming chunks to the send queue.
 
         ``depth``: mention-chain depth (0 = direct user trigger).
         ``parent_agent_id``: the agent that @-mentioned us (None if user did).
         ``inject_history``: prepend conv timeline as a history block.
+        ``burst_card_id`` / ``burst_task_id``: if set, this turn is a dispatched
+        burst worker — on completion we flip its lane state to done/failed.
+        ``is_dispatcher``: True only for the orchestrator's user-triggered turn
+        (the one whose `dispatch` tool stashes a batch). On abort we clear that
+        batch so it can't be revived; scoped by identity so aborting a sibling
+        lane never wipes the orchestrator's pending batch.
         """
         pool = get_pool()
         # Serialize concurrent user-messages to the SAME agent
         lock = agent_locks.setdefault(agent_id, asyncio.Lock())
+        log.info(
+            "run_adapter_turn ENTER agent=%s depth=%s suppress_dispatch=%s burst=%s locked=%s",
+            agent_id, depth, suppress_dispatch, burst_card_id, lock.locked(),
+        )
         async with lock:
             sandbox = await Sandbox.create(conv_id)
             # Build the actual prompt using the L1-L5 context assembler.
@@ -1213,39 +1757,107 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 prompt = text
 
             # Buffer the agent's text response so we can persist it +
-            # detect @-mentions after the turn completes.
+            # detect @-mentions after the turn completes. tool_parts captures
+            # completed tool-call/diff parts so the work trace is persisted too
+            # (not live-only) and survives a refresh.
             response_buffer: list[str] = []
+            tool_parts: list[dict] = []
+            emitted_any = False
+            # An adapter can stream a TERMINAL error (e.g. a 401/429/500 surfaces
+            # as a TurnFailedEvent → error chunk) WITHOUT raising — the stream
+            # just ends. Without tracking it, run_adapter_turn would then take the
+            # "success" path and mark the burst lane DONE on a turn that actually
+            # produced nothing. Track it so we mark the lane FAILED instead.
+            turn_failed = False
             try:
                 await emit_agent_status(agent_id, "starting", {"depth": depth})
-                sess = await pool.get_session(agent_id, conv_id)
-                if sess is None:
-                    await emit_agent_status(
-                        agent_id, "error", {"message": "adapter unavailable"}
-                    )
-                    await emit(
-                        'data: {"type":"error","error_text":'
-                        + json.dumps(f"{agent_id} adapter unavailable")
-                        + "}\n\n"
-                    )
-                    return
-                await emit_agent_status(agent_id, "streaming")
-                task_id = f"task-{conv_id}-{agent_id}-d{depth}"
-                events_iter = cast(
-                    "AsyncIterator[AdapterEvent]",
-                    sess.send(task_id=task_id, text=prompt),
-                )
-                # We tap into the adapter event stream so we can capture text
-                # parts for the timeline, *and* forward chunks unchanged to
-                # the WS.
-                async for chunk in adapter_events_to_chunks(
-                    _tap_text_into(events_iter, response_buffer),
-                    agent_id=agent_id,
-                    conv_id=conv_id,
-                    sender_label=agent_id,
-                    is_final=False,
-                ):
-                    await emit(chunk)
-                await emit_agent_status(agent_id, "idle")
+                # The pool is keyed by (agent_id, conv_id) and shared across WS
+                # connections. A cached session's subprocess can die between
+                # uses (SDK idle exit, a prior WS closing, etc.). If the first
+                # attempt fails BEFORE emitting anything, treat it as a stale
+                # session: evict + respawn once. (We only retry when nothing
+                # streamed yet, so there's no double-emit.)
+                for attempt in range(2):
+                    sess = await pool.get_session(agent_id, conv_id)
+                    if sess is None:
+                        await emit_agent_status(
+                            agent_id, "error", {"message": "adapter unavailable"}
+                        )
+                        await emit(
+                            'data: {"type":"error","error_text":'
+                            + json.dumps(f"{agent_id} adapter unavailable")
+                            + "}\n\n"
+                        )
+                        # A dispatched worker that can't get a session must STILL
+                        # flip its burst lane to failed — otherwise the lane stays
+                        # on "run" forever, is_last never fires, and the whole
+                        # burst stalls (no merge, no summary). Mirrors the other
+                        # failure exits.
+                        if burst_card_id and burst_task_id:
+                            with suppress(Exception):
+                                await _mark_burst_task(burst_card_id, burst_task_id, "failed")
+                        return
+                    await emit_agent_status(agent_id, "streaming")
+                    task_id = f"task-{conv_id}-{agent_id}-d{depth}"
+                    try:
+                        events_iter = cast(
+                            "AsyncIterator[AdapterEvent]",
+                            sess.send(task_id=task_id, text=prompt),
+                        )
+                        # Tap the adapter event stream to capture text for the
+                        # timeline while forwarding chunks unchanged to the WS.
+                        # Manual iteration with a per-chunk IDLE timeout: a hung
+                        # backend (no output) must fail the turn, not freeze the
+                        # lane forever.
+                        agen = adapter_events_to_chunks(
+                            _tap_text_into(events_iter, response_buffer, tool_parts),
+                            agent_id=agent_id,
+                            conv_id=conv_id,
+                            sender_label=agent_id,
+                            is_final=False,
+                        )
+                        cur_phase: str | None = None
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    agen.__anext__(), timeout=_AGENT_IDLE_TIMEOUT
+                                )
+                            except StopAsyncIteration:
+                                break
+                            except TimeoutError as te:
+                                raise RuntimeError(
+                                    f"{agent_id} 无响应:{int(_AGENT_IDLE_TIMEOUT)}s "
+                                    "内无任何输出(疑似模型后端挂起)"
+                                ) from te
+                            emitted_any = True
+                            # A terminal error chunk (from a TurnFailedEvent —
+                            # 401/429/upstream) means this turn FAILED even though
+                            # the stream ends "normally". Flag it so we don't mark
+                            # the burst lane done below. Match the type at frame
+                            # start so an agent's text containing `"type":"error"`
+                            # can't false-trip a failure.
+                            if chunk.startswith('data: {"type":"error"'):
+                                turn_failed = True
+                            # Refine the status pill by what's flowing now:
+                            # 正在思考 / 执行任务(工具名) / 回复. Debounced — only
+                            # re-emit when the phase actually changes.
+                            ph = _phase_from_chunk(chunk)
+                            if ph is not None and ph[0] != cur_phase:
+                                cur_phase = ph[0]
+                                await emit_agent_status(
+                                    agent_id, "streaming", {"phase": ph[0], **ph[1]}
+                                )
+                            await emit(chunk)
+                        await emit_agent_status(agent_id, "idle")
+                        break  # success
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        if attempt == 0 and not emitted_any:
+                            with suppress(Exception):
+                                await pool.close_session(agent_id, conv_id)
+                            continue  # respawn fresh + retry
+                        raise
             except asyncio.CancelledError:
                 # Cancel cleanup needs THREE steps — interrupt was wrong on its own:
                 #   1. signal the live CLI subprocess to stop (interrupt)
@@ -1261,6 +1873,24 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 with suppress(Exception):
                     await pool.close_session(agent_id, conv_id)
                 await emit_agent_status(agent_id, "aborted")
+                # If this was a burst worker, flip its lane to failed BEFORE
+                # re-raising — otherwise its task_id stays in reg["pending"]
+                # forever, is_last never fires, and the whole burst (merge +
+                # orchestrator summary) stalls with the card stuck on "run".
+                # Aborting ONE lane must still let the burst complete.
+                if burst_card_id and burst_task_id:
+                    with suppress(Exception):
+                        await _mark_burst_task(burst_card_id, burst_task_id, "failed")
+                # If the user aborted the orchestrator's dispatching turn, drop
+                # any batch the `dispatch` tool already stashed — otherwise the
+                # NEXT user message would drain it and revive the killed dispatch
+                # (a zombie burst). Gate on `is_dispatcher` (turn IDENTITY), NOT
+                # on flags: `burst_task_id is None and not suppress_dispatch` also
+                # matches direct-fanout / chain-mention lanes, so aborting one of
+                # those would wipe a concurrent orchestrator's legitimately-
+                # pending batch. Only the orchestrator's own dispatch turn clears.
+                if is_dispatcher:
+                    _pending_dispatches.pop(conv_id, None)
                 raise
             except Exception as exc:
                 await emit_agent_status(agent_id, "error", {"message": str(exc)})
@@ -1270,13 +1900,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         + json.dumps(f"{agent_id}: {exc}")
                         + "}\n\n"
                     )
-                # Evict the session so the next user message spawns a fresh one.
-                # Without this a connect-time failure (e.g. missing ~/.claude.json,
-                # MCP subprocess crash) gets latched in the pool and every later
-                # turn replays the same exception — the user sees the same error
-                # forever even after the underlying cause is fixed.
+                # A hung/errored session must NOT be reused (it would re-hang or
+                # hit a half-broken client). Interrupt + evict so the next turn
+                # respawns fresh. (Evicting also clears a latched connect-time
+                # failure — e.g. missing ~/.claude.json — that would otherwise
+                # replay the same exception on every later turn.)
+                with suppress(Exception):
+                    sess_now = await pool.get_session(agent_id, conv_id)
+                    if sess_now:
+                        await sess_now.interrupt()
                 with suppress(Exception):
                     await pool.close_session(agent_id, conv_id)
+                if burst_card_id and burst_task_id:
+                    with suppress(Exception):
+                        await _mark_burst_task(burst_card_id, burst_task_id, "failed")
                 return
 
             # Turn finished cleanly. Persist to shared timeline + scan for
@@ -1290,12 +1927,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # the block from the text portion + emit it as a `data-ask-form`
             # chunk; frontend routes it to a floating panel above Composer
             # (NOT into the message stream — same UX pattern as PendingEdit).
-            # Transient queue: refresh loses them, agent can re-emit if
-            # the turn re-runs. Acceptable trade for P0.
-            import uuid as _uuid
+            # PERSISTED as an ask-form message so a refresh re-hydrates any
+            # still-open question (GET /ask-forms) instead of silently losing it.
             full_text, ask_forms = _extract_ask_form_blocks(full_text)
             for af in ask_forms:
-                af_id = af.get("id") or f"ask-{_uuid.uuid4().hex[:10]}"
+                af_id = af.get("id") or f"ask-{uuid.uuid4().hex[:10]}"
                 af["id"] = af_id
                 af["agent_id"] = agent_id
                 frame = (
@@ -1305,10 +1941,218 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     + "}\n\n"
                 )
                 await emit(frame)
+            # Persist all forms in ONE session so they survive a refresh (under
+            # the SAME ids the frontend uses). Best-effort: a schema hiccup must
+            # not abort the turn.
+            if ask_forms:
+                with suppress(Exception):
+                    async with SessionLocal() as _af_db:
+                        for af in ask_forms:
+                            await storage_repo.append_message(
+                                _af_db, conv_id=conv_id, sender_id=agent_id,
+                                payload={
+                                    "kind": "ask-form",
+                                    "title": af.get("title", ""),
+                                    "blocking": bool(af.get("blocking", True)),
+                                    "questions": af.get("questions", []),
+                                },
+                                msg_id=af["id"],
+                            )
+                        await _af_db.commit()
 
             async with SessionLocal() as _resolver_db:
                 _all_agents = await storage_repo.list_agents(_resolver_db)
             resolver = _build_mention_resolver(_all_agents)
+            _agent_setup_by_id = {a.id: a.setup for a in _all_agents}
+
+            # Emit tasks card BEFORE persisting the trailing text so the
+            # WS chunk arrives in stream order with the rest of the turn.
+            full_text, tasks_payloads = _extract_tasks_blocks(
+                full_text, mention_resolver=resolver,
+            )
+
+            # Persist this turn's trace (tool-call/diff rows in stream order,
+            # then the final text) BEFORE any tasks card or worker spawn below.
+            # Ordering matters on reload: the orchestrator's `dispatch` tool-call
+            # must sort BEFORE the burst card it launches — it's the cause, not
+            # an afterthought. (Survives refresh; previously tool parts were
+            # live-only + persisted after the card → wrong order.)
+            if tool_parts or full_text:
+                async with SessionLocal() as _persist_db:
+                    for p in tool_parts:
+                        await storage_repo.append_message(
+                            _persist_db, conv_id=conv_id, sender_id=agent_id,
+                            payload=p, msg_id=f"tc-{uuid.uuid4().hex[:12]}",
+                        )
+                    if full_text:
+                        await storage_repo.append_message(
+                            _persist_db, conv_id=conv_id, sender_id=agent_id,
+                            payload={"kind": "text", "body": [{"t": "p", "c": full_text}]},
+                        )
+                    await _persist_db.commit()
+
+            if tasks_payloads:
+                async with SessionLocal() as _db:
+                    for tp in tasks_payloads:
+                        tp_id = f"tasks-{uuid.uuid4().hex[:10]}"
+                        frame = (
+                            'data: {"type":"data-tasks","data":'
+                            + json.dumps(tp, ensure_ascii=False)
+                            + ',"id":' + json.dumps(tp_id)
+                            + ',"sender_id":' + json.dumps(agent_id)
+                            + "}\n\n"
+                        )
+                        await emit(frame)
+                        await storage_repo.append_message(
+                            _db, conv_id=conv_id, sender_id=agent_id,
+                            payload=tp, msg_id=tp_id,
+                        )
+                    await _db.commit()
+
+            # Terminal turns (orchestrator summary) must not spin up more work:
+            # discard anything they dispatched and skip the drain entirely.
+            if suppress_dispatch:
+                _pending_dispatches.pop(conv_id, None)
+            # Drain `dispatch` MCP-tool batches recorded mid-turn (tool-based
+            # orchestration — the preferred path; the <tasks> text extraction
+            # above is the fallback for non-compliant LLMs). Each batch carries
+            # its own `author_agent_id` (the agent who called dispatch), so
+            # attribution no longer relies on which turn drains the queue.
+            # `resolver` maps teammate names → ULIDs.
+            for batch in ([] if suppress_dispatch else _pending_dispatches.pop(conv_id, [])):
+                # (worker_id, note, task_id) — task_id pairs the spawned worker
+                # with its lane so completion can flip that lane's state.
+                # Batch-level handoff contract: the shared spec every teammate
+                # must honor verbatim (ADR-014). Injected into each worker's
+                # prompt + shown on the card + checked at summary time.
+                contract = (batch.get("contract") or "").strip()
+                # The orchestrator who owns this burst = the agent whose turn is
+                # draining the batch (`agent_id`). We deliberately DO NOT trust
+                # the MCP-supplied `author_agent_id`: it comes from the adapter's
+                # POLYNOIA_AGENT_ID = self.meta.agent_id, which is the ADAPTER's
+                # static id ("claudeCode"), not the contact's ULID. Using it made
+                # the burst owner "claudeCode" → the wrap-up/verification summary
+                # spawned for a non-member with no session and silently no-op'd
+                # (orchestrator never actually verified the deliverables).
+                batch_author = agent_id
+                spawn_list: list[tuple[str, str, str]] = []
+                display_tasks: list[dict] = []
+                for raw_t in batch.get("tasks", []):
+                    if not isinstance(raw_t, dict):
+                        continue
+                    token = str(raw_t.get("agent") or "").strip().lstrip("@")
+                    worker_id = resolver.get(token) or resolver.get(token.lower())
+                    if not worker_id:
+                        continue
+                    note = str(raw_t.get("note") or "").strip()
+                    label = str(raw_t.get("label") or raw_t.get("agent") or "task")[:120]
+                    task_id = f"t-{uuid.uuid4().hex[:8]}"
+                    spawn_list.append((worker_id, note, task_id))
+                    display_tasks.append({
+                        "id": task_id,
+                        "state": "run",
+                        "agent": worker_id,
+                        "label": label,
+                        "note": (note[:300] or None),
+                        "context_refs": [],
+                        "retry_count": 0,
+                    })
+                if not display_tasks:
+                    continue
+                tp = {
+                    "kind": "tasks",
+                    "title": batch.get("title") or "并行任务",
+                    "tasks": display_tasks,
+                }
+                if contract:
+                    tp["contract"] = contract
+                tp_id = f"tasks-{uuid.uuid4().hex[:10]}"
+                await emit(
+                    'data: {"type":"data-tasks","data":'
+                    + json.dumps(tp, ensure_ascii=False)
+                    + ',"id":' + json.dumps(tp_id)
+                    + ',"sender_id":' + json.dumps(batch_author)
+                    + "}\n\n"
+                )
+                async with SessionLocal() as _db:
+                    await storage_repo.append_message(
+                        _db, conv_id=conv_id, sender_id=batch_author,
+                        payload=tp, msg_id=tp_id,
+                    )
+                    # Seed the contract into shared memory (ADR-014) so EVERY
+                    # subsequent turn — workers AND the summary — sees it via the
+                    # shared-memory layer, not just this batch's spawn prompts.
+                    if contract:
+                        await storage_repo.add_conv_memory(
+                            _db, conv_id=conv_id, author_agent_id=batch_author,
+                            kind="contract", content=contract,
+                        )
+                    await _db.commit()
+                # Register the burst so worker completions can flip lane state
+                # + merge to main once all land. workspace_id drives the merge.
+                _ws_id = None
+                async with SessionLocal() as _db:
+                    _conv = await storage_repo.get_conversation(_db, conv_id)
+                    _ws_id = _conv.workspace_id if _conv else None
+                burst_registry[tp_id] = {
+                    "payload": tp,
+                    "pending": {t["id"] for t in display_tasks},
+                    "orch": batch_author,
+                    "workspace_id": _ws_id,
+                    "contract": contract,
+                }
+                # Fire-and-forget spawn: each worker gets its full `note` as
+                # the prompt (with conv history prepended by the assembler).
+                for worker_id, note, task_id in spawn_list:
+                    if depth + 1 >= _MAX_MENTION_CHAIN_DEPTH:
+                        await emit(
+                            'data: {"type":"error","error_text":'
+                            + json.dumps(
+                                f"dispatch depth {_MAX_MENTION_CHAIN_DEPTH} hit "
+                                f"at {agent_id}, stopping"
+                            )
+                            + "}\n\n"
+                        )
+                        break
+                    setup = _agent_setup_by_id.get(worker_id)
+                    if not setup or not setup.adapter_id:
+                        # Can't spawn → don't leave its lane stuck on "run".
+                        await _mark_burst_task(tp_id, task_id, "failed")
+                        continue
+                    await emit_chain_link(
+                        caller=batch_author, callee=worker_id, depth=depth + 1
+                    )
+                    # Hand the shared contract to the teammate verbatim, ahead
+                    # of their own task, so all parallel deliverables interlock.
+                    worker_text = note or "开始你被指派的任务。"
+                    if contract:
+                        worker_text = (
+                            "# 接口契约(本批共享 · 锁定 · 不得各自改动)\n"
+                            f"{contract}\n\n# 你的子任务\n{worker_text}"
+                        )
+                    # Closed-loop handoff (RuFlo): require an explicit verdict +
+                    # point at the live blackboard. The orchestrator reads these
+                    # back to verify the burst instead of trusting silence.
+                    worker_text += (
+                        "\n\n# 收尾(必须)\n"
+                        "完成后调用 `report` 工具自评交付:status(ok/partial/failed)、"
+                        "deliverables(产物文件名+一句话)、contract_ok(是否符合上面的契约)。"
+                        "这是你向 Orchestrator 的正式交付确认——没有它,你的产物按\"未验证\"对待。\n"
+                        "执行中若需确认最新契约或队友已交付的接口,用 `recall` 查共享记忆。"
+                    )
+                    _spawn_turn(
+                        conv_id, worker_id,
+                        run_adapter_turn(
+                            worker_id,
+                            worker_text,
+                            depth=depth + 1,
+                            parent_agent_id=batch_author,
+                            inject_history=True,
+                            burst_card_id=tp_id,
+                            burst_task_id=task_id,
+                        ),
+                    )
+
             mentioned = _parse_mentions(
                 full_text, exclude={agent_id}, resolver=resolver,
             )
@@ -1320,21 +2164,30 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 parent_agent_id=parent_agent_id,
                 depth=depth,
             )
-            # Persist agent's final text to MessageRow so it survives a refresh
-            # and feeds L4 history on the next turn. (Tool-call parts are kept
-            # in the live stream only — P0 history is text-only.)
-            if full_text:
-                agent_payload = {"kind": "text", "body": [{"t": "p", "c": full_text}]}
-                async with SessionLocal() as db:
-                    await storage_repo.append_message(
-                        db, conv_id=conv_id, sender_id=agent_id, payload=agent_payload,
-                    )
-                    await db.commit()
+            log.info(
+                "run_adapter_turn DONE agent=%s depth=%s text_len=%d tool_parts=%d",
+                agent_id, depth, len(full_text), len(tool_parts),
+            )
+            # (Turn text + tool-call rows were already persisted ABOVE, before
+            # any tasks card / worker spawn — so on reload the orchestrator's
+            # dispatch tool-call sorts BEFORE the burst card it triggers, not
+            # after it.)
             # Chain-dispatch to any agents @-mentioned in the response.
             # Now that `mentioned` holds RESOLVED agent_ids (template OR
             # custom), accept any agent that has an adapter routing.
-            _agent_setup_by_id = {a.id: a.setup for a in _all_agents}
-            for target in mentioned:
+            #
+            # Two cases skip chaining entirely:
+            #   · suppress_dispatch — terminal summary turn; a wrap-up that
+            #     @mentions someone must not re-trigger them.
+            #   · burst_task_id — this is a dispatched burst WORKER. Workers
+            #     deliver their subtask; they don't start new turns. A worker
+            #     ending with "@林知夏 验对齐" would otherwise spawn a redundant
+            #     orchestrator turn that races + serializes with the burst's
+            #     own auto-summary (same agent, same lock) → the card reads
+            #     "3/3 done" while the orchestrator spins for ~40s. The
+            #     orchestrator's auto-summary is the single wrap-up path.
+            _skip_chain = suppress_dispatch or burst_task_id is not None
+            for target in ([] if _skip_chain else mentioned):
                 setup = _agent_setup_by_id.get(target)
                 if not setup or not setup.adapter_id:
                     continue  # not a real agent we can spawn
@@ -1358,18 +2211,30 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     f"@{agent_id} mentioned you in their last message above. "
                     "Pick up the conversation."
                 )
-                follow_task = asyncio.create_task(
+                # Strong-ref'd via _conv_inflight so it isn't GC'd even if the
+                # by-id slot is later overwritten; per-agent lock serializes
+                # execution against any other turn for the same agent.
+                _spawn_turn(
+                    conv_id, target,
                     run_adapter_turn(
                         target,
                         nudge,
                         depth=depth + 1,
                         parent_agent_id=agent_id,
                         inject_history=True,
-                    )
+                    ),
                 )
-                # Stash so it isn't GC'd. Overwrites any earlier task
-                # for the same agent — that's fine, per-agent lock serializes.
-                agent_tasks[target] = follow_task
+
+            # Flip the burst lane: failed if the turn streamed a terminal error
+            # (401/429/upstream — produced nothing usable), done otherwise. This
+            # is what stops a stale-credential 401 from showing a green "done"
+            # lane on an empty deliverable (the burst must not rubber-stamp it).
+            if burst_card_id and burst_task_id:
+                with suppress(Exception):
+                    await _mark_burst_task(
+                        burst_card_id, burst_task_id,
+                        "failed" if turn_failed else "done",
+                    )
 
     async def dispatch_user_message(
         text: str, members: list[str], in_reply_to: str | None = None,
@@ -1377,13 +2242,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         """Fan-out a user message to all relevant agents based on members.
 
         Routing rules:
-          - If "orchestrator" is in members → OrchestratorRuntime
+          - If the conv has a designated orchestrator member
+            (Conversation.orchestrator_member_id, and it's actually a member)
+            → run that member's adapter turn; its role-scoped `dispatch` MCP
+            tool drives parallel worker bursts (tool-based orchestration).
           - Else fan out to every member whose AgentRow.setup.adapter_id points
             to a known adapter (ULID-id user contacts are first-class here —
             not just the legacy "claudeCode"/"opencoder"/"codex" template ids).
           - If no such member exists → emit an explanatory error chunk
+
+        There is no implicit orchestrator: orchestration happens *only* when a
+        member has been explicitly designated. No designation → flat group.
         """
-        use_orch = "orchestrator" in members
+        async with SessionLocal() as session:
+            conv = await storage_repo.get_conversation(session, conv_id)
+        orch_id = conv.orchestrator_member_id if conv else None
+        use_orch = bool(orch_id and orch_id in members)
 
         # Persist the user's message FIRST so it shows up after a refresh and so
         # the L4 history layer (which reads MessageRow) sees this turn.
@@ -1399,17 +2273,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 await db.commit()
 
         if use_orch:
-            pool = get_pool()
-            runtime = OrchestratorRuntime(conv_id=conv_id, pool=pool, emit=emit)
-            try:
-                await runtime.run_turn(text)
-            except Exception as e:
-                with suppress(RuntimeError):
-                    await emit(
-                        'data: {"type":"error","error_text":'
-                        + json.dumps(f"orchestrator runtime error: {e}")
-                        + "}\n\n"
-                    )
+            # Tool-based orchestration (ADR-013). The orchestrator member runs a
+            # normal adapter turn whose session carries the role-scoped `dispatch`
+            # MCP tool. When it calls dispatch, the batch lands in
+            # _pending_dispatches; run_adapter_turn drains it at turn-end →
+            # tasks card + parallel worker bursts + silent merge + summary turn.
+            #
+            # NB: we deliberately bypass the legacy text-protocol
+            # OrchestratorRuntime (which expected a ```json``` task list in the
+            # reply). The seeded orchestrator (tool_role="orchestrator") dispatches
+            # via a tool *call*, not a JSON block, so routing it here was a no-op:
+            # the recorded dispatch batch was never drained. See the e2e dispatch
+            # self-test (scripts/test_dispatch_flow.py).
+            _spawn_turn(
+                conv_id, orch_id,
+                run_adapter_turn(orch_id, text, is_dispatcher=True),
+            )
             return
 
         # Real-adapter branch: pull each member's AgentRow and check whether
@@ -1464,13 +2343,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 )
             return
 
-        # Spawn one concurrent task per target agent.
+        # Spawn one concurrent task per target agent. A second message to the
+        # same agent while its first turn runs just blocks on the per-agent
+        # lock; the earlier task keeps its strong ref via _conv_inflight.
         for agent_id in targets:
-            existing = agent_tasks.get(agent_id)
-            if existing and not existing.done():
-                pass  # new task will block on the per-agent lock
-            t = asyncio.create_task(run_adapter_turn(agent_id, text))
-            agent_tasks[agent_id] = t
+            _spawn_turn(conv_id, agent_id, run_adapter_turn(agent_id, text))
 
     # ── Main receive loop ───────────────────────────────────────
     try:
@@ -1489,16 +2366,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             if kind == "abort":
                 target = msg.get("agent_id")
                 if target:
+                    # Agent-level (per-lane) terminate: cancel that agent's
+                    # current turn. Its CancelledError path marks any burst lane
+                    # failed so the rest of the burst still completes.
                     t = agent_tasks.get(target)
                     if t and not t.done():
                         t.cancel()
                 else:
-                    for aid, t in list(agent_tasks.items()):
+                    # Abort-all: cancel every live turn for this conv (iterate
+                    # the strong-ref set, not the last-writer-wins by-id map, so
+                    # no concurrent duplicate-agent turn is missed). Done-callbacks
+                    # remove them; we don't touch the dicts here.
+                    for t in list(_conv_inflight.get(conv_id, set())):
                         if not t.done():
                             t.cancel()
-                        # leave the task in the dict; sender_loop will see
-                        # the cancellation via agent.status=aborted.
-                        _ = aid
                 continue
 
             if kind == "agent_status_query":
@@ -1515,13 +2396,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 members: list[str] = msg.get("members", [])
                 in_reply_to: str | None = msg.get("in_reply_to") or None
                 # Don't await — dispatch returns when fan-out is queued, the
-                # actual streams continue in the background. We store the
-                # dispatcher task in a top-level set so it isn't GC'd mid-flight.
-                disp_task = asyncio.create_task(
-                    dispatch_user_message(text, members, in_reply_to)
+                # actual streams continue in the background. Tracked conv-scoped
+                # (not just locally) so it isn't GC'd AND so the disconnect-prune
+                # won't free this conv's dicts while the dispatcher is still in
+                # its pre-registration await window (else it'd orphan the
+                # agent_tasks dict the dispatcher then writes into).
+                _spawn_dispatcher(
+                    conv_id, dispatch_user_message(text, members, in_reply_to)
                 )
-                _dispatcher_tasks.add(disp_task)
-                disp_task.add_done_callback(_dispatcher_tasks.discard)
                 continue
 
             # Unknown kind — ignore but log via error chunk
@@ -1534,34 +2416,82 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     except WebSocketDisconnect:
         pass
     finally:
-        # Cancel all agent tasks
-        for t in agent_tasks.values():
-            if not t.done():
-                t.cancel()
-        # Best-effort wait so adapter.interrupt() can fire
-        for t in agent_tasks.values():
-            with suppress(BaseException):
-                await asyncio.wait_for(t, timeout=2.0)
-        # Stop the sender loop
+        # Backend-driven execution: a disconnect/refresh does NOT cancel agent
+        # tasks. They keep running (conv-scoped, module-level) and persist their
+        # output; a reconnecting client re-attaches and `emit`'s broadcast keeps
+        # streaming to it. ONLY an explicit `abort` command cancels a task.
+        # Just tear down THIS connection's sender + outbox.
         await send_queue.put(None)
         with suppress(BaseException):
             await asyncio.wait_for(sender, timeout=1.0)
         _unregister_conv_outbox(conv_id, send_queue)
+        # Prune conv-scoped state IFF the conv is now fully idle (no in-flight
+        # turns, no in-flight dispatcher) AND nobody is attached. If tasks are
+        # still running, we do NOT free anything here — the last task's
+        # done-callback (_maybe_prune_conv) reclaims once it finishes, so a
+        # disconnect mid-run can never orphan the per-conv dicts. Finished
+        # tasks were already removed from agent_tasks by their done-callbacks.
+        _maybe_prune_conv(conv_id)
 
 
 # ── Module-level helpers (used by ws_conv) ─────────────────────
 
 
+# Non-text part kinds worth PERSISTING so the trace survives a refresh /
+# reconnect. Tool calls + diffs are the agent's "work trace" — text-only
+# history silently loses them.
+_PERSIST_PART_KINDS = frozenset({"tool-call", "diff", "reasoning"})
+
+
+def _phase_from_chunk(chunk: str) -> tuple[str, dict] | None:
+    """Map an outbound chunk to a coarse agent phase for the status pill:
+    reasoning → thinking, tool-call/card → executing (+tool name), text →
+    replying. Returns (phase, extra) or None for structural chunks
+    (start/finish/metadata) that shouldn't move the pill.
+
+    Matches the `type` field at the START of the `data: {...}` frame (it's always
+    the first key) so an agent streaming literal `"type":"…"` text in a delta
+    can't mis-trigger the pill."""
+    if chunk.startswith('data: {"type":"reasoning-'):
+        return ("thinking", {})
+    if chunk.startswith('data: {"type":"text-'):
+        return ("replying", {})
+    if chunk.startswith('data: {"type":"data-tool-call"'):
+        name = None
+        with suppress(Exception):
+            name = json.loads(chunk[len("data: "):].strip()).get("data", {}).get("name")
+        return ("executing", {"tool": name} if name else {})
+    if chunk.startswith('data: {"type":"data-'):
+        return ("executing", {})
+    return None
+
+
 async def _tap_text_into(
-    events: AsyncIterator[AdapterEvent], buffer: list[str]
+    events: AsyncIterator[AdapterEvent],
+    buffer: list[str],
+    parts: list[dict] | None = None,
 ) -> AsyncIterator[AdapterEvent]:
     """Pass-through async iterator that side-effects every text bit into
-    ``buffer`` so the caller can reassemble the full agent response after
-    the stream ends. Doesn't touch non-text events.
+    ``buffer`` so the caller can reassemble the full agent response after the
+    stream ends. If ``parts`` is given, also captures completed non-text parts
+    (tool-call / diff / reasoning) in stream order so the caller can persist them
+    and the trace survives a refresh (otherwise they'd be live-only). Reasoning
+    deltas are streamed through but kept OUT of ``buffer`` — thinking is not the
+    agent's reply, must not be persisted as the reply, nor scanned for @mentions.
     """
+    part_row_idx: dict[str, int] = {}  # part_id → its index in `parts`
+    reasoning_parts: set[str] = set()  # part_ids whose deltas are thinking
     async for ev in events:
         t = ev.type
-        if t == "part.delta":
+        if t == "part.started":
+            if getattr(getattr(ev, "part", None), "kind", None) == "reasoning":
+                pid = getattr(ev, "part_id", None)
+                if pid is not None:
+                    reasoning_parts.add(pid)
+        elif t == "part.delta":
+            if getattr(ev, "part_id", None) in reasoning_parts:
+                yield ev  # thinking — stream through but keep out of the reply
+                continue
             delta = getattr(ev, "delta", None)
             if isinstance(delta, dict):
                 txt = delta.get("text")
@@ -1577,6 +2507,21 @@ async def _tap_text_into(
                     c = getattr(blk, "c", "")
                     if isinstance(c, str):
                         buffer.append(c)
+            elif parts is not None and kind in _PERSIST_PART_KINDS:
+                # A single tool emits part.completed more than once under the
+                # same part_id as it advances (running → completed). Persist ONE
+                # row per tool at its latest state by overwriting in place, so a
+                # reloaded trace shows each tool once (not a running/completed
+                # pair, which is what the live card collapses).
+                with suppress(Exception):
+                    dump = part.model_dump(mode="json")
+                    pid = getattr(ev, "part_id", None) or dump.get("tool_call_id")
+                    if pid is not None and pid in part_row_idx:
+                        parts[part_row_idx[pid]] = dump
+                    else:
+                        if pid is not None:
+                            part_row_idx[pid] = len(parts)
+                        parts.append(dump)
         yield ev
 
 
@@ -1617,6 +2562,152 @@ def _extract_ask_form_blocks(text: str) -> tuple[str, list[dict]]:
     return cleaned, out_blocks
 
 
+# Tasks-block protocol — same pattern as ask-form. Agent emits
+# `<tasks>{...}</tasks>` (or `<tasks>[...]</tasks>` for assignee-list shorthand)
+# to dispatch parallel sub-tasks. Server parses, resolves agent names → ULIDs,
+# fills in defaults, emits as TasksPayload chunk.
+_TASKS_RE = re.compile(
+    r"<tasks>\s*(\{.*?\}|\[.*?\])\s*</tasks>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Fallback: detect `` ```json [...] ``` `` code-block containing an array
+# of {assignee, file, spec} objects — orchestrator personas often fall
+# back to this form. Only the FIRST such block per message is treated as
+# a tasks dispatch (subsequent code blocks are normal).
+_TASKS_FALLBACK_RE = re.compile(
+    r"```(?:json)?\s*(\[\s*\{.*?\}\s*\])\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _build_task_items(
+    raw_tasks: list,
+    *,
+    resolve_agent: Callable[[str], str | None],
+) -> list[dict]:
+    """Normalize a list of raw task dicts into TasksPayload `TaskItem` shape.
+
+    Accepts both `{"agent","label","note"}` and `{"assignee","file","spec"}`
+    schemas. Drops tasks pointing at unresolvable agents (un-dispatchable).
+    """
+    out: list[dict] = []
+    for raw_t in raw_tasks:
+        if not isinstance(raw_t, dict):
+            continue
+        agent_raw = raw_t.get("agent") or raw_t.get("assignee") or ""
+        resolved = resolve_agent(str(agent_raw))
+        if not resolved:
+            continue
+        label = (
+            raw_t.get("label")
+            or raw_t.get("file")
+            or raw_t.get("name")
+            or "task"
+        )
+        note = raw_t.get("note") or raw_t.get("spec") or raw_t.get("desc")
+        out.append({
+            "id": f"t-{uuid.uuid4().hex[:8]}",
+            "state": "run",  # dispatched immediately on emit
+            "agent": resolved,
+            "label": str(label)[:120],
+            "note": (str(note)[:300] if note else None),
+            "context_refs": [],
+            "retry_count": 0,
+        })
+    return out
+
+
+def _extract_tasks_blocks(
+    text: str,
+    *,
+    mention_resolver: dict[str, str],
+) -> tuple[str, list[dict]]:
+    """Pull `<tasks>{...}</tasks>` blocks out of agent text and normalize to
+    TasksPayload shape.
+
+    Two JSON shapes accepted:
+    1. Full:    {"title": "...", "tasks": [{"agent": "顾屿", "label": "...", "note": "..."}, ...]}
+    2. Shorthand:  [{"assignee": "@顾屿", "file": "X", "spec": "..."}, ...]
+       (matches early personas — auto-translated)
+
+    Returns ``(text_without_blocks, list_of_payloads)``.
+
+    ``mention_resolver`` translates display names("顾屿","@顾屿","ClaudeCode")
+    → canonical agent_id. See `_build_mention_resolver`.
+    """
+    has_tag = "<tasks>" in text
+    # Fallback path is needed when a persona ignores the `<tasks>` tag and
+    # falls back to a `` ```json [{assignee...}] ``` `` code block.
+    has_fallback = (
+        not has_tag
+        and "```" in text
+        and "assignee" in text
+    )
+    if not has_tag and not has_fallback:
+        return text, []
+    out_blocks: list[dict] = []
+
+    def _resolve_agent(raw: str) -> str | None:
+        if not raw:
+            return None
+        s = raw.strip().lstrip("@")
+        return mention_resolver.get(s) or mention_resolver.get(s.lower())
+
+    def replacer(m: re.Match) -> str:
+        raw = m.group(1)
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return m.group(0)
+
+        title = ""
+        raw_tasks: list = []
+        if isinstance(parsed, list):
+            raw_tasks = parsed
+        elif isinstance(parsed, dict):
+            title = str(parsed.get("title") or "")
+            raw_tasks = parsed.get("tasks") or []
+        else:
+            return m.group(0)
+
+        tasks = _build_task_items(raw_tasks, resolve_agent=_resolve_agent)
+        if not tasks:
+            return m.group(0)
+
+        out_blocks.append({
+            "kind": "tasks",
+            "title": title or "Parallel work",
+            "tasks": tasks,
+        })
+        return ""
+
+    cleaned = _TASKS_RE.sub(replacer, text).strip()
+
+    if not out_blocks and has_fallback:
+        m = _TASKS_FALLBACK_RE.search(cleaned)
+        if m:
+            raw = m.group(1).strip()
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list) and any(
+                isinstance(t, dict) and ("assignee" in t or "agent" in t)
+                for t in parsed
+            ):
+                tasks = _build_task_items(parsed, resolve_agent=_resolve_agent)
+                if tasks:
+                    out_blocks.append({
+                        "kind": "tasks",
+                        "title": "Parallel work",
+                        "tasks": tasks,
+                    })
+                    cleaned = _TASKS_FALLBACK_RE.sub("", cleaned, count=1).strip()
+
+    return cleaned, out_blocks
+
+
 def _parse_mentions(
     text: str,
     *,
@@ -1630,26 +2721,62 @@ def _parse_mentions(
     chain-dispatching to fictional names. Callers pass a resolver built
     from the conv's actual members.
 
-    With ``resolver=None`` (legacy callers / tests), the raw token is
-    returned for backward compatibility.
+    Resolution strategy (resolver given) — **roster-driven longest-match**,
+    NOT a greedy regex. At each ``@`` we match the LONGEST known name/handle/id
+    that the following text starts with (case-insensitive). This is:
+      · CJK-safe — no whitespace needed. `@顾屿帮我写代码` matches "顾屿" and
+        leaves "帮我写代码" as prose. (The old greedy regex swallowed the whole
+        run into one token that never resolved → silently dropped the mention.)
+      · false-positive-free — only REAL roster names match; `@张三`/`@123`/an
+        email's `@` never resolve, so nothing fictional gets dispatched.
+      · rename/collision-robust — matching is against the live roster, exact.
+
+    With ``resolver=None`` (legacy callers / tests), fall back to the regex
+    token extraction and return raw tokens.
     """
     if not text:
         return []
+
     out: list[str] = []
     seen: set[str] = set()
-    for m in _MENTION_RE.finditer(text):
-        token = m.group(1)
-        # Resolve name/handle/id → agent_id
-        if resolver is not None:
-            resolved = resolver.get(token) or resolver.get(token.lower())
-            if not resolved:
-                continue  # unknown mention — skip
-        else:
-            resolved = token
-        if resolved in exclude or resolved in seen:
+
+    # Legacy / test path: no roster → regex token extraction, raw tokens.
+    if resolver is None:
+        for m in _MENTION_RE.finditer(text):
+            token = m.group(1)
+            if token in exclude or token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+        return out
+
+    # Roster-driven longest-match. Keys (id / name / handle, each + lowercased)
+    # sorted longest-first so the most specific name wins (e.g. "顾屿深" over
+    # "顾屿" if both are agents).
+    keys = sorted(
+        ((k, k.lower()) for k in resolver if k),
+        key=lambda kv: len(kv[0]),
+        reverse=True,
+    )
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "@":
+            i += 1
             continue
-        seen.add(resolved)
-        out.append(resolved)
+        rest_low = text[i + 1 :].lower()
+        matched: str | None = None
+        for key, key_low in keys:
+            if rest_low.startswith(key_low):
+                matched = key
+                break
+        if matched is None:
+            i += 1
+            continue
+        resolved = resolver[matched]
+        if resolved not in exclude and resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+        i += 1 + len(matched)  # skip past the matched name
     return out
 
 

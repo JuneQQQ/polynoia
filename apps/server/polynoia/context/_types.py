@@ -8,6 +8,7 @@ from typing import Literal
 LayerKind = Literal[
     "identity",       # L1
     "project_brief",  # L2
+    "shared_memory",  # L2.5 — conv-scoped shared contract/decisions (ADR-014)
     "activity",       # L3 (one entry per ledger event)
     "history",        # L4
     "user_turn",      # L5

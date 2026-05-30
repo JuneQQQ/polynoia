@@ -86,8 +86,12 @@ class AdapterPool:
             if base is None:
                 return None
 
-            # Orchestrator: tools off (pure text coordination).
-            allowed: list[str] | None = [] if agent_id == "orchestrator" else None
+            # The conv's designated orchestrator member coordinates with tools
+            # off (pure text decompose/aggregate). Everyone else gets the full
+            # adapter toolset.
+            allowed: list[str] | None = (
+                [] if (conv is not None and agent_id == conv.orchestrator_member_id) else None
+            )
 
             # P1.1 workspace-shared sandbox: trigger when conv has workspace_id
             # AND is a group conv (DMs stay per-conv until P1.2).
@@ -109,6 +113,7 @@ class AdapterPool:
                 workspace_id=ws_id,
                 agent_id=agent_id if ws_id else None,
                 merge_mode=merge_mode,
+                tool_role=agent.tool_role,
             )
             self._sessions[key] = new_sess
             return new_sess

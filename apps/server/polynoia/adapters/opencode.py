@@ -23,15 +23,19 @@ Translation map (ACP `session/update` → PAP `AdapterEvent`):
       → On status="completed":   PartCompletedEvent(completed, output_text=...)
       → On status="failed":      PartCompletedEvent(error, output_text=err)
 
-  update.sessionUpdate == "agent_thought_chunk"  → ignored (P0; P1 = thinking part)
+  update.sessionUpdate == "agent_thought_chunk"
+      → First chunk per message_id: PartStartedEvent(ReasoningPayload empty)
+      → Subsequent: PartDeltaEvent({"text": chunk}); closed as ReasoningPayload
   update.sessionUpdate == "usage_update"         → ignored (rolled into TurnCompleted)
   update.sessionUpdate == "available_commands_update" → ignored
   update.sessionUpdate == "plan"                 → ignored (P1)
   update.sessionUpdate == "user_message_chunk"   → ignored (client already knows)
 
 NOTE: `OPENCODE_ACP_NEXT=1` is NOT enabled — the acp-next code path returns
-`UnsupportedOperationError` for `session/prompt` in OpenCode 1.14.x. The
-default v1 path already streams via `session/update` notifications.
+`UnsupportedOperationError` for `session/prompt` and `session/cancel` in
+OpenCode 1.15.x. The default v1 path already streams via `session/update`
+notifications. acp-next is an agent-side Effect-based refactor; as ACP client
+we are unaffected.
 """
 from __future__ import annotations
 
@@ -42,11 +46,12 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from polynoia.adapters._utils import _new_id, _tool_summary
+from polynoia.adapters._utils import _new_id, _reasoning_seconds, _tool_summary
 from polynoia.adapters.base import (
     AdapterCapabilities,
     AdapterEvent,
@@ -59,8 +64,9 @@ from polynoia.adapters.base import (
     TurnStartedEvent,
 )
 from polynoia.domain.messages import TextBlock as PNTextBlock
-from polynoia.domain.messages import TextPayload, ToolCallPayload
+from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.sandbox import Sandbox
+from polynoia.settings import settings
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +74,37 @@ log = logging.getLogger(__name__)
 # Sentinel passed through the notification queue to stop the translator
 # once the session/prompt JSON-RPC response has been received.
 _SENTINEL: Any = object()
+
+
+def _polynoia_opencode_data_home() -> str:
+    """Return a dedicated XDG_DATA_HOME for Polynoia's opencode sessions,
+    ISOLATED from the user's own ``~/.local/share/opencode`` so the two never
+    contend on the same ``opencode.db`` (WAL sqlite session store).
+
+    Seeded ONCE from the host's already-migrated db + auth, so opencode skips
+    its slow first-run migration. Shared across Polynoia's own opencode
+    sessions (WAL handles that concurrency); only the user-vs-Polynoia
+    contention — the actual freeze cause — is removed.
+    """
+    target = settings.sandbox_root / "_opencode_home"
+    data = target / "opencode"
+    data.mkdir(parents=True, exist_ok=True)
+
+    host = (
+        Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+        / "opencode"
+    )
+    # auth.json — refresh every call (cheap; keeps credentials current).
+    host_auth = host / "auth.json"
+    if host_auth.exists():
+        with contextlib.suppress(Exception):
+            shutil.copy2(host_auth, data / "auth.json")
+    # opencode.db — copy ONCE to inherit the migrated schema (skip migration).
+    host_db = host / "opencode.db"
+    if host_db.exists() and not (data / "opencode.db").exists():
+        with contextlib.suppress(Exception):
+            shutil.copy2(host_db, data / "opencode.db")
+    return str(target)
 
 
 class OpenCodeAdapter:
@@ -107,7 +144,7 @@ class OpenCodeAdapter:
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
             line = stdout.decode().strip().splitlines()[0] if stdout else ""
-            # Typical: "1.14.48"
+            # Typical: "1.15.12"
             version = line.split()[0] if line else None
             self.meta.detected = True
             self.meta.detected_version = version
@@ -125,7 +162,8 @@ class OpenCodeAdapter:
         env: dict[str, str] | None = None,
         workspace_id: str | None = None,
         agent_id: str | None = None,
-        merge_mode: str = "auto",  # P1.2 — OpenCode doesn't use Polynoia MCP, so gating doesn't apply here
+        merge_mode: str = "auto",  # P1.2 — OpenCode does use Polynoia MCP (see _start in session); merge_mode reserved
+        tool_role: str = "generalist",
     ) -> OpenCodeSession:
         # P1.1 routing — see workspace-shared-git.md
         if workspace_id and agent_id:
@@ -142,6 +180,7 @@ class OpenCodeAdapter:
             system_prompt=system_prompt,
             env=env or {},
             agent_id=self.meta.agent_id,
+            tool_role=tool_role,
         )
 
 
@@ -172,7 +211,29 @@ async def _translate_acp_stream_to_pap(
         updated state.
     """
     text_messages: dict[str, tuple[str, str]] = {}  # msg_id → (part_id, accumulated)
+    # agent_thought_chunk streams → ReasoningPayload parts (folded away in UI)
+    thought_messages: dict[str, tuple[str, str]] = {}  # msg_id → (part_id, accumulated)
+    thought_start: dict[str, float] = {}  # msg_id → monotonic start (for "思考 N 秒")
     tool_parts: dict[str, tuple[str, str, ToolCallPayload]] = {}
+
+    def _close_open_thoughts() -> list[PartCompletedEvent]:
+        """Complete (fold) any open reasoning parts. Called when the model moves
+        from thinking to replying or executing a tool, so each 思考过程 folds
+        AS SOON AS it ends — matching Claude's per-block content_block_stop —
+        instead of all staying expanded until turn end (the '沈昭 状态很怪' wall).
+        Stamps the thinking duration so "思考 N 秒" persists through a refresh."""
+        evs = []
+        for mid, (pid, acc) in thought_messages.items():
+            evs.append(PartCompletedEvent(
+                message_id=mid, part_id=pid,
+                part=ReasoningPayload(
+                    body=[PNTextBlock(c=acc)],
+                    seconds=_reasoning_seconds(thought_start.get(mid)),
+                ),
+            ))
+        thought_messages.clear()
+        thought_start.clear()
+        return evs
 
     async for notif in notifications:
         if notif.get("method") != "session/update":
@@ -193,6 +254,9 @@ async def _translate_acp_stream_to_pap(
             chunk = content.get("text", "")
             if not chunk:
                 continue
+            # Reply started → fold any open thinking blocks first.
+            for ev in _close_open_thoughts():
+                yield ev
 
             existing = text_messages.get(msg_id)
             if existing is None:
@@ -219,10 +283,49 @@ async def _translate_acp_stream_to_pap(
                     delta={"text": chunk},
                 )
 
+        elif kind == "agent_thought_chunk":
+            # Same shape as agent_message_chunk, but the model's thinking →
+            # emit as a ReasoningPayload part so the UI streams then folds it.
+            msg_id = update.get("messageId") or _new_id()
+            content = update.get("content") or {}
+            if content.get("type") != "text":
+                continue
+            chunk = content.get("text", "")
+            if not chunk:
+                continue
+            existing = thought_messages.get(msg_id)
+            if existing is None:
+                part_id = _new_id()
+                thought_messages[msg_id] = (part_id, chunk)
+                thought_start[msg_id] = time.monotonic()
+                yield PartStartedEvent(
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    message_id=msg_id,
+                    part_id=part_id,
+                    part=ReasoningPayload(body=[PNTextBlock(c="")]),
+                )
+                yield PartDeltaEvent(
+                    message_id=msg_id,
+                    part_id=part_id,
+                    delta={"text": chunk},
+                )
+            else:
+                part_id, accumulated = existing
+                thought_messages[msg_id] = (part_id, accumulated + chunk)
+                yield PartDeltaEvent(
+                    message_id=msg_id,
+                    part_id=part_id,
+                    delta={"text": chunk},
+                )
+
         elif kind == "tool_call":
             tool_call_id = update.get("toolCallId")
             if not tool_call_id:
                 continue
+            # Tool execution started → fold any open thinking blocks first.
+            for ev in _close_open_thoughts():
+                yield ev
             tool_name = update.get("title") or update.get("kind") or "tool"
             raw_input = update.get("rawInput") or {}
             msg_id = _new_id()
@@ -315,9 +418,8 @@ async def _translate_acp_stream_to_pap(
                 part=updated_payload,
             )
 
-        # Other update kinds (agent_thought_chunk, user_message_chunk, plan,
-        # usage_update, available_commands_update, config_option_update)
-        # are silently ignored in P0.
+        # Other update kinds (user_message_chunk, plan, usage_update,
+        # available_commands_update, config_option_update) are ignored in P0.
         else:
             continue
 
@@ -328,6 +430,10 @@ async def _translate_acp_stream_to_pap(
             part_id=part_id,
             part=TextPayload(body=[PNTextBlock(c=accumulated)]),
         )
+    # Close any reasoning parts still open at turn end (final body + duration
+    # persisted; UI folds it).
+    for ev in _close_open_thoughts():
+        yield ev
 
 
 # ── Session implementation ────────────────────────────────────────
@@ -346,6 +452,7 @@ class OpenCodeSession:
         system_prompt: str | None,
         env: dict[str, str],
         agent_id: str,
+        tool_role: str = "generalist",
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
         self.agent_id = agent_id
@@ -355,6 +462,7 @@ class OpenCodeSession:
         self._model = model
         self._system_prompt = system_prompt
         self._env = env
+        self._tool_role = tool_role
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
         self._acp_session_id: str | None = None
@@ -372,19 +480,31 @@ class OpenCodeSession:
         if self._proc is not None:
             return
 
-        # IMPORTANT: do NOT rewrite HOME for opencode. Unlike claude/codex,
-        # opencode stores migrated sqlite + plugin caches under HOME and
-        # re-runs a multi-minute "one time database migration" every time
-        # HOME is a fresh dir. We want host HOME (where migration is already
-        # done) but keep per-conv isolation via cwd + Polynoia MCP boundary.
-        # Tool calls all go through mcp__polynoia__* into the sandbox; the
-        # opencode process can read its own auth from host ~/.local/share/opencode.
+        # Isolate opencode's RUNTIME state from the user's own opencode.
+        # opencode keeps its session store in a single sqlite (opencode.db,
+        # WAL) under $XDG_DATA_HOME/opencode. If Polynoia's spawned sessions
+        # share the host data dir with the user's interactive opencode, all of
+        # them contend on that one db → a session can wedge waiting on a lock
+        # (the "卡死" we hit). So we point XDG_DATA_HOME at a dedicated Polynoia
+        # dir. To dodge opencode's slow first-run migration, that dir is seeded
+        # ONCE from the host's already-migrated db (+ auth). HOME stays the host
+        # HOME; only the data dir is redirected.
         env = {
             **os.environ,                        # inherit including HOME
             **self._env,                         # extra caller env
+            "XDG_DATA_HOME": _polynoia_opencode_data_home(),
             "POLYNOIA_CONV_ID": self._sandbox.conv_id,
             "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
         }
+        # CRITICAL: opencode ACP `session/new` ignores any client-supplied
+        # model — it uses the config's default `model`. Without this the
+        # session silently runs opencode's free `big-pickle` model (which
+        # congests/hangs), NOT the model the user picked. We inject the model
+        # via OPENCODE_CONFIG_CONTENT (merged at highest precedence, keeps the
+        # user's providers) so this session actually uses self._model
+        # (e.g. "opencode-go/deepseek-v4-pro").
+        if self._model:
+            env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"model": self._model})
         # NOTE: do NOT set OPENCODE_ACP_NEXT=1 — see module docstring.
         self._proc = await asyncio.create_subprocess_exec(
             "opencode",
@@ -422,8 +542,21 @@ class OpenCodeSession:
             "env": [
                 {"name": "POLYNOIA_CONV_ID", "value": self._conv_id},
                 {"name": "POLYNOIA_AGENT_ID", "value": self.agent_id},
+                {"name": "POLYNOIA_AGENT_ROLE", "value": self._tool_role},
+                # Lets MCP tools call back into the server (pending-edit gate).
+                {"name": "POLYNOIA_API_BASE", "value": os.environ.get(
+                    "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}")},
                 # MCP subprocess might inherit a sandboxed HOME — pin sandbox_root.
                 {"name": "POLYNOIA_SANDBOX_ROOT", "value": str(self._sandbox.root.parent)},
+                # Exact worktree → MCP writes/commits to the agent's branch.
+                *(
+                    [
+                        {"name": "POLYNOIA_WORKTREE_ROOT", "value": str(self._sandbox.root)},
+                        {"name": "POLYNOIA_WORKSPACE_ROOT", "value": str(self._sandbox.workspace_root)},
+                    ]
+                    if self._sandbox.workspace_root
+                    else []
+                ),
                 {"name": "PYTHONPATH", "value": server_pkg_root},
             ],
         }

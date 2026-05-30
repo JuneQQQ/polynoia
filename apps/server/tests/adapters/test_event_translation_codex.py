@@ -124,6 +124,43 @@ async def test_file_change_item() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_item_streams_as_reasoning_part() -> None:
+    # Codex reasoning: item.started opens it; item.updated carries the CUMULATIVE
+    # text (we emit only the new suffix as a delta); item.completed closes it as
+    # a ReasoningPayload.
+    transcript = (
+        json.dumps({"type": "item.started",
+            "item": {"id": "r1", "type": "reasoning", "text": ""}}) + "\n"
+        + json.dumps({"type": "item.updated",
+            "item": {"id": "r1", "type": "reasoning", "text": "step one"}}) + "\n"
+        + json.dumps({"type": "item.updated",
+            "item": {"id": "r1", "type": "reasoning", "text": "step one, step two"}}) + "\n"
+        + json.dumps({"type": "item.completed",
+            "item": {"id": "r1", "type": "reasoning", "text": "step one, step two"}}) + "\n"
+        + json.dumps({"type": "turn.completed", "usage": {}}) + "\n"
+    )
+    events = [
+        ev async for ev in _translate_codex_stream(
+            feed(transcript), turn_id="t1", task_id="x",
+        )
+    ]
+    reasoning_evs = [
+        e for e in events if e.type in ("part.started", "part.delta", "part.completed")
+    ]
+    assert reasoning_evs[0].type == "part.started"
+    assert reasoning_evs[0].part.kind == "reasoning"
+    # Two updates → two suffix deltas (cumulative diffed)
+    assert reasoning_evs[1].delta == {"text": "step one"}
+    assert reasoning_evs[2].delta == {"text": ", step two"}
+    assert reasoning_evs[3].type == "part.completed"
+    assert reasoning_evs[3].part.kind == "reasoning"
+    assert reasoning_evs[3].part.body[0].c == "step one, step two"
+    # All share one part_id
+    assert len({reasoning_evs[0].part_id, reasoning_evs[1].part_id,
+                reasoning_evs[2].part_id, reasoning_evs[3].part_id}) == 1
+
+
+@pytest.mark.asyncio
 async def test_process_crash_when_no_terminal_event() -> None:
     transcript = "\n".join([
         json.dumps({"type": "thread.started", "thread_id": "t_z"}),

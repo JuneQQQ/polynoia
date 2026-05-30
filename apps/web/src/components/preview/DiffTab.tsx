@@ -6,6 +6,7 @@ import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view.css";
 import { useMemo } from "react";
 import type { DiffPayload, Hunk } from "../../lib/types";
+import { inferLang } from "./diffLang";
 
 /** Convert Polynoia hunks → unified-diff string (one file). */
 function hunksToUnifiedDiff(file: string, hunks: Hunk[]): string {
@@ -22,17 +23,6 @@ function hunksToUnifiedDiff(file: string, hunks: Hunk[]): string {
     }
   }
   return lines.join("\n");
-}
-
-function inferLang(file: string): string {
-  const ext = file.split(".").pop()?.toLowerCase() ?? "";
-  if (ext === "ts" || ext === "tsx") return "tsx";
-  if (ext === "js" || ext === "jsx") return "jsx";
-  if (ext === "py") return "python";
-  if (ext === "go") return "go";
-  if (ext === "sql") return "sql";
-  if (ext === "md") return "markdown";
-  return "text";
 }
 
 export function DiffTab({ payload }: { payload?: DiffPayload | null }) {

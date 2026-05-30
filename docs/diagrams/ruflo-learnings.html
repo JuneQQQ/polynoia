@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Polynoia · 借鉴 RuFlo:契约 + 共享记忆</title>
+<!-- 设计报告:我们从 ruvnet/ruflo 学到什么、采纳了哪两点、怎么落到代码里。
+     维护:有新借鉴就更新对照表 + before/after。Atelier 暗色风,沿用 langgraph 图 token。 -->
+<style>
+  :root{
+    --bg:#14110c; --surface:#1f1a14; --surface2:#1a160f; --line:#2c251b;
+    --fg:#ece3d2; --fg2:#c2b8a3; --fg3:#8c8270; --accent:#ec8a4c;
+    --green:#4faf86; --amber:#d9a441; --red:#d6695a; --blue:#5b8fc9; --purple:#9b7ee0;
+    --font-display:"Noto Serif SC","Songti SC",serif;
+    --font-ui:"Noto Sans SC","PingFang SC",system-ui,sans-serif;
+    --font-mono:"JetBrains Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-ui);
+       line-height:1.7;font-size:15px;
+       background-image:radial-gradient(60% 50% at 8% 0%,rgba(236,138,76,.06),transparent 70%),
+                        radial-gradient(55% 55% at 100% 100%,rgba(150,110,70,.05),transparent 70%);}
+  header{padding:34px 40px 18px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--font-mono);font-size:11px;letter-spacing:.24em;
+           text-transform:uppercase;color:var(--accent);font-weight:600}
+  h1{font-family:var(--font-display);font-weight:600;font-size:28px;margin:.3em 0 .15em}
+  .lede{color:var(--fg2);font-size:15px;margin:.2em 0;max-width:78ch}
+  .lede b{color:var(--fg)}
+  main{padding:24px 40px 8px;max-width:1100px}
+  section{margin:0 0 30px}
+  h2{font-family:var(--font-display);font-size:20px;font-weight:600;margin:0 0 4px;
+     display:flex;align-items:baseline;gap:10px}
+  h2 .tag{font-family:var(--font-mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+          padding:2px 8px;border-radius:99px;font-weight:600}
+  .tag.adopt{color:var(--green);background:rgba(79,175,134,.12);border:1px solid rgba(79,175,134,.3)}
+  .tag.skip{color:var(--fg3);background:var(--surface2);border:1px solid var(--line)}
+  h2 + .sub{color:var(--fg3);font-size:13px;margin:0 0 14px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0 4px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+     color:var(--accent);font-weight:600}
+  td b{color:var(--fg)}
+  .gap{color:var(--amber)} .ok{color:var(--green)}
+  code{font-family:var(--font-mono);font-size:11.5px;background:rgba(236,138,76,.13);
+       color:#e2a06e;border:1px solid rgba(236,138,76,.15);border-radius:5px;padding:1px 5px}
+  .flow{display:flex;flex-direction:column;gap:10px;background:var(--surface);
+        border:1px solid var(--line);border-radius:13px;padding:18px 20px;
+        box-shadow:inset 0 1px 0 rgba(255,240,220,.05)}
+  .step{display:flex;gap:12px;align-items:baseline}
+  .step .n{flex:0 0 auto;width:22px;height:22px;border-radius:7px;display:grid;place-items:center;
+           font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--bg);background:var(--accent)}
+  .step .t{color:var(--fg2);font-size:13.5px}
+  .step .t b{color:var(--fg)}
+  .ba{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}
+  .ba > div{flex:1 1 320px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .ba h4{margin:0 0 8px;font-family:var(--font-mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase}
+  .before h4{color:var(--red)} .after h4{color:var(--green)}
+  .ba p{margin:.3em 0;color:var(--fg2);font-size:13px}
+  footer{padding:10px 40px 40px;color:var(--fg3);font-size:11.5px;font-family:var(--font-mono);
+         border-top:1px solid var(--line);margin-top:10px}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  ul{margin:.3em 0;padding-left:1.1em} li{color:var(--fg2);font-size:13.5px;margin:4px 0}
+</style>
+</head>
+<body>
+<header>
+  <div class="eyebrow">Polynoia · Design Report · ADR-014</div>
+  <h1>从 RuFlo 学两件事:交接契约 + 共享记忆</h1>
+  <p class="lede"><b>RuFlo</b>(<code>ruvnet/ruflo</code>,前身 Claude Flow,40k★)是与我们同赛道的多 Agent 编排框架。
+     它把 <b>shared memory</b> 放在架构正中心,并把 agent 间的 <b>handoff</b> 做成机制。对照下来,我们有两个真实缺口——
+     这版按计划补上这两点,RuFlo 的重型部分(向量库 / federation / 100-agent / 自学习)<b>暂不做</b>。</p>
+</header>
+
+<main>
+
+  <!-- 对照 -->
+  <section>
+    <h2>RuFlo 概念 → 我们现状</h2>
+    <p class="sub">同样的四件套,看哪里已对齐、哪里有缺口。</p>
+    <table>
+      <tr><th>RuFlo</th><th>含义</th><th>Polynoia 现状</th></tr>
+      <tr><td><b>agents</b></td><td>角色限定的 AI 个体</td><td class="ok">✓ 已有 <code>tool_role</code>(orchestrator/coder/designer/writer)</td></tr>
+      <tr><td><b>swarms</b></td><td>带交互模式的编队</td><td class="gap">🟡 只有「主协调→并行 worker」一种(本轮不扩)</td></tr>
+      <tr><td><b>tasks</b></td><td>提交给编队的工作单元</td><td class="ok">✓ <code>dispatch</code> 批次 → BurstCard 泳道</td></tr>
+      <tr><td><b>handoffs</b></td><td>A 的产出/契约交给 B</td><td class="gap">🟡 原先只靠 <code>note</code> 散文 + 口头锁 → <b>本轮补「契约」</b></td></tr>
+      <tr><td><b>shared&nbsp;context</b></td><td>跨 agent 的记忆库</td><td class="gap">🟡 原先无共享层 → <b>本轮补「共享记忆」</b></td></tr>
+    </table>
+  </section>
+
+  <!-- Phase 1 -->
+  <section>
+    <h2>① 交接契约 <span class="tag adopt">已采纳</span></h2>
+    <p class="sub">把「所有人必须遵守的接口/字段/路径/端口」从散文提升为结构化字段,逐字下发 + 验收。</p>
+    <div class="flow">
+      <div class="step"><span class="n">1</span><span class="t">orchestrator 调 <code>dispatch</code> 时填 <b>contract</b> 字段(接口/字段名/路由/端口)——锁一次,不让各人自己发明。</span></div>
+      <div class="step"><span class="n">2</span><span class="t">drain 把 contract <b>逐字前置</b>到每个 worker 的 prompt:<code># 接口契约(锁定·不得改动)…</code></span></div>
+      <div class="step"><span class="n">3</span><span class="t">contract 写进 BurstCard payload → 卡上「契约」可折叠条;刷新仍在。</span></div>
+      <div class="step"><span class="n">4</span><span class="t">收尾汇总轮带上 contract,要求 orchestrator <b>逐条核对</b>各产物是否符合。</span></div>
+    </div>
+    <div class="ba">
+      <div class="before"><h4>Before</h4>
+        <p>「沈昭的 fetch 路径要和顾屿接口一致」塞在 note 里,靠人眼比对;字段名/端口对不上常要返工。</p></div>
+      <div class="after"><h4>After</h4>
+        <p>同一份契约下发给三个人,卡上可见,汇总时机器核对。三路产物天然互锁。</p></div>
+    </div>
+    <p class="sub" style="margin-top:10px">改动点:<code>mcp/tools.py::_DispatchTool</code> · <code>routes.py</code>(record_dispatch / drain / 汇总 nudge)· <code>TasksBurstPart.tsx</code></p>
+  </section>
+
+  <!-- Phase 2 -->
+  <section>
+    <h2>② 共享记忆 <span class="tag adopt">已采纳</span></h2>
+    <p class="sub">会话级、跨 agent 的「已锁定事实」存储,注入每一个 turn。轻量文本,<b>不上向量检索</b>。</p>
+    <div class="flow">
+      <div class="step"><span class="n">1</span><span class="t">新表 <code>conv_memory</code>(conv / author / kind=contract·decision·artifact / content)。</span></div>
+      <div class="step"><span class="n">2</span><span class="t">任何角色可调 MCP 工具 <code>remember</code> 记一条决策/产物;contract 在 dispatch 时<b>自动入库</b>。</span></div>
+      <div class="step"><span class="n">3</span><span class="t">上下文装配器新增一层 <code>&lt;shared_memory&gt;</code>(L2.5,priority 高于历史)→ 注入<b>每个</b>后续 turn。</span></div>
+      <div class="step"><span class="n">4</span><span class="t">于是 worker 与汇总轮都能看到「全群已锁定的契约/决策/产物」,不再各自重新推导或互相矛盾。</span></div>
+    </div>
+    <div class="ba">
+      <div class="before"><h4>Before</h4>
+        <p>每个 worker 只拿到 conv 历史 + 自己的 note;关键决策散落在长长的聊天里,容易丢。</p></div>
+      <div class="after"><h4>After</h4>
+        <p>一层精炼的共享事实,稳定在 prompt 顶部;<code>remember</code> 让任何人沉淀「这条大家都得守」。</p></div>
+    </div>
+    <p class="sub" style="margin-top:10px">改动点:<code>storage/models.py</code>(ConvMemoryRow)· <code>storage/repo.py</code> · <code>context/shared.py</code>(新)+ <code>assembler.py</code> · <code>mcp/tools.py</code>(_RememberTool + ROLE_TOOLS)· <code>routes.py</code>(memory 端点 + drain 自动入库)</p>
+  </section>
+
+  <!-- 不做 -->
+  <section>
+    <h2>暂不做 <span class="tag skip">未来可选</span></h2>
+    <p class="sub">RuFlo 的这些是为「企业级 100-agent swarm」准备的,对我们当前阶段过重,先记下。</p>
+    <ul>
+      <li><b>HNSW / AgentDB 向量记忆</b> + 跨会话语义检索 —— 现在共享记忆是线性文本,够用;量大了再上检索。</li>
+      <li><b>federation</b> 跨机/跨组织 swarm 协作。</li>
+      <li><b>swarm 拓扑</b>(mesh / pipeline / adaptive)+ dispatch <b>DAG 依赖</b>(deps/after)—— 即原计划 Phase 3。</li>
+      <li><b>SONA 自学习</b> / 学习型路由、<b>多 provider failover</b>。</li>
+    </ul>
+  </section>
+
+</main>
+
+<footer>
+  docs/diagrams/ruflo-learnings.html · 配套 ADR-013(角色化工具)/ ADR-014(本设计)·
+  源:<a href="https://github.com/ruvnet/ruflo">github.com/ruvnet/ruflo</a>
+</footer>
+</body>
+</html>

@@ -52,6 +52,12 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "in_reply_to",
         "ALTER TABLE messages ADD COLUMN in_reply_to VARCHAR(26)",
     ),
+    (
+        "agents",
+        "tool_role",
+        "ALTER TABLE agents ADD COLUMN tool_role VARCHAR(16) "
+        "NOT NULL DEFAULT 'generalist'",
+    ),
 ]
 
 

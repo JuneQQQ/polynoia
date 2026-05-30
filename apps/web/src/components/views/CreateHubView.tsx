@@ -3,7 +3,8 @@
  * 三大 quick action(顶部 grid):
  *   ① 1v1 对话    点击 → 浮层选 agent → 跳 dm-<agent_id>
  *   ② 新建项目    点击 → modal 填项目名 + 选成员(P0 UI,P1 接 server)
- *   ③ 自定义 Agent 点击 → modal 派生 base + system_prompt(P0 UI,P1 接 server)
+ *   ③ 自定义 Agent 点击 → NewContactModal:派生 (adapter, model, name,
+ *      system_prompt) 联系人(走真实 POST /api/contacts,custom=true)
  *
  * 下方:已安装 agent 列表(adapter-backed + custom),每行右侧有"聊"按钮
  * 直接进 dm-<agent_id>。
@@ -12,16 +13,20 @@
  */
 import {
   Bot,
-  Bug,
   ChevronRight,
   MessageCircle,
+  Pencil,
   Search,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { api } from "../../lib/api";
 import type { Agent } from "../../lib/types";
 import { useStore } from "../../store";
+import { NewContactModal } from "../NewContactModal";
+import { OnboardingModal } from "../OnboardingModal";
 
 type Props = {
   /** 跳到指定 conv(由 App.tsx 接收,会切到 chat view) */
@@ -35,7 +40,28 @@ export function CreateHubView({ onOpenConv }: Props) {
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   // 项目外只能建联系人(1v1) + 自定义 Agent。
   // 群聊只能在项目内建 — 见 Sidebar workspace mode 的 "+ 新建对话"。
-  const [modal, setModal] = useState<"dm" | "custom" | null>(null);
+  const [modal, setModal] = useState<"dm" | "custom" | "adapters" | null>(null);
+  // When set, the custom-agent modal opens in EDIT mode for this contact.
+  const [editing, setEditing] = useState<Agent | null>(null);
+
+  const refreshAgents = async () => {
+    try {
+      const list = await api.agents();
+      useStore.setState({ agents: list });
+    } catch {
+      // ignore — list refreshes on next load
+    }
+  };
+
+  const deleteAgent = async (a: Agent) => {
+    if (!window.confirm(`删除联系人「${a.name}」?该操作不可撤销。`)) return;
+    try {
+      await api.deleteContact(a.id);
+      await refreshAgents();
+    } catch {
+      // best-effort; row stays if delete failed
+    }
+  };
 
   // 只列 adapter-backed + custom agents(过滤系统角色)
   const installable: Agent[] = useMemo(
@@ -207,6 +233,31 @@ export function CreateHubView({ onOpenConv }: Props) {
                     </div>
                   )}
                 </div>
+                {/* Edit + Delete — only for user-created (custom) contacts.
+                    Adapter template agents (claudeCode/codex/opencoder) aren't
+                    editable/deletable here. */}
+                {a.custom && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setEditing(a); setModal("custom"); }}
+                      title={`编辑 ${a.name}`}
+                      aria-label={`编辑 ${a.name}`}
+                      className="p-1.5 rounded text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition flex-shrink-0"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteAgent(a)}
+                      title={`删除 ${a.name}`}
+                      aria-label={`删除 ${a.name}`}
+                      className="p-1.5 rounded text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/50 transition flex-shrink-0"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => startDM(a)}
@@ -232,7 +283,26 @@ export function CreateHubView({ onOpenConv }: Props) {
           }}
         />
       )}
-      {modal === "custom" && <NotYetModal onClose={() => setModal(null)} kind="custom" />}
+      {/* 自定义 Agent = 派生一个 (adapter, model, persona) 联系人 — reuses the
+          real, tested contact-creation flow (POST /api/contacts, custom=true). */}
+      {modal === "custom" && (
+        <NewContactModal
+          editing={editing}
+          onClose={() => { setModal(null); setEditing(null); }}
+          onOpenAdapterManager={() => setModal("adapters")}
+          onCreated={async () => {
+            await refreshAgents();
+            setModal(null);
+            setEditing(null);
+          }}
+        />
+      )}
+      {modal === "adapters" && (
+        <OnboardingModal
+          onClose={() => setModal(null)}
+          onAgentsChanged={refreshAgents}
+        />
+      )}
     </main>
   );
 }
@@ -381,37 +451,6 @@ function DMPicker({
           </li>
         ))}
       </ul>
-    </ModalShell>
-  );
-}
-
-function NotYetModal({ onClose }: { onClose: () => void; kind: "custom" }) {
-  return (
-    <ModalShell title="自定义 Agent" onClose={onClose}>
-      <div className="p-6 space-y-4">
-        <div className="flex items-center justify-center text-[var(--color-fg-4)] py-4">
-          <Bug size={32} />
-        </div>
-        <p className="text-[12.5px] text-[var(--color-fg-2)] leading-relaxed">
-          自定义 Agent = 基于 Claude / Codex / OpenCode 派生新角色。P1 上线后这里会有:
-          base provider 选择 · system_prompt 编辑器 · 工具白名单 · 能力 tag。
-        </p>
-        <div className="text-[11.5px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)] p-3 rounded border border-[var(--color-line)]">
-          <div className="font-semibold mb-1">当前已可用:</div>
-          <ul className="list-disc pl-4 space-y-0.5">
-            <li>seed 的 Designer agent 是已落地的 custom 示例</li>
-            <li>system_prompt + tools_whitelist 字段在 SQL 中可写</li>
-            <li>P1 加 modal 表单 + POST /api/agents endpoint</li>
-          </ul>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="w-full py-2 text-[12.5px] rounded bg-[var(--color-surface-2)] hover:bg-[var(--color-line)] text-[var(--color-fg-2)]"
-        >
-          知道了
-        </button>
-      </div>
     </ModalShell>
   );
 }

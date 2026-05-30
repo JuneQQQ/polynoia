@@ -136,6 +136,15 @@ class Sandbox:
         if not (ws_root / ".git").exists():
             await cls._bootstrap_workspace(ws_root, workspace_id)
 
+        # Step 1b: ALWAYS refresh the workspace-shared credential snapshot.
+        # The bootstrap copy is one-time, but OAuth tokens (Pro/Max login)
+        # EXPIRE — a workspace created hours ago would keep serving a frozen,
+        # eventually-expired token and every spawned agent would 401 while the
+        # real login is still valid. _copy_host_credentials now overwrites the
+        # small auth files, so this pulls the host's current token each spawn.
+        _cred_scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}")
+        await _cred_scratch._copy_host_credentials()
+
         # Step 2: short stable suffixes for path readability
         agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
         conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
@@ -358,16 +367,24 @@ class Sandbox:
                 dst = dst_root / entry
                 if not src.exists():
                     continue
-                if dst.exists():
-                    continue  # idempotent
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if src.is_dir():
+                    if dst.exists():
+                        continue  # dir already materialized — don't re-copytree
                     shutil.copytree(
                         src, dst,
                         symlinks=False,
                         ignore_dangling_symlinks=True,
                     )
                 else:
+                    # Credential FILES (OAuth tokens — ~/.claude/.credentials.json,
+                    # ~/.codex/auth.json, opencode auth.json) EXPIRE. We MUST NOT
+                    # freeze a stale snapshot: always re-copy the host's CURRENT
+                    # file so a sandbox created/refreshed later (incl. a respawn
+                    # after a 401) gets a fresh token, not a months-old one. Cheap
+                    # (<1KB); copy2 overwrites. This is what made Pro logins
+                    # "suddenly drop" mid-session — the snapshot aged out while the
+                    # real login was still valid.
                     shutil.copy2(src, dst)
 
     def _write_manifest(self) -> None:
@@ -426,6 +443,58 @@ class Sandbox:
                 continue
             branches.append(b)
         return sorted(branches)
+
+    async def commit_pending_worktrees(self, conv_id: str) -> int:
+        """Commit any uncommitted changes in this conv's agent worktrees.
+
+        Some adapters (OpenCode) write files via their NATIVE tools, which
+        land in the worktree but are never git-committed — so merge-to-main
+        (which works on commits) would skip them. We sweep each worktree and
+        commit pending work to its branch before merging. Adapter-agnostic.
+
+        Returns the number of worktrees where a commit was made.
+        """
+        if self.workspace_root is None:
+            return 0
+        rc, out, _ = await self._workspace_run(["git", "worktree", "list", "--porcelain"])
+        if rc != 0:
+            return 0
+        # Parse `worktree <path>` / `branch refs/heads/<name>` blocks.
+        committed = 0
+        cur_path: str | None = None
+        for line in out.splitlines():
+            if line.startswith("worktree "):
+                cur_path = line[len("worktree "):].strip()
+            elif line.startswith("branch ") and cur_path:
+                branch = line[len("branch "):].strip().removeprefix("refs/heads/")
+                if branch.startswith("agent/") and branch.endswith(f"/conv-{conv_id}"):
+                    if await self._commit_worktree_pending(cur_path, branch):
+                        committed += 1
+                cur_path = None
+        return committed
+
+    async def _commit_worktree_pending(self, worktree_path: str, branch: str) -> bool:
+        """`git add -A && git commit` in one worktree if it has changes."""
+        async def _run(cmd: list[str]) -> tuple[int, str, str]:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=worktree_path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            o, e = await proc.communicate()
+            return proc.returncode or 0, o.decode("utf-8", "replace"), e.decode("utf-8", "replace")
+
+        _rc, status, _ = await _run(["git", "status", "--porcelain"])
+        if not status.strip():
+            return False  # nothing pending
+        await _run(["git", "add", "-A"])
+        # Derive the agent id from the branch for the commit author.
+        agent_id = branch.split("/")[1] if "/" in branch else "agent"
+        author = f"{agent_id} <{agent_id}@polynoia.local>"
+        rc, _o, _e = await _run([
+            "git", "commit", "-q", "--author", author,
+            "-m", "polynoia: capture uncommitted worktree changes",
+        ])
+        return rc == 0
 
     async def branch_ahead_of_main(self, branch: str) -> int:
         """Return how many commits ``branch`` is ahead of ``main`` (0 = no

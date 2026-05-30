@@ -223,3 +223,14 @@ async def test_concurrent_edits_serialized(ctx):
     statuses = [r.get("kind") if isinstance(r, dict) else "error" for r in (res_a, res_b)]
     assert "edited" in statuses
     assert "not_found" in statuses
+
+
+def test_dispatch_tool_schema_accepts_contract():
+    """ADR-014: the dispatch tool exposes an optional batch-level `contract`
+    so the orchestrator can lock a shared spec for all sub-tasks."""
+    schema = TOOL_REGISTRY["dispatch"].input_schema
+    props = schema["properties"]
+    assert "contract" in props, "dispatch must expose a `contract` field"
+    assert props["contract"]["type"] == "string"
+    # Tasks remain required; contract is optional.
+    assert schema["required"] == ["tasks"]

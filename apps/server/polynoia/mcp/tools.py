@@ -51,7 +51,10 @@ async def _gate_via_pending_edit(
         return True
     timeout_seconds = 300  # 5 minutes total wait
     try:
-        async with httpx.AsyncClient(base_url=base, timeout=70.0) as client:
+        # trust_env=False: the callback targets 127.0.0.1 — never route it
+        # through an inherited HTTP_PROXY/ALL_PROXY (esp. a socks:// proxy,
+        # which also needs httpx[socks]). Localhost must hit the server direct.
+        async with httpx.AsyncClient(base_url=base, timeout=70.0, trust_env=False) as client:
             # First check conv.merge_mode — only gate in manual mode.
             r = await client.get(f"/api/conversations/{ctx.conv_id}")
             if r.status_code != 200:
@@ -59,8 +62,12 @@ async def _gate_via_pending_edit(
                     "gate: conv lookup failed %d, defaulting to auto", r.status_code,
                 )
                 return True
-            mode = (r.json() or {}).get("merge_mode") or "auto"
-            if mode != "manual":
+            conv = r.json()
+            # Defensive: only a JSON object carries merge_mode. Anything else
+            # (a list, a bare string, an error envelope) → treat as auto so a
+            # malformed/unexpected response can never abort the agent's write.
+            mode = conv.get("merge_mode") if isinstance(conv, dict) else None
+            if (mode or "auto") != "manual":
                 return True
 
             # Create the pending edit row + WS broadcast.
@@ -121,9 +128,28 @@ class ToolContext:
     _file_locks: dict[str, asyncio.Lock] = field(default_factory=dict, init=False)
 
     async def ensure_sandbox(self) -> Sandbox:
-        """Lazy-create the sandbox if needed."""
+        """Resolve the sandbox this MCP process should operate on.
+
+        When the spawning adapter put the agent in a workspace worktree, it
+        passes the EXACT worktree path via ``POLYNOIA_WORKTREE_ROOT`` (+ the
+        shared ``POLYNOIA_WORKSPACE_ROOT``). We must open THAT — otherwise
+        writes/commits land in a separate per-conv sandbox and never reach
+        the agent's branch, so merge-to-main finds nothing (the bug that made
+        the orchestrator report files "missing" + loop re-dispatching).
+
+        Falls back to a per-conv ``Sandbox.create`` for non-workspace convs.
+        """
         if self._sandbox is None:
-            self._sandbox = await Sandbox.create(self.conv_id)
+            wt = os.environ.get("POLYNOIA_WORKTREE_ROOT")
+            ws = os.environ.get("POLYNOIA_WORKSPACE_ROOT")
+            if wt:
+                self._sandbox = Sandbox(
+                    root=Path(wt),
+                    conv_id=self.conv_id,
+                    workspace_root=(Path(ws) if ws else None),
+                )
+            else:
+                self._sandbox = await Sandbox.create(self.conv_id)
         return self._sandbox
 
     @property
@@ -782,6 +808,242 @@ class _CallAgentTool(_ToolBase):
         return result
 
 
+async def _callback_server(
+    path: str,
+    *,
+    method: str = "POST",
+    json: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    label: str,
+) -> dict[str, Any]:
+    """Call back into the Polynoia FastAPI from inside an MCP tool subprocess.
+
+    Shared scaffold for the dispatch / remember / recall / report tools:
+    resolves POLYNOIA_API_BASE, bypasses inherited proxies (trust_env=False so
+    the localhost callback works), and normalizes failures into the
+    ``{"kind": "error", ...}`` envelope these tools hand back to the LLM.
+    """
+    base = os.environ.get("POLYNOIA_API_BASE")
+    if not base:
+        return {"kind": "error", "error": f"{label} unavailable (no API base in this context)"}
+    try:
+        async with httpx.AsyncClient(base_url=base, timeout=30.0, trust_env=False) as client:
+            r = await client.request(method, path, json=json, params=params)
+            if r.status_code != 200:
+                return {
+                    "kind": "error",
+                    "error": f"{label} endpoint returned {r.status_code}",
+                    "detail": r.text[:300],
+                }
+            return r.json()
+    except (httpx.RequestError, httpx.HTTPError) as e:
+        return {"kind": "error", "error": f"{label} transport failure: {e}"}
+
+
+class _DispatchTool(_ToolBase):
+    name = "dispatch"
+    description = (
+        "Dispatch parallel sub-tasks to your teammates. This is how an "
+        "orchestrator delegates — you do NOT do the work yourself.\n\n"
+        "Each task is {agent, label, note}:\n"
+        "  · agent — teammate's display name (e.g. 顾屿 / 沈昭 / 苏念)\n"
+        "  · label — ≤20-char card label shown in the UI lane header\n"
+        "  · note  — the COMPLETE, self-contained prompt for that teammate "
+        "(they don't see your reasoning — spell out the spec)\n\n"
+        "All tasks run CONCURRENTLY. This call returns immediately with "
+        "task_ids (fire-and-forget) — do NOT wait for results; the "
+        "teammates' work streams into the conversation as parallel lanes. "
+        "After you dispatch, just stop and let them work; you'll verify "
+        "their output in a later turn.\n\n"
+        "When the sub-tasks must interoperate (shared API, field names, file "
+        "paths, ports, data shapes), put that shared spec in `contract` — it "
+        "is handed to EVERY teammate verbatim and is what you verify their "
+        "deliverables against. Lock it here once; don't let each teammate "
+        "invent their own."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short title for the parallel batch (UI card header).",
+            },
+            "contract": {
+                "type": "string",
+                "description": (
+                    "Optional shared contract ALL sub-tasks must honor verbatim: "
+                    "interface / field names / routes / ports / data shapes. "
+                    "Injected into every teammate's prompt and used for final "
+                    "verification. Leave empty only for truly independent tasks."
+                ),
+            },
+            "tasks": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {"type": "string", "description": "Teammate display name"},
+                        "label": {"type": "string", "description": "≤20-char UI label"},
+                        "note": {"type": "string", "description": "Complete self-contained prompt"},
+                    },
+                    "required": ["agent", "note"],
+                },
+            },
+        },
+        "required": ["tasks"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        tasks = args.get("tasks") or []
+        if not isinstance(tasks, list) or not tasks:
+            return {"kind": "error", "error": "tasks must be a non-empty array"}
+        ctx.append_audit("agent.dispatch", {
+            "caller": ctx.agent_id,
+            "count": len(tasks),
+            "agents": [t.get("agent") for t in tasks if isinstance(t, dict)],
+        })
+        return await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/dispatch",
+            json={
+                "title": args.get("title") or "",
+                "contract": args.get("contract") or "",
+                "tasks": tasks,
+                # Carry the dispatcher identity explicitly so the drain attributes
+                # the batch to whoever actually called this tool — not to whichever
+                # agent's turn happens to drain the per-conv queue (ADR-014).
+                "author_agent_id": ctx.agent_id,
+            },
+            label="dispatch",
+        )
+
+
+class _RememberTool(_ToolBase):
+    name = "remember"
+    description = (
+        "Record a fact into the conversation's SHARED MEMORY — read by every "
+        "teammate on every future turn (ADR-014). Use it to lock things the "
+        "whole group must agree on:\n"
+        "  · decision — a choice that constrains later work (e.g. '统一用内存存储,不接 DB')\n"
+        "  · artifact — something you delivered (e.g. '顾屿 → api.py: GET/POST /todos')\n"
+        "  · contract — a shared interface/spec (orchestrators usually set this via dispatch)\n\n"
+        "Keep each entry one or two lines. Don't dump full file contents — "
+        "record the DECISION or the INTERFACE, not the implementation."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["decision", "artifact", "contract"],
+                "description": "What kind of shared fact this is.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The fact, 1-2 lines. Decision / interface, not implementation.",
+            },
+        },
+        "required": ["content"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        content = (args.get("content") or "").strip()
+        if not content:
+            return {"kind": "error", "error": "content must be a non-empty string"}
+        kind = (args.get("kind") or "decision").strip()
+        ctx.append_audit("memory.remember", {"author": ctx.agent_id, "kind": kind})
+        return await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/memory",
+            json={"kind": kind, "content": content, "author_agent_id": ctx.agent_id},
+            label="remember",
+        )
+
+
+class _RecallTool(_ToolBase):
+    name = "recall"
+    description = (
+        "Read the conversation's SHARED MEMORY right now — the contracts, "
+        "decisions, and artifacts your teammates have recorded (ADR-014). Use it "
+        "MID-TASK to check whether the locked contract changed or what a teammate "
+        "already delivered, WITHOUT waiting for your next turn. Optionally filter "
+        "by kind (contract / decision / artifact)."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["decision", "artifact", "contract"],
+                "description": "Optional filter; omit to get everything.",
+            },
+        },
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        kind = (args.get("kind") or "").strip()
+        ctx.append_audit("memory.recall", {"author": ctx.agent_id, "kind": kind or "all"})
+        return await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/memory",
+            method="GET",
+            params={"kind": kind} if kind else None,
+            label="recall",
+        )
+
+
+class _ReportTool(_ToolBase):
+    name = "report"
+    description = (
+        "Acknowledge completion of YOUR assigned task with an explicit, recorded "
+        "verdict — this is the closed-loop handoff back to the orchestrator. Call "
+        "it at the END of a dispatched subtask: state what you delivered, whether "
+        "it satisfies the shared contract, and any caveats. The orchestrator reads "
+        "these verdicts to VERIFY the burst instead of guessing, the verdict shows "
+        "on your lane, and it survives a refresh. Be honest: if you couldn't fully "
+        "comply, say status='partial' or 'failed' and explain in notes."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["ok", "partial", "failed"],
+                "description": "Your honest self-assessment of the task outcome.",
+            },
+            "deliverables": {
+                "type": "string",
+                "description": "What you actually produced — file names + one line each.",
+            },
+            "contract_ok": {
+                "type": "boolean",
+                "description": "Does your work conform to the shared/locked contract?",
+            },
+            "notes": {
+                "type": "string",
+                "description": "(optional) caveats, risks, or what's still missing.",
+            },
+        },
+        "required": ["status", "deliverables"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        deliverables = (args.get("deliverables") or "").strip()
+        if not deliverables:
+            return {"kind": "error", "error": "deliverables must be a non-empty string"}
+        status = (args.get("status") or "ok").strip()
+        ctx.append_audit("handoff.report", {"author": ctx.agent_id, "status": status})
+        return await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/report",
+            json={
+                "author_agent_id": ctx.agent_id,
+                "status": status,
+                "deliverables": deliverables,
+                "contract_ok": bool(args.get("contract_ok", False)),
+                "notes": (args.get("notes") or "").strip(),
+            },
+            label="report",
+        )
+
+
 def _short_id() -> str:
     import uuid
     return uuid.uuid4().hex[:12]
@@ -795,5 +1057,49 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
     for cls in [
         _ReadTool, _EditTool, _WriteTool, _ApplyPatchTool,
         _BashTool, _GrepTool, _GlobTool, _RevertTool, _CallAgentTool,
+        _DispatchTool, _RememberTool, _RecallTool, _ReportTool,
     ]
 }
+
+
+# Role → tool-name subset. Drives which polynoia MCP tools the running
+# agent is allowed to list/call. Filter applied in `mcp/server.py` based
+# on POLYNOIA_AGENT_ROLE env (set by the spawning adapter from Agent.tool_role).
+#
+# orchestrator: read-only + delegate (cannot edit files; only verifies + dispatches)
+# coder:        full toolset for backend / scripting work
+# designer:     HTML/CSS work — no shell, no patch (forces explicit Write/Edit)
+# writer:       docs work — same constraints as designer
+# critic:       read-only auditor — verifies others' work against the contract
+#               (read/grep/glob/recall) and records a verdict (report); no write.
+# generalist:   everything except call_agent (default for back-compat)
+# `remember` + `recall` (shared memory R/W, ADR-014) are available to every role
+# — anyone can record AND read the group's decisions/artifacts/contracts.
+# `report` (closed-loop handoff verdict) is for WORKERS, not the orchestrator
+# (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
+ROLE_TOOLS: dict[str, set[str]] = {
+    "orchestrator": {"read", "grep", "glob", "dispatch", "bash", "remember", "recall"},
+    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report"},
+    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report"},
+    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report"},
+    "critic":       {"read", "grep", "glob", "recall", "report"},
+    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report"},
+}
+
+
+def tools_for_role(role: str | None) -> dict[str, _ToolBase]:
+    """Return the filtered TOOL_REGISTRY subset visible to ``role``.
+
+    Empty role → generalist (back-compat for agents created before the role
+    field existed). UNKNOWN role → fail-closed to the **most restrictive**
+    set (orchestrator: read-only). A typo in tool_role must not silently
+    upgrade an agent to write capability.
+    """
+    if not role:
+        allowed = ROLE_TOOLS["generalist"]
+    elif role in ROLE_TOOLS:
+        allowed = ROLE_TOOLS[role]
+    else:
+        log.warning("unknown tool_role %r → falling back to orchestrator (read-only)", role)
+        allowed = ROLE_TOOLS["orchestrator"]
+    return {name: impl for name, impl in TOOL_REGISTRY.items() if name in allowed}

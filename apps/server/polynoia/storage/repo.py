@@ -27,6 +27,7 @@ from polynoia.domain.entities import (
 )
 from polynoia.storage.models import (
     AgentRow,
+    ConvMemoryRow,
     ConversationRow,
     MessageRow,
     OnboardedAdapterRow,
@@ -97,6 +98,7 @@ def _agent_from_row(r: AgentRow) -> Agent:
         custom=r.custom,
         system_prompt=r.system_prompt,
         tools_whitelist=r.tools_whitelist or [],
+        tool_role=(r.tool_role or "generalist"),  # type: ignore[arg-type]
         proxy=r.proxy,
         proxy_kind=r.proxy_kind,  # type: ignore[arg-type]
         setup=setup,
@@ -137,6 +139,7 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
         existing.custom = a.custom
         existing.system_prompt = a.system_prompt
         existing.tools_whitelist = a.tools_whitelist
+        existing.tool_role = a.tool_role
         existing.proxy = a.proxy
         existing.proxy_kind = a.proxy_kind
         existing.setup = setup_dict
@@ -148,6 +151,7 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
             initials=a.initials, color=a.color, bg=a.bg, tagline=a.tagline,
             caps=a.caps, online=a.online, enabled=a.enabled, custom=a.custom,
             system_prompt=a.system_prompt, tools_whitelist=a.tools_whitelist,
+            tool_role=a.tool_role,
             proxy=a.proxy, proxy_kind=a.proxy_kind, setup=setup_dict,
             human=a.human, foreign_from=a.foreign_from,
         ))
@@ -270,6 +274,27 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
     await session.delete(row)
     await session.flush()
     return True
+
+
+async def clear_conversation_messages(session: AsyncSession, conv_id: str) -> int:
+    """Delete all messages + pins for a conv but KEEP the conv itself.
+
+    Returns the number of messages removed. Used to reset a conv for a clean
+    re-test without churning its id / membership.
+    """
+    from sqlalchemy import func
+
+    from polynoia.storage.models import MessageRow, PinRow
+
+    count = (
+        await session.execute(
+            select(func.count()).select_from(MessageRow).where(MessageRow.conv_id == conv_id)
+        )
+    ).scalar_one()
+    await session.execute(MessageRow.__table__.delete().where(MessageRow.conv_id == conv_id))
+    await session.execute(PinRow.__table__.delete().where(PinRow.conv_id == conv_id))
+    await session.flush()
+    return int(count or 0)
 
 
 async def list_conversations(
@@ -415,6 +440,39 @@ async def set_member_roles(
     return True, before, after
 
 
+async def set_members(
+    session: AsyncSession,
+    conv_id: str,
+    members: list[str],
+) -> tuple[bool, list[str], list[str]]:
+    """Replace a conv's member list (add/remove). Returns ``(ok, before, after)``.
+
+    Dedupes, always keeps "you", and prunes role assignments for any removed
+    member. Clears the orchestrator if it was removed (caller should re-validate
+    the group invariant first). Caller commits.
+    """
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False, [], []
+    before = list(row.members or [])
+    seen: set[str] = set()
+    after: list[str] = []
+    for m in members:
+        if m and m not in seen:
+            seen.add(m)
+            after.append(m)
+    if "you" not in seen:
+        after.insert(0, "you")
+        seen.add("you")
+    row.members = after
+    if row.member_roles:
+        row.member_roles = {k: v for k, v in row.member_roles.items() if k in seen}
+    if row.orchestrator_member_id and row.orchestrator_member_id not in seen:
+        row.orchestrator_member_id = None
+    await session.flush()
+    return True, before, after
+
+
 # ── Pin ──────────────────────────────────────────────────────────────
 
 
@@ -484,6 +542,56 @@ async def append_message(
         )
     await session.flush()
     return mid
+
+
+async def update_message_payload(
+    session: AsyncSession, msg_id: str, payload: dict[str, Any]
+) -> bool:
+    """Overwrite a single message's payload in place (same id). Used to flip
+    a tasks/BurstCard's per-task state as workers complete. No-op if absent."""
+    from polynoia.storage.models import MessageRow
+
+    row = await session.get(MessageRow, msg_id)
+    if row is None:
+        return False
+    row.payload = payload
+    await session.flush()
+    return True
+
+
+async def add_conv_memory(
+    session: AsyncSession,
+    *,
+    conv_id: str,
+    author_agent_id: str,
+    kind: str,
+    content: str,
+) -> str:
+    """Append one shared-memory entry for a conversation (ADR-014).
+
+    Returns the new row id. Caller commits.
+    """
+    mid = new_ulid()
+    session.add(ConvMemoryRow(
+        id=mid, conv_id=conv_id, author_agent_id=author_agent_id,
+        kind=(kind or "decision")[:32], content=content,
+    ))
+    await session.flush()
+    return mid
+
+
+async def list_conv_memory(
+    session: AsyncSession, conv_id: str, *, limit: int = 50
+) -> list[ConvMemoryRow]:
+    """Shared-memory entries for a conversation, oldest→newest (chronological
+    so a contract recorded first reads before later decisions)."""
+    res = await session.execute(
+        select(ConvMemoryRow)
+        .where(ConvMemoryRow.conv_id == conv_id)
+        .order_by(ConvMemoryRow.created_at.asc())
+        .limit(limit)
+    )
+    return list(res.scalars().all())
 
 
 async def list_messages(

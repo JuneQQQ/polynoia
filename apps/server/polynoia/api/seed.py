@@ -7,8 +7,7 @@ Per spec § 8:Orchestrator IS an Agent(系统视它和别人没区别)。Designe
 等 "specialist" P0 都跑在 ClaudeCodeAdapter 上,差异只是 `system_prompt`。
 """
 
-from polynoia.domain.entities import Agent, AgentSetup, Provider, Server, Workspace
-
+from polynoia.domain.entities import Agent, Provider, Server, Workspace
 
 # ── System prompts(per spec § 8 — 决定每个 agent 的"人格")────
 
@@ -106,7 +105,12 @@ def seed_providers() -> list[Provider]:
 def seed_agents() -> list[Agent]:
     """Initial agents.
 
-    `you` is the local user; `orchestrator` is the built-in meta-agent.
+    `you` is the local user. There is **no** built-in orchestrator agent:
+    orchestration is a per-conversation role (see Conversation.orchestrator_member_id)
+    that the user explicitly assigns to one of the real member contacts —
+    that member gets ORCHESTRATOR_PROMPT prepended for its coordinating turns.
+    No designation → no orchestrator → flat group fan-out.
+
     All adapter-backed contacts (Claude Code / Codex / OpenCode) are NOT
     seeded — the user enables them via the onboarding flow once we've
     confirmed the underlying CLI is installed and authenticated. See
@@ -114,25 +118,6 @@ def seed_agents() -> list[Agent]:
     `polynoia/api/onboarding.py` for the probe endpoint.
     """
     return [
-        Agent(
-            id="orchestrator",
-            name="Orchestrator",
-            role="主协调器",
-            provider="claude",
-            handle="@orchestrator",
-            initials="Or",
-            color="#7A5AE0",
-            bg="#EFE9FB",
-            tagline="主协调器",
-            caps=["拆解", "调度", "聚合"],
-            online=True,
-            enabled=True,
-            system_prompt=ORCHESTRATOR_PROMPT,
-            setup=AgentSetup(
-                adapter_id="claudeCode",
-                model="claude-sonnet-4-6",
-            ),
-        ),
         Agent(
             id="you",
             name="我",

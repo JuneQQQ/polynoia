@@ -19,6 +19,8 @@ export type StatusItem = {
 
 // ── 12 payload types ─────────────────────────────────────────
 export type TextPayload = { kind: "text"; body: TextBlock[] };
+/** Model's thinking — streamed live, then folded away (shown on click, de-emphasized). */
+export type ReasoningPayload = { kind: "reasoning"; body: TextBlock[]; seconds?: number | null };
 
 export type TaskItem = {
   id: ULID;
@@ -33,6 +35,8 @@ export type TasksPayload = {
   kind: "tasks";
   title: string;
   tasks: TaskItem[];
+  /** Shared handoff contract all sub-tasks must honor (ADR-014). Optional. */
+  contract?: string;
 };
 
 export type HunkLine = ["add" | "del" | "ctx", number, string];
@@ -131,6 +135,7 @@ export type ToolCallPayload = {
   is_error?: boolean;
   duration_ms?: number | null;
   summary?: string | null;
+  input_preview?: string | null;
 };
 
 export type AskQuestion = {
@@ -173,6 +178,7 @@ export type FilePayload = {
 
 export type MessagePayload =
   | TextPayload
+  | ReasoningPayload
   | TasksPayload
   | DiffPayload
   | WebPayload
