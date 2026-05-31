@@ -931,7 +931,7 @@ async def apply_diff(body: dict):
     # Locate sandbox — workspace-mode prefers a worktree; legacy mode uses
     # the per-conv sandbox. We pick the conv's branch worktree if the conv
     # is workspace-shared; otherwise legacy.
-    from polynoia.sandbox import Sandbox
+    from polynoia.sandbox import Sandbox, workspace_merge_lock
     async with SessionLocal() as session:
         conv = await storage_repo.get_conversation(session, conv_id)
     if conv is None:
@@ -974,7 +974,19 @@ async def apply_diff(body: dict):
     ) as tmpf:
         tmpf.write(diff_text)
         patch_path = tmpf.name
+    # Serialize git apply/add/commit against burst merges (commit_pending_worktrees
+    # touches the SAME worktree under the lock); same workspace lock for workspace
+    # convs, no lock for legacy per-conv sandboxes (independent .git).
+    lock = (
+        workspace_merge_lock(conv.workspace_id)
+        if (conv.workspace_id and conv.group)
+        else None
+    )
+    acquired = False
     try:
+        if lock is not None:
+            await lock.acquire()
+            acquired = True
         rc, _out, err = await sandbox._run(
             ["git", "apply", "--whitespace=fix", patch_path]
         )
@@ -996,6 +1008,8 @@ async def apply_diff(body: dict):
         rc, sha, _err = await sandbox._run(["git", "rev-parse", "--short", "HEAD"])
         return {"ok": True, "sha": (sha.strip() if rc == 0 else "")}
     finally:
+        if acquired:
+            lock.release()
         with contextlib.suppress(OSError):
             os.unlink(patch_path)
 
@@ -1121,7 +1135,7 @@ async def wait_for_pending_edit(pending_id: str, timeout: float = 60.0):
         async with SessionLocal() as session:
             row = await storage_repo.get_pending_edit(session, pending_id)
         if row is None:
-            return {"error": "pending edit not found"}, 404
+            raise HTTPException(404, "pending edit not found")
         if row.status != "pending":
             return _pending_edit_to_dict(row)
         if asyncio.get_event_loop().time() >= deadline:
@@ -1496,27 +1510,28 @@ async def write_workspace_file(ws_id: str, path: str, request: Request):
         content_bytes.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(400, "content must be valid UTF-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content_bytes)
 
-    # Auto-commit on workspace main branch. The workspace root has main
-    # checked out (worktrees use agent branches).
-    from polynoia.sandbox import Sandbox
+    # Serialize the write + git add/commit against burst merges / conflict
+    # resolves on the SAME workspace (shared single HEAD/index). Otherwise this
+    # edit can interleave with a probe/conclude merge (corrupt index, mix into
+    # the merge commit) or get discarded by `_abort_stray_merge`'s reset --hard.
+    # Same lock + key (workspace_id) as resolve/abandon/burst-merge.
+    from polynoia.sandbox import Sandbox, workspace_merge_lock
+
     ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    if ws_sandbox is None:
-        return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
-    rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
-    if rc != 0:
-        return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
-    rc, _o, _e = await ws_sandbox._workspace_run([
-        "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
-    ])
-    sha = await ws_sandbox.main_head_sha() if rc == 0 else None
-    return {
-        "ok": True,
-        "sha": sha,
-        "modified": target.stat().st_mtime,
-    }
+    async with workspace_merge_lock(ws_id):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content_bytes)
+        if ws_sandbox is None:
+            return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
+        rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
+        if rc != 0:
+            return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
+        rc, _o, _e = await ws_sandbox._workspace_run([
+            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
+        ])
+        sha = await ws_sandbox.main_head_sha() if rc == 0 else None
+    return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
 
 
 @router.get("/api/workspaces/{ws_id}/preview")
@@ -2410,7 +2425,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             )
                             + "}\n\n"
                         )
-                        break
+                        # Don't `break`: that orphans this + the remaining lanes in
+                        # `pending`, so is_last never trips → burst never merges /
+                        # summarizes (card stuck on "run"). Mark this lane failed
+                        # and continue so `pending` fully drains.
+                        await _mark_burst_task(tp_id, task_id, "failed")
+                        continue
                     setup = _agent_setup_by_id.get(worker_id)
                     if not setup or not setup.adapter_id:
                         # Can't spawn → don't leave its lane stuck on "run".

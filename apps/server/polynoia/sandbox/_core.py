@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -13,6 +14,21 @@ from polynoia.settings import settings
 
 
 _IS_WINDOWS = os.name == "nt"
+
+# git 子进程超时 + 非交互 env:卡住的 git(凭据/编辑器提示、慢 filter、异常 stdin
+# 等待)会永久占住 workspace 合并锁、拖垮整个 workspace 的合并/冲突解决,故一律设
+# 超时 + 关交互 + stdin=DEVNULL。
+_GIT_TIMEOUT = 60.0
+
+
+def _git_env() -> dict[str, str]:
+    return {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_EDITOR": "true",
+        "GIT_PAGER": "cat",
+    }
 
 
 # ── Per-workspace merge serialization ────────────────────────────────
@@ -431,8 +447,17 @@ class Sandbox:
             cwd=str(self.root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=_git_env(),
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+        except (TimeoutError, asyncio.TimeoutError):
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.communicate()
+            return (124, "", f"git timed out ({_GIT_TIMEOUT}s): {' '.join(cmd[:3])}")
         return (
             proc.returncode or 0,
             out.decode("utf-8", "replace"),
@@ -504,8 +529,16 @@ class Sandbox:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=worktree_path,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL, env=_git_env(),
             )
-            o, e = await proc.communicate()
+            try:
+                o, e = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+            except (TimeoutError, asyncio.TimeoutError):
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.communicate()
+                return (124, "", "git timed out")
             return proc.returncode or 0, o.decode("utf-8", "replace"), e.decode("utf-8", "replace")
 
         _rc, status, _ = await _run(["git", "status", "--porcelain"])
@@ -641,7 +674,7 @@ class Sandbox:
             "-m", f"polynoia: merge {branch} into main", branch,
         ])
         _rcu, u_out, _eu = await self._workspace_run(
-            ["git", "diff", "--name-only", "--diff-filter=U"]
+            ["git", "-c", "core.quotePath=false", "diff", "--name-only", "--diff-filter=U"]
         )
         conflicted = [p for p in u_out.splitlines() if p.strip()]
         if rc == 0 and not conflicted:
@@ -751,7 +784,17 @@ class Sandbox:
                 "git", "-c", "merge.conflictStyle=diff3",
                 "merge", "--no-commit", "--no-ff", branch,
             ])
+            # Staleness guard: only apply resolutions/sides to paths STILL
+            # unmerged after re-entering the merge. A sibling conv's burst may
+            # have cleanly merged this path into main meanwhile — don't overwrite
+            # that with a stale (pre-resolve) resolution.
+            _rcu0, u0_out, _eu0 = await self._workspace_run(
+                ["git", "-c", "core.quotePath=false", "diff", "--name-only", "--diff-filter=U"]
+            )
+            unmerged = {p for p in u0_out.splitlines() if p.strip()}
             for p, side in sides.items():
+                if p not in unmerged:
+                    continue
                 flag = "--ours" if side == "ours" else "--theirs"
                 rc_co, _oco, _eco = await self._workspace_run(
                     ["git", "checkout", flag, "--", p]
@@ -764,6 +807,8 @@ class Sandbox:
                     # staging the surviving wrong side.
                     await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
             for p, content in resolutions.items():
+                if p not in unmerged:
+                    continue
                 # Reject a "resolution" that still carries conflict markers — once
                 # written + git-added it's no longer unmerged, so the U-guard
                 # below can't catch it and markers would commit to main.
@@ -781,7 +826,7 @@ class Sandbox:
             for p in deletions:
                 await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
             _rcu, u_out, _eu = await self._workspace_run(
-                ["git", "diff", "--name-only", "--diff-filter=U"]
+                ["git", "-c", "core.quotePath=false", "diff", "--name-only", "--diff-filter=U"]
             )
             if [p for p in u_out.splitlines() if p.strip()]:
                 await self._workspace_run(["git", "merge", "--abort"])
@@ -821,8 +866,17 @@ class Sandbox:
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=_git_env(),
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+        except (TimeoutError, asyncio.TimeoutError):
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.communicate()
+            return (124, "", f"git timed out ({_GIT_TIMEOUT}s): {' '.join(cmd[:3])}")
         return (
             proc.returncode or 0,
             out.decode("utf-8", "replace"),

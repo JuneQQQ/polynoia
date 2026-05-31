@@ -102,6 +102,37 @@ async def test_content_conflict_detected_then_concluded(ws_root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_ascii_path_content_conflict(ws_root: Path) -> None:
+    """B2 regression: a content conflict on a non-ASCII (Chinese) filename must
+    classify as `content` (not be mangled into `binary` by core.quotePath's
+    octal-quoting), expose real ours/theirs blobs, and conclude cleanly."""
+    name = "产品介绍.txt"
+    a = await _mk("w-cjk", "ag-A")
+    root = a.workspace_root
+    assert root is not None
+    _commit(root, name, "第一行\nBASE 基线\n第三行\n", "base cjk")
+    b = await _mk("w-cjk", "ag-B")
+    d = await _mk("w-cjk", "ag-D")
+    _commit(b.root, name, "第一行\nB 改动\n第三行\n", "b edits")
+    _commit(d.root, name, "第一行\nD 改动\n第三行\n", "d edits")
+
+    assert (await b.probe_merge(b.branch))[0] == "clean"
+    status, detail = await d.probe_merge(d.branch)
+    assert status == "conflict", detail
+    cf = detail["files"][0]
+    assert cf["path"] == name            # real path, NOT a quoted/escaped literal
+    assert cf["ctype"] == "content"      # not misclassified binary
+    assert cf["ours"] and "B 改动" in cf["ours"]
+    assert cf["theirs"] and "D 改动" in cf["theirs"]
+    assert _porcelain(root) == ""
+    assert not _has_merge_head(root)
+
+    ok, _sha, msg = await d.conclude_merge(d.branch, sides={name: "theirs"})
+    assert ok, msg
+    assert "D 改动" in (root / name).read_text()
+
+
+@pytest.mark.asyncio
 async def test_add_add_conflict_has_no_base(ws_root: Path) -> None:
     a = await _mk("w-addadd", "ag-A")
     b = await _mk("w-addadd", "ag-B")
