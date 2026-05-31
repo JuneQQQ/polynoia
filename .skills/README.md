@@ -8,6 +8,7 @@
 |---|---|---|
 | [`add-adapter`](add-adapter/SKILL.md) | ready | 接入一个新 backend(CLI 工具)成 Adapter |
 | [`add-card-type`](add-card-type/SKILL.md) | ready | 新加一种 MessagePart 渲染卡 |
+| [`add-preview-renderer`](add-preview-renderer/SKILL.md) | ready | 给右栏「预览」加一种文件类型的渲染器 + 导出 |
 | `add-server` | P1+ | 新加 server kind(remote / tunnel)— 待写 |
 
 ## 如何写一个 skill

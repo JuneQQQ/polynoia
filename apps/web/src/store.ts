@@ -140,7 +140,7 @@ type Store = {
   preview: PreviewState;
 
   /** File currently focused in the right-rail code editor, mirrored ONE-WAY
-   * from CodeTab (CodeTab → store) so LivePreviewPane can render it live —
+   * from CodeTab (CodeTab → store) so the doc/PPT preview can render it live —
    * unsaved edits included. Null when nothing's open / not in a workspace. */
   openCodeFile: { path: string; content: string } | null;
   setOpenCodeFile: (f: { path: string; content: string } | null) => void;
