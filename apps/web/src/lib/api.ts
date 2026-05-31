@@ -1,5 +1,5 @@
 /** HTTP API client — Polynoia server REST. */
-import type { Agent, Provider, Server, Workspace } from "./types";
+import type { Agent, ConflictFile, Provider, Server, Workspace } from "./types";
 
 export type AdapterProbe = {
   id: string;
@@ -31,6 +31,37 @@ export type PendingEdit = {
   status: "pending" | "accepted" | "rejected" | "timeout";
   created_at: string | null;
   decided_at: string | null;
+};
+
+/** Merge-conflict row (conflict closed-loop). `id` is the conflict id used by
+ * the resolve / abandon endpoints. */
+export type Conflict = {
+  id: string;
+  conv_id: string;
+  workspace_id?: string;
+  branch: string;
+  agent_id: string;
+  base_agents?: string[];
+  into?: string;
+  status: "open" | "resolving" | "resolved" | "abandoned";
+  files: ConflictFile[];
+  resolved_by?: string | null;
+  resolved_sha?: string | null;
+  card_msg_id?: string | null;
+  created_at?: string | null;
+  decided_at?: string | null;
+};
+
+/** Project runner (Docker-isolated whole-project live preview) status — ADR-018. */
+export type RunStatus = {
+  ws_id: string;
+  kind: string; // static | npm | python | unknown | ""
+  entry?: string;
+  note?: string;
+  status: "starting" | "running" | "error" | "stopped" | string;
+  error?: string;
+  host_port?: number;
+  url?: string; // iframe points here (http://localhost:{host_port}/)
 };
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -296,6 +327,18 @@ export const api = {
   workspacePreviewUrl: (wsId: string, file: string) =>
     `/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`,
 
+  // ── Project runner — Docker-isolated whole-project live preview (ADR-018) ──
+  /** Detect + start the project's container. Idempotent (returns the live one). */
+  runProject: (wsId: string) => postJSON<RunStatus>(`/api/workspaces/${wsId}/run`),
+  /** Current runner status (starting → running once the port answers). */
+  getRunStatus: (wsId: string) => getJSON<RunStatus>(`/api/workspaces/${wsId}/run`),
+  /** Stop + remove the project's container. */
+  stopProject: (wsId: string) =>
+    deleteJSON<{ ws_id: string; status: string }>(`/api/workspaces/${wsId}/run`),
+  /** Container logs (install / build / serve output) for the UI. */
+  runLogs: (wsId: string) =>
+    getJSON<{ ws_id: string; logs: string }>(`/api/workspaces/${wsId}/run/logs`),
+
   /** Approve a manual-mode pending edit (user clicked ✓). Server flips
    * status=accepted, MCP tool unblocks + applies the edit. */
   approvePendingEdit: (id: string) =>
@@ -308,6 +351,31 @@ export const api = {
   listPendingEdits: (convId: string, status?: string) => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
     return getJSON<PendingEdit[]>(`/api/conversations/${convId}/pending-edits${qs}`);
+  },
+
+  /** Resolve a merge conflict + re-merge for real (conflict closed-loop). */
+  resolveConflict: (
+    id: string,
+    body: {
+      resolutions?: Record<string, string>;
+      sides?: Record<string, "ours" | "theirs">;
+      deletions?: string[];
+      resolved_by?: string;
+    },
+  ) =>
+    postJSON<{ ok?: boolean; sha?: string; error?: string } & Conflict>(
+      `/api/conflicts/${id}/resolve`,
+      body,
+    ),
+  /** Abandon a conflict — the branch stays un-merged, but explicitly. */
+  abandonConflict: (id: string) =>
+    postJSON<Conflict>(`/api/conflicts/${id}/abandon`, {}),
+  /** Full conflict row incl. file blobs (for the resolve pane). */
+  getConflict: (id: string) => getJSON<Conflict>(`/api/conflicts/${id}`),
+  /** Hydrate conflicts for a conv on conv switch / page refresh. */
+  listConflicts: (convId: string, status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return getJSON<Conflict[]>(`/api/conversations/${convId}/conflicts${qs}`);
   },
 
   /** Persist a user-side message with arbitrary payload (image / file /

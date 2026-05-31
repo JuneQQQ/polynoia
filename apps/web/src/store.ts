@@ -125,6 +125,11 @@ type Store = {
    * Server pushes via `data-pending-edit` WS chunk; UI renders ✓/✗ cards. */
   pendingEditsByConv: Map<string, import("./lib/api").PendingEdit[]>;
 
+  /** Merge conflicts keyed by conv_id (conflict closed-loop). Server pushes
+   * via `data-conflict` WS chunk + hydrated via GET /conflicts on conv switch.
+   * Drives the ConflictResolvePane + survives refresh. */
+  conflictsByConv: Map<string, import("./lib/api").Conflict[]>;
+
   /** Active ask-form questions awaiting user input, keyed by conv_id.
    * Server emits `data-ask-form` chunk when an agent's reply contains a
    * `<ask-form>{...}</ask-form>` block. Frontend renders these as a
@@ -133,6 +138,12 @@ type Store = {
 
   // Preview right-rail state
   preview: PreviewState;
+
+  /** File currently focused in the right-rail code editor, mirrored ONE-WAY
+   * from CodeTab (CodeTab → store) so LivePreviewPane can render it live —
+   * unsaved edits included. Null when nothing's open / not in a workspace. */
+  openCodeFile: { path: string; content: string } | null;
+  setOpenCodeFile: (f: { path: string; content: string } | null) => void;
 
   /** Left sidebar fully collapsed (VS Code Cmd+B style). Persisted to
    * localStorage so it survives reloads. When true, App renders no sidebar
@@ -168,6 +179,10 @@ type Store = {
   upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
   /** Replace the pending-edits list for a conv (used on initial hydrate). */
   hydratePendingEdits: (convId: string, edits: import("./lib/api").PendingEdit[]) => void;
+  /** Upsert a merge conflict (WS chunk handler) — flips status in place. */
+  upsertConflict: (conflict: import("./lib/api").Conflict) => void;
+  /** Replace the conflicts list for a conv (initial hydrate on conv switch). */
+  hydrateConflicts: (convId: string, conflicts: import("./lib/api").Conflict[]) => void;
   /** Push an incoming ask-form into the floating panel queue. */
   enqueueAskForm: (convId: string, entry: AskFormEntry) => void;
   /** Remove an ask-form (user submitted or dismissed). */
@@ -229,6 +244,11 @@ type Store = {
   /** Cmd+K / search button → full-screen search overlay. */
   searchOverlayOpen: boolean;
   setSearchOverlayOpen: (v: boolean) => void;
+
+  /** Bumped when agent-written files land in main (data-workspace-files WS
+   * chunk) → CodeTab auto-refreshes its file tree, no manual refresh. */
+  workspaceFilesTick: number;
+  bumpWorkspaceFiles: () => void;
 };
 
 export type ChunkAction =
@@ -255,6 +275,7 @@ export const useStore = create<Store>((set, get) => ({
   convs: new Map(),
   replyingTo: null,
   pendingEditsByConv: new Map(),
+  conflictsByConv: new Map(),
   askFormsByConv: new Map(),
   enqueueAskForm: (convId, entry) => {
     const m = new Map(get().askFormsByConv);
@@ -285,10 +306,28 @@ export const useStore = create<Store>((set, get) => ({
     m.set(convId, [...edits]);
     set({ pendingEditsByConv: m });
   },
+  upsertConflict: (conflict) => {
+    if (!conflict?.id || !conflict.conv_id) return;
+    const m = new Map(get().conflictsByConv);
+    const list = m.get(conflict.conv_id) ?? [];
+    const next = list.filter((c) => c.id !== conflict.id);
+    next.push(conflict);
+    next.sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+    m.set(conflict.conv_id, next);
+    set({ conflictsByConv: m });
+  },
+  hydrateConflicts: (convId, conflicts) => {
+    const m = new Map(get().conflictsByConv);
+    m.set(convId, [...conflicts]);
+    set({ conflictsByConv: m });
+  },
 
   // The right rail is now a code-only panel (file tree + open file). `tab`
   // is fixed to "code" — PreviewPane ignores it and always renders CodeTab.
   preview: { open: false, tab: "code", data: {} },
+
+  openCodeFile: null,
+  setOpenCodeFile: (f) => set({ openCodeFile: f }),
 
   openPreview: (_tab, data) =>
     set((s) => ({
@@ -332,6 +371,9 @@ export const useStore = create<Store>((set, get) => ({
 
   searchOverlayOpen: false,
   setSearchOverlayOpen: (v) => set({ searchOverlayOpen: v }),
+
+  workspaceFilesTick: 0,
+  bumpWorkspaceFiles: () => set((s) => ({ workspaceFilesTick: s.workspaceFilesTick + 1 })),
 
   setSeed: (s) => set(s),
   setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),

@@ -176,11 +176,43 @@ export type FilePayload = {
   caption?: string | null;
 };
 
+export type ConflictType = "content" | "add_add" | "modify_delete" | "rename" | "binary";
+export type ConflictFile = {
+  path: string;
+  ctype: ConflictType;
+  markers?: string | null;
+  ours?: string | null;
+  theirs?: string | null;
+  base?: string | null;
+  is_binary?: boolean;
+  resolution?: string | null;
+  side?: "ours" | "theirs" | "delete" | null;
+  state?: "conflict" | "resolved";
+};
+export type ConflictPayload = {
+  kind: "conflict";
+  conflict_id: ULID;
+  conv_id: ULID;
+  branch: string;
+  agent_id: string;
+  /** agent(s) already merged into main on the conflicting side (the "main"
+   * side of the conflict). Lets the UI name it instead of abstract "main". */
+  base_agents?: string[];
+  into: string;
+  status: "open" | "resolving" | "resolved" | "abandoned";
+  files: ConflictFile[];
+  resolved_by?: string | null;
+  resolved_sha?: string | null;
+  created_at?: string;
+  decided_at?: string | null;
+};
+
 export type MessagePayload =
   | TextPayload
   | ReasoningPayload
   | TasksPayload
   | DiffPayload
+  | ConflictPayload
   | WebPayload
   | SwatchesPayload
   | CopyPayload

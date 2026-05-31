@@ -224,6 +224,39 @@ export function CodeTab() {
   const activeFile = openFiles.find((f) => f.path === activePath);
   const dirty = activeFile && activeFile.content !== activeFile.originalContent;
 
+  // Mirror the focused file (incl. unsaved edits) to the store so
+  // LivePreviewPane can render it live. One-way (CodeTab → store), no loop.
+  const setOpenCodeFile = useStore((s) => s.setOpenCodeFile);
+  useEffect(() => {
+    setOpenCodeFile(
+      activeFile && !activeFile.loading
+        ? { path: activeFile.path, content: activeFile.content }
+        : null,
+    );
+  }, [activeFile?.path, activeFile?.content, activeFile?.loading, setOpenCodeFile]);
+  useEffect(() => () => setOpenCodeFile(null), [setOpenCodeFile]); // clear on unmount
+
+  // Auto-refresh when agent-written files land in main (data-workspace-files WS
+  // chunk → store.workspaceFilesTick). Reload the root tree in place (open tabs
+  // kept), then open an entry file if nothing is open — so what the agent just
+  // produced shows up WITHOUT a manual refresh.
+  const filesTick = useStore((s) => s.workspaceFilesTick);
+  const openedForTick = useRef(0);
+  useEffect(() => {
+    if (!workspaceId || filesTick === 0) return;
+    loadDir("", true);
+  }, [filesTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!workspaceId || filesTick === 0 || filesTick === openedForTick.current) return;
+    const root = dirs[""];
+    if (!root?.loaded) return; // wait for the reload above to land
+    openedForTick.current = filesTick;
+    if (!activePath) {
+      const entry = pickEntryFile(root.entries);
+      if (entry) openFile(entry);
+    }
+  }, [filesTick, dirs, workspaceId, activePath]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const save = useCallback(async () => {
     if (!workspaceId || !activeFile || saving) return;
     if (activeFile.content === activeFile.originalContent) return;
@@ -498,6 +531,16 @@ export function CodeTab() {
       </div>
     </div>
   );
+}
+
+/** Pick an entry file to auto-open after an agent-files refresh: prefer a
+ *  recognizable entry point, else the first file in the dir. */
+function pickEntryFile(entries: DirEntry[]): string | null {
+  const files = entries.filter((e) => e.type === "file");
+  const pref = files.find((e) =>
+    /^(index\.html?|app\.py|main\.py|index\.[jt]sx?)$/i.test(e.name),
+  );
+  return (pref ?? files[0])?.name ?? null;
 }
 
 function DirTree({

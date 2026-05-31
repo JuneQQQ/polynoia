@@ -10,11 +10,13 @@
  * (Web preview / Diff / Tasks tabs were removed per product decision; their
  *  components — WebTab/DiffTab/TasksTab — remain in the repo, just unmounted.)
  */
-import { Code2, GitPullRequestArrow, X } from "lucide-react";
+import { Code2, GitMerge, GitPullRequestArrow, Play, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../../store";
 import { CodeTab } from "./CodeTab";
+import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
+import { ProjectRunPane } from "./ProjectRunPane";
 
 export function PreviewPane() {
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
@@ -30,6 +32,24 @@ export function PreviewPane() {
 			!!activeConvId &&
 			(s.pendingEditsByConv.get(activeConvId) ?? []).some((e) => e.status === "pending"),
 	);
+	// Open merge conflicts (conflict closed-loop) take precedence over the file
+	// tree / pending-edit review — the merge is blocked until they're resolved.
+	const hasConflict = useStore(
+		(s) =>
+			!!activeConvId &&
+			(s.conflictsByConv.get(activeConvId) ?? []).some(
+				(c) => c.status === "open" || c.status === "resolving",
+			),
+	);
+
+	// Code vs. live-preview toggle — only meaningful when not resolving a
+	// conflict / reviewing edits. Persisted so it survives reopen.
+	const [mode, setMode] = useState<"code" | "preview">(() =>
+		localStorage.getItem("polynoia:pv-mode") === "preview" ? "preview" : "code",
+	);
+	useEffect(() => {
+		localStorage.setItem("polynoia:pv-mode", mode);
+	}, [mode]);
 
 	// Resize handle — left edge, 360–900px, persisted.
 	const [width, setWidth] = useState(() => {
@@ -83,19 +103,49 @@ export function PreviewPane() {
 
 			{/* Header — workspace title + close */}
 			<header className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
-				{reviewing ? (
+				{hasConflict ? (
+					<GitMerge size={14} className="flex-shrink-0" style={{ color: "var(--color-amber)" }} />
+				) : reviewing ? (
 					<GitPullRequestArrow size={14} className="text-[var(--color-green)] flex-shrink-0" />
+				) : mode === "preview" ? (
+					<Play size={14} className="flex-shrink-0" style={{ color: "var(--color-green)" }} />
 				) : (
 					<Code2 size={14} className="text-[var(--color-accent)] flex-shrink-0" />
 				)}
 				<div className="flex-1 min-w-0">
 					<div className="text-[12px] font-semibold truncate text-[var(--color-fg)]">
-						{reviewing ? "代码评审 · 待接受改动" : wsName ? `${wsName} · 代码` : "代码"}
+						{hasConflict
+							? "合并冲突 · 待解决"
+							: reviewing
+								? "代码评审 · 待接受改动"
+								: mode === "preview"
+									? "实时预览 · 运行效果"
+									: wsName
+										? `${wsName} · 代码`
+										: "代码"}
 					</div>
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)]">
 						main · 工作目录
 					</div>
 				</div>
+				{!hasConflict && !reviewing && (
+					<div className="flex items-center rounded-md border border-[var(--color-line)] overflow-hidden text-[10.5px] flex-shrink-0">
+						<button
+							type="button"
+							onClick={() => setMode("code")}
+							className={`px-2 py-0.5 transition-colors ${mode === "code" ? "bg-[var(--color-accent)] text-white" : "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"}`}
+						>
+							代码
+						</button>
+						<button
+							type="button"
+							onClick={() => setMode("preview")}
+							className={`px-2 py-0.5 transition-colors ${mode === "preview" ? "bg-[var(--color-green)] text-white" : "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"}`}
+						>
+							预览
+						</button>
+					</div>
+				)}
 				<button
 					type="button"
 					onClick={closePreview}
@@ -109,10 +159,23 @@ export function PreviewPane() {
 
 			{/* Body — diff review (when an agent proposed changes) or file tree */}
 			<div className="flex-1 overflow-hidden">
-				{reviewing && activeConvId ? (
+				{hasConflict && activeConvId ? (
+					<ConflictResolvePane convId={activeConvId} />
+				) : reviewing && activeConvId ? (
 					<DiffReviewPane convId={activeConvId} />
 				) : (
-					<CodeTab />
+					<>
+						{/* CodeTab stays mounted (just hidden) in preview mode so its
+						    open tabs + the live-mirrored file survive the toggle. */}
+						<div className={mode === "code" ? "h-full" : "hidden"}>
+							<CodeTab />
+						</div>
+						{mode === "preview" && (
+							<div className="h-full">
+								<ProjectRunPane workspaceId={workspaceId} />
+							</div>
+						)}
+					</>
 				)}
 			</div>
 		</aside>

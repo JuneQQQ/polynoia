@@ -58,6 +58,12 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "ALTER TABLE agents ADD COLUMN tool_role VARCHAR(16) "
         "NOT NULL DEFAULT 'generalist'",
     ),
+    (
+        "merge_conflicts",
+        "base_agents_json",
+        "ALTER TABLE merge_conflicts ADD COLUMN base_agents_json JSON "
+        "NOT NULL DEFAULT '[]'",
+    ),
 ]
 
 
