@@ -1184,6 +1184,27 @@ async def list_pending_edits_endpoint(conv_id: str, status: str | None = None):
 # ── Conflict closed-loop (merge-conflict resolution) ─────────────────
 
 
+# Conflict blobs (ours/theirs/base/markers) can be huge for a big file; the
+# card never renders them (the resolve pane fetches full via GET /conflicts/{id}),
+# so cap what goes into the live WS frame + the persisted message payload to keep
+# frames small and the messages table lean. DB merge_conflicts.files_json stays FULL.
+_CONFLICT_BLOB_CAP = 20_000
+
+
+def _truncate_conflict_files(files: list[dict]) -> list[dict]:
+    """Return a shallow copy of files with oversized blobs clipped (for the card
+    payload / WS frame only — never for DB storage or the resolve GET)."""
+    out: list[dict] = []
+    for f in files:
+        nf = dict(f)
+        for k in ("ours", "theirs", "base", "markers"):
+            v = nf.get(k)
+            if isinstance(v, str) and len(v) > _CONFLICT_BLOB_CAP:
+                nf[k] = v[:_CONFLICT_BLOB_CAP] + "\n…[truncated; open to load full]"
+        out.append(nf)
+    return out
+
+
 def _conflict_to_dict(row) -> dict:
     return {
         "id": row.id,
@@ -1230,7 +1251,7 @@ async def _broadcast_conflict_card(row) -> None:
     data-conflict frame to all tabs (in-place status flip, refresh-safe)."""
     if row is None:
         return
-    files = [ConflictFile(**f) for f in (row.files_json or [])]
+    files = [ConflictFile(**f) for f in _truncate_conflict_files(row.files_json or [])]
     payload = ConflictPayload(
         conflict_id=row.id, conv_id=row.conv_id, branch=row.branch,
         agent_id=row.agent_id, base_agents=row.base_agents_json or [],
@@ -1935,7 +1956,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             payload = ConflictPayload(
                 conflict_id=cid, conv_id=conv_id, branch=branch, agent_id=author,
                 base_agents=base_agents,
-                status="open", files=[ConflictFile(**f) for f in files],
+                status="open",
+                files=[ConflictFile(**f) for f in _truncate_conflict_files(files)],
                 created_at=crow.created_at if crow else datetime.utcnow(),
             ).model_dump(mode="json")
             await storage_repo.append_message(
@@ -1982,14 +2004,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # probe_merge is transient, so an unresolved/abandoned branch stays
             # ahead of main and would otherwise spawn a duplicate row each burst.
             async with SessionLocal() as _db:
-                already = {
-                    r.branch
-                    for r in await storage_repo.list_conflicts(_db, conv_id)
-                    if r.status in ("open", "resolving", "abandoned")
-                }
+                _rows = await storage_repo.list_conflicts(_db, conv_id)
+            # open/resolving = an in-flight card; probe_merge is transient so
+            # re-probing would just spawn a duplicate row each burst — skip them.
+            live = {r.branch for r in _rows if r.status in ("open", "resolving")}
+            # abandoned = user gave up resolving THIS branch's conflict. We still
+            # re-probe it: if later main progress made it cleanly mergeable it
+            # should land (B7 — don't strand a now-mergeable branch); if it is
+            # STILL conflicting we stay silent (honor the abandon, no re-spam).
+            abandoned = {r.branch for r in _rows if r.status == "abandoned"}
             merged_authors: list[str] = []
             for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
-                if b in already:
+                if b in live:
                     continue
                 if await ws_sandbox.branch_ahead_of_main(b) <= 0:
                     continue
@@ -2000,6 +2026,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     # any conflict a LATER branch in this same burst hits.
                     merged_authors.append(author)
                 elif status == "conflict":
+                    if b in abandoned:
+                        continue  # abandoned + still conflicting → don't re-surface
                     await _surface_conflict(
                         ws_id, b, author, detail.get("files", []), orch_id,
                         base_agents=list(merged_authors),
