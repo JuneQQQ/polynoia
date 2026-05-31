@@ -52,18 +52,6 @@ export type Conflict = {
   decided_at?: string | null;
 };
 
-/** Project runner (Docker-isolated whole-project live preview) status — ADR-018. */
-export type RunStatus = {
-  ws_id: string;
-  kind: string; // static | npm | python | unknown | ""
-  entry?: string;
-  note?: string;
-  status: "starting" | "running" | "error" | "stopped" | string;
-  error?: string;
-  host_port?: number;
-  url?: string; // iframe points here (http://localhost:{host_port}/)
-};
-
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -326,18 +314,6 @@ export const api = {
   /** URL for embedding a workspace HTML file in an iframe. */
   workspacePreviewUrl: (wsId: string, file: string) =>
     `/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`,
-
-  // ── Project runner — Docker-isolated whole-project live preview (ADR-018) ──
-  /** Detect + start the project's container. Idempotent (returns the live one). */
-  runProject: (wsId: string) => postJSON<RunStatus>(`/api/workspaces/${wsId}/run`),
-  /** Current runner status (starting → running once the port answers). */
-  getRunStatus: (wsId: string) => getJSON<RunStatus>(`/api/workspaces/${wsId}/run`),
-  /** Stop + remove the project's container. */
-  stopProject: (wsId: string) =>
-    deleteJSON<{ ws_id: string; status: string }>(`/api/workspaces/${wsId}/run`),
-  /** Container logs (install / build / serve output) for the UI. */
-  runLogs: (wsId: string) =>
-    getJSON<{ ws_id: string; logs: string }>(`/api/workspaces/${wsId}/run/logs`),
 
   /** Approve a manual-mode pending edit (user clicked ✓). Server flips
    * status=accepted, MCP tool unblocks + applies the edit. */

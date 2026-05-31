@@ -1348,6 +1348,11 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
                     await session.commit()
                 fresh = await storage_repo.get_conflict(session, conflict_id)
     await _broadcast_conflict_card(fresh)
+    if ok:
+        # Resolve committed a real merge into main → nudge the code tab to refresh.
+        await _broadcast_to_conv(
+            row.conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
+        )
     return ({"ok": True, "sha": sha} if ok else {"ok": False, "error": msg}) | _conflict_to_dict(fresh)
 
 
@@ -1357,17 +1362,27 @@ async def abandon_conflict_endpoint(conflict_id: str):
     silent). Emits the abandoned card state + a conv_memory note."""
     async with SessionLocal() as session:
         row = await storage_repo.get_conflict(session, conflict_id)
-        if row is None:
-            raise HTTPException(404, "conflict not found")
-        if row.status in ("resolved", "abandoned"):
-            return _conflict_to_dict(row)
-        await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
-        await storage_repo.add_conv_memory(
-            session, conv_id=row.conv_id, author_agent_id="you", kind="decision",
-            content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
-        )
-        await session.commit()
-        fresh = await storage_repo.get_conflict(session, conflict_id)
+    if row is None:
+        raise HTTPException(404, "conflict not found")
+    if row.status in ("resolved", "abandoned"):
+        return _conflict_to_dict(row)
+    # Serialize against a concurrent resolve on the same workspace and re-check
+    # under the lock: never abandon a conflict that a resolve is committing /
+    # already committed into main (would leave git/DB inconsistent).
+    async with workspace_merge_lock(row.workspace_id):
+        async with SessionLocal() as session:
+            cur = await storage_repo.get_conflict(session, conflict_id)
+            if cur is None:
+                raise HTTPException(404, "conflict not found")
+            if cur.status in ("resolved", "abandoned", "resolving"):
+                return _conflict_to_dict(cur)
+            await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
+            await storage_repo.add_conv_memory(
+                session, conv_id=row.conv_id, author_agent_id="you", kind="decision",
+                content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
+            )
+            await session.commit()
+            fresh = await storage_repo.get_conflict(session, conflict_id)
     await _broadcast_conflict_card(fresh)
     return _conflict_to_dict(fresh)
 
@@ -1535,49 +1550,6 @@ async def preview_workspace_html(ws_id: str, file: str = "index.html"):
             "X-Frame-Options": "SAMEORIGIN",
         },
     )
-
-
-# ── Project runner — Docker-isolated whole-project live preview (ADR-018) ──
-# Detect the workspace's project type, run the WHOLE project in a container, and
-# let the UI iframe localhost:{host_port}. See polynoia/runners/.
-
-@router.post("/api/workspaces/{ws_id}/run")
-async def start_project_runner(ws_id: str):
-    """Detect + start the project container. Idempotent (returns the live one)."""
-    from polynoia.runners.docker_runner import get_runner_manager
-
-    root = _workspace_root(ws_id)
-    runner = await get_runner_manager().start(ws_id, root)
-    return runner.public()
-
-
-@router.get("/api/workspaces/{ws_id}/run")
-async def get_project_runner(ws_id: str):
-    """Current runner status (starting → running once the port answers)."""
-    from polynoia.runners.docker_runner import get_runner_manager
-
-    runner = await get_runner_manager().status(ws_id)
-    if runner is None:
-        return {"ws_id": ws_id, "status": "stopped", "kind": "", "url": ""}
-    return runner.public()
-
-
-@router.delete("/api/workspaces/{ws_id}/run")
-async def stop_project_runner(ws_id: str):
-    """Stop + remove the project's container."""
-    from polynoia.runners.docker_runner import get_runner_manager
-
-    await get_runner_manager().stop(ws_id)
-    return {"ws_id": ws_id, "status": "stopped"}
-
-
-@router.get("/api/workspaces/{ws_id}/run/logs")
-async def project_runner_logs(ws_id: str, tail: int = 200):
-    """Container logs (install / build / serve output) for the UI."""
-    from polynoia.runners.docker_runner import get_runner_manager
-
-    logs = await get_runner_manager().logs(ws_id, tail=min(max(tail, 1), 1000))
-    return {"ws_id": ws_id, "logs": logs}
 
 
 @router.patch("/api/conversations/{conv_id}/member_roles")

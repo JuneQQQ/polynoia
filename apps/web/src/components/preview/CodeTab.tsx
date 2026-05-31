@@ -225,7 +225,7 @@ export function CodeTab() {
   const dirty = activeFile && activeFile.content !== activeFile.originalContent;
 
   // Mirror the focused file (incl. unsaved edits) to the store so
-  // LivePreviewPane can render it live. One-way (CodeTab → store), no loop.
+  // the doc/PPT preview can render it live. One-way (CodeTab → store), no loop.
   const setOpenCodeFile = useStore((s) => s.setOpenCodeFile);
   useEffect(() => {
     setOpenCodeFile(
@@ -240,11 +240,40 @@ export function CodeTab() {
   // chunk → store.workspaceFilesTick). Reload the root tree in place (open tabs
   // kept), then open an entry file if nothing is open — so what the agent just
   // produced shows up WITHOUT a manual refresh.
+  const openFilesRef = useRef(openFiles);
+  useEffect(() => {
+    openFilesRef.current = openFiles;
+  }, [openFiles]);
+
   const filesTick = useStore((s) => s.workspaceFilesTick);
   const openedForTick = useRef(0);
   useEffect(() => {
     if (!workspaceId || filesTick === 0) return;
     loadDir("", true);
+    // Re-sync open, NON-dirty buffers from disk (e.g. after a Crepe save of the
+    // same .md, or an agent edit) so the code tab isn't stale; keep dirty ones.
+    let alive = true;
+    (async () => {
+      for (const f of openFilesRef.current) {
+        if (f.loading || f.content !== f.originalContent) continue;
+        try {
+          const { content: c, modified } = await api.workspaceFileRead(workspaceId, f.path);
+          if (!alive) continue;
+          setOpenFiles((prev) =>
+            prev.map((x) =>
+              x.path === f.path && x.content === x.originalContent
+                ? { ...x, content: c, originalContent: c, modified }
+                : x,
+            ),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, [filesTick]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!workspaceId || filesTick === 0 || filesTick === openedForTick.current) return;

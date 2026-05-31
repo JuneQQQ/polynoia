@@ -16,7 +16,7 @@ import { useStore } from "../../store";
 import { CodeTab } from "./CodeTab";
 import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
-import { ProjectRunPane } from "./ProjectRunPane";
+import { DocPreviewPane } from "./DocPreviewPane";
 
 export function PreviewPane() {
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
@@ -172,7 +172,7 @@ export function PreviewPane() {
 						</div>
 						{mode === "preview" && (
 							<div className="h-full">
-								<ProjectRunPane workspaceId={workspaceId} />
+								<DocPreviewPane workspaceId={workspaceId} />
 							</div>
 						)}
 					</>

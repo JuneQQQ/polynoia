@@ -43,6 +43,7 @@ coverage/
 /research/
 /ui_design/
 .claude/
+.codex/
 
 # Local secrets / overrides
 *.local
