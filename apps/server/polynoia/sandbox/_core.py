@@ -15,6 +15,23 @@ from polynoia.settings import settings
 _IS_WINDOWS = os.name == "nt"
 
 
+# ── Per-workspace merge serialization ────────────────────────────────
+# The workspace root shares ONE HEAD/index across all worktrees AND all convs,
+# so concurrent merges from sibling convs would corrupt the shared .git. The
+# whole probe→conclude critical section must run under this lock, keyed by
+# workspace_id (NOT conv_id). See docs/design/conflict-closed-loop-2026-05-30.md.
+_WS_MERGE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
+    """Return the process-wide merge lock for a workspace (lazily created)."""
+    lock = _WS_MERGE_LOCKS.get(workspace_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _WS_MERGE_LOCKS[workspace_id] = lock
+    return lock
+
+
 class Sandbox:
     """A per-conversation sandbox directory.
 
@@ -213,7 +230,10 @@ class Sandbox:
         # Make a temporary Sandbox just to reuse _run / _copy_host_credentials.
         # workspace_id is not a conv_id but the methods only use self.root.
         scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}")
-        await scratch._run(["git", "init", "-q", "-b", "main"])
+        await scratch._run(["git", "init", "-q"])
+        # git 2.25.1 has no `git init -b`; set default branch `main` portably.
+        await scratch._run(["git", "symbolic-ref", "HEAD", "refs/heads/main"])
+        await scratch._run(["git", "config", "core.autocrlf", "false"])
         await scratch._run(["git", "config", "user.email", "agent@polynoia.local"])
         await scratch._run(["git", "config", "user.name", "polynoia-agent"])
         (ws_root / ".gitignore").write_text(
@@ -248,7 +268,12 @@ class Sandbox:
 
     async def _init_git(self) -> None:
         """Initialize an isolated git repo for tracking agent edits."""
-        await self._run(["git", "init", "-q", "-b", "main"])
+        await self._run(["git", "init", "-q"])
+        # git 2.25.1 (Ubuntu 20.04) has no `git init -b`; set the default
+        # branch to `main` portably via symbolic-ref BEFORE the first commit.
+        await self._run(["git", "symbolic-ref", "HEAD", "refs/heads/main"])
+        # Deterministic bytes across platforms — never CRLF-translate (Windows).
+        await self._run(["git", "config", "core.autocrlf", "false"])
         await self._run(["git", "config", "user.email", "agent@polynoia.local"])
         await self._run(["git", "config", "user.name", "polynoia-agent"])
         # .gitignore: hide Polynoia internal state (audit log, credentials, manifest,
@@ -570,6 +595,218 @@ class Sandbox:
             return False, "", f"conflict: {tail}"
         sha = await self.main_head_sha() or ""
         return True, sha, "merged"
+
+    # ── Conflict closed-loop (probe / capture / conclude) ───────────
+    #
+    # These run on the SHARED workspace root and MUST be wrapped by the
+    # caller in ``workspace_merge_lock(workspace_id)``. All git commands are
+    # chosen to work on old git (2.25.1, Ubuntu 20.04): no merge-tree
+    # --write-tree, no `init -b`. See docs/design/conflict-closed-loop-2026-05-30.md.
+
+    async def _abort_stray_merge(self) -> None:
+        """Restore a clean, mergeable main if the root is mid-merge or dirty
+        (e.g. a prior crash). ``git merge --abort`` errors (rc=128) when not
+        merging, so we guard on MERGE_HEAD first, then hard-reset any residue."""
+        if self.workspace_root is None:
+            return
+        rc, _o, _e = await self._workspace_run(
+            ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
+        )
+        if rc == 0:
+            await self._workspace_run(["git", "merge", "--abort"])
+        rc, out, _e = await self._workspace_run(["git", "status", "--porcelain"])
+        if rc == 0 and out.strip():
+            # Discard leftover half-applied changes; back to current HEAD.
+            await self._workspace_run(["git", "reset", "--hard", "-q", "HEAD"])
+
+    async def probe_merge(self, branch: str) -> tuple[str, dict[str, Any]]:
+        """Try to merge ``branch`` into main.
+
+        - CLEAN   → conclude (commit) and return ``("clean", {"sha": ...})``.
+        - CONFLICT→ capture per-file detail, ``git merge --abort`` to keep the
+          shared root CLEAN (transient probe), return ``("conflict", {"files": [...]})``.
+        - ERROR   → ``("error", {"message": ...})``.
+
+        Caller MUST hold ``workspace_merge_lock(workspace_id)``. Workspace mode only.
+        """
+        if self.workspace_root is None:
+            return ("error", {"message": "not in workspace mode"})
+        await self._abort_stray_merge()
+        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", "main"])
+        if rc_co != 0:
+            return ("error", {"message": f"checkout main failed: {err_co.strip()[:200]}"})
+        rc, out, err = await self._workspace_run([
+            "git", "-c", "merge.conflictStyle=diff3",
+            "merge", "--no-commit", "--no-ff",
+            "-m", f"polynoia: merge {branch} into main", branch,
+        ])
+        _rcu, u_out, _eu = await self._workspace_run(
+            ["git", "diff", "--name-only", "--diff-filter=U"]
+        )
+        conflicted = [p for p in u_out.splitlines() if p.strip()]
+        if rc == 0 and not conflicted:
+            # Clean merge — conclude it (MERGE_MSG is pre-populated).
+            rc_c, _oc, err_c = await self._workspace_run(["git", "commit", "--no-edit"])
+            if rc_c != 0:
+                await self._abort_stray_merge()
+                return ("error", {"message": f"commit failed: {err_c.strip()[:200]}"})
+            return ("clean", {"sha": await self.main_head_sha() or ""})
+        if not conflicted:
+            # Non-zero rc but nothing unmerged (e.g. already up to date) — recover.
+            await self._abort_stray_merge()
+            return ("error", {"message": (err.strip() or out.strip())[:200]})
+        files = [await self._capture_conflict_file(p) for p in conflicted]
+        await self._abort_stray_merge()  # leave root clean + mergeable
+        return ("conflict", {"files": files})
+
+    async def _show_stage(self, stage: int, path: str) -> str | None:
+        """Return git index stage blob (1=base, 2=ours/main, 3=theirs/branch)
+        as text, or None if that stage is absent (e.g. add/add has no :1:)."""
+        rc, out, _e = await self._workspace_run(["git", "show", f":{stage}:{path}"])
+        return out if rc == 0 else None
+
+    async def _path_is_binary(self, path: str) -> bool:
+        """Heuristic: a NUL byte in the working-tree file ⇒ binary. Used so we
+        NEVER UTF-8-decode binary content into a markers string (would corrupt)."""
+        root = self.workspace_root
+        if root is None:
+            return False
+        try:
+            return b"\x00" in (root / path).read_bytes()[:8000]
+        except OSError:
+            return False
+
+    async def _capture_conflict_file(self, path: str) -> dict[str, Any]:
+        """Classify one conflicted path + capture its 3-way blobs.
+
+        ctype ∈ content | add_add | modify_delete | binary. Binary files are
+        take-side only (blobs not decoded). The classification order matters:
+        binary first, then a missing side (modify_delete), then no merge base
+        (add_add), else a normal content conflict.
+        """
+        root = self.workspace_root
+        is_binary = await self._path_is_binary(path)
+        base = ours = theirs = markers = None
+        if not is_binary:
+            base = await self._show_stage(1, path)
+            ours = await self._show_stage(2, path)
+            theirs = await self._show_stage(3, path)
+            if root is not None:
+                try:
+                    text = (root / path).read_text(encoding="utf-8")
+                    if "<<<<<<<" in text:
+                        markers = text
+                except (OSError, UnicodeDecodeError):
+                    is_binary = True  # undecodable ⇒ treat as binary
+
+        if is_binary:
+            ctype = "binary"
+            base = ours = theirs = markers = None
+        elif ours is None or theirs is None:
+            ctype = "modify_delete"  # one side is a tombstone — no text merge
+        elif base is None:
+            ctype = "add_add"        # both present, no merge base
+        else:
+            ctype = "content"
+        return {
+            "path": path, "ctype": ctype, "markers": markers,
+            "ours": ours, "theirs": theirs, "base": base,
+            "is_binary": is_binary, "resolution": None, "side": None,
+            "state": "conflict",
+        }
+
+    async def conclude_merge(
+        self,
+        branch: str,
+        *,
+        resolutions: dict[str, str] | None = None,
+        sides: dict[str, str] | None = None,
+        deletions: list[str] | None = None,
+    ) -> tuple[bool, str, str]:
+        """Re-enter the merge for real and finish it with the given resolutions.
+
+        - ``resolutions``: path → final text content (content / add_add / keep).
+        - ``sides``: path → "ours"|"theirs" (take a whole side from the git index
+          — works for BINARY too, no stored blob needed).
+        - ``deletions``: paths to remove (modify_delete take-delete).
+
+        Returns ``(ok, new_sha_or_empty, message)``. Caller MUST hold the
+        workspace lock. A ``finally`` guard guarantees the shared root is never
+        left half-merged on any error path.
+        """
+        if self.workspace_root is None:
+            return (False, "", "not in workspace mode")
+        resolutions = resolutions or {}
+        sides = sides or {}
+        deletions = deletions or []
+        await self._abort_stray_merge()
+        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", "main"])
+        if rc_co != 0:
+            return (False, "", f"checkout main failed: {err_co.strip()[:200]}")
+        rc_b, _ob, _eb = await self._workspace_run(["git", "rev-parse", "--verify", branch])
+        if rc_b != 0:
+            return (False, "", f"branch gone: {branch}")
+        try:
+            await self._workspace_run([
+                "git", "-c", "merge.conflictStyle=diff3",
+                "merge", "--no-commit", "--no-ff", branch,
+            ])
+            for p, side in sides.items():
+                flag = "--ours" if side == "ours" else "--theirs"
+                rc_co, _oco, _eco = await self._workspace_run(
+                    ["git", "checkout", flag, "--", p]
+                )
+                if rc_co == 0:
+                    await self._workspace_run(["git", "add", "--", p])
+                else:
+                    # The chosen side is a tombstone (that side DELETED the file
+                    # in a modify/delete conflict): take the deletion rather than
+                    # staging the surviving wrong side.
+                    await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
+            for p, content in resolutions.items():
+                # Reject a "resolution" that still carries conflict markers — once
+                # written + git-added it's no longer unmerged, so the U-guard
+                # below can't catch it and markers would commit to main.
+                if any(
+                    ln.startswith(("<<<<<<<", ">>>>>>>", "|||||||"))
+                    for ln in content.splitlines()
+                ):
+                    await self._workspace_run(["git", "merge", "--abort"])
+                    return (False, "", f"resolution for {p} still has conflict markers")
+                target = self.workspace_root / p
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # newline="" → keep bytes exact (no CRLF translation on Windows).
+                target.write_text(content, encoding="utf-8", newline="")
+                await self._workspace_run(["git", "add", "--", p])
+            for p in deletions:
+                await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
+            _rcu, u_out, _eu = await self._workspace_run(
+                ["git", "diff", "--name-only", "--diff-filter=U"]
+            )
+            if [p for p in u_out.splitlines() if p.strip()]:
+                await self._workspace_run(["git", "merge", "--abort"])
+                return (False, "", "unresolved files remain")
+            # Nothing staged (branch already merged / no-op) → success, not a
+            # `git commit` that errors with "nothing to commit" (stuck card).
+            rc_idx, _oi, _ei = await self._workspace_run(
+                ["git", "diff", "--cached", "--quiet"]
+            )
+            if rc_idx == 0:
+                await self._abort_stray_merge()
+                return (True, await self.main_head_sha() or "", "already merged")
+            rc_c, _oc, err_c = await self._workspace_run([
+                "git", "commit", "-m", f"polynoia: resolve+merge {branch} into main",
+            ])
+            if rc_c != 0:
+                await self._abort_stray_merge()
+                return (False, "", f"commit failed: {err_c.strip()[:200]}")
+            return (True, await self.main_head_sha() or "", "resolved")
+        finally:
+            rc_m, _om, _em = await self._workspace_run(
+                ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
+            )
+            if rc_m == 0:
+                await self._workspace_run(["git", "merge", "--abort"])
 
     async def _workspace_run(self, cmd: list[str]) -> tuple[int, str, str]:
         """Like ``_run`` but pinned to the workspace root, not the worktree.

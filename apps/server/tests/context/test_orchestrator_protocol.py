@@ -1,0 +1,129 @@
+"""Tests for the platform-injected orchestration protocol (ADR-017).
+
+The conv's designated orchestrator must receive the dispatch protocol in its
+prompt EVEN WHEN its persona never mentions dispatching — and non-orchestrator
+members must not.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+import polynoia.storage.db as db_module
+from polynoia.context import build_context_for_turn
+from polynoia.context.orchestrator import build_orchestrator_protocol_layer
+from polynoia.domain.entities import Agent, AgentSetup, Conversation, new_ulid
+from polynoia.storage.repo import create_conversation, upsert_agent
+
+
+@pytest.fixture
+async def clean_db(monkeypatch, tmp_path: Path):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/orch-test.db"
+    monkeypatch.setattr("polynoia.settings.settings.db_url", db_url)
+    import polynoia.storage.db as db_mod
+    eng = create_async_engine(
+        db_url, echo=False, future=True,
+        connect_args={"check_same_thread": False},
+    )
+    sm = async_sessionmaker(eng, expire_on_commit=False)
+    monkeypatch.setattr(db_mod, "engine", eng)
+    monkeypatch.setattr(db_mod, "SessionLocal", sm)
+    from polynoia.storage import models  # noqa: F401
+    async with eng.begin() as conn:
+        await conn.run_sync(db_mod.Base.metadata.create_all)
+    try:
+        yield
+    finally:
+        await eng.dispose()
+
+
+async def _agent(name: str, tool_role: str = "generalist") -> Agent:
+    # Persona deliberately NEVER mentions dispatch — the protocol must still
+    # reach an orchestrator, proving it doesn't depend on the user's persona.
+    a = Agent(
+        id=new_ulid(), name=name, role="t", provider="claude", handle=f"@{name}",
+        initials=name[:2], color="#000", bg="#fff",
+        system_prompt=f"你是{name},一个普通工程师,只埋头写代码,从不提派活。",
+        tool_role=tool_role,
+        setup=AgentSetup(adapter_id="claudeCode", model="claude-sonnet-4-6"),
+    )
+    async with db_module.SessionLocal() as s:
+        await upsert_agent(s, a)
+        await s.commit()
+    return a
+
+
+def test_protocol_layer_content() -> None:
+    layer = build_orchestrator_protocol_layer(agent_id="x", roster=["阿码", "阿写"])
+    c = layer.content
+    assert "协调器" in c
+    assert "dispatch" in c
+    assert "严禁用 @提及" in c
+    assert "不写文件" in c
+    assert "阿码" in c and "阿写" in c
+    assert layer.hard is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_gets_protocol_despite_custom_persona(clean_db) -> None:
+    orch = await _agent("调度")  # generalist + persona never mentions dispatch
+    w1 = await _agent("码甲")
+    w2 = await _agent("码乙")
+    cid = new_ulid()
+    conv = Conversation(
+        id=cid, title="g", members=["you", orch.id, w1.id, w2.id],
+        group=True, orchestrator_member_id=orch.id,
+    )
+    async with db_module.SessionLocal() as s:
+        await create_conversation(s, conv)
+        await s.commit()
+    async with db_module.SessionLocal() as s:
+        prompt = await build_context_for_turn(
+            s, agent_id=orch.id, conv_id=cid, user_text="并行做两件事"
+        )
+    assert "你是本群聊的协调器" in prompt
+    assert "dispatch" in prompt
+    assert "严禁用 @提及" in prompt
+    # roster lists the OTHER members, not the orchestrator itself
+    assert "码甲" in prompt and "码乙" in prompt
+
+
+@pytest.mark.asyncio
+async def test_non_orchestrator_member_gets_no_protocol(clean_db) -> None:
+    orch = await _agent("调度")
+    w1 = await _agent("码甲")
+    cid = new_ulid()
+    conv = Conversation(
+        id=cid, title="g", members=["you", orch.id, w1.id],
+        group=True, orchestrator_member_id=orch.id,
+    )
+    async with db_module.SessionLocal() as s:
+        await create_conversation(s, conv)
+        await s.commit()
+    async with db_module.SessionLocal() as s:
+        prompt = await build_context_for_turn(
+            s, agent_id=w1.id, conv_id=cid, user_text="hi"
+        )
+    assert "你是本群聊的协调器" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_dm_orchestrator_field_unset_no_protocol(clean_db) -> None:
+    """A non-group conv never injects the protocol even if someone matches."""
+    solo = await _agent("独")
+    cid = new_ulid()
+    conv = Conversation(
+        id=cid, title="dm", members=["you", solo.id], direct=True, group=False,
+        orchestrator_member_id=solo.id,  # nonsensical for a DM, but guard on group
+    )
+    async with db_module.SessionLocal() as s:
+        await create_conversation(s, conv)
+        await s.commit()
+    async with db_module.SessionLocal() as s:
+        prompt = await build_context_for_turn(
+            s, agent_id=solo.id, conv_id=cid, user_text="hi"
+        )
+    assert "你是本群聊的协调器" not in prompt

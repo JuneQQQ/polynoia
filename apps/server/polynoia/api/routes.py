@@ -19,7 +19,8 @@ from fastapi.responses import PlainTextResponse, Response
 
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
-from polynoia.sandbox import Sandbox
+from polynoia.domain.messages import ConflictFile, ConflictPayload
+from polynoia.sandbox import Sandbox, workspace_merge_lock
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
@@ -1166,6 +1167,211 @@ async def list_pending_edits_endpoint(conv_id: str, status: str | None = None):
     return [_pending_edit_to_dict(r) for r in rows]
 
 
+# ── Conflict closed-loop (merge-conflict resolution) ─────────────────
+
+
+def _conflict_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "conv_id": row.conv_id,
+        "workspace_id": row.workspace_id,
+        "branch": row.branch,
+        "agent_id": row.agent_id,
+        "into": row.into,
+        "status": row.status,
+        "files": row.files_json,
+        "base_agents": row.base_agents_json or [],
+        "resolved_by": row.resolved_by,
+        "resolved_sha": row.resolved_sha,
+        "card_msg_id": row.card_msg_id,
+        "created_at": row.created_at.isoformat() + "Z" if row.created_at else None,
+        "decided_at": row.decided_at.isoformat() + "Z" if row.decided_at else None,
+    }
+
+
+def _apply_resolution_to_files(
+    files: list[dict], resolutions: dict, sides: dict, deletions: list[str]
+) -> list[dict]:
+    """Fold the incoming per-file resolution into files_json (so a partial
+    resolve isn't lost if conclude aborts)."""
+    out = []
+    for f in files:
+        p = f.get("path")
+        nf = dict(f)
+        if p in deletions:
+            nf["side"] = "delete"
+            nf["state"] = "resolved"
+        elif p in sides:
+            nf["side"] = sides[p]
+            nf["state"] = "resolved"
+        elif p in resolutions:
+            nf["resolution"] = resolutions[p]
+            nf["state"] = "resolved"
+        out.append(nf)
+    return out
+
+
+async def _broadcast_conflict_card(row) -> None:
+    """Update the conflict card message payload from the row + push a
+    data-conflict frame to all tabs (in-place status flip, refresh-safe)."""
+    if row is None:
+        return
+    files = [ConflictFile(**f) for f in (row.files_json or [])]
+    payload = ConflictPayload(
+        conflict_id=row.id, conv_id=row.conv_id, branch=row.branch,
+        agent_id=row.agent_id, base_agents=row.base_agents_json or [],
+        into=row.into, status=row.status, files=files,
+        resolved_by=row.resolved_by, resolved_sha=row.resolved_sha,
+        created_at=row.created_at, decided_at=row.decided_at,
+    ).model_dump(mode="json")
+    if row.card_msg_id:
+        async with SessionLocal() as session:
+            await storage_repo.update_message_payload(session, row.card_msg_id, payload)
+            await session.commit()
+    frame = (
+        'data: {"type":"data-conflict","data":'
+        + json.dumps(payload, ensure_ascii=False)
+        + (',"id":' + json.dumps(row.card_msg_id) if row.card_msg_id else "")
+        + ',"sender_id":' + json.dumps(row.agent_id)
+        + "}\n\n"
+    )
+    await _broadcast_to_conv(row.conv_id, frame)
+
+
+@router.get("/api/conversations/{conv_id}/conflicts")
+async def list_conflicts_endpoint(conv_id: str, status: str | None = None):
+    """List merge conflicts for a conv (UI hydration on refresh)."""
+    async with SessionLocal() as session:
+        rows = await storage_repo.list_conflicts(session, conv_id, status=status)
+    return [_conflict_to_dict(r) for r in rows]
+
+
+@router.get("/api/conflicts/{conflict_id}")
+async def get_conflict_endpoint(conflict_id: str):
+    """Full conflict row incl. uncapped file blobs (for the resolve pane)."""
+    async with SessionLocal() as session:
+        row = await storage_repo.get_conflict(session, conflict_id)
+    if row is None:
+        raise HTTPException(404, "conflict not found")
+    return _conflict_to_dict(row)
+
+
+@router.get("/api/conflicts/{conflict_id}/wait")
+async def wait_for_conflict(conflict_id: str, timeout: float = 60.0):
+    """Long-poll until the conflict leaves open/resolving, or timeout. Lets an
+    MCP/LLM path block on resolution (mirrors the pending-edit wait)."""
+    timeout = min(max(timeout, 1.0), 120.0)
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        async with SessionLocal() as session:
+            row = await storage_repo.get_conflict(session, conflict_id)
+        if row is None:
+            raise HTTPException(404, "conflict not found")
+        if row.status in ("resolved", "abandoned"):
+            return _conflict_to_dict(row)
+        if asyncio.get_event_loop().time() >= deadline:
+            return _conflict_to_dict(row)
+        await asyncio.sleep(0.5)
+
+
+@router.post("/api/conflicts/{conflict_id}/resolve")
+async def resolve_conflict_endpoint(conflict_id: str, body: dict):
+    """Resolve a conflict and re-merge for real.
+
+    Body: ``{ resolutions?: {path: content}, sides?: {path: "ours"|"theirs"},
+    deletions?: [path], resolved_by?: str }``. Re-enters the merge under the
+    per-workspace lock; on success the card flips to ``resolved``.
+    """
+    resolutions = body.get("resolutions") or {}
+    sides = body.get("sides") or {}
+    deletions = body.get("deletions") or []
+    resolved_by = body.get("resolved_by") or "you"
+
+    async with SessionLocal() as session:
+        row = await storage_repo.get_conflict(session, conflict_id)
+    if row is None:
+        raise HTTPException(404, "conflict not found")
+    if row.status in ("resolved", "abandoned"):
+        return _conflict_to_dict(row)  # idempotent
+    ws_sandbox = Sandbox.open_workspace_if_exists(row.workspace_id)
+    if ws_sandbox is None:
+        raise HTTPException(409, "workspace not available")
+
+    updated_files = _apply_resolution_to_files(
+        row.files_json or [], resolutions, sides, deletions
+    )
+
+    # Serialize on the workspace lock AND re-check status inside it, so two
+    # concurrent resolves can't both run conclude_merge or clobber a winner.
+    async with workspace_merge_lock(row.workspace_id):
+        async with SessionLocal() as session:
+            cur = await storage_repo.get_conflict(session, conflict_id)
+            if cur is None:
+                raise HTTPException(404, "conflict not found")
+            if cur.status in ("resolved", "abandoned"):
+                return _conflict_to_dict(cur)  # a concurrent resolve already won
+            # Persist the per-file resolution + flip to 'resolving' (so a partial
+            # isn't lost if conclude aborts), then broadcast the in-progress card.
+            await storage_repo.update_conflict_files(session, conflict_id, updated_files)
+            await storage_repo.set_conflict_status(session, conflict_id, "resolving")
+            await session.commit()
+            resolving = await storage_repo.get_conflict(session, conflict_id)
+        await _broadcast_conflict_card(resolving)
+
+        try:
+            ok, sha, msg = await ws_sandbox.conclude_merge(
+                row.branch, resolutions=resolutions, sides=sides, deletions=deletions,
+            )
+        except Exception as exc:  # never leave the row stuck in 'resolving'
+            log.exception("conclude_merge raised for conflict %s", conflict_id)
+            ok, sha, msg = False, "", f"conclude raised: {exc}"
+
+        if ok:
+            async with SessionLocal() as session:
+                await storage_repo.set_conflict_status(
+                    session, conflict_id, "resolved",
+                    resolved_by=resolved_by, resolved_sha=sha,
+                )
+                await storage_repo.add_conv_memory(
+                    session, conv_id=row.conv_id, author_agent_id=resolved_by,
+                    kind="decision",
+                    content=f"{resolved_by} 解决了 `{row.branch}` 的冲突 → main@{sha}。",
+                )
+                await session.commit()
+                fresh = await storage_repo.get_conflict(session, conflict_id)
+        else:
+            async with SessionLocal() as session:
+                back = await storage_repo.get_conflict(session, conflict_id)
+                # Only revert to open if WE still own the 'resolving' state.
+                if back and back.status == "resolving":
+                    await storage_repo.set_conflict_status(session, conflict_id, "open")
+                    await session.commit()
+                fresh = await storage_repo.get_conflict(session, conflict_id)
+    await _broadcast_conflict_card(fresh)
+    return ({"ok": True, "sha": sha} if ok else {"ok": False, "error": msg}) | _conflict_to_dict(fresh)
+
+
+@router.post("/api/conflicts/{conflict_id}/abandon")
+async def abandon_conflict_endpoint(conflict_id: str):
+    """Abandon a conflict — the branch stays un-merged, but explicitly (never
+    silent). Emits the abandoned card state + a conv_memory note."""
+    async with SessionLocal() as session:
+        row = await storage_repo.get_conflict(session, conflict_id)
+        if row is None:
+            raise HTTPException(404, "conflict not found")
+        if row.status in ("resolved", "abandoned"):
+            return _conflict_to_dict(row)
+        await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
+        await storage_repo.add_conv_memory(
+            session, conv_id=row.conv_id, author_agent_id="you", kind="decision",
+            content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
+        )
+        await session.commit()
+        fresh = await storage_repo.get_conflict(session, conflict_id)
+    await _broadcast_conflict_card(fresh)
+    return _conflict_to_dict(fresh)
+
+
 # ── Workspace files (Phase B + C) ──────────────────────────────────────
 
 
@@ -1329,6 +1535,49 @@ async def preview_workspace_html(ws_id: str, file: str = "index.html"):
             "X-Frame-Options": "SAMEORIGIN",
         },
     )
+
+
+# ── Project runner — Docker-isolated whole-project live preview (ADR-018) ──
+# Detect the workspace's project type, run the WHOLE project in a container, and
+# let the UI iframe localhost:{host_port}. See polynoia/runners/.
+
+@router.post("/api/workspaces/{ws_id}/run")
+async def start_project_runner(ws_id: str):
+    """Detect + start the project container. Idempotent (returns the live one)."""
+    from polynoia.runners.docker_runner import get_runner_manager
+
+    root = _workspace_root(ws_id)
+    runner = await get_runner_manager().start(ws_id, root)
+    return runner.public()
+
+
+@router.get("/api/workspaces/{ws_id}/run")
+async def get_project_runner(ws_id: str):
+    """Current runner status (starting → running once the port answers)."""
+    from polynoia.runners.docker_runner import get_runner_manager
+
+    runner = await get_runner_manager().status(ws_id)
+    if runner is None:
+        return {"ws_id": ws_id, "status": "stopped", "kind": "", "url": ""}
+    return runner.public()
+
+
+@router.delete("/api/workspaces/{ws_id}/run")
+async def stop_project_runner(ws_id: str):
+    """Stop + remove the project's container."""
+    from polynoia.runners.docker_runner import get_runner_manager
+
+    await get_runner_manager().stop(ws_id)
+    return {"ws_id": ws_id, "status": "stopped"}
+
+
+@router.get("/api/workspaces/{ws_id}/run/logs")
+async def project_runner_logs(ws_id: str, tail: int = 200):
+    """Container logs (install / build / serve output) for the UI."""
+    from polynoia.runners.docker_runner import get_runner_manager
+
+    logs = await get_runner_manager().logs(ws_id, tail=min(max(tail, 1), 1000))
+    return {"ws_id": ws_id, "logs": logs}
 
 
 @router.patch("/api/conversations/{conv_id}/member_roles")
@@ -1680,13 +1929,57 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 ),
             )
 
-    async def _merge_burst_to_main(reg: dict) -> None:
-        """All burst workers done → fold their branches into main so the user
-        only ever reviews main.
+    async def _surface_conflict(
+        ws_id: str, branch: str, author: str, files: list[dict], orch_id: str,
+        base_agents: list[str] | None = None,
+    ) -> None:
+        """Freeze a real merge conflict into a durable ConflictRow + a `conflict`
+        card in the timeline (everyone sees it) + a conv_memory note (so the
+        orchestrator's wrap-up turn knows). Survives refresh."""
+        base_agents = base_agents or []
+        card_msg_id = f"conflict-{uuid.uuid4().hex[:12]}"
+        async with SessionLocal() as db:
+            cid = await storage_repo.create_conflict(
+                db, conv_id=conv_id, workspace_id=ws_id, branch=branch,
+                agent_id=author, files=files, card_msg_id=card_msg_id,
+                base_agents=base_agents,
+            )
+            crow = await storage_repo.get_conflict(db, cid)
+            payload = ConflictPayload(
+                conflict_id=cid, conv_id=conv_id, branch=branch, agent_id=author,
+                base_agents=base_agents,
+                status="open", files=[ConflictFile(**f) for f in files],
+                created_at=crow.created_at if crow else datetime.utcnow(),
+            ).model_dump(mode="json")
+            await storage_repo.append_message(
+                db, conv_id=conv_id, sender_id=orch_id,
+                payload=payload, msg_id=card_msg_id,
+            )
+            await storage_repo.add_conv_memory(
+                db, conv_id=conv_id, author_agent_id=author, kind="conflict",
+                content=(
+                    f"分支 `{branch}` 合并 main 冲突,{len(files)} 个文件待解决"
+                    f"(conflict {cid})。"
+                ),
+            )
+            await db.commit()
+        await emit(
+            'data: {"type":"data-conflict","data":'
+            + json.dumps(payload, ensure_ascii=False)
+            + ',"id":' + json.dumps(card_msg_id)
+            + ',"sender_id":' + json.dumps(orch_id)
+            + "}\n\n"
+        )
 
-        SILENT by design: branch juggling + merge is an internal mechanism the
-        user shouldn't see (no `system` chatter). Files just appear on main;
-        the orchestrator's summary turn is the only user-facing wrap-up.
+    async def _merge_burst_to_main(reg: dict) -> None:
+        """All burst workers done → fold their branches into main via REAL
+        conflict-detecting merges (conflict closed-loop).
+
+        Clean branches merge silently (as before). A true git conflict is no
+        longer a silent abort-and-drop: it is frozen into a `conflict` card the
+        user can resolve. The whole critical section is serialized per-workspace
+        (the shared root has ONE HEAD/index across all worktrees AND convs).
+        See docs/design/conflict-closed-loop-2026-05-30.md.
         """
         ws_id = reg.get("workspace_id")
         if not ws_id:
@@ -1694,12 +1987,44 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
         if ws_sandbox is None:
             return
-        # Capture native-tool writes that never got auto-committed (OpenCode)
-        # so they exist as commits before we merge their branches into main.
-        await ws_sandbox.commit_pending_worktrees(conv_id)
-        for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
-            if await ws_sandbox.branch_ahead_of_main(b) > 0:
-                await ws_sandbox.merge_branch_into_main(b)
+        orch_id = reg.get("orch") or "orchestrator"
+        async with workspace_merge_lock(ws_id):
+            # Capture native-tool writes (OpenCode) as commits before merging.
+            await ws_sandbox.commit_pending_worktrees(conv_id)
+            # Don't re-surface a branch that already has a live conflict card:
+            # probe_merge is transient, so an unresolved/abandoned branch stays
+            # ahead of main and would otherwise spawn a duplicate row each burst.
+            async with SessionLocal() as _db:
+                already = {
+                    r.branch
+                    for r in await storage_repo.list_conflicts(_db, conv_id)
+                    if r.status in ("open", "resolving", "abandoned")
+                }
+            merged_authors: list[str] = []
+            for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
+                if b in already:
+                    continue
+                if await ws_sandbox.branch_ahead_of_main(b) <= 0:
+                    continue
+                status, detail = await ws_sandbox.probe_merge(b)
+                author = b.split("/")[1] if "/" in b else b
+                if status == "clean":
+                    # This branch is now IN main — it becomes the "main side" of
+                    # any conflict a LATER branch in this same burst hits.
+                    merged_authors.append(author)
+                elif status == "conflict":
+                    await _surface_conflict(
+                        ws_id, b, author, detail.get("files", []), orch_id,
+                        base_agents=list(merged_authors),
+                    )
+                elif status == "error":
+                    log.warning(
+                        "burst merge: %s → error: %s", b, detail.get("message", "")
+                    )
+            if merged_authors:
+                # Files just landed in main → now visible in the code tab. Nudge
+                # the UI to auto-refresh its file tree (no manual refresh needed).
+                await emit('data: {"type":"data-workspace-files","data":{}}\n\n')
 
     async def run_adapter_turn(
         agent_id: str,

@@ -315,7 +315,11 @@ async def test_ledger_surfaces_git_commits(clean_db, monkeypatch, tmp_path) -> N
     monkeypatch.setattr("polynoia.settings.settings.sandbox_root", sandbox_root)
     bob_sandbox = sandbox_root / bob_conv.id
     bob_sandbox.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=bob_sandbox, check=True)
+    # git 2.25.1 (Ubuntu 20.04) has no `git init -b`; set default branch portably.
+    subprocess.run(["git", "init", "-q"], cwd=bob_sandbox, check=True)
+    subprocess.run(
+        ["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=bob_sandbox, check=True
+    )
     subprocess.run(["git", "config", "user.email", "test@x"], cwd=bob_sandbox, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=bob_sandbox, check=True)
     (bob_sandbox / "auth.py").write_text("# stub\n")

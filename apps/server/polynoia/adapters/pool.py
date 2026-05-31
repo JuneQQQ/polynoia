@@ -86,12 +86,21 @@ class AdapterPool:
             if base is None:
                 return None
 
-            # The conv's designated orchestrator member coordinates with tools
-            # off (pure text decompose/aggregate). Everyone else gets the full
-            # adapter toolset.
-            allowed: list[str] | None = (
-                [] if (conv is not None and agent_id == conv.orchestrator_member_id) else None
+            # The conv's DESIGNATED orchestrator is self-enabling: force its
+            # EFFECTIVE tool_role to "orchestrator" (dispatch on, write off)
+            # REGARDLESS of the contact's own tool_role — so ANY contact picked
+            # as a group's orchestrator can actually dispatch, independent of how
+            # it was created. The real gate is tool_role: the MCP server filters
+            # tools by POLYNOIA_AGENT_ROLE, and the claudeCode adapter rebuilds
+            # its auto-approve allowlist from it. `allowed=[]` is a legacy
+            # auto-approve hint only (falsy → adapter ignores it, uses the
+            # role-derived list); kept as-is to not perturb existing behavior. ADR-017.
+            is_conv_orch = (
+                conv is not None
+                and conv.group
+                and agent_id == conv.orchestrator_member_id
             )
+            allowed: list[str] | None = [] if is_conv_orch else None
 
             # P1.1 workspace-shared sandbox: trigger when conv has workspace_id
             # AND is a group conv (DMs stay per-conv until P1.2).
@@ -113,7 +122,7 @@ class AdapterPool:
                 workspace_id=ws_id,
                 agent_id=agent_id if ws_id else None,
                 merge_mode=merge_mode,
-                tool_role=agent.tool_role,
+                tool_role=("orchestrator" if is_conv_orch else agent.tool_role),
             )
             self._sessions[key] = new_sess
             return new_sess

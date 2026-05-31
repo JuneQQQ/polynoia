@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 import type { MessagePayload } from "../../lib/types";
 import { ApiPart } from "./ApiPart";
 import { AskFormPart } from "./AskFormPart";
+import { ConflictPart } from "./ConflictPart";
 import { CopyPart } from "./CopyPart";
 import { DiffPart } from "./DiffPart";
 import { FilePart } from "./FilePart";
@@ -61,6 +62,7 @@ export const PARTS_REGISTRY: Partial<{
   "ask-form": AskFormPart,
   image: ImagePart,
   file: FilePart,
+  conflict: ConflictPart,
 };
 
 export function MessagePart({

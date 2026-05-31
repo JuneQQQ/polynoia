@@ -31,3 +31,8 @@
 | 010 | [Workspace file API + path safety](ADR-010-workspace-file-api.md) | accepted | 2026-05-28 |
 | 011 | [Right-side slide-in Drawer pattern](ADR-011-right-drawer-pattern.md) | accepted | 2026-05-29 |
 | 012 | [Context budget = max_context − Claude Code 35k overhead](ADR-012-context-budget-overhead.md) | accepted | 2026-05-29 |
+| 013 | [Role-based MCP tool exposure](ADR-013-role-based-mcp-tools.md) | accepted | 2026-05-29 |
+| 014 | [Handoff contract + conv-scoped shared memory](ADR-014-handoff-contract-and-shared-memory.md) | accepted | 2026-05-29 |
+| 015 | [Closed-loop collaboration: recall / report / critic](ADR-015-closed-loop-collaboration.md) | accepted | 2026-05-30 |
+| 016 | [Enhanced CodeMirror over Monaco](ADR-016-codemirror-over-monaco.md) | accepted | 2026-05-30 |
+| 017 | [Group orchestrator self-enabling (conv designation grants dispatch + protocol)](ADR-017-forced-orchestrator-role.md) | accepted | 2026-05-31 |

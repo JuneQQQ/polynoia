@@ -354,6 +354,62 @@ class ImagePayload(BaseModel):
     caption: str | None = None
 
 
+# ── Conflict (merge-conflict closed-loop) ────────────────────────
+# A real git merge conflict, frozen into a first-class card so it stops being a
+# silent abort-and-drop. Backed by ConflictRow (source of truth). See
+# docs/design/conflict-closed-loop-2026-05-30.md.
+ConflictType = Literal["content", "add_add", "modify_delete", "rename", "binary"]
+
+
+class ConflictFile(BaseModel):
+    """One conflicted file inside a ConflictPayload.
+
+    Which blobs are present depends on ``ctype``: ``content`` has text markers
+    + 3-way stage blobs; ``add_add`` has no base; ``modify_delete`` has a
+    missing side and NO markers; ``binary`` is take-side only (never decoded).
+    """
+
+    path: str
+    ctype: ConflictType = "content"
+    # Conflicted working-tree content with <<<<<<< ||||||| ======= >>>>>>>
+    # markers — only for text ``content`` conflicts.
+    markers: str | None = None
+    ours: str | None = None       # git stage :2: (main side); None if missing
+    theirs: str | None = None     # git stage :3: (branch side); None if missing
+    base: str | None = None       # git stage :1: (merge base); None for add_add
+    is_binary: bool = False
+    # Final resolved content (text ``content`` conflicts), filled on resolve.
+    resolution: str | None = None
+    # For non-content conflicts the resolution is a side choice, not text.
+    side: Literal["ours", "theirs", "delete"] | None = None
+    state: Literal["conflict", "resolved"] = "conflict"
+
+
+class ConflictPayload(BaseModel):
+    """Merge-conflict card: a branch that failed to auto-merge into main.
+
+    Four-state machine: open → resolving → resolved | abandoned. Re-emitted
+    with the same message id to flip state in place. Resolution happens via the
+    manual ConflictResolvePane or an LLM repair turn; both re-merge for real.
+    """
+
+    kind: Literal["conflict"] = "conflict"
+    conflict_id: ULID
+    conv_id: ULID
+    branch: str                   # agent/<id>/conv-<id> that failed to merge
+    agent_id: str                 # branch author (branch.split('/')[1])
+    # agent(s) already merged into main on the conflicting side (merged cleanly
+    # earlier in the same burst). UI shows "采用 main" as their version.
+    base_agents: list[str] = Field(default_factory=list)
+    into: str = "main"
+    status: Literal["open", "resolving", "resolved", "abandoned"] = "open"
+    files: list[ConflictFile] = []
+    resolved_by: str | None = None       # agent_id or "you"
+    resolved_sha: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    decided_at: datetime | None = None
+
+
 # ── Discriminated union ──────────────────────────────────────────
 MessagePayload = Annotated[
     Union[
@@ -374,6 +430,7 @@ MessagePayload = Annotated[
         AskFormPayload,
         ImagePayload,
         FilePayload,
+        ConflictPayload,
     ],
     Field(discriminator="kind"),
 ]

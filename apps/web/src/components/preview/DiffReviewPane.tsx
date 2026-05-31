@@ -15,6 +15,7 @@ import { useMemo, useState } from "react";
 import { api, type PendingEdit } from "../../lib/api";
 import { useStore } from "../../store";
 import { inferLang } from "./diffLang";
+import { lineDiffUnified } from "./diffUnified";
 
 /** Build a unified-diff string + add/del counts from a pending edit's args. */
 function editToUnified(edit: PendingEdit): { file: string; unified: string; adds: number; dels: number } {
@@ -26,19 +27,13 @@ function editToUnified(edit: PendingEdit): { file: string; unified: string; adds
     const dels = (patch.match(/^-(?!--)/gm) || []).length;
     return { file, unified: patch, adds, dels };
   }
+  // edit: old_string → new_string ; write: new file (empty → content).
+  // Real LCS diff so the reviewer sees the ACTUAL delta (changed lines red/green,
+  // unchanged lines as plain context) instead of a whole-snippet replace.
   const oldStr = edit.kind === "edit" ? String(a.old_string ?? "") : "";
   const newStr = edit.kind === "edit" ? String(a.new_string ?? "") : String(a.content ?? "");
-  const oldLines = oldStr === "" ? [] : oldStr.split("\n");
-  const newLines = newStr === "" ? [] : newStr.split("\n");
-  const lines = [
-    `diff --git a/${file} b/${file}`,
-    `--- a/${file}`,
-    `+++ b/${file}`,
-    `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
-    ...oldLines.map((l) => `-${l}`),
-    ...newLines.map((l) => `+${l}`),
-  ];
-  return { file, unified: lines.join("\n"), adds: newLines.length, dels: oldLines.length };
+  const { unified, adds, dels } = lineDiffUnified(oldStr, newStr, file);
+  return { file, unified, adds, dels };
 }
 
 export function DiffReviewPane({ convId }: { convId: string }) {

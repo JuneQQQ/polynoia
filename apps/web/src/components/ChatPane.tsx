@@ -143,6 +143,29 @@ export function ChatPane({ convId, members, title }: Props) {
             if (af && af.id) {
               useStore.getState().enqueueAskForm(convId, af);
             }
+          } else if (chunk.type === "data-conflict") {
+            // Merge-conflict card (conflict closed-loop). Feed the resolve-pane
+            // store AND render it as a stream card so everyone sees it.
+            const anyChunk = chunk as any;
+            const data = anyChunk.data;
+            if (data && (data.conflict_id || data.id)) {
+              const st = useStore.getState();
+              st.upsertConflict({ ...data, id: data.id ?? data.conflict_id });
+              applyChunkToConv(convId, {
+                kind: "card",
+                cardKind: "conflict",
+                payload: { kind: "conflict", ...data },
+                messageId: anyChunk.id ?? `conflict-${Date.now()}`,
+                senderId: anyChunk.sender_id ?? null,
+              });
+              if (st.preview.data?.workspaceId && !st.preview.open) {
+                st.openPreview("code");
+              }
+            }
+          } else if (chunk.type === "data-workspace-files") {
+            // Agent-written files landed in main → CodeTab auto-refreshes its
+            // file tree (no manual refresh needed).
+            useStore.getState().bumpWorkspaceFiles();
           } else if (chunk.type.startsWith("data-")) {
             const cardKind = chunk.type.slice("data-".length);
             const anyChunk = chunk as any;
@@ -187,6 +210,13 @@ export function ChatPane({ convId, members, title }: Props) {
       .catch(() => {
         if (!cancelled) setLoadingOlder(convId, false);
       });
+    // Hydrate merge conflicts (conflict closed-loop) so they survive refresh.
+    api
+      .listConflicts(convId)
+      .then((rows) => {
+        if (!cancelled) useStore.getState().hydrateConflicts(convId, rows);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
