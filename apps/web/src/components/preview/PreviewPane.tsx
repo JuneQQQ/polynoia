@@ -28,6 +28,10 @@ export function PreviewPane() {
 	const openCenterFile = useStore((s) => s.openCenterFile);
 	const activeCenterTab = useStore((s) => s.activeCenterTab);
 	const terminalOpen = useStore((s) => s.terminalOpen);
+	// Header code/preview tab toggle. (The declaration was missing — the buttons
+	// + the `mode === "preview"` header branch referenced an undefined `mode`,
+	// which crashed the whole PreviewPane on open.) Default to the code view.
+	const [mode, setMode] = useState<"code" | "preview">("code");
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
 	const reviewing = useStore(
