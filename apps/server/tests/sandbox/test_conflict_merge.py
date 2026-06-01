@@ -102,6 +102,37 @@ async def test_content_conflict_detected_then_concluded(ws_root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_ascii_path_content_conflict(ws_root: Path) -> None:
+    """B2 regression: a content conflict on a non-ASCII (Chinese) filename must
+    classify as `content` (not be mangled into `binary` by core.quotePath's
+    octal-quoting), expose real ours/theirs blobs, and conclude cleanly."""
+    name = "产品介绍.txt"
+    a = await _mk("w-cjk", "ag-A")
+    root = a.workspace_root
+    assert root is not None
+    _commit(root, name, "第一行\nBASE 基线\n第三行\n", "base cjk")
+    b = await _mk("w-cjk", "ag-B")
+    d = await _mk("w-cjk", "ag-D")
+    _commit(b.root, name, "第一行\nB 改动\n第三行\n", "b edits")
+    _commit(d.root, name, "第一行\nD 改动\n第三行\n", "d edits")
+
+    assert (await b.probe_merge(b.branch))[0] == "clean"
+    status, detail = await d.probe_merge(d.branch)
+    assert status == "conflict", detail
+    cf = detail["files"][0]
+    assert cf["path"] == name            # real path, NOT a quoted/escaped literal
+    assert cf["ctype"] == "content"      # not misclassified binary
+    assert cf["ours"] and "B 改动" in cf["ours"]
+    assert cf["theirs"] and "D 改动" in cf["theirs"]
+    assert _porcelain(root) == ""
+    assert not _has_merge_head(root)
+
+    ok, _sha, msg = await d.conclude_merge(d.branch, sides={name: "theirs"})
+    assert ok, msg
+    assert "D 改动" in (root / name).read_text()
+
+
+@pytest.mark.asyncio
 async def test_add_add_conflict_has_no_base(ws_root: Path) -> None:
     a = await _mk("w-addadd", "ag-A")
     b = await _mk("w-addadd", "ag-B")
@@ -249,3 +280,81 @@ async def test_conclude_take_deleted_side_removes_file(ws_root: Path) -> None:
     ok, _sha, msg = await x.conclude_merge(x.branch, sides={"f.txt": "theirs"})
     assert ok, msg
     assert not (root / "f.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_special_char_path_content_conflict(ws_root: Path) -> None:
+    """B2 (-z) regression: a path with a double-quote still classifies as content
+    (not binary) and is resolvable. core.quotePath=false alone C-quotes `"`/`\\`;
+    only -z NUL parsing yields the real path for show/checkout/add."""
+    name = 'sa"y.txt'
+    a = await _mk("w-special", "ag-A")
+    root = a.workspace_root
+    assert root is not None
+    _commit(root, name, "L1\nBASE\nL3\n", "base special")
+    b = await _mk("w-special", "ag-B")
+    d = await _mk("w-special", "ag-D")
+    _commit(b.root, name, "L1\nB\nL3\n", "b")
+    _commit(d.root, name, "L1\nD\nL3\n", "d")
+    assert (await b.probe_merge(b.branch))[0] == "clean"
+    status, detail = await d.probe_merge(d.branch)
+    assert status == "conflict", detail
+    cf = detail["files"][0]
+    assert cf["path"] == name             # real path, NOT a C-quoted "..." literal
+    assert cf["ctype"] == "content"       # not misclassified binary
+    assert cf["ours"] and cf["theirs"]
+    ok, _sha, msg = await d.conclude_merge(d.branch, sides={name: "theirs"})
+    assert ok, msg
+    assert "D" in (root / name).read_text()
+
+
+@pytest.mark.asyncio
+async def test_conclude_stale_resolution_skipped_when_already_landed(ws_root: Path) -> None:
+    """B4 staleness guard: a path no longer unmerged at conclude time (a sibling
+    landed the branch into main first) must NOT be overwritten by the caller's
+    now-stale resolution. The existing already-merged test can't catch this — its
+    resolution equals main's content; here the resolution DIFFERS."""
+    a = await _mk("w-stale", "ag-A")
+    root = a.workspace_root
+    assert root is not None
+    _commit(root, "f.txt", "L1\nBASE\nL3\n", "base")
+    d = await _mk("w-stale", "ag-D")
+    _commit(d.root, "f.txt", "L1\nD-SIDE\nL3\n", "d edits")
+    # A sibling cleanly lands D into main directly (main was still BASE).
+    _git(root, "merge", "--no-ff", "-m", "sibling lands D", d.branch)
+    landed = (root / "f.txt").read_text()
+    assert "D-SIDE" in landed
+    # D's conclude arrives late with a bogus resolution — must be a no-op, NOT
+    # clobber main with STALE (which is exactly what removing the guard would do).
+    ok, _sha, msg = await d.conclude_merge(d.branch, resolutions={"f.txt": "L1\nSTALE\nL3\n"})
+    assert ok, msg
+    assert (root / "f.txt").read_text() == landed
+    assert "STALE" not in (root / "f.txt").read_text()
+
+
+@pytest.mark.asyncio
+async def test_conclude_merge_timeout_is_failure_not_false_success(
+    ws_root: Path, monkeypatch
+) -> None:
+    """HIGH regression (B8 follow-up): if the git merge step times out (rc=124),
+    conclude_merge must return FAILURE — not fall through the 'already merged'
+    short-circuit and report false success (which would silently drop the branch
+    + the user's resolution)."""
+    a = await _mk("w-to", "ag-A")
+    root = a.workspace_root
+    assert root is not None
+    _commit(root, "f.txt", "BASE\n", "base")
+    d = await _mk("w-to", "ag-D")
+    _commit(d.root, "f.txt", "D\n", "d edits")
+    # Make ONLY the merge step return the 124 timeout sentinel.
+    orig = type(d)._workspace_run
+
+    async def fake_run(self, cmd):
+        if "merge" in cmd and "--no-commit" in cmd:
+            return (124, "", "git timed out")
+        return await orig(self, cmd)
+
+    monkeypatch.setattr(type(d), "_workspace_run", fake_run)
+    ok, _sha, msg = await d.conclude_merge(d.branch, resolutions={"f.txt": "RESOLVED\n"})
+    assert ok is False, f"timeout must fail, got ok={ok} msg={msg!r}"
+    assert "merge failed" in msg or "124" in msg

@@ -13,7 +13,7 @@
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view.css";
 import { GitMerge, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type Conflict } from "../../lib/api";
 import type { ConflictFile } from "../../lib/types";
 import { useStore } from "../../store";
@@ -36,8 +36,28 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [over, setOver] = useState<Record<string, Choice>>({});
+  // The card payload / WS frame carries blobs truncated for size; fetch the FULL
+  // files (untruncated ours/theirs/base) when a conflict is selected so the diff
+  // + 手动合并 see real content. (B6 — the store copy may be clipped.)
+  const [full, setFull] = useState<Conflict | null>(null);
 
   const conflict = list.find((c) => c.status === "open" || c.status === "resolving");
+  const conflictId = conflict?.id;
+  useEffect(() => {
+    if (!conflictId) {
+      setFull(null);
+      return;
+    }
+    let alive = true;
+    api
+      .getConflict(conflictId)
+      .then((c) => alive && setFull(c))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [conflictId]);
+
   if (!conflict) {
     return (
       <div className="h-full grid place-items-center text-[12.5px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)]">
@@ -48,6 +68,13 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
       </div>
     );
   }
+
+  // Prefer the freshly-fetched full files; fall back to the (maybe clipped) store
+  // copy until the GET lands. `ready` gates the whole resolve UI so a user can't
+  // pre-fill 手动合并 / submit with a TRUNCATED blob in the brief window before
+  // the full GET returns (B6 window — would silently drop >20k chars).
+  const ready = full?.id === conflict.id;
+  const files: ConflictFile[] = ready && full ? full.files : conflict.files;
 
   const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const agentLabel = nameOf(conflict.agent_id); // the conflicting branch (e.g. 码乙)
@@ -67,7 +94,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
     const resolutions: Record<string, string> = {};
     const sides: Record<string, "ours" | "theirs"> = {};
     const deletions: string[] = [];
-    for (const f of conflict.files) {
+    for (const f of files) {
       const ch = choiceOf(f);
       if (ch.mode === "ours") sides[f.path] = "ours";
       else if (ch.mode === "theirs") sides[f.path] = "theirs";
@@ -99,7 +126,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
           {conflict.branch}
         </span>
         <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-4)]">
-          {conflict.files.length} 文件
+          {files.length} 文件
         </span>
       </div>
 
@@ -108,13 +135,23 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
         <span className="font-semibold" style={{ color: "var(--color-amber)" }}>
           {agentLabel}
         </span>{" "}
-        的改动和 <span className="font-semibold">{baseLabel}</span>
-        {baseAgents.length ? " 已合入 main 的版本" : " main"} 改到了同一处,Git 无法自动合并。
+        的改动和当前 main
+        {baseAgents.length ? (
+          <>
+            (已含 <span className="font-semibold">{baseLabel}</span> 先合入的改动)
+          </>
+        ) : null}
+        在同一处冲突,Git 无法自动合并。
         逐个文件选「采用 {baseLabel}」或「采用 {agentLabel}」,需要合两边就「手动合并」。
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {conflict.files.map((f) => {
+        {!ready && (
+          <div className="px-3 py-3 text-[12px] text-[var(--color-fg-3)]">
+            加载完整冲突内容…
+          </div>
+        )}
+        {(ready ? files : []).map((f) => {
           const ch = choiceOf(f);
           const isText = f.ctype === "content" || f.ctype === "add_add";
           const isModDel = f.ctype === "modify_delete";
@@ -256,7 +293,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
         )}
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !ready}
           onClick={resolve}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11.5px] font-medium rounded text-white hover:opacity-90 transition disabled:opacity-50"
           style={{ background: "var(--color-amber)" }}

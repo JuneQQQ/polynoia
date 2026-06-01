@@ -79,12 +79,28 @@ async def _apply_schema_patches() -> None:
                 await conn.execute(text(sql))
 
 
+async def _reset_stuck_resolving() -> None:
+    """A server crash mid-resolve can leave a conflict in 'resolving' (status is
+    flipped before conclude_merge finishes). conclude/probe both self-abort the
+    git merge, so the shared tree is clean — reset such rows to 'open' on startup
+    so the user can resolve/abandon again (otherwise abandon skips 'resolving'
+    and the card is permanently stuck)."""
+    async with engine.begin() as conn:
+        res = await conn.execute(text("PRAGMA table_info(merge_conflicts)"))
+        if res.fetchall():
+            await conn.execute(
+                text("UPDATE merge_conflicts SET status='open' WHERE status='resolving'")
+            )
+
+
 async def bootstrap_db() -> None:
     """Create tables + seed default data if empty."""
     # Step 1: create tables (idempotent — but won't ADD COLUMN to existing).
     await init_db()
     # Step 1b: patch existing tables with any new columns (dev-only).
     await _apply_schema_patches()
+    # Step 1c: recover conflicts left "resolving" by a crash mid-conclude.
+    await _reset_stuck_resolving()
 
     async with SessionLocal() as session:
         # Step 2: short-circuit if any provider row exists

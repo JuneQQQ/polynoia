@@ -931,7 +931,7 @@ async def apply_diff(body: dict):
     # Locate sandbox — workspace-mode prefers a worktree; legacy mode uses
     # the per-conv sandbox. We pick the conv's branch worktree if the conv
     # is workspace-shared; otherwise legacy.
-    from polynoia.sandbox import Sandbox
+    from polynoia.sandbox import Sandbox, workspace_merge_lock
     async with SessionLocal() as session:
         conv = await storage_repo.get_conversation(session, conv_id)
     if conv is None:
@@ -969,12 +969,27 @@ async def apply_diff(body: dict):
     # let git create new files via apply unless --new-file is passed —
     # safer to fail loudly than silently create.
     import tempfile
+    # Keep the .patch OUT of the worktree (no dir=) — inside it, a concurrent
+    # burst-merge's `git add -A` could stage the temp patch into the branch
+    # before we apply it. System tmp is fine: git apply reads it by abs path.
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".patch", delete=False, dir=str(sandbox.cwd),
+        mode="w", suffix=".patch", delete=False,
     ) as tmpf:
         tmpf.write(diff_text)
         patch_path = tmpf.name
+    # Serialize git apply/add/commit against burst merges (commit_pending_worktrees
+    # touches the SAME worktree under the lock); same workspace lock for workspace
+    # convs, no lock for legacy per-conv sandboxes (independent .git).
+    lock = (
+        workspace_merge_lock(conv.workspace_id)
+        if (conv.workspace_id and conv.group)
+        else None
+    )
+    acquired = False
     try:
+        if lock is not None:
+            await lock.acquire()
+            acquired = True
         rc, _out, err = await sandbox._run(
             ["git", "apply", "--whitespace=fix", patch_path]
         )
@@ -996,6 +1011,8 @@ async def apply_diff(body: dict):
         rc, sha, _err = await sandbox._run(["git", "rev-parse", "--short", "HEAD"])
         return {"ok": True, "sha": (sha.strip() if rc == 0 else "")}
     finally:
+        if acquired:
+            lock.release()
         with contextlib.suppress(OSError):
             os.unlink(patch_path)
 
@@ -1082,7 +1099,7 @@ async def create_pending_edit_endpoint(body: dict):
     file_path = body.get("file_path") or ""
     args = body.get("args") or {}
     if not (conv_id and agent_id and kind in ("edit", "write", "apply_patch")):
-        return {"error": "conv_id + agent_id + kind required"}, 400
+        raise HTTPException(400, "conv_id + agent_id + kind required")
     async with SessionLocal() as session:
         pid = await storage_repo.create_pending_edit(
             session,
@@ -1121,7 +1138,7 @@ async def wait_for_pending_edit(pending_id: str, timeout: float = 60.0):
         async with SessionLocal() as session:
             row = await storage_repo.get_pending_edit(session, pending_id)
         if row is None:
-            return {"error": "pending edit not found"}, 404
+            raise HTTPException(404, "pending edit not found")
         if row.status != "pending":
             return _pending_edit_to_dict(row)
         if asyncio.get_event_loop().time() >= deadline:
@@ -1138,12 +1155,12 @@ async def decide_pending_edit(pending_id: str, body: dict):
     """
     decision = body.get("decision")
     if decision not in ("accept", "reject"):
-        return {"error": "decision must be 'accept' or 'reject'"}, 400
+        raise HTTPException(400, "decision must be 'accept' or 'reject'")
     target = "accepted" if decision == "accept" else "rejected"
     async with SessionLocal() as session:
         row = await storage_repo.get_pending_edit(session, pending_id)
         if row is None:
-            return {"error": "pending edit not found"}, 404
+            raise HTTPException(404, "pending edit not found")
         if row.status == "pending":
             await storage_repo.set_pending_edit_status(session, pending_id, target)
             await session.commit()
@@ -1168,6 +1185,27 @@ async def list_pending_edits_endpoint(conv_id: str, status: str | None = None):
 
 
 # ── Conflict closed-loop (merge-conflict resolution) ─────────────────
+
+
+# Conflict blobs (ours/theirs/base/markers) can be huge for a big file; the
+# card never renders them (the resolve pane fetches full via GET /conflicts/{id}),
+# so cap what goes into the live WS frame + the persisted message payload to keep
+# frames small and the messages table lean. DB merge_conflicts.files_json stays FULL.
+_CONFLICT_BLOB_CAP = 20_000
+
+
+def _truncate_conflict_files(files: list[dict]) -> list[dict]:
+    """Return a shallow copy of files with oversized blobs clipped (for the card
+    payload / WS frame only — never for DB storage or the resolve GET)."""
+    out: list[dict] = []
+    for f in files:
+        nf = dict(f)
+        for k in ("ours", "theirs", "base", "markers"):
+            v = nf.get(k)
+            if isinstance(v, str) and len(v) > _CONFLICT_BLOB_CAP:
+                nf[k] = v[:_CONFLICT_BLOB_CAP] + "\n…[truncated; open to load full]"
+        out.append(nf)
+    return out
 
 
 def _conflict_to_dict(row) -> dict:
@@ -1216,7 +1254,7 @@ async def _broadcast_conflict_card(row) -> None:
     data-conflict frame to all tabs (in-place status flip, refresh-safe)."""
     if row is None:
         return
-    files = [ConflictFile(**f) for f in (row.files_json or [])]
+    files = [ConflictFile(**f) for f in _truncate_conflict_files(row.files_json or [])]
     payload = ConflictPayload(
         conflict_id=row.id, conv_id=row.conv_id, branch=row.branch,
         agent_id=row.agent_id, base_agents=row.base_agents_json or [],
@@ -1496,27 +1534,28 @@ async def write_workspace_file(ws_id: str, path: str, request: Request):
         content_bytes.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(400, "content must be valid UTF-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content_bytes)
 
-    # Auto-commit on workspace main branch. The workspace root has main
-    # checked out (worktrees use agent branches).
-    from polynoia.sandbox import Sandbox
+    # Serialize the write + git add/commit against burst merges / conflict
+    # resolves on the SAME workspace (shared single HEAD/index). Otherwise this
+    # edit can interleave with a probe/conclude merge (corrupt index, mix into
+    # the merge commit) or get discarded by `_abort_stray_merge`'s reset --hard.
+    # Same lock + key (workspace_id) as resolve/abandon/burst-merge.
+    from polynoia.sandbox import Sandbox, workspace_merge_lock
+
     ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    if ws_sandbox is None:
-        return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
-    rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
-    if rc != 0:
-        return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
-    rc, _o, _e = await ws_sandbox._workspace_run([
-        "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
-    ])
-    sha = await ws_sandbox.main_head_sha() if rc == 0 else None
-    return {
-        "ok": True,
-        "sha": sha,
-        "modified": target.stat().st_mtime,
-    }
+    async with workspace_merge_lock(ws_id):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content_bytes)
+        if ws_sandbox is None:
+            return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
+        rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
+        if rc != 0:
+            return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
+        rc, _o, _e = await ws_sandbox._workspace_run([
+            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
+        ])
+        sha = await ws_sandbox.main_head_sha() if rc == 0 else None
+    return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
 
 
 @router.get("/api/workspaces/{ws_id}/preview")
@@ -1920,7 +1959,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             payload = ConflictPayload(
                 conflict_id=cid, conv_id=conv_id, branch=branch, agent_id=author,
                 base_agents=base_agents,
-                status="open", files=[ConflictFile(**f) for f in files],
+                status="open",
+                files=[ConflictFile(**f) for f in _truncate_conflict_files(files)],
                 created_at=crow.created_at if crow else datetime.utcnow(),
             ).model_dump(mode="json")
             await storage_repo.append_message(
@@ -1967,14 +2007,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # probe_merge is transient, so an unresolved/abandoned branch stays
             # ahead of main and would otherwise spawn a duplicate row each burst.
             async with SessionLocal() as _db:
-                already = {
-                    r.branch
-                    for r in await storage_repo.list_conflicts(_db, conv_id)
-                    if r.status in ("open", "resolving", "abandoned")
-                }
+                _rows = await storage_repo.list_conflicts(_db, conv_id)
+            # open/resolving = an in-flight card; probe_merge is transient so
+            # re-probing would just spawn a duplicate row each burst — skip them.
+            live = {r.branch for r in _rows if r.status in ("open", "resolving")}
+            # abandoned = user gave up resolving THIS branch's conflict. We still
+            # re-probe it: if later main progress made it cleanly mergeable it
+            # should land (B7 — don't strand a now-mergeable branch); if it is
+            # STILL conflicting we stay silent (honor the abandon, no re-spam).
+            abandoned = {r.branch for r in _rows if r.status == "abandoned"}
             merged_authors: list[str] = []
             for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
-                if b in already:
+                if b in live:
                     continue
                 if await ws_sandbox.branch_ahead_of_main(b) <= 0:
                     continue
@@ -1984,7 +2028,42 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     # This branch is now IN main — it becomes the "main side" of
                     # any conflict a LATER branch in this same burst hits.
                     merged_authors.append(author)
+                    if b in abandoned:
+                        # A branch the user had abandoned just became cleanly
+                        # mergeable (main moved on) and we merged it. Flip the
+                        # stale 'abandoned' card → resolved and correct the
+                        # earlier "未合并进 main" memory — otherwise the
+                        # orchestrator's wrap-up reports it as un-merged (a
+                        # user-visible lie).
+                        async with SessionLocal() as _adb:
+                            _arow = next(
+                                (r for r in await storage_repo.list_conflicts(_adb, conv_id)
+                                 if r.branch == b and r.status == "abandoned"),
+                                None,
+                            )
+                            if _arow is not None:
+                                await storage_repo.set_conflict_status(
+                                    _adb, _arow.id, "resolved",
+                                    resolved_by="auto-merge",
+                                    resolved_sha=await ws_sandbox.main_head_sha() or "",
+                                )
+                                await storage_repo.add_conv_memory(
+                                    _adb, conv_id=conv_id, author_agent_id=author,
+                                    kind="decision",
+                                    content=(
+                                        f"分支 `{b}` 此前被放弃的冲突,已随 main "
+                                        f"进展自动干净合入 main。"
+                                    ),
+                                )
+                                await _adb.commit()
+                                _afresh = await storage_repo.get_conflict(_adb, _arow.id)
+                            else:
+                                _afresh = None
+                        if _afresh is not None:
+                            await _broadcast_conflict_card(_afresh)
                 elif status == "conflict":
+                    if b in abandoned:
+                        continue  # abandoned + still conflicting → don't re-surface
                     await _surface_conflict(
                         ws_id, b, author, detail.get("files", []), orch_id,
                         base_agents=list(merged_authors),
@@ -2410,11 +2489,21 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             )
                             + "}\n\n"
                         )
-                        break
+                        # Don't `break`: that orphans this + the remaining lanes in
+                        # `pending`, so is_last never trips → burst never merges /
+                        # summarizes (card stuck on "run"). Mark this lane failed
+                        # and continue so `pending` fully drains.
+                        # suppress: a DB hiccup in the mark must not escape the
+                        # drain loop and orphan the remaining lanes (the pending
+                        # discard already ran sync inside _mark_burst_task).
+                        with contextlib.suppress(Exception):
+                            await _mark_burst_task(tp_id, task_id, "failed")
+                        continue
                     setup = _agent_setup_by_id.get(worker_id)
                     if not setup or not setup.adapter_id:
                         # Can't spawn → don't leave its lane stuck on "run".
-                        await _mark_burst_task(tp_id, task_id, "failed")
+                        with contextlib.suppress(Exception):
+                            await _mark_burst_task(tp_id, task_id, "failed")
                         continue
                     await emit_chain_link(
                         caller=batch_author, callee=worker_id, depth=depth + 1

@@ -114,10 +114,11 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
             <button
               type="button"
               onClick={() => {
-                // Self-populate the resolve store from THIS card's payload — the
-                // card already carries the full conflict (id + files + blobs), so
+                // Self-populate the resolve store from THIS card's payload so
                 // opening the pane doesn't depend on the live/hydrate path having
-                // filled conflictsByConv.
+                // filled conflictsByConv. NB: the card payload carries blobs
+                // TRUNCATED for size (B6) — ConflictResolvePane re-fetches the
+                // full files via GET /conflicts/{id} before allowing resolve.
                 upsertConflict({ ...payload, id: payload.conflict_id });
                 openPreview("code");
               }}

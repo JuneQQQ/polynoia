@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -13,6 +14,21 @@ from polynoia.settings import settings
 
 
 _IS_WINDOWS = os.name == "nt"
+
+# git 子进程超时 + 非交互 env:卡住的 git(凭据/编辑器提示、慢 filter、异常 stdin
+# 等待)会永久占住 workspace 合并锁、拖垮整个 workspace 的合并/冲突解决,故一律设
+# 超时 + 关交互 + stdin=DEVNULL。
+_GIT_TIMEOUT = 60.0
+
+
+def _git_env() -> dict[str, str]:
+    return {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_EDITOR": "true",
+        "GIT_PAGER": "cat",
+    }
 
 
 # ── Per-workspace merge serialization ────────────────────────────────
@@ -177,8 +193,21 @@ class Sandbox:
                 cwd=str(ws_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_git_env(),
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_GIT_TIMEOUT
+                )
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                raise RuntimeError(
+                    f"git worktree add timed out ({_GIT_TIMEOUT}s)"
+                ) from None
             if proc.returncode != 0:
                 # Branch might already exist from a previous run; try without -b
                 proc2 = await asyncio.create_subprocess_exec(
@@ -186,8 +215,21 @@ class Sandbox:
                     cwd=str(ws_root),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=_git_env(),
                 )
-                _o2, e2 = await proc2.communicate()
+                try:
+                    _o2, e2 = await asyncio.wait_for(
+                        proc2.communicate(), timeout=_GIT_TIMEOUT
+                    )
+                except TimeoutError:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc2.kill()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proc2.communicate(), timeout=5.0)
+                    raise RuntimeError(
+                        f"git worktree add timed out ({_GIT_TIMEOUT}s)"
+                    ) from None
                 if proc2.returncode != 0:
                     raise RuntimeError(
                         f"git worktree add failed: {stderr.decode()[:200]} / "
@@ -431,8 +473,19 @@ class Sandbox:
             cwd=str(self.root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=_git_env(),
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            # Bounded reap: a SIGKILL'd-but-D-state (e.g. NFS) proc could hang the
+            # post-kill drain forever and re-block the merge lock — cap it.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            return (124, "", f"git timed out ({_GIT_TIMEOUT}s): {' '.join(cmd[:3])}")
         return (
             proc.returncode or 0,
             out.decode("utf-8", "replace"),
@@ -504,8 +557,16 @@ class Sandbox:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=worktree_path,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL, env=_git_env(),
             )
-            o, e = await proc.communicate()
+            try:
+                o, e = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                return (124, "", "git timed out")
             return proc.returncode or 0, o.decode("utf-8", "replace"), e.decode("utf-8", "replace")
 
         _rc, status, _ = await _run(["git", "status", "--porcelain"])
@@ -603,12 +664,32 @@ class Sandbox:
     # chosen to work on old git (2.25.1, Ubuntu 20.04): no merge-tree
     # --write-tree, no `init -b`. See docs/design/conflict-closed-loop-2026-05-30.md.
 
+    def _clear_stale_index_locks(self) -> None:
+        """Remove stale index.lock files left by a SIGKILL'd git (e.g. a
+        _workspace_run timeout). Such a lock makes every later git WRITE
+        (reset/checkout/merge) fail with rc=128 and wedges the whole workspace
+        until a human deletes it. Safe here: we hold the workspace lock and the
+        killed git is already dead, so no live process owns these locks."""
+        if self.workspace_root is None:
+            return
+        git_dir = self.workspace_root / ".git"
+        locks = [git_dir / "index.lock"]
+        wt_dir = git_dir / "worktrees"
+        if wt_dir.is_dir():
+            locks += list(wt_dir.glob("*/index.lock"))
+        for lk in locks:
+            with contextlib.suppress(OSError):
+                lk.unlink()
+
     async def _abort_stray_merge(self) -> None:
         """Restore a clean, mergeable main if the root is mid-merge or dirty
         (e.g. a prior crash). ``git merge --abort`` errors (rc=128) when not
         merging, so we guard on MERGE_HEAD first, then hard-reset any residue."""
         if self.workspace_root is None:
             return
+        # Clear any stale index.lock first, else the merge --abort / reset --hard
+        # below themselves fail with rc=128 ("Unable to create '.../index.lock'").
+        self._clear_stale_index_locks()
         rc, _o, _e = await self._workspace_run(
             ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
         )
@@ -641,9 +722,10 @@ class Sandbox:
             "-m", f"polynoia: merge {branch} into main", branch,
         ])
         _rcu, u_out, _eu = await self._workspace_run(
-            ["git", "diff", "--name-only", "--diff-filter=U"]
+            ["git", "-c", "core.quotePath=false",
+             "diff", "--name-only", "--diff-filter=U", "-z"]
         )
-        conflicted = [p for p in u_out.splitlines() if p.strip()]
+        conflicted = [p for p in u_out.split("\0") if p.strip()]
         if rc == 0 and not conflicted:
             # Clean merge — conclude it (MERGE_MSG is pre-populated).
             rc_c, _oc, err_c = await self._workspace_run(["git", "commit", "--no-edit"])
@@ -747,11 +829,33 @@ class Sandbox:
         if rc_b != 0:
             return (False, "", f"branch gone: {branch}")
         try:
-            await self._workspace_run([
+            rc_mrg, _omrg, emrg = await self._workspace_run([
                 "git", "-c", "merge.conflictStyle=diff3",
                 "merge", "--no-commit", "--no-ff", branch,
             ])
+            # rc 0 = clean / already-up-to-date, 1 = conflict (expected — resolved
+            # below). ANYTHING else (124 = _workspace_run timeout sentinel after a
+            # kill, 128 = index.lock/other error) means the merge never reached a
+            # known state: do NOT fall through to the "already merged" short-circuit
+            # below — a killed merge leaves a clean-looking index that the short
+            # circuit would mask as success, silently dropping the branch AND the
+            # user's resolution. Abort and surface the real failure so the caller
+            # reverts the conflict to 'open' instead of falsely 'resolved'.
+            if rc_mrg not in (0, 1):
+                await self._abort_stray_merge()
+                return (False, "", f"merge failed (rc={rc_mrg}): {emrg.strip()[:200]}")
+            # Staleness guard: only apply resolutions/sides to paths STILL
+            # unmerged after re-entering the merge. A sibling conv's burst may
+            # have cleanly merged this path into main meanwhile — don't overwrite
+            # that with a stale (pre-resolve) resolution.
+            _rcu0, u0_out, _eu0 = await self._workspace_run(
+                ["git", "-c", "core.quotePath=false",
+                 "diff", "--name-only", "--diff-filter=U", "-z"]
+            )
+            unmerged = {p for p in u0_out.split("\0") if p.strip()}
             for p, side in sides.items():
+                if p not in unmerged:
+                    continue
                 flag = "--ours" if side == "ours" else "--theirs"
                 rc_co, _oco, _eco = await self._workspace_run(
                     ["git", "checkout", flag, "--", p]
@@ -764,6 +868,8 @@ class Sandbox:
                     # staging the surviving wrong side.
                     await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
             for p, content in resolutions.items():
+                if p not in unmerged:
+                    continue
                 # Reject a "resolution" that still carries conflict markers — once
                 # written + git-added it's no longer unmerged, so the U-guard
                 # below can't catch it and markers would commit to main.
@@ -781,9 +887,10 @@ class Sandbox:
             for p in deletions:
                 await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
             _rcu, u_out, _eu = await self._workspace_run(
-                ["git", "diff", "--name-only", "--diff-filter=U"]
+                ["git", "-c", "core.quotePath=false",
+                 "diff", "--name-only", "--diff-filter=U", "-z"]
             )
-            if [p for p in u_out.splitlines() if p.strip()]:
+            if [p for p in u_out.split("\0") if p.strip()]:
                 await self._workspace_run(["git", "merge", "--abort"])
                 return (False, "", "unresolved files remain")
             # Nothing staged (branch already merged / no-op) → success, not a
@@ -821,8 +928,19 @@ class Sandbox:
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=_git_env(),
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            # Bounded reap: a SIGKILL'd-but-D-state (e.g. NFS) proc could hang the
+            # post-kill drain forever and re-block the merge lock — cap it.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            return (124, "", f"git timed out ({_GIT_TIMEOUT}s): {' '.join(cmd[:3])}")
         return (
             proc.returncode or 0,
             out.decode("utf-8", "replace"),

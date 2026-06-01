@@ -398,8 +398,10 @@ class ConflictPayload(BaseModel):
     conv_id: ULID
     branch: str                   # agent/<id>/conv-<id> that failed to merge
     agent_id: str                 # branch author (branch.split('/')[1])
-    # agent(s) already merged into main on the conflicting side (merged cleanly
-    # earlier in the same burst). UI shows "采用 main" as their version.
+    # agent(s) whose work was already merged into main earlier in THIS burst (so
+    # main's side of the conflict reflects their commits). NOTE: these are the
+    # earlier clean-mergers, NOT necessarily everyone who touched this file — the
+    # UI labels the main side after them ("采用 <names>") as a best-effort hint.
     base_agents: list[str] = Field(default_factory=list)
     into: str = "main"
     status: Literal["open", "resolving", "resolved", "abandoned"] = "open"
