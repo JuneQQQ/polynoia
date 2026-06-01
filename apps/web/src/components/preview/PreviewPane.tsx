@@ -10,7 +10,7 @@
  * ConflictResolvePane (both block the tree until resolved).
  * Resize handle on the left edge (360–900px), persisted to localStorage.
  */
-import { Code2, GitMerge, GitPullRequestArrow, X } from "lucide-react";
+import { Code2, GitMerge, GitPullRequestArrow, Play, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../../store";
 import { ConflictResolvePane } from "./ConflictResolvePane";
