@@ -70,8 +70,11 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
   }
 
   // Prefer the freshly-fetched full files; fall back to the (maybe clipped) store
-  // copy until the GET lands.
-  const files: ConflictFile[] = full?.id === conflict.id ? full.files : conflict.files;
+  // copy until the GET lands. `ready` gates the whole resolve UI so a user can't
+  // pre-fill 手动合并 / submit with a TRUNCATED blob in the brief window before
+  // the full GET returns (B6 window — would silently drop >20k chars).
+  const ready = full?.id === conflict.id;
+  const files: ConflictFile[] = ready && full ? full.files : conflict.files;
 
   const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const agentLabel = nameOf(conflict.agent_id); // the conflicting branch (e.g. 码乙)
@@ -143,7 +146,12 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {files.map((f) => {
+        {!ready && (
+          <div className="px-3 py-3 text-[12px] text-[var(--color-fg-3)]">
+            加载完整冲突内容…
+          </div>
+        )}
+        {(ready ? files : []).map((f) => {
           const ch = choiceOf(f);
           const isText = f.ctype === "content" || f.ctype === "add_add";
           const isModDel = f.ctype === "modify_delete";
@@ -285,7 +293,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
         )}
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !ready}
           onClick={resolve}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11.5px] font-medium rounded text-white hover:opacity-90 transition disabled:opacity-50"
           style={{ background: "var(--color-amber)" }}

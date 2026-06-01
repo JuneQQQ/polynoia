@@ -969,8 +969,11 @@ async def apply_diff(body: dict):
     # let git create new files via apply unless --new-file is passed —
     # safer to fail loudly than silently create.
     import tempfile
+    # Keep the .patch OUT of the worktree (no dir=) — inside it, a concurrent
+    # burst-merge's `git add -A` could stage the temp patch into the branch
+    # before we apply it. System tmp is fine: git apply reads it by abs path.
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".patch", delete=False, dir=str(sandbox.cwd),
+        mode="w", suffix=".patch", delete=False,
     ) as tmpf:
         tmpf.write(diff_text)
         patch_path = tmpf.name
@@ -1096,7 +1099,7 @@ async def create_pending_edit_endpoint(body: dict):
     file_path = body.get("file_path") or ""
     args = body.get("args") or {}
     if not (conv_id and agent_id and kind in ("edit", "write", "apply_patch")):
-        return {"error": "conv_id + agent_id + kind required"}, 400
+        raise HTTPException(400, "conv_id + agent_id + kind required")
     async with SessionLocal() as session:
         pid = await storage_repo.create_pending_edit(
             session,
@@ -1152,12 +1155,12 @@ async def decide_pending_edit(pending_id: str, body: dict):
     """
     decision = body.get("decision")
     if decision not in ("accept", "reject"):
-        return {"error": "decision must be 'accept' or 'reject'"}, 400
+        raise HTTPException(400, "decision must be 'accept' or 'reject'")
     target = "accepted" if decision == "accept" else "rejected"
     async with SessionLocal() as session:
         row = await storage_repo.get_pending_edit(session, pending_id)
         if row is None:
-            return {"error": "pending edit not found"}, 404
+            raise HTTPException(404, "pending edit not found")
         if row.status == "pending":
             await storage_repo.set_pending_edit_status(session, pending_id, target)
             await session.commit()
@@ -2025,6 +2028,39 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     # This branch is now IN main — it becomes the "main side" of
                     # any conflict a LATER branch in this same burst hits.
                     merged_authors.append(author)
+                    if b in abandoned:
+                        # A branch the user had abandoned just became cleanly
+                        # mergeable (main moved on) and we merged it. Flip the
+                        # stale 'abandoned' card → resolved and correct the
+                        # earlier "未合并进 main" memory — otherwise the
+                        # orchestrator's wrap-up reports it as un-merged (a
+                        # user-visible lie).
+                        async with SessionLocal() as _adb:
+                            _arow = next(
+                                (r for r in await storage_repo.list_conflicts(_adb, conv_id)
+                                 if r.branch == b and r.status == "abandoned"),
+                                None,
+                            )
+                            if _arow is not None:
+                                await storage_repo.set_conflict_status(
+                                    _adb, _arow.id, "resolved",
+                                    resolved_by="auto-merge",
+                                    resolved_sha=await ws_sandbox.main_head_sha() or "",
+                                )
+                                await storage_repo.add_conv_memory(
+                                    _adb, conv_id=conv_id, author_agent_id=author,
+                                    kind="decision",
+                                    content=(
+                                        f"分支 `{b}` 此前被放弃的冲突,已随 main "
+                                        f"进展自动干净合入 main。"
+                                    ),
+                                )
+                                await _adb.commit()
+                                _afresh = await storage_repo.get_conflict(_adb, _arow.id)
+                            else:
+                                _afresh = None
+                        if _afresh is not None:
+                            await _broadcast_conflict_card(_afresh)
                 elif status == "conflict":
                     if b in abandoned:
                         continue  # abandoned + still conflicting → don't re-surface
@@ -2457,12 +2493,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # `pending`, so is_last never trips → burst never merges /
                         # summarizes (card stuck on "run"). Mark this lane failed
                         # and continue so `pending` fully drains.
-                        await _mark_burst_task(tp_id, task_id, "failed")
+                        # suppress: a DB hiccup in the mark must not escape the
+                        # drain loop and orphan the remaining lanes (the pending
+                        # discard already ran sync inside _mark_burst_task).
+                        with contextlib.suppress(Exception):
+                            await _mark_burst_task(tp_id, task_id, "failed")
                         continue
                     setup = _agent_setup_by_id.get(worker_id)
                     if not setup or not setup.adapter_id:
                         # Can't spawn → don't leave its lane stuck on "run".
-                        await _mark_burst_task(tp_id, task_id, "failed")
+                        with contextlib.suppress(Exception):
+                            await _mark_burst_task(tp_id, task_id, "failed")
                         continue
                     await emit_chain_link(
                         caller=batch_author, callee=worker_id, depth=depth + 1
