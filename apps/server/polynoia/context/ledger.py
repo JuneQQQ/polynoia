@@ -132,6 +132,20 @@ def _format_message_body(payload: dict) -> str:
         method = payload.get("method", "?")
         url = payload.get("url", "")
         return f"[API] {method} {url}"
+    if kind == "image":
+        # User-attached image: surface the filename/type so the agent knows an
+        # image was shared (not a bare "[image]" placeholder).
+        nm = payload.get("name") or "图片"
+        mt = payload.get("media_type")
+        return f"[图片: {nm}{(' · ' + mt) if mt else ''}]"
+    if kind == "file":
+        # User-attached file: surface name + type + size so the agent can
+        # acknowledge/ask about it instead of seeing a bare "[file]".
+        nm = payload.get("name") or "文件"
+        mt = payload.get("media_type")
+        sz = payload.get("size_bytes")
+        meta = "".join([f" · {mt}" if mt else "", f" · {sz}B" if sz else ""])
+        return f"[文件: {nm}{meta}]"
     if kind == "typing":
         return ""  # ephemeral typing indicator — skip from ledger
     if kind == "ask-form":

@@ -1170,12 +1170,75 @@ class _AskUserTool(_ToolBase):
         return {"kind": "error", "error": "user did not answer within 10 minutes"}
 
 
+class _RequestProjectAccessTool(_ToolBase):
+    name = "request_project_access"
+    description = (
+        "Request the USER's approval to work inside one of their PROJECTS. Use "
+        "this ONLY when you're in a private 1:1 (you have your own private "
+        "workspace but cannot see any project's code) and the user asks you to "
+        "work on a project. It SUSPENDS your turn, shows the user an approval "
+        "card (they pick which project + 批准/拒绝), and returns the result. On "
+        "approval the project is mounted with write access on your NEXT turn — "
+        "tell the user it's granted and to send the task again. Returns "
+        "{kind:'granted', workspace_id} or {kind:'denied'}."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Why you need project access — what you intend to do.",
+            },
+        },
+        "required": ["reason"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        reason = (args.get("reason") or "").strip()
+        base = os.environ.get("POLYNOIA_API_BASE")
+        if not base:
+            return {"kind": "error", "error": "no API base — cannot request access"}
+        ctx.append_audit("tool.request_project_access", {"reason": reason[:120]})
+        try:
+            async with httpx.AsyncClient(base_url=base, timeout=70.0, trust_env=False) as client:
+                r = await client.post("/api/pending-access", json={
+                    "conv_id": ctx.conv_id, "agent_id": ctx.agent_id, "reason": reason,
+                })
+                if r.status_code != 200:
+                    return {"kind": "error", "error": f"create failed {r.status_code}"}
+                pid = r.json().get("id")
+                if not pid:
+                    return {"kind": "error", "error": "no pending id"}
+                deadline = asyncio.get_event_loop().time() + 300  # 5 min budget
+                while True:
+                    r = await client.get(
+                        f"/api/pending-access/{pid}/wait", params={"timeout": 60},
+                    )
+                    if r.status_code != 200:
+                        return {"kind": "error", "error": "wait poll failed"}
+                    row = r.json()
+                    st = row.get("status")
+                    if st == "accepted":
+                        return {"kind": "granted", "workspace_id": row.get("workspace_id"),
+                                "note": "项目已授权,但要在你的下一轮才会挂载——请用户把任务再发一次。"}
+                    if st in ("rejected", "timeout"):
+                        return {"kind": "denied"}
+                    if asyncio.get_event_loop().time() >= deadline:
+                        with contextlib.suppress(Exception):
+                            await client.post(f"/api/pending-access/{pid}/decide",
+                                              json={"decision": "reject"})
+                        return {"kind": "denied"}
+        except (httpx.RequestError, httpx.HTTPError) as e:
+            return {"kind": "error", "error": f"transport failure: {e}"}
+
+
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
         _ReadTool, _EditTool, _WriteTool, _ApplyPatchTool,
         _BashTool, _GrepTool, _GlobTool, _RevertTool, _CallAgentTool,
         _DispatchTool, _RememberTool, _RecallTool, _ReportTool, _AskUserTool,
+        _RequestProjectAccessTool,
     ]
 }
 
@@ -1202,12 +1265,12 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
 ROLE_TOOLS: dict[str, set[str]] = {
     "orchestrator": {"read", "grep", "glob", "dispatch", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user"},
-    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user"},
-    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user"},
-    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user"},
+    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
     "critic":       {"read", "grep", "glob", "recall", "report"},
-    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user"},
-    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report"},
+    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access"},
 }
 
 

@@ -9,6 +9,7 @@ import type { Message, TasksPayload } from "../lib/types";
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingReviewBar } from "./FloatingReviewBar";
+import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
 import { MessageView } from "./MessageView";
 import { ConvScopeProvider } from "./parts/_context";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
@@ -125,6 +126,14 @@ export function ChatPane({ convId, members, title }: Props) {
               if (st.preview.data?.workspaceId && !st.preview.open) {
                 st.openPreview("code");
               }
+            }
+          } else if (chunk.type === "data-pending-access") {
+            // ADR-020: agent requested project access. Route to the approval
+            // card (project picker + 批准/拒绝); not a regular message bubble.
+            const anyChunk = chunk as any;
+            const req = anyChunk.data;
+            if (req && req.id && req.conv_id) {
+              useStore.getState().upsertPendingAccess(req);
             }
           } else if (chunk.type === "data-chain-link") {
             // Transient meta — actual B bubble appears right after A in the
@@ -349,6 +358,15 @@ export function ChatPane({ convId, members, title }: Props) {
   useEffect(() => {
     let alive = true;
     setConvSummary(null);
+    // Clear any workspace carried over from the PREVIOUS conv immediately, BEFORE
+    // the async getConv resolves. A 1:1 contact opens a synthetic `dm-<id>` conv
+    // whose getConv 404s (no row) → the .catch below swallows it → without this
+    // reset the preview pane would keep the last project's workspaceId and show
+    // that project's files inside a private DM (the workspace-leak bug). Reset to
+    // null so a DM shows its own (private) space, never a project's.
+    useStore.setState((s) => ({
+      preview: { ...s.preview, data: { ...s.preview.data, workspaceId: null } },
+    }));
     api.getConv(convId).then((c) => {
       if (!alive) return;
       setConvSummary(c);
@@ -359,7 +377,7 @@ export function ChatPane({ convId, members, title }: Props) {
       useStore.setState((s) => ({
         preview: {
           ...s.preview,
-          data: { ...s.preview.data, workspaceId: c.workspace_id },
+          data: { ...s.preview.data, workspaceId: c.workspace_id ?? null },
         },
       }));
     }).catch(() => {});
@@ -495,6 +513,10 @@ export function ChatPane({ convId, members, title }: Props) {
       {/* Manual-mode per-file review strip — Cursor-style, sits above the chat
           (←/→ through the queue, ✓/✗ the focused change). */}
       <FloatingReviewBar convId={convId} />
+
+      {/* ADR-020 project-access approval strip — when an agent in a private DM
+          requests access to a project, the user picks the project + 批准/拒绝. */}
+      <FloatingProjectAccessBar convId={convId} />
 
       {/* Message stream — relative wrapper so the "running" status pill can
           float on top without displacing content. */}

@@ -33,6 +33,20 @@ export type PendingEdit = {
   decided_at: string | null;
 };
 
+/** ADR-020: an agent in a private DM requesting approval to access a PROJECT.
+ * Server pushes via `data-pending-access`; UI renders an approval card with a
+ * project picker. On accept the chosen workspace_id is recorded + granted. */
+export type PendingAccess = {
+  id: string;
+  conv_id: string;
+  agent_id: string;
+  reason: string;
+  workspace_id: string | null;
+  status: "pending" | "accepted" | "rejected" | "timeout";
+  created_at: string | null;
+  decided_at: string | null;
+};
+
 export type Conflict = {
   id: string;
   conv_id: string;
@@ -254,6 +268,7 @@ export const api = {
     color?: string;
     initials?: string;
     tagline?: string;
+    tool_role?: string;
     max_context_tokens?: number | null;
   }) => postJSON<{ contact: Agent }>("/api/contacts", body),
   updateContact: (
@@ -265,6 +280,7 @@ export const api = {
       color: string;
       initials: string;
       tagline: string;
+      tool_role: string;
       max_context_tokens: number | null;
     }>,
   ) =>
@@ -339,6 +355,18 @@ export const api = {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
     return getJSON<PendingEdit[]>(`/api/conversations/${convId}/pending-edits${qs}`);
   },
+
+  /** ADR-020: list project-access requests for a conv (hydrate on load). */
+  listPendingAccess: (convId: string, status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return getJSON<PendingAccess[]>(`/api/conversations/${convId}/pending-access${qs}`);
+  },
+  /** Approve (with the chosen project) or reject a project-access request. */
+  decidePendingAccess: (id: string, decision: "accept" | "reject", workspaceId?: string) =>
+    postJSON<PendingAccess>(`/api/pending-access/${id}/decide`, {
+      decision,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+    }),
 
   // ── Merge conflicts (closed-loop) ──
   /** Resolve a merge conflict + re-merge for real. */

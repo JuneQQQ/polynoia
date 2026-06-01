@@ -20,11 +20,11 @@ from polynoia.context._types import ContextLayer
 from polynoia.context.briefs import build_project_briefs_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
-from polynoia.context.ledger import build_activity_ledger_layer
+from polynoia.context.ledger import build_activity_ledger_layer, _format_message_body
 from polynoia.context.shared import build_shared_memory_layer, member_role_for
 from polynoia.context.budget import compute_budget
 from polynoia.context.window import enforce_budgets
-from polynoia.storage.repo import get_conversation, list_agents
+from polynoia.storage.repo import get_conversation, list_agents, list_pinned_messages
 
 
 async def build_context_for_turn(
@@ -90,6 +90,28 @@ async def build_context_for_turn(
     history = await build_conv_history_layer(db, agent_id, conv_id)
     if history is not None:
         layers.append(history)
+
+    # Pinned messages → long-term context. The user can pin key messages in any
+    # conv; we inject them as a high-priority block so they survive across the
+    # rolling history window. (rule.md: 手动 pin 关键消息作为长期上下文.)
+    pinned = await list_pinned_messages(db, conv_id)
+    if pinned:
+        plines = ["# 固定消息(用户置顶的关键信息 — 视为长期上下文,优先遵守)"]
+        for m in pinned:
+            body = _format_message_body(m.get("payload") or {}).strip()
+            if not body:
+                continue
+            who = "用户" if m.get("sender_id") == "you" else f"@{str(m.get('sender_id'))[:8]}"
+            plines.append(f"- {who}: {body}")
+        if len(plines) > 1:
+            layers.append(
+                ContextLayer.make(
+                    kind="pinned",
+                    content="\n".join(plines),
+                    priority=85,  # just below user_turn(90), above history/shared
+                    meta={"agent_id": agent_id, "count": str(len(pinned))},
+                )
+            )
 
     # 3. User turn — always last, full text. HARD layer:never truncate.
     # If user pasted 20k tokens of code, that's the actual question — cutting

@@ -849,6 +849,21 @@ export function Sidebar({
                               return a.tagline ?? a.role ?? t("agent", lang);
                             })()}
                       </div>
+                      {/* Capability tags — surfaced in the primary contact list
+                          (previously only in Marketplace). Cap at 3 to keep the
+                          row compact. */}
+                      {a.caps && a.caps.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {a.caps.slice(0, 3).map((cap) => (
+                            <span
+                              key={cap}
+                              className="text-[9px] leading-none px-1.5 py-0.5 rounded-sm bg-[var(--color-sidebar-line)] text-[var(--color-sidebar-muted)]"
+                            >
+                              {cap}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {/* ⋮ overflow menu — only for user-created contacts
                         (template adapter rows like "claudeCode" can't be

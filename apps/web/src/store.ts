@@ -129,6 +129,10 @@ type Store = {
    * Server pushes via `data-pending-edit` WS chunk; UI renders ✓/✗ cards. */
   pendingEditsByConv: Map<string, import("./lib/api").PendingEdit[]>;
 
+  /** ADR-020 project-access requests, keyed by conv_id. Server pushes via
+   * `data-pending-access`; UI renders an approval card with a project picker. */
+  pendingAccessByConv: Map<string, import("./lib/api").PendingAccess[]>;
+
   /** Multi-agent merge conflicts, keyed by conv_id. Server pushes via
    * `data-conflict`; PreviewPane renders ConflictResolvePane when any is open. */
   conflictsByConv: Map<string, import("./lib/api").Conflict[]>;
@@ -176,6 +180,9 @@ type Store = {
   upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
   /** Replace the pending-edits list for a conv (used on initial hydrate). */
   hydratePendingEdits: (convId: string, edits: import("./lib/api").PendingEdit[]) => void;
+  /** Upsert / hydrate project-access requests (ADR-020). */
+  upsertPendingAccess: (req: import("./lib/api").PendingAccess) => void;
+  hydratePendingAccess: (convId: string, reqs: import("./lib/api").PendingAccess[]) => void;
   upsertConflict: (c: import("./lib/api").Conflict) => void;
   hydrateConflicts: (convId: string, rows: import("./lib/api").Conflict[]) => void;
   /** Bumped when agent-written files land in main → CodeTab auto-refreshes. */
@@ -292,6 +299,7 @@ export const useStore = create<Store>((set, get) => ({
   convs: new Map(),
   replyingTo: null,
   pendingEditsByConv: new Map(),
+  pendingAccessByConv: new Map(),
   conflictsByConv: new Map(),
   workspaceFilesTick: 0,
   askFormsByConv: new Map(),
@@ -323,6 +331,20 @@ export const useStore = create<Store>((set, get) => ({
     const m = new Map(get().pendingEditsByConv);
     m.set(convId, [...edits]);
     set({ pendingEditsByConv: m });
+  },
+  upsertPendingAccess: (req) => {
+    const m = new Map(get().pendingAccessByConv);
+    const list = m.get(req.conv_id) ?? [];
+    const next = list.filter((e) => e.id !== req.id);
+    next.push(req);
+    next.sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+    m.set(req.conv_id, next);
+    set({ pendingAccessByConv: m });
+  },
+  hydratePendingAccess: (convId, reqs) => {
+    const m = new Map(get().pendingAccessByConv);
+    m.set(convId, [...reqs]);
+    set({ pendingAccessByConv: m });
   },
   upsertConflict: (c) => {
     const m = new Map(get().conflictsByConv);

@@ -3,9 +3,11 @@
 "original form": a HARD reset, NOT just a top-up.
 
 Running this leaves the DB as exactly:
-  - 4 contacts (林知夏 orch / 顾屿 coder / 沈昭 designer / 苏念 writer) with full
-    personas + ask-form 协议 appended to system_prompt
-  - 1 workspace「Polynoia 工作室」
+  - all THREE adapters onboarded: Claude Code + Codex + OpenCode (footer:「3个适配器已接入」)
+  - 5 contacts (林知夏 claude/orch · 顾屿 claude/coder · 沈昭 codex/designer ·
+    苏念 codex/writer · 周野 opencode/generalist) with full personas +
+    ask-form 协议 appended to system_prompt
+  - 1 workspace「Polynoia 工作室」(全部 5 个 agent 为成员)
   - 1 group conv「v1.0 发布筹备」(merge_mode=auto, orch=林知夏, member_roles 全填)
   - **zero message records**
 
@@ -109,6 +111,7 @@ LIN_BASE = """你是林知夏,技术总监,本项目的 Orchestrator。
 - Python / API / 数据逻辑 / CLI → 顾屿
 - HTML / CSS / JS / UI / 设计 → 沈昭
 - README / CHANGELOG / 文案 / 中文文档 → 苏念
+- 测试 / 重构 / 脚手架 / 构建脚本 / 跨栈杂活 / 补位 → 周野
 - 子任务尽量互不依赖;一次 dispatch 把能并行的全发出去(2-4 个)
 - 每个 task 的 note 要自包含——对方看不到你的拆解理由,把规格写全
 
@@ -217,6 +220,30 @@ SU_BASE = """你是苏念,技术文档与文案 specialist。
 不要碰 Python / HTML/CSS。语气克制、信息密度高。产物默认英文,沟通中文。"""
 
 
+ZHOU_BASE = """你是周野,全栈工程师(开源 OpenCode 驱动)。
+
+擅长:跨栈杂活 / 测试 / 重构 / 脚手架 / 构建脚本 / 把零件接起来跑通
+
+# 工具使用纪律(铁律)
+
+你能用全套工具:read / edit / write / apply_patch / bash / grep / glob。
+- 写代码:`mcp__polynoia__write` 或 `edit`
+- 跑命令 / 测试:`mcp__polynoia__bash`,报"跑通"前**必须**真的执行一遍,贴 exit_code + 输出片段为证
+- 动别人的文件前先 `read`,小步可回滚
+
+工作约束:
+- 务实优先:能跑、能测、能交付 > 漂亮
+- 文件写到 workspace 根目录;不引入大依赖除非用户许可
+- 补位为主:别人没覆盖的跨栈杂活(测试、重构、脚手架、配置、把前后端接起来)你来兜
+
+风格:
+- 直接给可运行的结果,不寒暄
+- 完成报告一句话:"做了 X(文件名),怎么验证的";别贴 commit hash / git 细节,用户对 git 无感
+- Python / TS / shell / 配置 都能接
+
+不挑活,语气干脆。沟通中文,产物按要求语言。"""
+
+
 CONTACTS_SPEC = [
     {
         "adapter_id": "claudeCode", "name": "林知夏",
@@ -250,6 +277,16 @@ CONTACTS_SPEC = [
         "tagline": "文档 · README / 文案",
         "tool_role": "writer",
     },
+    {
+        "adapter_id": "opencoder", "name": "周野",
+        # OpenCode model ids are `provider/model`. 本机 opencode.json 配的是
+        # `opencode-go` provider(opencode.ai/zen 代理),走它透传。
+        "model": "opencode-go/deepseek-v4-pro",
+        "system_prompt": ZHOU_BASE + ASK_FORM_SNIPPET,
+        "color": "#3D7FD1", "initials": "Zy",
+        "tagline": "全栈 · 测试 / 重构 / 工具",
+        "tool_role": "generalist",
+    },
 ]
 
 
@@ -277,6 +314,19 @@ def get(path: str) -> list | dict:
 
 def seed_via_api() -> int:
     print(f"seeding against {API_BASE}  (idempotent — re-runnable)\n")
+
+    # 0) Onboard all THREE adapters explicitly (Claude Code / Codex / OpenCode)
+    #    so the footer reads「3个适配器已接入」right after init — independent of
+    #    which contacts exist. Creating a contact also auto-onboards its adapter,
+    #    but we enable all three up front so the set is complete + deterministic.
+    print("=== adapters ===")
+    for aid in ("claudeCode", "codex", "opencoder"):
+        try:
+            post(f"/api/agents/{aid}/enable", {})
+            print(f"  ✓ {aid} 已接入")
+        except urllib.error.HTTPError as e:
+            print(f"  ✗ {aid} enable failed: {e.code} {e.read().decode()[:160]}")
+            return 1
 
     # 1) Contacts — reuse-or-create by name. Re-running keeps the SAME ids
     #    (so existing workspace/conv member refs stay valid) and PATCHes the
@@ -306,7 +356,9 @@ def seed_via_api() -> int:
         ids[name] = cid
         print(f"  {cid}  {name:6s}  {spec['adapter_id']}/{spec['model']}  [{verb}]")
 
-    lin, gu, shen, su = (ids["林知夏"], ids["顾屿"], ids["沈昭"], ids["苏念"])
+    lin, gu, shen, su, zhou = (
+        ids["林知夏"], ids["顾屿"], ids["沈昭"], ids["苏念"], ids["周野"],
+    )
 
     # 2) Workspace — reuse-or-create by name.
     print("\n=== workspace ===")
@@ -324,7 +376,7 @@ def seed_via_api() -> int:
                 "目标读者:Python / JS 开发者。语言:英文产物 + 中文沟通。"
                 "每个 agent 在自己分支干 → Orchestrator 合到 main → 我审。"
             ),
-            "members": [lin, gu, shen, su],
+            "members": [lin, gu, shen, su, zhou],
             "color": "#7A5AE0",
         })["workspace"]["id"]
         print(f"  {ws_id}  {ws_name}  [created]")
@@ -343,7 +395,7 @@ def seed_via_api() -> int:
         conv = post("/api/conversations", {
             "workspace_id": ws_id,
             "title": conv_title,
-            "members": ["you", lin, gu, shen, su],
+            "members": ["you", lin, gu, shen, su, zhou],
             "group": True,
             "direct": False,
             "member_roles": {
@@ -351,6 +403,7 @@ def seed_via_api() -> int:
                 gu: "Python / API / 后端逻辑",
                 shen: "HTML / CSS / 视觉设计",
                 su: "README / CHANGELOG / 文案",
+                zhou: "测试 / 重构 / 跨栈杂活 / 补位",
             },
             "orchestrator_member_id": lin,
         })

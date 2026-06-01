@@ -1351,6 +1351,116 @@ async def list_pending_edits_endpoint(conv_id: str, status: str | None = None):
     return [_pending_edit_to_dict(r) for r in rows]
 
 
+# ── PendingAccess (ADR-020: approval-gated project access from a DM) ────
+
+
+def _pending_access_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "conv_id": row.conv_id,
+        "agent_id": row.agent_id,
+        "reason": row.reason,
+        "workspace_id": row.workspace_id,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() + "Z" if row.created_at else None,
+        "decided_at": row.decided_at.isoformat() + "Z" if row.decided_at else None,
+    }
+
+
+@router.post("/api/pending-access")
+async def create_pending_access_endpoint(body: dict):
+    """Create a project-access request (called by the request_project_access MCP
+    tool). Body: ``{ conv_id, agent_id, reason }``. Broadcasts a
+    ``data-pending-access`` card so the user can approve + pick the project."""
+    conv_id = body.get("conv_id")
+    agent_id = body.get("agent_id")
+    reason = body.get("reason") or ""
+    if not (conv_id and agent_id):
+        return {"error": "conv_id + agent_id required"}, 400
+    # The spawning adapter reports its STATIC id (claudeCode/codex/opencoder) as
+    # POLYNOIA_AGENT_ID, not the contact's ULID. For a private DM the real
+    # contact id is encoded in the conv id (`dm-<agentId>`) — use it so the grant
+    # is keyed to the actual contact and AdapterPool.active_access_grant (which
+    # looks up by the contact's real id) finds it.
+    if conv_id.startswith("dm-"):
+        agent_id = conv_id[len("dm-"):]
+    async with SessionLocal() as session:
+        pid = await storage_repo.create_pending_access(
+            session, conv_id=conv_id, agent_id=agent_id, reason=reason,
+        )
+        await session.commit()
+        row = await storage_repo.get_pending_access(session, pid)
+    frame = (
+        'data: {"type":"data-pending-access","data":'
+        + json.dumps(_pending_access_to_dict(row))
+        + "}\n\n"
+    )
+    await _broadcast_to_conv(conv_id, frame)
+    return {"id": pid, "status": "pending"}
+
+
+@router.get("/api/pending-access/{pending_id}/wait")
+async def wait_for_pending_access(pending_id: str, timeout: float = 60.0):
+    """Long-poll until the access request is decided or timeout expires."""
+    timeout = min(max(timeout, 1.0), 120.0)
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        async with SessionLocal() as session:
+            row = await storage_repo.get_pending_access(session, pending_id)
+        if row is None:
+            return {"error": "pending access not found"}, 404
+        if row.status != "pending":
+            return _pending_access_to_dict(row)
+        if asyncio.get_event_loop().time() >= deadline:
+            return _pending_access_to_dict(row)
+        await asyncio.sleep(0.5)
+
+
+@router.post("/api/pending-access/{pending_id}/decide")
+async def decide_pending_access(pending_id: str, body: dict):
+    """User approves (with a chosen project) or rejects. Body:
+    ``{ decision: accept|reject, workspace_id? }``. On accept we record the
+    granted workspace + evict the agent's cached session so the next turn
+    re-spawns with that project mounted (write-enabled)."""
+    decision = body.get("decision")
+    if decision not in ("accept", "reject"):
+        return {"error": "decision must be 'accept' or 'reject'"}, 400
+    ws_id = body.get("workspace_id")
+    if decision == "accept" and not ws_id:
+        return {"error": "workspace_id required to accept"}, 400
+    target = "accepted" if decision == "accept" else "rejected"
+    async with SessionLocal() as session:
+        row = await storage_repo.get_pending_access(session, pending_id)
+        if row is None:
+            return {"error": "pending access not found"}, 404
+        if row.status == "pending":
+            await storage_repo.set_pending_access_status(
+                session, pending_id, target, workspace_id=ws_id,
+            )
+            await session.commit()
+            row = await storage_repo.get_pending_access(session, pending_id)
+    if target == "accepted":
+        # Evict cached session so the grant takes effect on the next turn.
+        from polynoia.adapters.pool import get_pool
+        with contextlib.suppress(Exception):
+            await get_pool().close_sessions_for_agent(row.agent_id)
+    frame = (
+        'data: {"type":"data-pending-access","data":'
+        + json.dumps(_pending_access_to_dict(row))
+        + "}\n\n"
+    )
+    await _broadcast_to_conv(row.conv_id, frame)
+    return _pending_access_to_dict(row)
+
+
+@router.get("/api/conversations/{conv_id}/pending-access")
+async def list_pending_access_endpoint(conv_id: str, status: str | None = None):
+    """List project-access requests for a conv (UI hydration on refresh)."""
+    async with SessionLocal() as session:
+        rows = await storage_repo.list_pending_access(session, conv_id, status=status)
+    return [_pending_access_to_dict(r) for r in rows]
+
+
 # ── Merge conflicts (PR#4 closed-loop) ─────────────────────────────────
 
 
