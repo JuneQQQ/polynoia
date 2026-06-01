@@ -22,6 +22,7 @@ from polynoia.context.budget import compute_budget
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
 from polynoia.context.ledger import build_activity_ledger_layer, _format_message_body
+from polynoia.context.orchestrator import build_orchestrator_protocol_layer
 from polynoia.context.shared import build_shared_memory_layer, member_role_for
 from polynoia.context.budget import compute_budget
 from polynoia.context.window import enforce_budgets
