@@ -15,7 +15,12 @@ from datetime import datetime
 from typing import cast
 
 from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
@@ -1839,6 +1844,171 @@ async def preview_workspace_html(ws_id: str, file: str = "index.html"):
             "X-Frame-Options": "SAMEORIGIN",
         },
     )
+
+
+# ── Workspace download / archive ───────────────────────────────────────
+#
+# /files/raw is for the editor (UTF-8 only, ≤1MB) — the endpoints below are
+# the download path: byte-faithful for any single file, plus zip for whole
+# or selected paths. .git history is intentionally INCLUDED in the zip
+# (migration/backup use case). Only regenerable cache dirs are pruned.
+
+
+_ARCHIVE_SKIP_DIRS = {
+    "node_modules", "__pycache__", ".venv",
+    ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    "worktrees",  # per-agent branches — recreated on demand
+}
+
+
+@router.get("/api/workspaces/{ws_id}/files/download")
+async def download_workspace_file(ws_id: str, path: str):
+    """Stream a single workspace file as a downloadable attachment.
+
+    Byte-faithful (any binary, any size), unlike ``/files/raw`` which is
+    text-only for the editor. Same path-traversal protection.
+    """
+    if not path:
+        raise HTTPException(400, "path required")
+    root = _workspace_root(ws_id)
+    target = _resolve_safe_path(root, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "file not found")
+    return FileResponse(
+        path=target,
+        filename=target.name,
+        media_type="application/octet-stream",
+    )
+
+
+def _iter_archive_files(workspace_root, selected_paths):
+    """Yield ``(absolute_path, arcname)`` for every file to include.
+
+    ``selected_paths=None`` → walk the whole workspace. Otherwise each path
+    is added directly (file) or walked recursively (dir). Cache dirs are
+    pruned in both modes; .git is preserved.
+    """
+    from pathlib import Path
+
+    def walk(start, arc_prefix):
+        if start.is_file():
+            yield start, arc_prefix or start.name
+            return
+        for dirpath, dirnames, filenames in os.walk(start):
+            dirnames[:] = [d for d in dirnames if d not in _ARCHIVE_SKIP_DIRS]
+            for fn in filenames:
+                abs_path = Path(dirpath) / fn
+                rel = abs_path.relative_to(workspace_root).as_posix()
+                yield abs_path, rel
+
+    if selected_paths is None:
+        yield from walk(workspace_root, "")
+        return
+    for raw in selected_paths:
+        if not raw:
+            continue
+        target = _resolve_safe_path(workspace_root, raw)
+        if not target.exists():
+            continue
+        if target.is_file():
+            yield target, target.relative_to(workspace_root).as_posix()
+        else:
+            yield from walk(target, target.relative_to(workspace_root).as_posix())
+
+
+def _build_workspace_zip(workspace_root, selected_paths=None):
+    """Build the archive into a spooled tempfile (in-memory up to 8MB then
+    spills to disk). Caller streams from the returned, rewound buffer."""
+    import tempfile
+    import zipfile
+
+    buf = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for abs_path, arcname in _iter_archive_files(workspace_root, selected_paths):
+            try:
+                zf.write(abs_path, arcname)
+            except (OSError, ValueError):
+                # Skip unreadable files (broken symlinks, perms) — partial
+                # archive beats a 500.
+                continue
+    buf.seek(0)
+    return buf
+
+
+def _stream_spooled(buf, chunk: int = 65536):
+    try:
+        while True:
+            data = buf.read(chunk)
+            if not data:
+                break
+            yield data
+    finally:
+        buf.close()
+
+
+def _zip_response(buf, display_name: str) -> StreamingResponse:
+    from urllib.parse import quote
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", display_name).strip("._-") or "workspace"
+    utf8_name = quote(display_name + ".zip")
+    return StreamingResponse(
+        _stream_spooled(buf),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}.zip"; '
+                f"filename*=UTF-8''{utf8_name}"
+            ),
+        },
+    )
+
+
+async def _workspace_display_name(ws_id: str) -> str:
+    from sqlalchemy import select as _select
+    async with SessionLocal() as session:
+        row = (await session.execute(
+            _select(WorkspaceRow).where(WorkspaceRow.id == ws_id)
+        )).scalar_one_or_none()
+        if row and row.name:
+            return row.name
+    return ws_id
+
+
+@router.get("/api/workspaces/{ws_id}/archive")
+async def archive_workspace(ws_id: str):
+    """Stream a zip of the entire workspace (incl. .git history).
+
+    Excludes only regenerable cache dirs (``node_modules``, ``__pycache__``,
+    venvs, ``worktrees``). Use the POST variant for partial archives.
+    """
+    root = _workspace_root(ws_id)
+    display = await _workspace_display_name(ws_id)
+    buf = await asyncio.to_thread(_build_workspace_zip, root, None)
+    return _zip_response(buf, display)
+
+
+@router.post("/api/workspaces/{ws_id}/archive")
+async def archive_workspace_paths(ws_id: str, body: dict = Body(...)):
+    """Stream a zip of selected paths (files and/or directories).
+
+    Body: ``{"paths": ["src/main.py", "docs/"]}``. Dirs are walked
+    recursively (still pruning cache dirs).
+    """
+    raw_paths = body.get("paths") or []
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise HTTPException(400, "paths must be a non-empty list")
+    paths = [str(p) for p in raw_paths if p]
+    if not paths:
+        raise HTTPException(400, "paths must be a non-empty list")
+    root = _workspace_root(ws_id)
+    display = await _workspace_display_name(ws_id)
+    if len(paths) == 1:
+        leaf = paths[0].rstrip("/").rsplit("/", 1)[-1]
+        if leaf:
+            display = f"{display}-{leaf}"
+    else:
+        display = f"{display}-selection"
+    buf = await asyncio.to_thread(_build_workspace_zip, root, paths)
+    return _zip_response(buf, display)
 
 
 @router.patch("/api/conversations/{conv_id}/member_roles")
