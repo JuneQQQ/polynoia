@@ -454,21 +454,8 @@ export function Composer({
                 </button>
               </div>
             )}
-            {/* Group: who-coordinates is shown in the header (first avatar +
-                ring), NOT here — keep the composer bar clean. Only the 1v1 DM
-                chip remains, to label who you're talking to. */}
-            {!isGroup && otherAgent ? (
-              <span className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-full text-[var(--color-fg-2)]">
-                <span
-                  className="w-3.5 h-3.5 rounded text-[9px] text-white grid place-items-center"
-                  style={{ background: otherAgent.color }}
-                >
-                  {otherAgent.initials}
-                </span>
-                {otherAgent.name}
-                <span className="text-[var(--color-fg-4)]">· 1v1</span>
-              </span>
-            ) : null}
+            {/* Recipient is already shown in the chat header — no redundant
+                "{name} · 1v1" chip in the composer bar (kept clean). */}
             <button
               type="button"
               onClick={submit}

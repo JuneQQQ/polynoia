@@ -54,6 +54,12 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
   // This agent coordinates the current conv → show a marker when opened.
   const isOrchestrator =
     !!convSummary && convSummary.orchestrator_member_id === agent.id;
+  // Hide "单独私聊" when we're ALREADY in this agent's private DM (redundant).
+  const isCurrentDm = activeConvId === `dm-${agent.id}`;
+  // Per-conv role only makes sense inside a PROJECT conv — a plain 1:1 has no
+  // project role, so showing "本对话中的角色: 未指定" there is just noise (R2:
+  // roles are per-project).
+  const inProjectConv = !!convSummary?.workspace_id;
 
   // Recent activity in current conv: filter messageOrder for this sender,
   // newest 5, render with payload-aware summary.
@@ -113,8 +119,8 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
         </div>
       )}
 
-      {/* 3. Role in conv */}
-      {!isYou && !isSystem && (
+      {/* 3. Role in conv — only inside a project conv (per-project roles, R2) */}
+      {!isYou && !isSystem && inProjectConv && (
         <SectionRow
           icon={<User size={11} />}
           title="本对话中的角色"
@@ -171,14 +177,17 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
       {/* 6. Action bar */}
       {!isYou && !isSystem && (
         <div className="px-6 py-4 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={openDM}
-            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md bg-[var(--color-accent)] text-white hover:opacity-90 transition font-medium"
-          >
-            <MessageCircle size={13} />
-            单独私聊
-          </button>
+          {/* "单独私聊" only when NOT already in this agent's private DM. */}
+          {!isCurrentDm && (
+            <button
+              type="button"
+              onClick={openDM}
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md bg-[var(--color-accent)] text-white hover:opacity-90 transition font-medium"
+            >
+              <MessageCircle size={13} />
+              单独私聊
+            </button>
+          )}
           {agent.custom && (
             <button
               type="button"
@@ -202,12 +211,7 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
               onClick={async () => {
                 if (!window.confirm(`删除联系人「${agent.name}」?该操作不可撤销。`)) return;
                 try {
-                  const r = await api.deleteContact(agent.id);
-                  if (r?.error) {
-                    // e.g. still a member of a project — must delete it first.
-                    window.alert(r.error);
-                    return; // keep the drawer + contact
-                  }
+                  await api.deleteContact(agent.id);
                   const list = await api.agents();
                   useStore.setState({ agents: list });
                 } catch {
