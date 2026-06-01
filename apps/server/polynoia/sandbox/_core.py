@@ -48,6 +48,23 @@ def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
     return lock
 
 
+# ── Per-workspace merge serialization ────────────────────────────────
+# The workspace root shares ONE HEAD/index across all worktrees AND all convs,
+# so concurrent merges from sibling convs would corrupt the shared .git. The
+# whole probe→conclude critical section must run under this lock, keyed by
+# workspace_id (NOT conv_id). See docs/design/conflict-closed-loop-2026-05-30.md.
+_WS_MERGE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
+    """Return the process-wide merge lock for a workspace (lazily created)."""
+    lock = _WS_MERGE_LOCKS.get(workspace_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _WS_MERGE_LOCKS[workspace_id] = lock
+    return lock
+
+
 class Sandbox:
     """A per-conversation sandbox directory.
 
@@ -244,6 +261,22 @@ class Sandbox:
             agent_id=agent_id,
             branch=branch,
         )
+
+    @classmethod
+    async def ensure_workspace(cls, workspace_id: str) -> Path:
+        """Ensure the workspace-shared git exists on disk, returning its main root.
+
+        Bootstraps (git init + initial commit + credentials) if missing — the
+        same one-time setup ``create_workspace_sandbox`` does, minus any agent
+        worktree. Used by IDE endpoints (interactive terminal, file tree) that
+        operate on the workspace's main dir, which otherwise wouldn't exist
+        until the first agent runs in the conversation.
+        """
+        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        ws_root.mkdir(parents=True, exist_ok=True)
+        if not (ws_root / ".git").exists():
+            await cls._bootstrap_workspace(ws_root, workspace_id)
+        return ws_root
 
     @classmethod
     def open_workspace_if_exists(cls, workspace_id: str) -> "Sandbox | None":
@@ -664,32 +697,12 @@ class Sandbox:
     # chosen to work on old git (2.25.1, Ubuntu 20.04): no merge-tree
     # --write-tree, no `init -b`. See docs/design/conflict-closed-loop-2026-05-30.md.
 
-    def _clear_stale_index_locks(self) -> None:
-        """Remove stale index.lock files left by a SIGKILL'd git (e.g. a
-        _workspace_run timeout). Such a lock makes every later git WRITE
-        (reset/checkout/merge) fail with rc=128 and wedges the whole workspace
-        until a human deletes it. Safe here: we hold the workspace lock and the
-        killed git is already dead, so no live process owns these locks."""
-        if self.workspace_root is None:
-            return
-        git_dir = self.workspace_root / ".git"
-        locks = [git_dir / "index.lock"]
-        wt_dir = git_dir / "worktrees"
-        if wt_dir.is_dir():
-            locks += list(wt_dir.glob("*/index.lock"))
-        for lk in locks:
-            with contextlib.suppress(OSError):
-                lk.unlink()
-
     async def _abort_stray_merge(self) -> None:
         """Restore a clean, mergeable main if the root is mid-merge or dirty
         (e.g. a prior crash). ``git merge --abort`` errors (rc=128) when not
         merging, so we guard on MERGE_HEAD first, then hard-reset any residue."""
         if self.workspace_root is None:
             return
-        # Clear any stale index.lock first, else the merge --abort / reset --hard
-        # below themselves fail with rc=128 ("Unable to create '.../index.lock'").
-        self._clear_stale_index_locks()
         rc, _o, _e = await self._workspace_run(
             ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
         )
@@ -722,10 +735,9 @@ class Sandbox:
             "-m", f"polynoia: merge {branch} into main", branch,
         ])
         _rcu, u_out, _eu = await self._workspace_run(
-            ["git", "-c", "core.quotePath=false",
-             "diff", "--name-only", "--diff-filter=U", "-z"]
+            ["git", "diff", "--name-only", "--diff-filter=U"]
         )
-        conflicted = [p for p in u_out.split("\0") if p.strip()]
+        conflicted = [p for p in u_out.splitlines() if p.strip()]
         if rc == 0 and not conflicted:
             # Clean merge — conclude it (MERGE_MSG is pre-populated).
             rc_c, _oc, err_c = await self._workspace_run(["git", "commit", "--no-edit"])
@@ -829,33 +841,11 @@ class Sandbox:
         if rc_b != 0:
             return (False, "", f"branch gone: {branch}")
         try:
-            rc_mrg, _omrg, emrg = await self._workspace_run([
+            await self._workspace_run([
                 "git", "-c", "merge.conflictStyle=diff3",
                 "merge", "--no-commit", "--no-ff", branch,
             ])
-            # rc 0 = clean / already-up-to-date, 1 = conflict (expected — resolved
-            # below). ANYTHING else (124 = _workspace_run timeout sentinel after a
-            # kill, 128 = index.lock/other error) means the merge never reached a
-            # known state: do NOT fall through to the "already merged" short-circuit
-            # below — a killed merge leaves a clean-looking index that the short
-            # circuit would mask as success, silently dropping the branch AND the
-            # user's resolution. Abort and surface the real failure so the caller
-            # reverts the conflict to 'open' instead of falsely 'resolved'.
-            if rc_mrg not in (0, 1):
-                await self._abort_stray_merge()
-                return (False, "", f"merge failed (rc={rc_mrg}): {emrg.strip()[:200]}")
-            # Staleness guard: only apply resolutions/sides to paths STILL
-            # unmerged after re-entering the merge. A sibling conv's burst may
-            # have cleanly merged this path into main meanwhile — don't overwrite
-            # that with a stale (pre-resolve) resolution.
-            _rcu0, u0_out, _eu0 = await self._workspace_run(
-                ["git", "-c", "core.quotePath=false",
-                 "diff", "--name-only", "--diff-filter=U", "-z"]
-            )
-            unmerged = {p for p in u0_out.split("\0") if p.strip()}
             for p, side in sides.items():
-                if p not in unmerged:
-                    continue
                 flag = "--ours" if side == "ours" else "--theirs"
                 rc_co, _oco, _eco = await self._workspace_run(
                     ["git", "checkout", flag, "--", p]
@@ -868,8 +858,6 @@ class Sandbox:
                     # staging the surviving wrong side.
                     await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
             for p, content in resolutions.items():
-                if p not in unmerged:
-                    continue
                 # Reject a "resolution" that still carries conflict markers — once
                 # written + git-added it's no longer unmerged, so the U-guard
                 # below can't catch it and markers would commit to main.
@@ -887,10 +875,9 @@ class Sandbox:
             for p in deletions:
                 await self._workspace_run(["git", "rm", "-q", "-f", "--", p])
             _rcu, u_out, _eu = await self._workspace_run(
-                ["git", "-c", "core.quotePath=false",
-                 "diff", "--name-only", "--diff-filter=U", "-z"]
+                ["git", "diff", "--name-only", "--diff-filter=U"]
             )
-            if [p for p in u_out.split("\0") if p.strip()]:
+            if [p for p in u_out.splitlines() if p.strip()]:
                 await self._workspace_run(["git", "merge", "--abort"])
                 return (False, "", "unresolved files remain")
             # Nothing staged (branch already merged / no-op) → success, not a

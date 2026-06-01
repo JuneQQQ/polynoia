@@ -3,9 +3,11 @@
 "original form": a HARD reset, NOT just a top-up.
 
 Running this leaves the DB as exactly:
-  - 4 contacts (林知夏 orch / 顾屿 coder / 沈昭 designer / 苏念 writer) with full
-    personas + ask-form 协议 appended to system_prompt
-  - 1 workspace「Polynoia 工作室」
+  - all THREE adapters onboarded: Claude Code + Codex + OpenCode (footer:「3个适配器已接入」)
+  - 5 contacts (林知夏 claude/orch · 顾屿 claude/coder · 沈昭 codex/designer ·
+    苏念 codex/writer · 周野 opencode/generalist) with full personas +
+    ask-form 协议 appended to system_prompt
+  - 1 workspace「Polynoia 工作室」(全部 5 个 agent 为成员)
   - 1 group conv「v1.0 发布筹备」(merge_mode=auto, orch=林知夏, member_roles 全填)
   - **zero message records**
 
@@ -71,39 +73,22 @@ async def _wipe_and_bootstrap() -> None:
 
 ASK_FORM_SNIPPET = """
 
-# 何时让用户选(ask-form 协议)
+# 何时让用户选(用 `ask_user` 工具)
 
-如果你的下一步需要用户决定的事(技术选型、产物范围、文案 tone、是否进入下一阶段),
-**不要**写"等用户的正式指令"这种被动话。**直接在回复末尾追加** `<ask-form>{JSON}</ask-form>` 块,
-前端会渲染成可点选/可填空的浮层卡。
+需要用户拿主意时(技术选型、产物范围、文案 tone、是否进入下一阶段),**别写"等用户指令"这种被动话,也别瞎猜**——**调 `ask_user` 工具**。它会**阻塞**等用户回答、把答案返回给你,你就在**同一轮**里拿着答案继续往下做。
 
-JSON schema:
-{
-  "title": "标题",
-  "blocking": true,
-  "questions": [
-    {"id": "唯一短id", "kind": "single"|"multi"|"fill", "label": "问题",
-     "options": [{"value":"v","label":"L","desc":"(可选)"}],
-     "placeholder": "(fill 用)"}
-  ]
-}
-
-例:
-<ask-form>{"title":"v1.0 范围澄清","blocking":true,"questions":[
-  {"id":"target","kind":"single","label":"主要面向哪类开发者?",
-   "options":[
-     {"value":"py","label":"Python 开发者"},
-     {"value":"ts","label":"TypeScript 开发者"},
-     {"value":"both","label":"双栈都覆盖"}
-   ]},
-  {"id":"slogan","kind":"fill","label":"slogan 给个备选?","placeholder":"如:Compose AI agents like UNIX pipes"}
-]}</ask-form>
+`ask_user` 的 `questions` 参数(1–4 个问题):
+[
+  {"id": "唯一短id", "kind": "single"|"multi"|"fill", "label": "问题",
+   "options": [{"value":"v","label":"L","desc":"(可选)"}],   // single / multi 用
+   "placeholder": "(fill 用)", "optional": true|false}        // 自由填空类建议 optional:true
+]
 
 规则:
 - 只在真的需要用户决定才用,别滥用
-- 问题数 ≤ 4
-- options ≤ 5
-- 单 turn 一块"""
+- 问题 ≤ 4,每题 options ≤ 5
+- **自由填空(补充说明类)标 `optional: true`,别逼用户填**
+- 调了 `ask_user` 就等它返回,别同时再写 `<ask-form>` 文本"""
 
 
 LIN_BASE = """你是林知夏,技术总监,本项目的 Orchestrator。
@@ -112,15 +97,21 @@ LIN_BASE = """你是林知夏,技术总监,本项目的 Orchestrator。
 
 # 你能干什么(工具已注入,按 schema 调用即可)
 
-- 派活只能用 `dispatch` 工具(并行 fire-and-forget,调完就停,别等别轮询)
-- 验收/排查用 `bash`(`git log --all` / `git worktree list` / `ls` / `cat`)+ `read` / `grep` / `glob`
-- 你**没有** write / edit —— 改不了任何代码,这是设计,不要试
+- **群聊**:拆解 + 派活(`dispatch`)+ 验收 + 集成;实现尽量交给 specialist,自己别抢着写
+- **项目内单聊(只有你和用户,但在某个项目里)**:**别 dispatch、别 @ 谁**——没人可派;你有 `write` / `edit` / `apply_patch`,**直接动手把活做完**再汇报
+- **首页单聊(不在任何项目里)**:这是「咨询位」,你**没有**写类工具——只读 + 跟用户讨论 / 规划 / 拍方案。要真动手,引导用户把这件事开进一个项目
+- 写类工具(`write` / `edit` / `apply_patch`)**只在项目里给**:群聊用于小修小补 / 兜底,项目内单聊用于直接交付
+- `dispatch` 的 `tasks` **永远是数组** `[{agent, note}, ...]`;**一次 dispatch 就把这一轮要派的人全放进同一个 `tasks` 数组**(2–4 个一起发),**别拆成多次 dispatch 调用**
+- **contract 先用 `remember` 锁一次**(它会自动注入给每个被派的人);**`dispatch` 的 note 要精炼——别在 note 里重复 contract 那串带引号的 JSON**,只写这个人独有的活。note 里少塞带转义引号(`\\"`)的内容,工具入参就不会写崩(那正是反复报 "'tasks' is a required property" 的根因)
+- **dispatch 报错 = 你调用格式不对(多半 tasks 漏了/不是数组,或 note 里 JSON 转义写崩):精简 note、确认 tasks 是数组,在同一次调用里重试**。群聊里**别因为 dispatch 失败就改口说"这是单聊 / 没团队"**——路由里的 顾屿 / 沈昭 / 苏念 就是你的队友
+- 验收 / 排查:`bash`(`git log --all` / `cat`)+ `read` / `grep` / `glob`
 
 # 派活路由
 
 - Python / API / 数据逻辑 / CLI → 顾屿
 - HTML / CSS / JS / UI / 设计 → 沈昭
 - README / CHANGELOG / 文案 / 中文文档 → 苏念
+- 测试 / 重构 / 脚手架 / 构建脚本 / 跨栈杂活 / 补位 → 周野
 - 子任务尽量互不依赖;一次 dispatch 把能并行的全发出去(2-4 个)
 - 每个 task 的 note 要自包含——对方看不到你的拆解理由,把规格写全
 
@@ -229,6 +220,30 @@ SU_BASE = """你是苏念,技术文档与文案 specialist。
 不要碰 Python / HTML/CSS。语气克制、信息密度高。产物默认英文,沟通中文。"""
 
 
+ZHOU_BASE = """你是周野,全栈工程师(开源 OpenCode 驱动)。
+
+擅长:跨栈杂活 / 测试 / 重构 / 脚手架 / 构建脚本 / 把零件接起来跑通
+
+# 工具使用纪律(铁律)
+
+你能用全套工具:read / edit / write / apply_patch / bash / grep / glob。
+- 写代码:`mcp__polynoia__write` 或 `edit`
+- 跑命令 / 测试:`mcp__polynoia__bash`,报"跑通"前**必须**真的执行一遍,贴 exit_code + 输出片段为证
+- 动别人的文件前先 `read`,小步可回滚
+
+工作约束:
+- 务实优先:能跑、能测、能交付 > 漂亮
+- 文件写到 workspace 根目录;不引入大依赖除非用户许可
+- 补位为主:别人没覆盖的跨栈杂活(测试、重构、脚手架、配置、把前后端接起来)你来兜
+
+风格:
+- 直接给可运行的结果,不寒暄
+- 完成报告一句话:"做了 X(文件名),怎么验证的";别贴 commit hash / git 细节,用户对 git 无感
+- Python / TS / shell / 配置 都能接
+
+不挑活,语气干脆。沟通中文,产物按要求语言。"""
+
+
 CONTACTS_SPEC = [
     {
         "adapter_id": "claudeCode", "name": "林知夏",
@@ -247,20 +262,30 @@ CONTACTS_SPEC = [
         "tool_role": "coder",
     },
     {
-        "adapter_id": "opencoder", "name": "沈昭",
-        "model": "opencode-go/deepseek-v4-pro",
+        "adapter_id": "codex", "name": "沈昭",
+        "model": "gpt-5.5",
         "system_prompt": SHEN_BASE + ASK_FORM_SNIPPET,
         "color": "#3D7FD1", "initials": "Sz",
         "tagline": "前端 · UI / 视觉",
         "tool_role": "designer",
     },
     {
-        "adapter_id": "opencoder", "name": "苏念",
-        "model": "opencode-go/deepseek-v4-pro",
+        "adapter_id": "codex", "name": "苏念",
+        "model": "gpt-5.5",
         "system_prompt": SU_BASE + ASK_FORM_SNIPPET,
         "color": "#2E9F73", "initials": "Sn",
         "tagline": "文档 · README / 文案",
         "tool_role": "writer",
+    },
+    {
+        "adapter_id": "opencoder", "name": "周野",
+        # OpenCode model ids are `provider/model`. 本机 opencode.json 配的是
+        # `opencode-go` provider(opencode.ai/zen 代理),走它透传。
+        "model": "opencode-go/deepseek-v4-pro",
+        "system_prompt": ZHOU_BASE + ASK_FORM_SNIPPET,
+        "color": "#3D7FD1", "initials": "Zy",
+        "tagline": "全栈 · 测试 / 重构 / 工具",
+        "tool_role": "generalist",
     },
 ]
 
@@ -290,6 +315,19 @@ def get(path: str) -> list | dict:
 def seed_via_api() -> int:
     print(f"seeding against {API_BASE}  (idempotent — re-runnable)\n")
 
+    # 0) Onboard all THREE adapters explicitly (Claude Code / Codex / OpenCode)
+    #    so the footer reads「3个适配器已接入」right after init — independent of
+    #    which contacts exist. Creating a contact also auto-onboards its adapter,
+    #    but we enable all three up front so the set is complete + deterministic.
+    print("=== adapters ===")
+    for aid in ("claudeCode", "codex", "opencoder"):
+        try:
+            post(f"/api/agents/{aid}/enable", {})
+            print(f"  ✓ {aid} 已接入")
+        except urllib.error.HTTPError as e:
+            print(f"  ✗ {aid} enable failed: {e.code} {e.read().decode()[:160]}")
+            return 1
+
     # 1) Contacts — reuse-or-create by name. Re-running keeps the SAME ids
     #    (so existing workspace/conv member refs stay valid) and PATCHes the
     #    model / role / prompt to match this script.
@@ -318,7 +356,9 @@ def seed_via_api() -> int:
         ids[name] = cid
         print(f"  {cid}  {name:6s}  {spec['adapter_id']}/{spec['model']}  [{verb}]")
 
-    lin, gu, shen, su = (ids["林知夏"], ids["顾屿"], ids["沈昭"], ids["苏念"])
+    lin, gu, shen, su, zhou = (
+        ids["林知夏"], ids["顾屿"], ids["沈昭"], ids["苏念"], ids["周野"],
+    )
 
     # 2) Workspace — reuse-or-create by name.
     print("\n=== workspace ===")
@@ -336,7 +376,7 @@ def seed_via_api() -> int:
                 "目标读者:Python / JS 开发者。语言:英文产物 + 中文沟通。"
                 "每个 agent 在自己分支干 → Orchestrator 合到 main → 我审。"
             ),
-            "members": [lin, gu, shen, su],
+            "members": [lin, gu, shen, su, zhou],
             "color": "#7A5AE0",
         })["workspace"]["id"]
         print(f"  {ws_id}  {ws_name}  [created]")
@@ -355,7 +395,7 @@ def seed_via_api() -> int:
         conv = post("/api/conversations", {
             "workspace_id": ws_id,
             "title": conv_title,
-            "members": ["you", lin, gu, shen, su],
+            "members": ["you", lin, gu, shen, su, zhou],
             "group": True,
             "direct": False,
             "member_roles": {
@@ -363,6 +403,7 @@ def seed_via_api() -> int:
                 gu: "Python / API / 后端逻辑",
                 shen: "HTML / CSS / 视觉设计",
                 su: "README / CHANGELOG / 文案",
+                zhou: "测试 / 重构 / 跨栈杂活 / 补位",
             },
             "orchestrator_member_id": lin,
         })

@@ -222,14 +222,19 @@ class Adapter(Protocol):
         agent_id: str | None = None,
         merge_mode: str = "auto",
         tool_role: str = "generalist",
+        read_only_workspace_id: str | None = None,
     ) -> AdapterSession:
         """Start a fresh session.
 
-        Sandbox routing (workspace-shared-git.md P1.1):
+        Sandbox routing (workspace-shared-git.md P1.1 / ADR-019):
             - If ``workspace_id`` AND ``agent_id`` are both given, the adapter
               uses ``Sandbox.create_workspace_sandbox`` — a per-(agent, conv)
               worktree inside a shared workspace-level git. Used for group
               convs in a workspace.
+            - Else if ``read_only_workspace_id`` is given (a project-external
+              DM), the adapter opens that workspace READ-ONLY via
+              ``Sandbox.open_workspace_if_exists`` so read/grep/glob can inspect
+              the project (writes are blocked by the advisory role).
             - Otherwise the adapter uses legacy per-conv ``Sandbox.create`` —
               isolated git per conv. Used for DMs / convs without workspace.
 

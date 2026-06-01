@@ -1,5 +1,6 @@
 import { Menu } from "lucide-react";
 import { useEffect, useState } from "react";
+import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { PreviewPane } from "./components/preview/PreviewPane";
@@ -20,6 +21,7 @@ export function App() {
   const workspaces = useStore((s) => s.workspaces);
   const previewOpen = useStore((s) => s.preview.open);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const resetCenterTabs = useStore((s) => s.resetCenterTabs);
   const [activeConv, setActiveConv] = useState<{
     id: string;
     members: string[];
@@ -66,18 +68,11 @@ export function App() {
     setView("chat");
   };
 
-  // Mirror the local conv selection into the store's `activeConvId`. The app
-  // historically tracked "current conv" in TWO places: App's local `activeConv`
-  // (drives ChatPane + the PreviewPane mount) and the store's `activeConvId`
-  // (read by PreviewPane's hasConflict/reviewing selectors, ConflictResolvePane,
-  // the drawer views, WebTab…). The sidebar selection path only set the local
-  // one, so `store.activeConvId` stayed null → `conflictsByConv.get(null)` →
-  // hasConflict/reviewing always false → the conflict + pending-edit panes never
-  // opened. This single effect keeps the store in sync for every selection path
-  // (sidebar / inbox / archive / mobile drawer / clear-on-workspace).
+  // Switching conversation → drop any open center file/terminal tabs (they
+  // belong to the previous conv's workspace). Back to the chat tab.
   useEffect(() => {
-    useStore.setState({ activeConvId: activeConv?.id ?? null });
-  }, [activeConv]);
+    resetCenterTabs();
+  }, [activeConv?.id, resetCenterTabs]);
 
   // Members changed in the drawer (add/remove) → keep the active conv's member
   // list in sync so ChatPane's @mention + dispatch target the new roster
@@ -97,7 +92,7 @@ export function App() {
   const renderMain = () => {
     if (view === "chat" && activeConv) {
       return (
-        <ChatPane
+        <CenterTabs
           convId={activeConv.id}
           members={activeConv.members}
           title={activeConv.title}

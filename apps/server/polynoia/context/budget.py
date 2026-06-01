@@ -147,7 +147,11 @@ def compute_budget(
     return LayerBudget(
         identity=max(2_000, int(available * 0.04)),
         project_brief=max(3_000, int(available * 0.06)),
+        # Locked contracts/decisions + (in a DM) the agent's own work memory.
+        # Give it a real, bounded slice carved from history's share (0.62→0.54)
+        # so the total still ≈ available — the survey's |C| ≤ L_max.
+        shared_memory=max(3_000, int(available * 0.08)),
         activity=max(15_000, int(available * 0.18)),
-        history=max(35_000, int(available * 0.62)),
+        history=max(35_000, int(available * 0.54)),
         user_turn=max(5_000, int(available * 0.10)),
     )

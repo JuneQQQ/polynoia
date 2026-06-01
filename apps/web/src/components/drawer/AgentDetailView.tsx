@@ -202,7 +202,12 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
               onClick={async () => {
                 if (!window.confirm(`删除联系人「${agent.name}」?该操作不可撤销。`)) return;
                 try {
-                  await api.deleteContact(agent.id);
+                  const r = await api.deleteContact(agent.id);
+                  if (r?.error) {
+                    // e.g. still a member of a project — must delete it first.
+                    window.alert(r.error);
+                    return; // keep the drawer + contact
+                  }
                   const list = await api.agents();
                   useStore.setState({ agents: list });
                 } catch {

@@ -216,12 +216,18 @@ class CodexAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",  # P1.2 — Codex does use Polynoia MCP via config.toml; merge_mode reserved
         tool_role: str = "generalist",
+        read_only_workspace_id: str | None = None,
     ) -> CodexSession:
-        # P1.1 routing — see workspace-shared-git.md
+        # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
+        # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id, conv_id=conv_id, agent_id=agent_id,
             )
+        elif read_only_workspace_id:
+            sandbox = Sandbox.open_workspace_if_exists(
+                read_only_workspace_id
+            ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
 
@@ -297,6 +303,15 @@ class CodexSession:
         self._first_turn = True
         self._running_proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
+        # ── app-server transport (ADR-017): real token streaming ──
+        # Default to the app-server JSON-RPC v2 protocol (token-level streaming).
+        # `POLYNOIA_CODEX_TRANSPORT=exec` falls back to the old `exec --json`
+        # whole-message path (kept as an escape hatch for the experimental API).
+        self._transport = os.environ.get("POLYNOIA_CODEX_TRANSPORT", "app-server")
+        self._client: _AppServerClient | None = None
+        self._as_proc: asyncio.subprocess.Process | None = None
+        self._as_thread_id: str | None = None
+        self._active_turn_id: str | None = None
 
     def _maybe_prepend_system(self, prompt: str) -> str:
         if self._first_turn and self._system_prompt:
@@ -333,6 +348,108 @@ class CodexSession:
         return self._sandbox.env_for_agent(self._extra_env)
 
     async def send(
+        self,
+        task_id: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[AdapterEvent]:
+        if self._transport == "exec":
+            async for ev in self._send_exec(task_id, text, attachments):
+                yield ev
+        else:
+            async for ev in self._send_appserver(task_id, text, attachments):
+                yield ev
+
+    # ── app-server transport (ADR-017) ──────────────────────────────
+
+    async def _ensure_appserver(self) -> None:
+        """Spawn (or respawn) the long-lived `codex app-server` process and do the
+        one-time handshake: initialize(experimentalApi) → initialized → thread/start.
+        Reuses the same sandbox CODEX_HOME/config.toml (MCP block) as exec mode."""
+        if (
+            self._client is not None
+            and self._as_proc is not None
+            and self._as_proc.returncode is None
+        ):
+            return
+        # `-c model_reasoning_summary=auto`: make codex stream a reasoning SUMMARY
+        # (item/reasoning/summaryTextDelta) so the agent shows a live "thinking"
+        # block during its (often long) reasoning gap — translated to a
+        # ReasoningPayload part. Without this the reasoning item is empty → no
+        # think block (the gpt-5.x default hides raw reasoning).
+        self._as_proc = await asyncio.create_subprocess_exec(
+            "codex", "-c", "model_reasoning_summary=auto", "app-server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=self._env(),
+            cwd=str(self._sandbox.root),
+        )
+        self._client = _AppServerClient(self._as_proc)
+        self._client.start()
+        await self._client.request("initialize", {
+            "clientInfo": {"name": "polynoia", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True},
+        })
+        await self._client.notify("initialized", {})
+        start_params: dict[str, Any] = {"cwd": str(self._sandbox.root)}
+        if self._model:
+            start_params["model"] = self._model
+        res = await self._client.request("thread/start", start_params)
+        self._as_thread_id = (res.get("thread") or {}).get("id")
+        self._client.drain_pending_notifications()
+
+    async def _send_appserver(
+        self,
+        task_id: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[AdapterEvent]:
+        async with self._lock:
+            turn_id = _new_id()
+            yield TurnStartedEvent(turn_id=turn_id, task_id=task_id)
+            terminal_from_translator = False
+            try:
+                await self._ensure_appserver()
+                assert self._client is not None
+                params: dict[str, Any] = {
+                    "threadId": self._as_thread_id,
+                    "input": [{"type": "text", "text": self._maybe_prepend_system(text)}],
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                }
+                if self._model:
+                    params["model"] = self._model
+                result = await self._client.request("turn/start", params)
+                self._active_turn_id = (result.get("turn") or {}).get("id")
+                # System prompt was just delivered (prepended to this turn's input)
+                # — only now is it safe to stop prepending it. If we failed BEFORE
+                # here (connect error), keep _first_turn so the retry still sends it.
+                self._first_turn = False
+
+                def _cap(tid: str) -> None:
+                    self._active_turn_id = tid
+
+                async for ev in _translate_appserver_turn(
+                    self._client.notifications(),
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    on_codex_turn_id=_cap,
+                ):
+                    if ev.type in ("turn.completed", "turn.failed"):
+                        terminal_from_translator = True
+                    yield ev
+            except Exception as e:  # surface any connect/RPC error as a turn failure
+                if not terminal_from_translator:
+                    yield TurnFailedEvent(
+                        turn_id=turn_id,
+                        task_id=task_id,
+                        error={"subtype": "exception", "message": str(e)},
+                    )
+            finally:
+                self._active_turn_id = None
+
+    async def _send_exec(
         self,
         task_id: str,
         text: str,
@@ -423,13 +540,36 @@ class CodexSession:
         return
 
     async def interrupt(self, task_id: str | None = None) -> None:
+        # exec: kill the per-turn subprocess. app-server: cancel the active turn
+        # over JSON-RPC (the long-lived connection stays up for the next turn).
+        if self._transport != "exec" and self._client is not None and (
+            self._as_thread_id and self._active_turn_id
+        ):
+            with contextlib.suppress(Exception):
+                await self._client.request(
+                    "turn/interrupt",
+                    {"threadId": self._as_thread_id, "turnId": self._active_turn_id},
+                    timeout=10,
+                )
         proc = self._running_proc
         if proc is not None and proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.terminate()
 
     async def close(self) -> None:
-        await self.interrupt()
+        self._active_turn_id = None
+        # Tear down the long-lived app-server process (if any).
+        if self._as_proc is not None and self._as_proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self._as_proc.terminate()
+        self._client = None
+        self._as_proc = None
+        self._as_thread_id = None
+        # And the exec per-turn subprocess (if any).
+        proc = self._running_proc
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
         self._thread_id = None
 
 
@@ -492,6 +632,320 @@ def _codex_mcp_to_toolcall(item_id: str, item: dict[str, Any]) -> ToolCallPayloa
         output=result.get("content") or err.get("message"),
         output_text=output_text,
     )
+
+
+# ── app-server (JSON-RPC v2) transport — real token streaming (ADR-017) ──
+
+
+class _AppServerClient:
+    """Minimal newline-delimited JSON-RPC 2.0 client over a subprocess.
+
+    A background reader task fans stdout lines into three buckets:
+      * responses (``id`` + ``result``/``error``) → resolve the pending future
+      * notifications (``method`` only) → a queue, drained one turn at a time
+      * server→client *requests* (``method`` + ``id``) → we handle none, so we
+        reply with a JSON-RPC error to keep codex from hanging on us.
+    """
+
+    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+        self._proc = proc
+        self._next_id = 0
+        self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._notif_q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._reader: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        self._reader = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self) -> None:
+        assert self._proc.stdout is not None
+        try:
+            async for raw in self._proc.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "method" in msg and "id" in msg:
+                    # server→client request — we don't implement approvals etc.
+                    with contextlib.suppress(Exception):
+                        await self._write({
+                            "jsonrpc": "2.0", "id": msg["id"],
+                            "error": {"code": -32601, "message": "unhandled by polynoia"},
+                        })
+                elif "id" in msg and ("result" in msg or "error" in msg):
+                    fut = self._pending.pop(msg["id"], None)
+                    if fut is not None and not fut.done():
+                        fut.set_result(msg)
+                elif "method" in msg:
+                    await self._notif_q.put(msg)
+        finally:
+            await self._notif_q.put(None)  # stream end → unblock the translator
+
+    async def _write(self, obj: dict[str, Any]) -> None:
+        assert self._proc.stdin is not None
+        self._proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
+        await self._proc.stdin.drain()
+
+    async def request(
+        self, method: str, params: dict[str, Any], timeout: float = 900.0
+    ) -> dict[str, Any]:
+        self._next_id += 1
+        rid = self._next_id
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending[rid] = fut
+        await self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        msg = await asyncio.wait_for(fut, timeout)
+        if "error" in msg:
+            raise RuntimeError(f"app-server {method} error: {msg['error']}")
+        return msg.get("result") or {}
+
+    async def notify(self, method: str, params: dict[str, Any]) -> None:
+        await self._write({"jsonrpc": "2.0", "method": method, "params": params})
+
+    async def notifications(self) -> AsyncIterator[dict[str, Any] | None]:
+        """Yield queued notifications until the stream ends (yields ``None`` last)."""
+        while True:
+            msg = await self._notif_q.get()
+            yield msg
+            if msg is None:
+                return
+
+    def drain_pending_notifications(self) -> None:
+        """Discard buffered pre-turn notifications (thread/started, status, …)."""
+        while not self._notif_q.empty():
+            try:
+                self._notif_q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+
+def _codex_v2_status_to_state(status: str | None) -> ToolCallState:
+    return {
+        "inProgress": "running",
+        "completed": "completed",
+        "failed": "error",
+    }.get(status or "", "running")
+
+
+def _v2_reasoning_text(item: dict[str, Any]) -> str:
+    out: list[str] = []
+    for seg in (item.get("summary") or []) + (item.get("content") or []):
+        if isinstance(seg, dict):
+            out.append(seg.get("text") or seg.get("content") or "")
+        elif isinstance(seg, str):
+            out.append(seg)
+    return "\n\n".join(s for s in out if s.strip()).strip()
+
+
+def _v2_item_to_toolcall(item: dict[str, Any]) -> ToolCallPayload | None:
+    """Map a v2 ThreadItem (commandExecution / fileChange / mcpToolCall /
+    webSearch) to a ToolCallPayload. Returns None for non-tool item types."""
+    itype = item.get("type")
+    item_id = item.get("id") or _new_id()
+    status = item.get("status")
+    if itype == "commandExecution":
+        out = item.get("aggregatedOutput") or ""
+        exit_code = item.get("exitCode")
+        return ToolCallPayload(
+            tool_call_id=item_id,
+            name="Bash",
+            input={"command": item.get("command", "")},
+            state=_codex_v2_status_to_state(status),
+            is_error=(status == "failed") or (exit_code not in (None, 0)),
+            output=out[:8000] or None,
+            output_text=out[:8000] or None,
+            summary=str(item.get("command", ""))[:80],
+            duration_ms=item.get("durationMs"),
+        )
+    if itype == "fileChange":
+        changes = item.get("changes") or []
+        names = ", ".join(str(c.get("path", "")) for c in changes[:3])
+        return ToolCallPayload(
+            tool_call_id=item_id,
+            name="FileChange",
+            input={"changes": changes},
+            state=_codex_v2_status_to_state(status),
+            is_error=status == "failed",
+            summary=f"{len(changes)} files: {names}",
+            output=changes,
+        )
+    if itype == "mcpToolCall":
+        err = item.get("error") or {}
+        result = item.get("result") or {}
+        out_text = (
+            _stringify_tool_output(result.get("content")) if result
+            else (err.get("message") if err else None)
+        )
+        return ToolCallPayload(
+            tool_call_id=item_id,
+            name=f"{item.get('server', 'mcp')}::{item.get('tool', '')}",
+            input=item.get("arguments") or {},
+            state=_codex_v2_status_to_state(status),
+            is_error=status == "failed",
+            output=result.get("content") or err.get("message"),
+            output_text=out_text,
+        )
+    if itype == "webSearch":
+        return ToolCallPayload(
+            tool_call_id=item_id,
+            name="WebSearch",
+            input={"query": item.get("query", "")},
+            state=_codex_v2_status_to_state(status),
+            summary=str(item.get("query", ""))[:80],
+        )
+    return None
+
+
+async def _translate_appserver_turn(
+    notifications: AsyncIterator[dict[str, Any] | None],
+    *,
+    turn_id: str,
+    task_id: str,
+    on_codex_turn_id: Callable[[str], None] | None = None,
+) -> AsyncIterator[AdapterEvent]:
+    """Translate one turn's `codex app-server` JSON-RPC notification stream into
+    PAP ``AdapterEvent``s. Pure async generator: consumes ``{method, params}``
+    dicts (or ``None`` = stream end), yields events, returns on the first
+    ``turn/completed`` / ``turn/failed``. agentMessage text streams token-by-token
+    via ``item/agentMessage/delta`` (started → deltas → completed)."""
+    keys: dict[str, tuple[str, str]] = {}
+    text_started: set[str] = set()
+    reasoning_started: set[str] = set()
+    usage: dict[str, Any] = {}
+    terminal = False
+
+    def _keys(item_id: str) -> tuple[str, str]:
+        if item_id not in keys:
+            keys[item_id] = (_new_id(), _new_id())
+        return keys[item_id]
+
+    async for note in notifications:
+        if note is None:
+            break
+        method = note.get("method")
+        params = note.get("params") or {}
+
+        if method == "turn/started":
+            tid = (params.get("turn") or {}).get("id")
+            if tid and on_codex_turn_id is not None:
+                on_codex_turn_id(tid)
+            continue
+
+        if method == "item/agentMessage/delta":
+            item_id = params.get("itemId") or ""
+            delta = params.get("delta") or ""
+            mid, pid = _keys(item_id)
+            if item_id not in text_started:
+                text_started.add(item_id)
+                yield PartStartedEvent(
+                    turn_id=turn_id, task_id=task_id,
+                    message_id=mid, part_id=pid,
+                    part=TextPayload(body=[PNTextBlock(c="")]),
+                )
+            if delta:
+                yield PartDeltaEvent(message_id=mid, part_id=pid, delta={"text": delta})
+            continue
+
+        # Reasoning SUMMARY stream → the "thinking" block (needs codex spawned
+        # with model_reasoning_summary set; see _ensure_appserver). Fills the long
+        # reasoning gap so a turn doesn't read as "dead blank → block".
+        if method in ("item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded"):
+            item_id = params.get("itemId") or ""
+            mid, pid = _keys(item_id)
+            if item_id not in reasoning_started:
+                reasoning_started.add(item_id)
+                yield PartStartedEvent(
+                    turn_id=turn_id, task_id=task_id,
+                    message_id=mid, part_id=pid,
+                    part=ReasoningPayload(body=[PNTextBlock(c="")]),
+                )
+            if method == "item/reasoning/summaryTextDelta":
+                delta = params.get("delta") or ""
+                if delta:
+                    yield PartDeltaEvent(message_id=mid, part_id=pid, delta={"text": delta})
+            elif (params.get("summaryIndex") or 0) > 0:
+                # New summary paragraph → separate it from the previous thought.
+                yield PartDeltaEvent(message_id=mid, part_id=pid, delta={"text": "\n\n"})
+            continue
+
+        if method in ("item/started", "item/completed"):
+            item = params.get("item") or {}
+            itype = item.get("type")
+            item_id = item.get("id") or _new_id()
+            mid, pid = _keys(item_id)
+
+            if itype == "userMessage":
+                continue  # our own echoed input — not shown
+            if itype == "agentMessage":
+                if method == "item/started":
+                    if item_id not in text_started:
+                        text_started.add(item_id)
+                        yield PartStartedEvent(
+                            turn_id=turn_id, task_id=task_id,
+                            message_id=mid, part_id=pid,
+                            part=TextPayload(body=[PNTextBlock(c="")]),
+                        )
+                else:  # item/completed → final text
+                    yield PartCompletedEvent(
+                        message_id=mid, part_id=pid,
+                        part=TextPayload(body=[PNTextBlock(c=item.get("text") or "")]),
+                    )
+                continue
+            if itype == "reasoning":
+                # The thinking block is opened LAZILY by the summaryTextDelta
+                # stream above (only when there's actual reasoning text). Here we
+                # just CLOSE it on completion with the full summary. Skip entirely
+                # if nothing streamed AND no summary text (reasoning hidden → no
+                # empty card).
+                if method == "item/completed":
+                    txt = _v2_reasoning_text(item)
+                    if item_id in reasoning_started or txt:
+                        yield PartCompletedEvent(
+                            message_id=mid, part_id=pid,
+                            part=ReasoningPayload(body=[PNTextBlock(c=txt)]),
+                        )
+                continue
+            payload = _v2_item_to_toolcall(item)
+            if payload is not None:
+                yield PartCompletedEvent(message_id=mid, part_id=pid, part=payload)
+            continue
+
+        if method == "thread/tokenUsage/updated":
+            tu = (params.get("tokenUsage") or {}).get("total") or {}
+            if tu:
+                usage = {
+                    "input_tokens": tu.get("inputTokens"),
+                    "output_tokens": tu.get("outputTokens"),
+                    "total_tokens": tu.get("totalTokens"),
+                    "cached_input_tokens": tu.get("cachedInputTokens"),
+                }
+            continue
+
+        if method == "turn/completed":
+            terminal = True
+            yield TurnCompletedEvent(
+                turn_id=turn_id, task_id=task_id, usage=usage, stop_reason="complete",
+            )
+            return
+        if method == "turn/failed":
+            err = (params.get("turn") or {}).get("error") or params.get("error") or {}
+            terminal = True
+            yield TurnFailedEvent(
+                turn_id=turn_id, task_id=task_id,
+                error={"subtype": "turn_failed", "message": (err or {}).get("message", "")},
+            )
+            return
+        # else: thread/status/changed, account/rateLimits/updated,
+        # item/commandExecution/outputDelta, thread/started, … → ignored.
+
+    if not terminal:
+        yield TurnFailedEvent(
+            turn_id=turn_id, task_id=task_id,
+            error={"subtype": "process_crash", "message": "codex app-server stream ended"},
+        )
 
 
 # ── Stream translator (pure async generator, testable in isolation) ──

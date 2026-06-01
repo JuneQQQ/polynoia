@@ -10,6 +10,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.context._types import ContextLayer
+from polynoia.context.shared import is_project_conv
 from polynoia.storage.repo import get_conversation, list_workspaces
 
 
@@ -21,12 +22,18 @@ async def build_project_briefs_layer(
     max_other_workspaces: int = 10,
 ) -> ContextLayer | None:
     """Build L2 briefs for `agent_id`. Returns None if no workspaces in scope."""
+    cur_conv = await get_conversation(db, conv_id)
+    # R1: out-of-project chat (no workspace) → do NOT proactively enumerate the
+    # agent's projects at all. The agent can still answer about a project if the
+    # user explicitly asks (read-only code mount + own work memory remain).
+    if not is_project_conv(cur_conv):
+        return None
+
     workspaces = await list_workspaces(db)
     relevant = [w for w in workspaces if agent_id in (w.members or [])]
     if not relevant:
         return None
 
-    cur_conv = await get_conversation(db, conv_id)
     cur_ws_id = cur_conv.workspace_id if cur_conv else None
 
     cur_ws = next((w for w in relevant if w.id == cur_ws_id), None)

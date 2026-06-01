@@ -109,6 +109,11 @@ export function NewContactModal({
   const [name, setName] = useState(editing?.name ?? "");
   const [systemPrompt, setSystemPrompt] = useState(editing?.system_prompt ?? "");
   const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
+  // Tool set (工具集) — coarse-grained role that decides which mcp__polynoia__*
+  // tools the agent gets (backend ROLE_TOOLS). Was backend-only; now editable.
+  const [toolRole, setToolRole] = useState<string>(
+    (editing as { tool_role?: string } | null)?.tool_role ?? "generalist",
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -208,6 +213,7 @@ export function NewContactModal({
           model: finalModel,
           system_prompt: systemPrompt.trim(),
           color,
+          tool_role: toolRole,
           max_context_tokens: parsedMaxCtx,
         });
       } else {
@@ -217,6 +223,7 @@ export function NewContactModal({
           model: finalModel,
           system_prompt: systemPrompt.trim() || undefined,
           color,
+          tool_role: toolRole,
           max_context_tokens: parsedMaxCtx ?? undefined,
         });
       }
@@ -396,10 +403,27 @@ export function NewContactModal({
                 <textarea
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
-                  placeholder="给该联系人一个特定的角色定位。留空则用 adapter 默认。"
+                  placeholder="只写这个 agent 的独特人格 / 风格(如:技术总监,克制直接)。平台/工具说明会自动注入,无需手写。"
                   rows={3}
                   className="w-full text-[12.5px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] resize-y"
                 />
+              </Field>
+
+              <Field label="工具集 / 角色">
+                <select
+                  value={toolRole}
+                  onChange={(e) => setToolRole(e.target.value)}
+                  className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+                >
+                  <option value="generalist">通用 generalist · 全套工具</option>
+                  <option value="coder">后端 coder · read/edit/write/bash…</option>
+                  <option value="designer">前端 designer · 无 bash</option>
+                  <option value="writer">文档 writer · 无 bash</option>
+                  <option value="orchestrator">协调 orchestrator · 只拆解 / 派活</option>
+                </select>
+                <div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed mt-1">
+                  决定该 agent 能用哪些工具(平台按角色注入对应「工具与纪律」)。
+                </div>
               </Field>
 
               <Field label="颜色">

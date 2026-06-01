@@ -84,3 +84,12 @@ ROLE_TOOLS = {
 - LLM 实测能严格遵守 prompt 内的"不要写文件"(比如 Opus 5+ 出来后):role 过滤可作为可选 enforcement layer
 - 加入更细粒度权限(per-file glob 白名单)时:从 5 种 role 升级到 `tool_role` + `path_policy` 二维结构
 - specialist 互调的 P+ 设计(沈昭让顾屿写 backend stub)如果落地:designer/writer 加 `call_agent`,但要明确不允许任意嵌套
+
+## 更新(2026-05-30):orchestrator 重新获得 write/edit,单聊不派活
+
+- **改了什么**:`ROLE_TOOLS["orchestrator"]` 加回 `write` / `edit` / `apply_patch`(原 ADR 故意拿掉)。约束从「工具物理隔离」改为「**工具可用 + prompt 按上下文引导**」:
+  - **群聊**:prompt 仍要求 orchestrator 拆解 + 派活 + 验收,实现交给 specialist(行为约束,非工具约束)
+  - **单聊(只有用户和 orchestrator,无团队)**:prompt 明确「别 dispatch / 别 @,直接用 write/edit 把活做完」——单聊没人可派,物理隔离反而让它干不了活
+- **为什么反悔**:用户在单聊里直接找 orchestrator 干活,旧设计下它只能 dispatch,但单聊里没有 specialist 可派 → 卡死。给它 edit 工具后,单聊能直接交付,群聊靠 prompt 继续保持「只编排」。
+- **抗幻觉怎么办**:原 ADR 靠「没 write 就没法假装交付」。现在 orchestrator 有 write 了,改靠 prompt 的验收纪律(`git log`/`read` 自证)+ 群聊里它本就不该自己写。代价:群聊里 orchestrator 理论上能越界自己写代码,靠 prompt 约束(实测 Sonnet 基本遵守)。
+- **dispatch 工具同时改宽松**:不再硬性 `required:["tasks"]`,也接受顶层 `agent`/`note` 的单任务简写(`execute` 归一化)——消除模型派单人时老报「'tasks' is a required property」的反复失败。

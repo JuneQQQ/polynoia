@@ -48,10 +48,12 @@ def test_lookup_unknown_falls_back() -> None:
 
 def test_budget_200k_model_uses_proportional() -> None:
     """200k Opus: 200k - 35k overhead = 165k available.
-    history layer should get 165k × 0.62 ≈ 102k, NOT the 35k floor."""
+    history gets 165k × 0.54 ≈ 89k (0.08 carved out for shared_memory, ADR-019),
+    NOT the 35k floor; shared_memory gets a real bounded slice."""
     b = compute_budget(model="claude-opus-4-7")
     assert b.history > 35_000
-    assert 90_000 < b.history < 110_000
+    assert 80_000 < b.history < 100_000
+    assert b.shared_memory > 10_000  # 165k × 0.08 ≈ 13k, no longer uncapped
     # Total budget should fit inside available
     assert b.total <= 200_000 - CLAUDE_CODE_OVERHEAD + 5_000  # slack for floor saturation
 

@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.context._types import ContextLayer
+from polynoia.context.shared import is_project_conv
 from polynoia.domain.entities import Agent
 from polynoia.sandbox._core import Sandbox
 from polynoia.storage.models import (
@@ -131,6 +132,20 @@ def _format_message_body(payload: dict) -> str:
         method = payload.get("method", "?")
         url = payload.get("url", "")
         return f"[API] {method} {url}"
+    if kind == "image":
+        # User-attached image: surface the filename/type so the agent knows an
+        # image was shared (not a bare "[image]" placeholder).
+        nm = payload.get("name") or "图片"
+        mt = payload.get("media_type")
+        return f"[图片: {nm}{(' · ' + mt) if mt else ''}]"
+    if kind == "file":
+        # User-attached file: surface name + type + size so the agent can
+        # acknowledge/ask about it instead of seeing a bare "[file]".
+        nm = payload.get("name") or "文件"
+        mt = payload.get("media_type")
+        sz = payload.get("size_bytes")
+        meta = "".join([f" · {mt}" if mt else "", f" · {sz}B" if sz else ""])
+        return f"[文件: {nm}{meta}]"
     if kind == "typing":
         return ""  # ephemeral typing indicator — skip from ledger
     if kind == "ask-form":
@@ -173,6 +188,13 @@ async def build_activity_ledger_layer(
     # 1. Collect convs visible to this agent
     convs_q = await db.execute(select(ConversationRow))
     all_convs = list(convs_q.scalars().all())
+
+    # R1: is the CURRENT conv a project conv? If not (out-of-project DM), we
+    # render only the 私聊 (DM) activity below and suppress the per-project
+    # "## 项目 · {ws}" sections — the agent keeps its own DM continuity but never
+    # volunteers project specifics unprompted.
+    cur_conv = next((c for c in all_convs if c.id == exclude_conv_id), None)
+    in_project = is_project_conv(cur_conv)
 
     workspaces_q = await db.execute(select(WorkspaceRow))
     all_workspaces = list(workspaces_q.scalars().all())
@@ -291,12 +313,13 @@ async def build_activity_ledger_layer(
     lines: list[str] = ["# 你的近期活动"]
     rendered = 0
 
-    # Workspace convs first — one section per workspace
+    # Workspace convs first — one section per workspace. SKIPPED entirely when
+    # the current conv is out-of-project (R1): no "## 项目 · {ws}" leakage.
     ws_ids_sorted = sorted(
         (k for k in by_ws if k is not None),
         key=lambda wid: visible_ws_by_id.get(wid).name if visible_ws_by_id.get(wid) else "",
     )
-    for ws_id in ws_ids_sorted:
+    for ws_id in (ws_ids_sorted if in_project else []):
         if rendered >= limit:
             break
         ws = visible_ws_by_id.get(ws_id)

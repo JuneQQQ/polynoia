@@ -32,6 +32,31 @@ from polynoia.adapters.opencode import OpenCodeAdapter
 _BASE_ADAPTERS: dict[str, Adapter] = {}
 
 
+# Appended to a contact's system prompt when it's spawned in a non-project
+# (homepage DM) conversation. Each contact has its OWN private hidden workspace
+# (a per-contact sandbox) where it can freely read/write/run — for its own
+# operation + output files — but it CANNOT see any project's code. To work on a
+# project it must request access and the user must approve (request_project_access).
+_PRIVATE_WS_BANNER = """
+
+---
+# 当前模式:私有工作区 · 1:1
+
+你在一个**不属于任何项目的私有 1:1** 里。你有一个**只属于你的私有工作区**(隐藏沙箱):可以自由 read / write / edit / bash —— 在这里存放你的操作文件、产出文件、草稿。
+
+但你**看不到、也不能改任何项目的代码** —— 私有区与项目工作区是**物理隔离**的。如果用户要你在**某个项目**里干活,引导用户把这件事**开进对应项目**(在项目里你才有该项目的读写权限);在私有 1:1 里别假装能读/改项目文件。或者调用 `request_project_access`(说明理由)申请,用户批准后即可在本对话里读写该项目。"""
+
+
+# Appended when the user has APPROVED project access for this DM (ADR-020).
+# The agent now has a worktree in the granted project with full write tools.
+_GRANTED_ACCESS_BANNER = """
+
+---
+# 当前模式:已获授权访问项目
+
+用户已**批准**你访问一个项目,并已把该项目的工作区挂载到本对话。你现在对**该项目**有完整的读写 + 执行能力(read / write / edit / bash 等),可以正常在项目里干活、提交产物。和在项目里一样守纪律:写文件走 `mcp__polynoia__write`,声称跑通前真用 bash 跑。"""
+
+
 def _ensure_base_adapters() -> dict[str, Adapter]:
     """Lazy-init base adapter instances. One per CLI, shared across all contacts."""
     if not _BASE_ADAPTERS:
@@ -73,11 +98,19 @@ class AdapterPool:
 
             # Lazy DB lookup — avoid top-level import cycle.
             from polynoia.storage.db import SessionLocal
-            from polynoia.storage.repo import get_conversation, list_agents
+            from polynoia.storage.repo import (
+                get_conversation,
+                active_access_grant,
+                list_agents,
+                list_workspaces,
+            )
 
             async with SessionLocal() as db:
                 rows = await list_agents(db)
                 conv = await get_conversation(db, conv_id)
+                workspaces = await list_workspaces(db)
+                # ADR-020: did the user approve project access for this DM?
+                granted_ws = await active_access_grant(db, conv_id, agent_id)
             agent = next((r for r in rows if r.id == agent_id), None)
             if agent is None or agent.setup is None or not agent.setup.adapter_id:
                 return None
@@ -114,15 +147,44 @@ class AdapterPool:
             # on pending-edit approval). See ADR-005.
             merge_mode = conv.merge_mode if conv else "auto"
 
+            # Workspace scoping (ADR-013 §location-gate, revised by ADR-020).
+            # PROJECT conv (workspace_id set) → the agent works on PROJECT files
+            # with its full tool_role. NON-project 1:1 → the agent's OWN PRIVATE
+            # workspace: it keeps its full (writable) tool_role but its sandbox is
+            # the per-conv private one (Sandbox.create(conv_id)) — a hidden
+            # per-contact space. Crucially we DO NOT mount any project here:
+            # the old code mounted my_ws[0] read-only, which LEAKED an arbitrary
+            # project's code into every DM. A DM now sees zero project files;
+            # project access is opt-in via the approval flow (request_project_access).
+            in_project = conv is not None and conv.workspace_id is not None
+            effective_role = agent.tool_role  # writable in its own sandbox either way
+            system_prompt = agent.system_prompt
+            read_only_ws_id: str | None = None
+            if not in_project:
+                if granted_ws:
+                    # ADR-020: the user approved this DM's access to a project.
+                    # Mount that project's worktree (write-enabled) instead of
+                    # the private sandbox — for THIS (agent, conv) only.
+                    ws_id = granted_ws
+                    system_prompt = (system_prompt or "") + _GRANTED_ACCESS_BANNER
+                else:
+                    system_prompt = (system_prompt or "") + _PRIVATE_WS_BANNER
+
             new_sess = await base.start_session(
                 conv_id=conv_id,
                 model=agent.setup.model,
-                system_prompt=agent.system_prompt,
+                system_prompt=system_prompt,
                 allowed_tools=allowed,
                 workspace_id=ws_id,
-                agent_id=agent_id if ws_id else None,
+                # Always pass the real agent_id so the spawned polynoia MCP
+                # server identifies as THIS contact (POLYNOIA_AGENT_ID) — needed
+                # for audit + request_project_access grants. The worktree path
+                # gates on (workspace_id AND agent_id), so agent_id alone (a DM
+                # with no project) does NOT create a worktree — stays private.
+                agent_id=agent_id,
                 merge_mode=merge_mode,
-                tool_role=("orchestrator" if is_conv_orch else agent.tool_role),
+                tool_role=effective_role,
+                read_only_workspace_id=read_only_ws_id,
             )
             self._sessions[key] = new_sess
             return new_sess

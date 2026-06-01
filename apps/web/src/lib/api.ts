@@ -33,8 +33,20 @@ export type PendingEdit = {
   decided_at: string | null;
 };
 
-/** Merge-conflict row (conflict closed-loop). `id` is the conflict id used by
- * the resolve / abandon endpoints. */
+/** ADR-020: an agent in a private DM requesting approval to access a PROJECT.
+ * Server pushes via `data-pending-access`; UI renders an approval card with a
+ * project picker. On accept the chosen workspace_id is recorded + granted. */
+export type PendingAccess = {
+  id: string;
+  conv_id: string;
+  agent_id: string;
+  reason: string;
+  workspace_id: string | null;
+  status: "pending" | "accepted" | "rejected" | "timeout";
+  created_at: string | null;
+  decided_at: string | null;
+};
+
 export type Conflict = {
   id: string;
   conv_id: string;
@@ -180,9 +192,13 @@ export const api = {
   /** Still-open ask-forms (agent questions awaiting an answer) — used to
    * re-hydrate the floating panel after a refresh. */
   openAskForms: (convId: string) =>
-    getJSON<{ ask_forms: Array<{ id: string; agent_id: string; kind: "ask-form"; title: string; blocking: boolean; questions: unknown[] }> }>(
+    getJSON<{ ask_forms: Array<{ id: string; agent_id: string; kind: "ask-form"; title: string; blocking: boolean; questions: unknown[]; blocking_tool?: boolean }> }>(
       `/api/conversations/${convId}/ask-forms`,
     ),
+  /** Resolve a blocking `ask_user` tool call (⑥) — the suspended agent turn
+   * continues with this answer. Only used for blocking_tool ask-forms. */
+  answerAsk: (convId: string, askId: string, answer: string) =>
+    postJSON<{ ok: boolean }>(`/api/conversations/${convId}/ask/${askId}/answer`, { answer }),
   /** Paginated message fetch. `before` is an ISO timestamp cursor —
    * `null` for the latest page, then pass back the oldest message's
    * `created_at` to walk further into the past. */
@@ -225,6 +241,12 @@ export const api = {
 
   // Onboarding — adapter layer
   probeAdapters: () => getJSON<AdapterProbe[]>("/api/onboarding/adapters"),
+  // Re-read host CLI logins into all sandboxes + evict cached sessions, so a
+  // switched account (claude/codex re-login) takes effect on the next turn.
+  refreshAdapterCredentials: () =>
+    postJSON<{ ok: boolean; sandboxes_refreshed: number; sessions_evicted: number }>(
+      "/api/adapters/refresh-credentials",
+    ),
   enableAgent: (id: string) => postJSON<{ agent: Agent }>(`/api/agents/${id}/enable`),
   disableAgent: (id: string) => postJSON<{ ok: boolean }>(`/api/agents/${id}/disable`),
 
@@ -246,6 +268,7 @@ export const api = {
     color?: string;
     initials?: string;
     tagline?: string;
+    tool_role?: string;
     max_context_tokens?: number | null;
   }) => postJSON<{ contact: Agent }>("/api/contacts", body),
   updateContact: (
@@ -257,6 +280,7 @@ export const api = {
       color: string;
       initials: string;
       tagline: string;
+      tool_role: string;
       max_context_tokens: number | null;
     }>,
   ) =>
@@ -268,7 +292,10 @@ export const api = {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       return r.json() as Promise<{ contact: Agent }>;
     }),
-  deleteContact: (id: string) => deleteJSON<{ ok: boolean }>(`/api/contacts/${id}`),
+  deleteContact: (id: string) =>
+    deleteJSON<{ ok: boolean; error?: string; kind?: string; workspaces?: string[] }>(
+      `/api/contacts/${id}`,
+    ),
 
   health: () => getJSON<{ status: string; version: string; time: string }>("/api/health"),
 
@@ -329,7 +356,20 @@ export const api = {
     return getJSON<PendingEdit[]>(`/api/conversations/${convId}/pending-edits${qs}`);
   },
 
-  /** Resolve a merge conflict + re-merge for real (conflict closed-loop). */
+  /** ADR-020: list project-access requests for a conv (hydrate on load). */
+  listPendingAccess: (convId: string, status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return getJSON<PendingAccess[]>(`/api/conversations/${convId}/pending-access${qs}`);
+  },
+  /** Approve (with the chosen project) or reject a project-access request. */
+  decidePendingAccess: (id: string, decision: "accept" | "reject", workspaceId?: string) =>
+    postJSON<PendingAccess>(`/api/pending-access/${id}/decide`, {
+      decision,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
+    }),
+
+  // ── Merge conflicts (closed-loop) ──
+  /** Resolve a merge conflict + re-merge for real. */
   resolveConflict: (
     id: string,
     body: {

@@ -294,6 +294,33 @@ class ToolCallPayload(BaseModel):
     input_preview: str | None = None
 
 
+class ErrorPayload(BaseModel):
+    """A turn- or conversation-level failure, persisted as a first-class card so
+    it 回显 survives a refresh.
+
+    Errors used to be live-only WS chunks (``{"type":"error"}``) that the client
+    rendered transiently and never wrote back — so on reload the turn looked like
+    it had silently stopped. This payload is the persisted record.
+
+    Distinct from a tool-call's own ``state="error"`` (one tool failed): this is
+    the WHOLE turn / routing failing — upstream 401/429/500, idle-timeout, adapter
+    crash, user abort, dispatch depth limit, or no routable contact.
+    """
+
+    kind: Literal["error"] = "error"
+    message: str
+    # The agent whose turn failed; None for conversation-level errors (routing /
+    # no adapter contact), which are attributed to the "system" sender.
+    agent_id: ULID | None = None
+    # Why it failed — drives the icon/tone in the UI ("aborted" is neutral, the
+    # rest read as a hard error).
+    reason: Literal[
+        "turn_failed", "exception", "timeout", "aborted", "unavailable", "depth_limit"
+    ] = "exception"
+    # Whether re-sending could plausibly succeed (transient upstream / timeout).
+    retryable: bool = False
+
+
 class AskQuestion(BaseModel):
     """One question in an ask-form."""
 
@@ -354,10 +381,7 @@ class ImagePayload(BaseModel):
     caption: str | None = None
 
 
-# ── Conflict (merge-conflict closed-loop) ────────────────────────
-# A real git merge conflict, frozen into a first-class card so it stops being a
-# silent abort-and-drop. Backed by ConflictRow (source of truth). See
-# docs/design/conflict-closed-loop-2026-05-30.md.
+# ── Conflict (multi-agent same-file merge conflict, PR#4 closed-loop) ──
 ConflictType = Literal["content", "add_add", "modify_delete", "rename", "binary"]
 
 
@@ -398,10 +422,6 @@ class ConflictPayload(BaseModel):
     conv_id: ULID
     branch: str                   # agent/<id>/conv-<id> that failed to merge
     agent_id: str                 # branch author (branch.split('/')[1])
-    # agent(s) whose work was already merged into main earlier in THIS burst (so
-    # main's side of the conflict reflects their commits). NOTE: these are the
-    # earlier clean-mergers, NOT necessarily everyone who touched this file — the
-    # UI labels the main side after them ("采用 <names>") as a best-effort hint.
     base_agents: list[str] = Field(default_factory=list)
     into: str = "main"
     status: Literal["open", "resolving", "resolved", "abandoned"] = "open"
@@ -432,6 +452,7 @@ MessagePayload = Annotated[
         AskFormPayload,
         ImagePayload,
         FilePayload,
+        ErrorPayload,
         ConflictPayload,
     ],
     Field(discriminator="kind"),

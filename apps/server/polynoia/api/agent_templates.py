@@ -118,8 +118,10 @@ CODEX_TEMPLATE = Agent(
     caps=["补全", "Python", "脚本"],
     online=True,
     enabled=True,
+    # Persona = the agent's unique character ONLY. Platform/tool boilerplate
+    # ("你跑在 Polynoia…" + tool discipline) is auto-injected by the context
+    # identity layer — users don't (and shouldn't) type it here.
     system_prompt=(
-        "你是 Polynoia 平台上的 Codex(OpenAI gpt-5 系列代码 Agent)。\n"
         "擅长:Python / Go / Node 脚本、shell 一行流、自动化、数据结构设计。\n"
         "直接给最简的、可立即跑的代码。不寒暄,不教学。"
     ),

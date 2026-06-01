@@ -1,4 +1,4 @@
-import { Loader2, PanelRight, Search, Settings, Square } from "lucide-react";
+import { Loader2, PanelRight, Square } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { api, type ConversationSummary } from "../lib/api";
@@ -8,9 +8,9 @@ import { computeBursts } from "../lib/burstClaim";
 import type { Message, TasksPayload } from "../lib/types";
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
-import { ConvRolesModal } from "./ConvRolesModal";
+import { FloatingReviewBar } from "./FloatingReviewBar";
+import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
 import { MessageView } from "./MessageView";
-import { PendingEditsPanel } from "./PendingEditsPanel";
 import { ConvScopeProvider } from "./parts/_context";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 
@@ -127,6 +127,14 @@ export function ChatPane({ convId, members, title }: Props) {
                 st.openPreview("code");
               }
             }
+          } else if (chunk.type === "data-pending-access") {
+            // ADR-020: agent requested project access. Route to the approval
+            // card (project picker + 批准/拒绝); not a regular message bubble.
+            const anyChunk = chunk as any;
+            const req = anyChunk.data;
+            if (req && req.id && req.conv_id) {
+              useStore.getState().upsertPendingAccess(req);
+            }
           } else if (chunk.type === "data-chain-link") {
             // Transient meta — actual B bubble appears right after A in the
             // stream; this link is redundant UI noise. Silently drop.
@@ -163,8 +171,7 @@ export function ChatPane({ convId, members, title }: Props) {
               }
             }
           } else if (chunk.type === "data-workspace-files") {
-            // Agent-written files landed in main → CodeTab auto-refreshes its
-            // file tree (no manual refresh needed).
+            // Agent-written files landed in main → code area auto-refreshes.
             useStore.getState().bumpWorkspaceFiles();
           } else if (chunk.type.startsWith("data-")) {
             const cardKind = chunk.type.slice("data-".length);
@@ -210,7 +217,7 @@ export function ChatPane({ convId, members, title }: Props) {
       .catch(() => {
         if (!cancelled) setLoadingOlder(convId, false);
       });
-    // Hydrate merge conflicts (conflict closed-loop) so they survive refresh.
+    // Hydrate open merge conflicts so they survive a refresh.
     api
       .listConflicts(convId)
       .then((rows) => {
@@ -351,6 +358,15 @@ export function ChatPane({ convId, members, title }: Props) {
   useEffect(() => {
     let alive = true;
     setConvSummary(null);
+    // Clear any workspace carried over from the PREVIOUS conv immediately, BEFORE
+    // the async getConv resolves. A 1:1 contact opens a synthetic `dm-<id>` conv
+    // whose getConv 404s (no row) → the .catch below swallows it → without this
+    // reset the preview pane would keep the last project's workspaceId and show
+    // that project's files inside a private DM (the workspace-leak bug). Reset to
+    // null so a DM shows its own (private) space, never a project's.
+    useStore.setState((s) => ({
+      preview: { ...s.preview, data: { ...s.preview.data, workspaceId: null } },
+    }));
     api.getConv(convId).then((c) => {
       if (!alive) return;
       setConvSummary(c);
@@ -361,7 +377,7 @@ export function ChatPane({ convId, members, title }: Props) {
       useStore.setState((s) => ({
         preview: {
           ...s.preview,
-          data: { ...s.preview.data, workspaceId: c.workspace_id },
+          data: { ...s.preview.data, workspaceId: c.workspace_id ?? null },
         },
       }));
     }).catch(() => {});
@@ -369,8 +385,6 @@ export function ChatPane({ convId, members, title }: Props) {
   }, [convId]);
   const mergeMode = convSummary?.merge_mode ?? "auto";
   const inWorkspace = !!convSummary?.workspace_id;
-
-  const [rolesModalOpen, setRolesModalOpen] = useState(false);
 
   const toggleMergeMode = async () => {
     if (!convSummary) return;
@@ -479,14 +493,8 @@ export function ChatPane({ convId, members, title }: Props) {
             })}
         </div>
         <div className="flex items-center gap-1 ml-2">
-          <button
-            type="button"
-            onClick={() => useStore.getState().setSearchOverlayOpen(true)}
-            className="p-1.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
-            title="搜索 (⌘K / Ctrl+K)"
-          >
-            <Search size={14} />
-          </button>
+          {/* Search lives in the top-left (sidebar / ⌘K) and 群聊设置 moved to
+              the conversation's ⋮ menu in the sidebar — header stays minimal. */}
           <button
             type="button"
             onClick={() => (previewOpen ? closePreview() : openPreview("web"))}
@@ -499,21 +507,16 @@ export function ChatPane({ convId, members, title }: Props) {
           >
             <PanelRight size={14} />
           </button>
-          <button
-            type="button"
-            onClick={() => isGroup && setRolesModalOpen(true)}
-            disabled={!isGroup || !convSummary}
-            className={`p-1.5 rounded transition ${
-              isGroup
-                ? "hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
-                : "text-[var(--color-fg-4)] opacity-40 cursor-not-allowed"
-            }`}
-            title={isGroup ? "成员角色" : "仅群聊可编辑角色"}
-          >
-            <Settings size={14} />
-          </button>
         </div>
       </header>
+
+      {/* Manual-mode per-file review strip — Cursor-style, sits above the chat
+          (←/→ through the queue, ✓/✗ the focused change). */}
+      <FloatingReviewBar convId={convId} />
+
+      {/* ADR-020 project-access approval strip — when an agent in a private DM
+          requests access to a project, the user picks the project + 批准/拒绝. */}
+      <FloatingProjectAccessBar convId={convId} />
 
       {/* Message stream — relative wrapper so the "running" status pill can
           float on top without displacing content. */}
@@ -538,12 +541,21 @@ export function ChatPane({ convId, members, title }: Props) {
                 >
                   <Loader2 size={10} className="animate-spin" style={{ color: agent?.color ?? "#666" }} />
                   <span style={{ color: agent?.color ?? "var(--color-fg-2)" }}>{agent?.name ?? a.id}</span>
-                  <span className="text-[var(--color-fg-3)] group-hover:hidden">· {label}</span>
-                  <Square
-                    size={10}
-                    className="ml-0.5 hidden group-hover:inline"
-                    style={{ color: "var(--color-red)" }}
-                  />
+                  {/* Hover swaps the label → a stop icon. Overlay the icon
+                      (absolute) and fade, instead of hide/show, so the button's
+                      width never changes — otherwise this centered flex-wrap row
+                      re-centers + jitters every sibling pill on hover. */}
+                  <span className="relative inline-flex items-center">
+                    <span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
+                      · {label}
+                    </span>
+                    <Square
+                      size={10}
+                      aria-hidden
+                      className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
+                      style={{ color: "var(--color-red)" }}
+                    />
+                  </span>
                 </button>
               );
             })}
@@ -624,9 +636,6 @@ export function ChatPane({ convId, members, title }: Props) {
       {/* Agent-initiated questions — floating panel above Composer */}
       <AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
-      {/* Manual-mode pending edits — sits above Composer */}
-      <PendingEditsPanel convId={convId} />
-
       {/* Composer */}
       <Composer
         convId={convId}
@@ -689,13 +698,6 @@ export function ChatPane({ convId, members, title }: Props) {
           wsRef.current?.sendUserMessage(text, members, inReplyTo);
         }}
       />
-      {rolesModalOpen && convSummary && (
-        <ConvRolesModal
-          conv={convSummary}
-          onClose={() => setRolesModalOpen(false)}
-          onSaved={(updated) => setConvSummary(updated)}
-        />
-      )}
     </main>
   );
 }

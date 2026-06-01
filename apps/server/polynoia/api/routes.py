@@ -59,6 +59,11 @@ _conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = {}
 # `tasks` are raw `{agent, label, note}` dicts — resolution happens at drain.
 _pending_dispatches: dict[str, list[dict]] = {}
 
+# ⑥ Blocking ask_user: ask_id → answer text (None = still waiting). The
+# `ask_user` MCP tool registers an entry then polls it (suspending the agent's
+# turn); the frontend POSTs the answer to resolve it. poll_ask pops on delivery.
+_pending_asks: dict[str, str | None] = {}
+
 # Conversation-scoped execution state — lives at MODULE level (per conv_id), NOT
 # per WS connection. This is what makes execution backend-driven + refresh-safe:
 # a browser refresh/disconnect tears down that connection's send_queue but the
@@ -429,15 +434,73 @@ async def update_contact(contact_id: str, body: dict):
 
 @router.delete("/api/contacts/{contact_id}")
 async def delete_contact(contact_id: str):
-    """Delete a contact. The `you` builtin cannot be removed."""
+    """Delete a contact. The `you` builtin cannot be removed. A contact that's
+    still a member of any PROJECT (workspace) cannot be deleted either — the
+    user must delete those projects first (referential guard)."""
     if contact_id == "you":
-        return {"error": f"cannot delete builtin: {contact_id}"}, 400
+        return {"ok": False, "error": f"cannot delete builtin: {contact_id}"}
     async with SessionLocal() as session:
+        workspaces = await storage_repo.list_workspaces(session)
+        in_ws = [w.name for w in workspaces if contact_id in (w.members or [])]
+        if in_ws:
+            names = "」「".join(in_ws)
+            return {
+                "ok": False,
+                "kind": "in_workspace",
+                "workspaces": in_ws,
+                "error": (
+                    f"该联系人还在项目「{names}」里,得先删掉这些项目,再删联系人。"
+                ),
+            }
         ok = await storage_repo.delete_agent(session, contact_id)
         await session.commit()
     from polynoia.adapters.pool import get_pool
     await get_pool().close_sessions_for_agent(contact_id)
     return {"ok": ok}
+
+
+@router.post("/api/adapters/refresh-credentials")
+async def refresh_adapter_credentials():
+    """Re-read the host's current CLI logins (~/.claude, ~/.codex, opencode …)
+    into every existing sandbox AND evict all cached adapter sessions.
+
+    Why this is needed: each sandbox holds a SNAPSHOT of the host credentials
+    taken at spawn time, and the adapter pool caches live sessions. So after the
+    user switches their `claude` / `codex` login (e.g. an account ran out of
+    quota), already-spawned sessions keep using the OLD token until something
+    forces a refresh. This button is that force — the next turn respawns with
+    the new login. (Workspace sandboxes already re-copy per spawn; per-conv
+    sandboxes don't, so we refresh both here.)"""
+    refreshed = 0
+    root = settings.sandbox_root
+    if root.exists():
+        # Per-conv sandboxes: <sandbox_root>/<conv_id>/ (each has .git). Skip the
+        # `workspaces` container dir and any dotfiles.
+        for d in root.iterdir():
+            if not d.is_dir() or d.name.startswith(".") or d.name == "workspaces":
+                continue
+            if not (d / ".git").exists():
+                continue
+            with contextlib.suppress(Exception):
+                await Sandbox(root=d, conv_id=d.name)._copy_host_credentials()
+                refreshed += 1
+        # Workspace-shared sandboxes: <sandbox_root>/workspaces/<ws_id>/.
+        ws_dir = root / "workspaces"
+        if ws_dir.exists():
+            for d in ws_dir.iterdir():
+                if not d.is_dir() or not (d / ".git").exists():
+                    continue
+                with contextlib.suppress(Exception):
+                    await Sandbox(
+                        root=d, conv_id=f"_workspace_{d.name}", workspace_root=d
+                    )._copy_host_credentials()
+                    refreshed += 1
+
+    from polynoia.adapters.pool import get_pool
+    pool = get_pool()
+    evicted = len(pool._sessions)  # count before clearing (for UI feedback)
+    await pool.close_all()
+    return {"ok": True, "sandboxes_refreshed": refreshed, "sessions_evicted": evicted}
 
 
 def _default_initials(name: str) -> str | None:
@@ -643,6 +706,35 @@ async def list_conv_messages(
         msgs, has_more = await storage_repo.list_messages(
             session, conv_id, limit=limit, before=before,
         )
+        # Orphaned-burst recovery: a `tasks` card with lanes still pending/run
+        # but NO live registry entry was orphaned mid-flight (server restart, or
+        # a worker that died without marking its lane). Left alone it 回显 frozen
+        # on 进行中 forever. Coerce its stuck lanes to "failed" and persist that,
+        # so the card reflects reality on reload. A burst that's genuinely still
+        # running IS in the registry (skipped), so live state is never clobbered.
+        live_bursts = _conv_bursts.get(conv_id, {})
+        recovered = False
+        for m in msgs:
+            p = m.get("payload")
+            if not isinstance(p, dict) or p.get("kind") != "tasks":
+                continue
+            if m["id"] in live_bursts:
+                continue
+            tasks = p.get("tasks")
+            if not isinstance(tasks, list):
+                continue
+            changed = False
+            for t in tasks:
+                if isinstance(t, dict) and t.get("state") in ("pending", "run"):
+                    t["state"] = "failed"
+                    changed = True
+            if changed:
+                recovered = True
+                with suppress(Exception):
+                    await storage_repo.update_message_payload(session, m["id"], p)
+        if recovered:
+            with suppress(Exception):
+                await session.commit()
     return {"messages": msgs, "has_more": has_more}
 
 
@@ -739,6 +831,28 @@ async def record_dispatch(conv_id: str, body: dict):
     raw_tasks = body.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise HTTPException(status_code=400, detail="tasks must be a non-empty array")
+    # ⑧b — a 1:1 (单聊) has no teammates to delegate to. Reject dispatch so the
+    # orchestrator does the work itself (it has write/edit) instead of trying to
+    # delegate to a non-existent team (and then mis-rationalizing the context).
+    author = (body.get("author_agent_id") or "").strip()
+    try:
+        async with SessionLocal() as _s:
+            _conv = await storage_repo.get_conversation(_s, conv_id)
+    except Exception:
+        # Fail-open: any storage error (missing conv/table) → skip the DM guard
+        # rather than block a real dispatch.
+        _conv = None
+    # Only enforce when we can resolve the conv (fail-open otherwise).
+    if _conv is not None:
+        _dispatchable = [m for m in (_conv.members or []) if m not in ("you", author)]
+        if not _dispatchable:
+            return {
+                "kind": "error",
+                "error": (
+                    "这是单聊(只有你和用户),没有可派的队友——请直接用 write / edit / "
+                    "apply_patch 自己把活做完,不要 dispatch。"
+                ),
+            }
     task_ids = [f"t-{uuid.uuid4().hex[:8]}" for _ in raw_tasks]
     _pending_dispatches.setdefault(conv_id, []).append({
         "title": (body.get("title") or "").strip(),
@@ -755,6 +869,74 @@ async def record_dispatch(conv_id: str, body: dict):
         "count": len(task_ids),
         "note": "Teammates are now working in parallel. Stop here; verify their output in a later turn.",
     }
+
+
+@router.post("/api/conversations/{conv_id}/ask")
+async def register_ask(conv_id: str, body: dict):
+    """⑥ Register a blocking `ask_user` question, push it to the UI, return ask_id.
+
+    The `ask_user` MCP tool calls this, then polls GET .../ask/{ask_id} until the
+    user answers (resolved by POST .../ask/{ask_id}/answer from the panel). The
+    agent's turn is suspended in the tool meanwhile — a true blocking question.
+    """
+    ask_id = f"ask-{uuid.uuid4().hex[:10]}"
+    agent_id = (body.get("agent_id") or "").strip()
+    questions = body.get("questions") or []
+    title = (body.get("title") or "").strip()
+    _pending_asks[ask_id] = None
+    af = {
+        "id": ask_id, "agent_id": agent_id, "kind": "ask-form",
+        "title": title, "blocking": True, "questions": questions,
+        "blocking_tool": True,
+    }
+    frame = (
+        'data: {"type":"data-ask-form","data":'
+        + json.dumps(af, ensure_ascii=False)
+        + ',"sender_id":' + json.dumps(agent_id)
+        + "}\n\n"
+    )
+    await _broadcast_to_conv(conv_id, frame)
+    # Persist so a refresh re-hydrates the open question (GET /ask-forms).
+    with suppress(Exception):
+        async with SessionLocal() as _db:
+            await storage_repo.append_message(
+                _db, conv_id=conv_id, sender_id=agent_id,
+                payload={
+                    "kind": "ask-form", "title": title, "blocking": True,
+                    "questions": questions, "blocking_tool": True,
+                },
+                msg_id=ask_id,
+            )
+            await _db.commit()
+    return {"ask_id": ask_id}
+
+
+@router.get("/api/conversations/{conv_id}/ask/{ask_id}")
+async def poll_ask(conv_id: str, ask_id: str):
+    """Polled by the `ask_user` tool. Returns {answered, answer}; pops on delivery."""
+    if _pending_asks.get(ask_id) is not None:
+        return {"answered": True, "answer": _pending_asks.pop(ask_id)}
+    return {"answered": False, "answer": None}
+
+
+@router.post("/api/conversations/{conv_id}/ask/{ask_id}/answer")
+async def answer_ask(conv_id: str, ask_id: str, body: dict):
+    """Resolve a blocking `ask_user` — the panel POSTs the user's formatted answer.
+
+    Also persists the answer as a `you` message so it survives refresh AND marks
+    the ask-form answered for re-hydration. Does NOT broadcast / spawn a turn —
+    the suspended `ask_user` tool resumes the CURRENT turn with this answer.
+    """
+    answer = (body.get("answer") or "").strip() or "(用户未填写)"
+    _pending_asks[ask_id] = answer
+    with suppress(Exception):
+        async with SessionLocal() as _db:
+            await storage_repo.append_message(
+                _db, conv_id=conv_id, sender_id="you",
+                payload={"kind": "text", "body": [{"c": answer}]},
+            )
+            await _db.commit()
+    return {"ok": True}
 
 
 @router.post("/api/conversations/{conv_id}/memory")
@@ -820,6 +1002,8 @@ async def get_open_ask_forms(conv_id: str):
                 "title": payload.get("title", ""),
                 "blocking": bool(payload.get("blocking", True)),
                 "questions": payload.get("questions", []),
+                # ⑥ preserve so a re-hydrated blocking ask still resolves the tool
+                "blocking_tool": bool(payload.get("blocking_tool", False)),
             })
     return {"ask_forms": open_forms}
 
@@ -1184,28 +1368,117 @@ async def list_pending_edits_endpoint(conv_id: str, status: str | None = None):
     return [_pending_edit_to_dict(r) for r in rows]
 
 
-# ── Conflict closed-loop (merge-conflict resolution) ─────────────────
+# ── PendingAccess (ADR-020: approval-gated project access from a DM) ────
 
 
-# Conflict blobs (ours/theirs/base/markers) can be huge for a big file; the
-# card never renders them (the resolve pane fetches full via GET /conflicts/{id}),
-# so cap what goes into the live WS frame + the persisted message payload to keep
-# frames small and the messages table lean. DB merge_conflicts.files_json stays FULL.
-_CONFLICT_BLOB_CAP = 20_000
+def _pending_access_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "conv_id": row.conv_id,
+        "agent_id": row.agent_id,
+        "reason": row.reason,
+        "workspace_id": row.workspace_id,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() + "Z" if row.created_at else None,
+        "decided_at": row.decided_at.isoformat() + "Z" if row.decided_at else None,
+    }
 
 
-def _truncate_conflict_files(files: list[dict]) -> list[dict]:
-    """Return a shallow copy of files with oversized blobs clipped (for the card
-    payload / WS frame only — never for DB storage or the resolve GET)."""
-    out: list[dict] = []
-    for f in files:
-        nf = dict(f)
-        for k in ("ours", "theirs", "base", "markers"):
-            v = nf.get(k)
-            if isinstance(v, str) and len(v) > _CONFLICT_BLOB_CAP:
-                nf[k] = v[:_CONFLICT_BLOB_CAP] + "\n…[truncated; open to load full]"
-        out.append(nf)
-    return out
+@router.post("/api/pending-access")
+async def create_pending_access_endpoint(body: dict):
+    """Create a project-access request (called by the request_project_access MCP
+    tool). Body: ``{ conv_id, agent_id, reason }``. Broadcasts a
+    ``data-pending-access`` card so the user can approve + pick the project."""
+    conv_id = body.get("conv_id")
+    agent_id = body.get("agent_id")
+    reason = body.get("reason") or ""
+    if not (conv_id and agent_id):
+        return {"error": "conv_id + agent_id required"}, 400
+    # The spawning adapter reports its STATIC id (claudeCode/codex/opencoder) as
+    # POLYNOIA_AGENT_ID, not the contact's ULID. For a private DM the real
+    # contact id is encoded in the conv id (`dm-<agentId>`) — use it so the grant
+    # is keyed to the actual contact and AdapterPool.active_access_grant (which
+    # looks up by the contact's real id) finds it.
+    if conv_id.startswith("dm-"):
+        agent_id = conv_id[len("dm-"):]
+    async with SessionLocal() as session:
+        pid = await storage_repo.create_pending_access(
+            session, conv_id=conv_id, agent_id=agent_id, reason=reason,
+        )
+        await session.commit()
+        row = await storage_repo.get_pending_access(session, pid)
+    frame = (
+        'data: {"type":"data-pending-access","data":'
+        + json.dumps(_pending_access_to_dict(row))
+        + "}\n\n"
+    )
+    await _broadcast_to_conv(conv_id, frame)
+    return {"id": pid, "status": "pending"}
+
+
+@router.get("/api/pending-access/{pending_id}/wait")
+async def wait_for_pending_access(pending_id: str, timeout: float = 60.0):
+    """Long-poll until the access request is decided or timeout expires."""
+    timeout = min(max(timeout, 1.0), 120.0)
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        async with SessionLocal() as session:
+            row = await storage_repo.get_pending_access(session, pending_id)
+        if row is None:
+            return {"error": "pending access not found"}, 404
+        if row.status != "pending":
+            return _pending_access_to_dict(row)
+        if asyncio.get_event_loop().time() >= deadline:
+            return _pending_access_to_dict(row)
+        await asyncio.sleep(0.5)
+
+
+@router.post("/api/pending-access/{pending_id}/decide")
+async def decide_pending_access(pending_id: str, body: dict):
+    """User approves (with a chosen project) or rejects. Body:
+    ``{ decision: accept|reject, workspace_id? }``. On accept we record the
+    granted workspace + evict the agent's cached session so the next turn
+    re-spawns with that project mounted (write-enabled)."""
+    decision = body.get("decision")
+    if decision not in ("accept", "reject"):
+        return {"error": "decision must be 'accept' or 'reject'"}, 400
+    ws_id = body.get("workspace_id")
+    if decision == "accept" and not ws_id:
+        return {"error": "workspace_id required to accept"}, 400
+    target = "accepted" if decision == "accept" else "rejected"
+    async with SessionLocal() as session:
+        row = await storage_repo.get_pending_access(session, pending_id)
+        if row is None:
+            return {"error": "pending access not found"}, 404
+        if row.status == "pending":
+            await storage_repo.set_pending_access_status(
+                session, pending_id, target, workspace_id=ws_id,
+            )
+            await session.commit()
+            row = await storage_repo.get_pending_access(session, pending_id)
+    if target == "accepted":
+        # Evict cached session so the grant takes effect on the next turn.
+        from polynoia.adapters.pool import get_pool
+        with contextlib.suppress(Exception):
+            await get_pool().close_sessions_for_agent(row.agent_id)
+    frame = (
+        'data: {"type":"data-pending-access","data":'
+        + json.dumps(_pending_access_to_dict(row))
+        + "}\n\n"
+    )
+    await _broadcast_to_conv(row.conv_id, frame)
+    return _pending_access_to_dict(row)
+
+
+@router.get("/api/conversations/{conv_id}/pending-access")
+async def list_pending_access_endpoint(conv_id: str, status: str | None = None):
+    """List project-access requests for a conv (UI hydration on refresh)."""
+    async with SessionLocal() as session:
+        rows = await storage_repo.list_pending_access(session, conv_id, status=status)
+    return [_pending_access_to_dict(r) for r in rows]
+
+
+# ── Merge conflicts (PR#4 closed-loop) ─────────────────────────────────
 
 
 def _conflict_to_dict(row) -> dict:
@@ -1254,7 +1527,7 @@ async def _broadcast_conflict_card(row) -> None:
     data-conflict frame to all tabs (in-place status flip, refresh-safe)."""
     if row is None:
         return
-    files = [ConflictFile(**f) for f in _truncate_conflict_files(row.files_json or [])]
+    files = [ConflictFile(**f) for f in (row.files_json or [])]
     payload = ConflictPayload(
         conflict_id=row.id, conv_id=row.conv_id, branch=row.branch,
         agent_id=row.agent_id, base_agents=row.base_agents_json or [],
@@ -1296,8 +1569,7 @@ async def get_conflict_endpoint(conflict_id: str):
 
 @router.get("/api/conflicts/{conflict_id}/wait")
 async def wait_for_conflict(conflict_id: str, timeout: float = 60.0):
-    """Long-poll until the conflict leaves open/resolving, or timeout. Lets an
-    MCP/LLM path block on resolution (mirrors the pending-edit wait)."""
+    """Long-poll until the conflict leaves open/resolving, or timeout."""
     timeout = min(max(timeout, 1.0), 120.0)
     deadline = asyncio.get_event_loop().time() + timeout
     while True:
@@ -1317,8 +1589,7 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
     """Resolve a conflict and re-merge for real.
 
     Body: ``{ resolutions?: {path: content}, sides?: {path: "ours"|"theirs"},
-    deletions?: [path], resolved_by?: str }``. Re-enters the merge under the
-    per-workspace lock; on success the card flips to ``resolved``.
+    deletions?: [path], resolved_by?: str }``.
     """
     resolutions = body.get("resolutions") or {}
     sides = body.get("sides") or {}
@@ -1339,8 +1610,6 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
         row.files_json or [], resolutions, sides, deletions
     )
 
-    # Serialize on the workspace lock AND re-check status inside it, so two
-    # concurrent resolves can't both run conclude_merge or clobber a winner.
     async with workspace_merge_lock(row.workspace_id):
         async with SessionLocal() as session:
             cur = await storage_repo.get_conflict(session, conflict_id)
@@ -1348,8 +1617,6 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
                 raise HTTPException(404, "conflict not found")
             if cur.status in ("resolved", "abandoned"):
                 return _conflict_to_dict(cur)  # a concurrent resolve already won
-            # Persist the per-file resolution + flip to 'resolving' (so a partial
-            # isn't lost if conclude aborts), then broadcast the in-progress card.
             await storage_repo.update_conflict_files(session, conflict_id, updated_files)
             await storage_repo.set_conflict_status(session, conflict_id, "resolving")
             await session.commit()
@@ -1380,47 +1647,30 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
         else:
             async with SessionLocal() as session:
                 back = await storage_repo.get_conflict(session, conflict_id)
-                # Only revert to open if WE still own the 'resolving' state.
                 if back and back.status == "resolving":
                     await storage_repo.set_conflict_status(session, conflict_id, "open")
                     await session.commit()
                 fresh = await storage_repo.get_conflict(session, conflict_id)
     await _broadcast_conflict_card(fresh)
-    if ok:
-        # Resolve committed a real merge into main → nudge the code tab to refresh.
-        await _broadcast_to_conv(
-            row.conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
-        )
     return ({"ok": True, "sha": sha} if ok else {"ok": False, "error": msg}) | _conflict_to_dict(fresh)
 
 
 @router.post("/api/conflicts/{conflict_id}/abandon")
 async def abandon_conflict_endpoint(conflict_id: str):
-    """Abandon a conflict — the branch stays un-merged, but explicitly (never
-    silent). Emits the abandoned card state + a conv_memory note."""
+    """Abandon a conflict — the branch stays un-merged, but explicitly."""
     async with SessionLocal() as session:
         row = await storage_repo.get_conflict(session, conflict_id)
-    if row is None:
-        raise HTTPException(404, "conflict not found")
-    if row.status in ("resolved", "abandoned"):
-        return _conflict_to_dict(row)
-    # Serialize against a concurrent resolve on the same workspace and re-check
-    # under the lock: never abandon a conflict that a resolve is committing /
-    # already committed into main (would leave git/DB inconsistent).
-    async with workspace_merge_lock(row.workspace_id):
-        async with SessionLocal() as session:
-            cur = await storage_repo.get_conflict(session, conflict_id)
-            if cur is None:
-                raise HTTPException(404, "conflict not found")
-            if cur.status in ("resolved", "abandoned", "resolving"):
-                return _conflict_to_dict(cur)
-            await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
-            await storage_repo.add_conv_memory(
-                session, conv_id=row.conv_id, author_agent_id="you", kind="decision",
-                content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
-            )
-            await session.commit()
-            fresh = await storage_repo.get_conflict(session, conflict_id)
+        if row is None:
+            raise HTTPException(404, "conflict not found")
+        if row.status in ("resolved", "abandoned"):
+            return _conflict_to_dict(row)
+        await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
+        await storage_repo.add_conv_memory(
+            session, conv_id=row.conv_id, author_agent_id="you", kind="decision",
+            content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
+        )
+        await session.commit()
+        fresh = await storage_repo.get_conflict(session, conflict_id)
     await _broadcast_conflict_card(fresh)
     return _conflict_to_dict(fresh)
 
@@ -1959,8 +2209,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             payload = ConflictPayload(
                 conflict_id=cid, conv_id=conv_id, branch=branch, agent_id=author,
                 base_agents=base_agents,
-                status="open",
-                files=[ConflictFile(**f) for f in _truncate_conflict_files(files)],
+                status="open", files=[ConflictFile(**f) for f in files],
                 created_at=crow.created_at if crow else datetime.utcnow(),
             ).model_dump(mode="json")
             await storage_repo.append_message(
@@ -1985,13 +2234,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
     async def _merge_burst_to_main(reg: dict) -> None:
         """All burst workers done → fold their branches into main via REAL
-        conflict-detecting merges (conflict closed-loop).
+        conflict-detecting merges (conflict closed-loop, PR#4).
 
         Clean branches merge silently (as before). A true git conflict is no
-        longer a silent abort-and-drop: it is frozen into a `conflict` card the
-        user can resolve. The whole critical section is serialized per-workspace
-        (the shared root has ONE HEAD/index across all worktrees AND convs).
-        See docs/design/conflict-closed-loop-2026-05-30.md.
+        longer a silent abort-and-drop: it's frozen into a `conflict` card the
+        user can resolve. Critical section serialized per-workspace (shared root
+        has ONE HEAD/index across all worktrees AND convs).
         """
         ws_id = reg.get("workspace_id")
         if not ws_id:
@@ -2007,63 +2255,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # probe_merge is transient, so an unresolved/abandoned branch stays
             # ahead of main and would otherwise spawn a duplicate row each burst.
             async with SessionLocal() as _db:
-                _rows = await storage_repo.list_conflicts(_db, conv_id)
-            # open/resolving = an in-flight card; probe_merge is transient so
-            # re-probing would just spawn a duplicate row each burst — skip them.
-            live = {r.branch for r in _rows if r.status in ("open", "resolving")}
-            # abandoned = user gave up resolving THIS branch's conflict. We still
-            # re-probe it: if later main progress made it cleanly mergeable it
-            # should land (B7 — don't strand a now-mergeable branch); if it is
-            # STILL conflicting we stay silent (honor the abandon, no re-spam).
-            abandoned = {r.branch for r in _rows if r.status == "abandoned"}
+                already = {
+                    r.branch
+                    for r in await storage_repo.list_conflicts(_db, conv_id)
+                    if r.status in ("open", "resolving", "abandoned")
+                }
             merged_authors: list[str] = []
             for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
-                if b in live:
+                if b in already:
                     continue
                 if await ws_sandbox.branch_ahead_of_main(b) <= 0:
                     continue
                 status, detail = await ws_sandbox.probe_merge(b)
                 author = b.split("/")[1] if "/" in b else b
                 if status == "clean":
-                    # This branch is now IN main — it becomes the "main side" of
-                    # any conflict a LATER branch in this same burst hits.
                     merged_authors.append(author)
-                    if b in abandoned:
-                        # A branch the user had abandoned just became cleanly
-                        # mergeable (main moved on) and we merged it. Flip the
-                        # stale 'abandoned' card → resolved and correct the
-                        # earlier "未合并进 main" memory — otherwise the
-                        # orchestrator's wrap-up reports it as un-merged (a
-                        # user-visible lie).
-                        async with SessionLocal() as _adb:
-                            _arow = next(
-                                (r for r in await storage_repo.list_conflicts(_adb, conv_id)
-                                 if r.branch == b and r.status == "abandoned"),
-                                None,
-                            )
-                            if _arow is not None:
-                                await storage_repo.set_conflict_status(
-                                    _adb, _arow.id, "resolved",
-                                    resolved_by="auto-merge",
-                                    resolved_sha=await ws_sandbox.main_head_sha() or "",
-                                )
-                                await storage_repo.add_conv_memory(
-                                    _adb, conv_id=conv_id, author_agent_id=author,
-                                    kind="decision",
-                                    content=(
-                                        f"分支 `{b}` 此前被放弃的冲突,已随 main "
-                                        f"进展自动干净合入 main。"
-                                    ),
-                                )
-                                await _adb.commit()
-                                _afresh = await storage_repo.get_conflict(_adb, _arow.id)
-                            else:
-                                _afresh = None
-                        if _afresh is not None:
-                            await _broadcast_conflict_card(_afresh)
                 elif status == "conflict":
-                    if b in abandoned:
-                        continue  # abandoned + still conflicting → don't re-surface
                     await _surface_conflict(
                         ws_id, b, author, detail.get("files", []), orch_id,
                         base_agents=list(merged_authors),
@@ -2073,8 +2280,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         "burst merge: %s → error: %s", b, detail.get("message", "")
                     )
             if merged_authors:
-                # Files just landed in main → now visible in the code tab. Nudge
-                # the UI to auto-refresh its file tree (no manual refresh needed).
+                # Files just landed in main → nudge the code tab to auto-refresh.
                 await emit('data: {"type":"data-workspace-files","data":{}}\n\n')
 
     async def run_adapter_turn(
@@ -2145,6 +2351,37 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # "success" path and mark the burst lane DONE on a turn that actually
             # produced nothing. Track it so we mark the lane FAILED instead.
             turn_failed = False
+            # Failure paths (exception / abort) re-raise or `return` BEFORE the
+            # clean-path persist further down — so without this they'd drop the
+            # work trace (tool calls + partial reply) the agent already produced,
+            # even though the side effects (files written) really happened. Flush
+            # what we have so a crashed/aborted turn still 回显 on reload.
+            # Idempotent; the success + turn_failed paths don't call it (they
+            # reach the richer persist below), so there's no double-write.
+            _trace_flushed = False
+
+            async def _flush_partial_trace() -> None:
+                nonlocal _trace_flushed
+                if _trace_flushed:
+                    return
+                _trace_flushed = True
+                partial = "".join(response_buffer).strip()
+                if not tool_parts and not partial:
+                    return
+                with suppress(Exception):
+                    async with SessionLocal() as _pdb:
+                        for _p in tool_parts:
+                            await storage_repo.append_message(
+                                _pdb, conv_id=conv_id, sender_id=agent_id,
+                                payload=_p, msg_id=f"tc-{uuid.uuid4().hex[:12]}",
+                            )
+                        if partial:
+                            await storage_repo.append_message(
+                                _pdb, conv_id=conv_id, sender_id=agent_id,
+                                payload={"kind": "text", "body": [{"t": "p", "c": partial}]},
+                            )
+                        await _pdb.commit()
+
             try:
                 await emit_agent_status(agent_id, "starting", {"depth": depth})
                 # The pool is keyed by (agent_id, conv_id) and shared across WS
@@ -2159,10 +2396,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         await emit_agent_status(
                             agent_id, "error", {"message": "adapter unavailable"}
                         )
-                        await emit(
-                            'data: {"type":"error","error_text":'
-                            + json.dumps(f"{agent_id} adapter unavailable")
-                            + "}\n\n"
+                        await _persist_and_emit_error(
+                            emit, conv_id=conv_id, sender_id=agent_id,
+                            message=f"{agent_id} 无法启动(adapter 不可用)",
+                            reason="unavailable", retryable=True,
                         )
                         # A dispatched worker that can't get a session must STILL
                         # flip its burst lane to failed — otherwise the lane stays
@@ -2214,6 +2451,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             # can't false-trip a failure.
                             if chunk.startswith('data: {"type":"error"'):
                                 turn_failed = True
+                                # Don't forward the raw (live-only) error frame —
+                                # persist it + emit a data-error in its place so
+                                # the failure 回显 survives a refresh (BUG: an
+                                # upstream 401/429 used to vanish on reload).
+                                await _persist_and_emit_error(
+                                    emit, conv_id=conv_id, sender_id=agent_id,
+                                    message=_error_text_from_chunk(chunk),
+                                    reason="turn_failed", retryable=True,
+                                )
+                                continue
                             # Refine the status pill by what's flowing now:
                             # 正在思考 / 执行任务(工具名) / 回复. Debounced — only
                             # re-emit when the phase actually changes.
@@ -2249,6 +2496,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 with suppress(Exception):
                     await pool.close_session(agent_id, conv_id)
                 await emit_agent_status(agent_id, "aborted")
+                # Persist whatever the agent produced before the user aborted +
+                # an "aborted" marker, so the interrupted turn 回显 on reload
+                # (neutral tone, not a red error — reason="aborted").
+                await _flush_partial_trace()
+                await _persist_and_emit_error(
+                    emit, conv_id=conv_id, sender_id=agent_id,
+                    message=f"{agent_id} 的回复已被中断", reason="aborted", retryable=True,
+                )
                 # If this was a burst worker, flip its lane to failed BEFORE
                 # re-raising — otherwise its task_id stays in reg["pending"]
                 # forever, is_last never fires, and the whole burst (merge +
@@ -2270,12 +2525,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 raise
             except Exception as exc:
                 await emit_agent_status(agent_id, "error", {"message": str(exc)})
-                with suppress(RuntimeError):
-                    await emit(
-                        'data: {"type":"error","error_text":'
-                        + json.dumps(f"{agent_id}: {exc}")
-                        + "}\n\n"
-                    )
+                # Persist the partial work trace (files were really written) +
+                # the error itself BEFORE returning, so a mid-stream crash still
+                # 回显 on reload instead of looking like a silent stop.
+                await _flush_partial_trace()
+                await _persist_and_emit_error(
+                    emit, conv_id=conv_id, sender_id=agent_id,
+                    message=f"{agent_id}: {exc}", reason="exception", retryable=True,
+                )
                 # A hung/errored session must NOT be reused (it would re-hang or
                 # hit a half-broken client). Interrupt + evict so the next turn
                 # respawns fresh. (Evicting also clears a latched connect-time
@@ -2395,7 +2652,30 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # its own `author_agent_id` (the agent who called dispatch), so
             # attribution no longer relies on which turn drains the queue.
             # `resolver` maps teammate names → ULIDs.
-            for batch in ([] if suppress_dispatch else _pending_dispatches.pop(conv_id, [])):
+            # Merge ALL of this turn's dispatch calls into ONE burst. The model
+            # now often dispatches one teammate per call (small tool inputs =
+            # reliable JSON), but the user should still see a single multi-lane
+            # burst, not N single-lane cards. Flatten the tasks; union contracts.
+            _raw_batches = [] if suppress_dispatch else _pending_dispatches.pop(conv_id, [])
+            _merged_batches: list[dict] = []
+            if _raw_batches:
+                _m_tasks: list = []
+                _m_contracts: list[str] = []
+                _m_title = ""
+                for _b in _raw_batches:
+                    _m_tasks.extend(_b.get("tasks") or [])
+                    _c = (_b.get("contract") or "").strip()
+                    if _c and _c not in _m_contracts:
+                        _m_contracts.append(_c)
+                    if not _m_title:
+                        _m_title = (_b.get("title") or "").strip()
+                _merged_batches = [{
+                    "title": _m_title,
+                    "contract": "\n\n".join(_m_contracts),
+                    "tasks": _m_tasks,
+                    "author_agent_id": _raw_batches[0].get("author_agent_id", ""),
+                }]
+            for batch in _merged_batches:
                 # (worker_id, note, task_id) — task_id pairs the spawned worker
                 # with its lane so completion can flip that lane's state.
                 # Batch-level handoff contract: the shared spec every teammate
@@ -2481,13 +2761,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # the prompt (with conv history prepended by the assembler).
                 for worker_id, note, task_id in spawn_list:
                     if depth + 1 >= _MAX_MENTION_CHAIN_DEPTH:
-                        await emit(
-                            'data: {"type":"error","error_text":'
-                            + json.dumps(
-                                f"dispatch depth {_MAX_MENTION_CHAIN_DEPTH} hit "
-                                f"at {agent_id}, stopping"
-                            )
-                            + "}\n\n"
+                        await _persist_and_emit_error(
+                            emit, conv_id=conv_id, sender_id=agent_id,
+                            message=(
+                                f"派发链路深度达到上限 {_MAX_MENTION_CHAIN_DEPTH}"
+                                f"({agent_id}),已停止继续派发"
+                            ),
+                            reason="depth_limit",
                         )
                         # Don't `break`: that orphans this + the remaining lanes in
                         # `pending`, so is_last never trips → burst never merges /
@@ -2578,13 +2858,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 if not setup or not setup.adapter_id:
                     continue  # not a real agent we can spawn
                 if depth + 1 >= _MAX_MENTION_CHAIN_DEPTH:
-                    await emit(
-                        'data: {"type":"error","error_text":'
-                        + json.dumps(
-                            f"mention chain depth {_MAX_MENTION_CHAIN_DEPTH} hit "
-                            f"at {agent_id} → {target}, stopping"
-                        )
-                        + "}\n\n"
+                    await _persist_and_emit_error(
+                        emit, conv_id=conv_id, sender_id=agent_id,
+                        message=(
+                            f"@提及链路深度达到上限 {_MAX_MENTION_CHAIN_DEPTH}"
+                            f"({agent_id} → {target}),已停止继续接力"
+                        ),
+                        reason="depth_limit",
                     )
                     break
                 await emit_chain_link(
@@ -2717,16 +2997,15 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 targets.append(m)
 
         if not targets:
-            with suppress(RuntimeError):
-                await emit(
-                    'data: {"type":"error","error_text":'
-                    + json.dumps(
-                        "本对话没有 adapter 联系人。请先在「新建联系人」里基于已接入的 "
-                        "适配器(Claude Code / Codex / OpenCode)创建联系人,或者把 "
-                        "@orchestrator 加入成员。"
-                    )
-                    + "}\n\n"
-                )
+            await _persist_and_emit_error(
+                emit, conv_id=conv_id, sender_id="system",
+                message=(
+                    "本对话没有 adapter 联系人。请先在「新建联系人」里基于已接入的 "
+                    "适配器(Claude Code / Codex / OpenCode)创建联系人,或者把 "
+                    "@orchestrator 加入成员。"
+                ),
+                reason="unavailable",
+            )
             return
 
         # Spawn one concurrent task per target agent. A second message to the
@@ -2827,6 +3106,59 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 # reconnect. Tool calls + diffs are the agent's "work trace" — text-only
 # history silently loses them.
 _PERSIST_PART_KINDS = frozenset({"tool-call", "diff", "reasoning"})
+
+
+async def _persist_and_emit_error(
+    emit,
+    *,
+    conv_id: str,
+    sender_id: str,
+    message: str,
+    reason: str = "exception",
+    retryable: bool = False,
+) -> None:
+    """Persist a turn/conversation-level failure as a first-class ``error``
+    message AND push a matching ``data-error`` chunk under the SAME id.
+
+    Why both: a live-only error chunk vanished on refresh (the turn then looked
+    like it had silently stopped). Persisting under the same id the live chunk
+    carries means the client renders it instantly now AND re-hydrates the SAME
+    card on reload (dedup by message id — no double bubble). Best-effort: a
+    persistence hiccup must never mask the original error, so DB + emit are each
+    wrapped to swallow their own failures.
+    """
+    eid = f"err-{uuid.uuid4().hex[:12]}"
+    payload = {
+        "kind": "error",
+        "message": (message or "")[:2000],
+        "agent_id": None if sender_id == "system" else sender_id,
+        "reason": reason,
+        "retryable": retryable,
+    }
+    with suppress(Exception):
+        async with SessionLocal() as _edb:
+            await storage_repo.append_message(
+                _edb, conv_id=conv_id, sender_id=sender_id,
+                payload=payload, msg_id=eid,
+            )
+            await _edb.commit()
+    with suppress(RuntimeError):
+        await emit(
+            'data: {"type":"data-error","data":'
+            + json.dumps(payload, ensure_ascii=False)
+            + ',"id":' + json.dumps(eid)
+            + ',"sender_id":' + json.dumps(sender_id)
+            + "}\n\n"
+        )
+
+
+def _error_text_from_chunk(chunk: str) -> str:
+    """Pull the human error text out of a raw ``data: {"type":"error",...}``
+    frame (adapter-surfaced TurnFailedEvent — 401/429/upstream)."""
+    with suppress(Exception):
+        obj = json.loads(chunk[len("data: "):].strip())
+        return str(obj.get("error_text") or obj.get("error") or "上游错误")
+    return "上游错误"
 
 
 def _phase_from_chunk(chunk: str) -> tuple[str, dict] | None:

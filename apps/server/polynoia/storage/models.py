@@ -298,14 +298,33 @@ class PendingEditRow(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-# ── MergeConflict (conflict closed-loop) ─────────────────────────────
+# ── PendingAccess (ADR-020: approval-gated project access from a private DM) ──
 #
-# A real git merge conflict, frozen as first-class data so it stops being a
-# silent abort-and-drop. Source of truth backing the `conflict` message card
-# (mirrors PendingEditRow: durable row + transient broadcast card). Brand-new
-# table → created by Base.metadata.create_all in init_db; no _SCHEMA_PATCHES
-# entry needed (patches are for ADD COLUMN on pre-existing tables).
-# See docs/design/conflict-closed-loop-2026-05-30.md.
+# An agent in a private 1:1 (no project) calls `request_project_access(reason)`.
+# That creates a row in status="pending" + broadcasts a `data-pending-access`
+# card. The user picks WHICH project to expose and clicks 批准/拒绝. On accept
+# the chosen workspace_id is recorded; the AdapterPool then mounts that project
+# (write-enabled) for this (agent, conv) on the next turn. Mirrors PendingEdit.
+class PendingAccessRow(Base):
+    __tablename__ = "pending_access"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ULID
+    conv_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # Set on ACCEPT — which project the user chose to grant. Null while pending.
+    workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # "pending" / "accepted" / "rejected" / "timeout"
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ── MergeConflict (multi-agent same-file conflict closed-loop, PR#4) ──
 class ConflictRow(Base):
     __tablename__ = "merge_conflicts"
 
@@ -325,20 +344,16 @@ class ConflictRow(Base):
         String(16), default="open", nullable=False, index=True,
     )
     # Full ConflictFile dicts (per-file ctype + markers + :1:/:2:/:3: blobs).
-    # Source of truth; the broadcast card payload may carry a size-capped view.
     files_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
-    # agent_id(s) whose changes are ALREADY in main on the conflicting side
-    # (branches that merged cleanly earlier in the SAME burst). Lets the UI show
-    # "采用 main" as "采用 <those agents> 已合入的版本".
+    # agent_id(s) whose changes are ALREADY in main on the conflicting side.
     base_agents_json: Mapped[list[str]] = mapped_column(
         JSON, default=list, nullable=False
     )
     resolved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resolved_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    # Stable message id of the conflict card → re-emitted with same id to flip
-    # state in place (the tasks-burst card pattern).
+    # Stable conflict-card message id → re-emitted with same id to flip state.
     card_msg_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False

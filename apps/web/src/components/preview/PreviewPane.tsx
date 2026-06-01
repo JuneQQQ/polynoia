@@ -1,22 +1,22 @@
-/** Right rail — a code area (working-dir file tree + open file).
+/** Right rail — the workspace file tree (explorer).
  *
- * IDE-style: this panel is now code-only. It auto-opens for conversations
+ * IDE-style: this panel is the explorer. It auto-opens for conversations
  * that have a workspace (ChatPane sets preview.open on conv switch) and the
- * left sidebar can fully collapse, giving a three-pane editor feel.
+ * left sidebar can fully collapse, giving a three-pane editor feel. Clicking
+ * a file opens it as a CENTER code tab (CenterTabs) rather than inline here.
  *
- * Layout: header (workspace title + close) → CodeTab (tree + editor).
+ * Layout: header (workspace title + close) → FileTree. When there's a pending
+ * review it shows DiffReviewPane, and a live merge conflict shows
+ * ConflictResolvePane (both block the tree until resolved).
  * Resize handle on the left edge (360–900px), persisted to localStorage.
- *
- * (Web preview / Diff / Tasks tabs were removed per product decision; their
- *  components — WebTab/DiffTab/TasksTab — remain in the repo, just unmounted.)
  */
-import { Code2, GitMerge, GitPullRequestArrow, Play, X } from "lucide-react";
+import { Code2, GitMerge, GitPullRequestArrow, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../../store";
-import { CodeTab } from "./CodeTab";
 import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
-import { DocPreviewPane } from "./DocPreviewPane";
+import { FileTree } from "./FileTree";
+import { TerminalTab } from "./TerminalTab";
 
 export function PreviewPane() {
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
@@ -25,6 +25,9 @@ export function PreviewPane() {
 	);
 	const closePreview = useStore((s) => s.closePreview);
 	const activeConvId = useStore((s) => s.activeConvId);
+	const openCenterFile = useStore((s) => s.openCenterFile);
+	const activeCenterTab = useStore((s) => s.activeCenterTab);
+	const terminalOpen = useStore((s) => s.terminalOpen);
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
 	const reviewing = useStore(
@@ -32,8 +35,8 @@ export function PreviewPane() {
 			!!activeConvId &&
 			(s.pendingEditsByConv.get(activeConvId) ?? []).some((e) => e.status === "pending"),
 	);
-	// Open merge conflicts (conflict closed-loop) take precedence over the file
-	// tree / pending-edit review — the merge is blocked until they're resolved.
+	// A live multi-agent merge conflict blocks everything else — the user must
+	// resolve it before reviewing/editing (ConflictResolvePane).
 	const hasConflict = useStore(
 		(s) =>
 			!!activeConvId &&
@@ -41,15 +44,6 @@ export function PreviewPane() {
 				(c) => c.status === "open" || c.status === "resolving",
 			),
 	);
-
-	// Code vs. live-preview toggle — only meaningful when not resolving a
-	// conflict / reviewing edits. Persisted so it survives reopen.
-	const [mode, setMode] = useState<"code" | "preview">(() =>
-		localStorage.getItem("polynoia:pv-mode") === "preview" ? "preview" : "code",
-	);
-	useEffect(() => {
-		localStorage.setItem("polynoia:pv-mode", mode);
-	}, [mode]);
 
 	// Resize handle — left edge, 360–900px, persisted.
 	const [width, setWidth] = useState(() => {
@@ -86,6 +80,38 @@ export function PreviewPane() {
 		window.addEventListener("mouseup", onUp);
 	};
 
+	// Docked terminal (bottom half of the explorer). Height in px, draggable.
+	// 0 = uninitialized → snaps to half the pane on open ("默认下半"); reset to
+	// 0 on close so the next open re-halves.
+	const bodyRef = useRef<HTMLDivElement>(null);
+	const [termH, setTermH] = useState(0);
+	useEffect(() => {
+		if (!terminalOpen) {
+			setTermH(0);
+		} else if (termH === 0 && bodyRef.current) {
+			setTermH(Math.round(bodyRef.current.clientHeight / 2));
+		}
+	}, [terminalOpen, termH]);
+
+	const onTermDragStart = (e: React.MouseEvent) => {
+		e.preventDefault();
+		document.body.classList.add("polynoia-resizing");
+		const startY = e.clientY;
+		const startH = termH || 240;
+		const bodyH = bodyRef.current?.clientHeight ?? 600;
+		const onMove = (ev: MouseEvent) => {
+			const dy = ev.clientY - startY;
+			setTermH(Math.max(120, Math.min(bodyH - 140, startH - dy)));
+		};
+		const onUp = () => {
+			document.body.classList.remove("polynoia-resizing");
+			window.removeEventListener("mousemove", onMove);
+			window.removeEventListener("mouseup", onUp);
+		};
+		window.addEventListener("mousemove", onMove);
+		window.addEventListener("mouseup", onUp);
+	};
+
 	return (
 		<aside
 			className="relative flex flex-col bg-[var(--color-surface)] border-l border-[var(--color-line)] flex-shrink-0"
@@ -104,7 +130,7 @@ export function PreviewPane() {
 			{/* Header — workspace title + close */}
 			<header className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
 				{hasConflict ? (
-					<GitMerge size={14} className="flex-shrink-0" style={{ color: "var(--color-amber)" }} />
+					<GitMerge size={14} className="text-[var(--color-red)] flex-shrink-0" />
 				) : reviewing ? (
 					<GitPullRequestArrow size={14} className="text-[var(--color-green)] flex-shrink-0" />
 				) : mode === "preview" ? (
@@ -118,11 +144,9 @@ export function PreviewPane() {
 							? "合并冲突 · 待解决"
 							: reviewing
 								? "代码评审 · 待接受改动"
-								: mode === "preview"
-									? "实时预览 · 运行效果"
-									: wsName
-										? `${wsName} · 代码`
-										: "代码"}
+								: wsName
+									? `${wsName} · 代码`
+									: "代码"}
 					</div>
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)]">
 						main · 工作目录
@@ -157,24 +181,39 @@ export function PreviewPane() {
 				</button>
 			</header>
 
-			{/* Body — diff review (when an agent proposed changes) or file tree */}
-			<div className="flex-1 overflow-hidden">
-				{hasConflict && activeConvId ? (
-					<ConflictResolvePane convId={activeConvId} />
-				) : reviewing && activeConvId ? (
-					<DiffReviewPane convId={activeConvId} />
-				) : (
-					<>
-						{/* CodeTab stays mounted (just hidden) in preview mode so its
-						    open tabs + the live-mirrored file survive the toggle. */}
-						<div className={mode === "code" ? "h-full" : "hidden"}>
-							<CodeTab />
+			{/* Body — top: conflict resolve (blocks) → diff review → file tree.
+			    Bottom (when open): the interactive terminal, draggable divider. */}
+			<div ref={bodyRef} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+				<div className="flex-1 min-h-0 overflow-hidden">
+					{hasConflict && activeConvId ? (
+						<ConflictResolvePane convId={activeConvId} />
+					) : reviewing && activeConvId ? (
+						<DiffReviewPane convId={activeConvId} />
+					) : workspaceId ? (
+						<FileTree
+							workspaceId={workspaceId}
+							onOpen={openCenterFile}
+							activePath={activeCenterTab}
+						/>
+					) : (
+						<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
+							无工作区
 						</div>
-						{mode === "preview" && (
-							<div className="h-full">
-								<DocPreviewPane workspaceId={workspaceId} />
-							</div>
-						)}
+					)}
+				</div>
+				{terminalOpen && workspaceId && (
+					<>
+						<div
+							onMouseDown={onTermDragStart}
+							title="拖动调节终端高度"
+							className="h-1.5 flex-shrink-0 cursor-row-resize bg-[var(--color-line)] hover:bg-[var(--color-accent)] transition-colors"
+						/>
+						<div
+							style={{ height: termH || 240 }}
+							className="flex-shrink-0 min-h-0 overflow-hidden"
+						>
+							<TerminalTab workspaceId={workspaceId} />
+						</div>
 					</>
 				)}
 			</div>

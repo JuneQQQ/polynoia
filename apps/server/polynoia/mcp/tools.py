@@ -115,6 +115,21 @@ async def _gate_via_pending_edit(
         log.warning("gate: transport failure (%s), defaulting to auto", e)
         return True  # fail-open: don't break agent when server hiccups
 
+
+async def _require_edit_approval(
+    ctx: ToolContext, *, kind: str, file_path: str, args: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Manual-mode approval gate (ADR-005) shared by the write-class tools.
+
+    Returns a ``{"kind":"rejected"}`` envelope if the user declined (the tool
+    should return it verbatim), or ``None`` to proceed. Centralizes the
+    gate-then-reject pattern; each tool keeps its own locking/commit since those
+    differ (edit/write lock one path, apply_patch gates a multi-file patch)."""
+    approved = await _gate_via_pending_edit(ctx, kind=kind, file_path=file_path, args=args)
+    if not approved:
+        return {"error": "rejected by user", "kind": "rejected"}
+    return None
+
 # ── Context ────────────────────────────────────────────────────
 
 
@@ -206,6 +221,28 @@ class ToolContext:
                 f"path {path!r} resolves outside sandbox root {self.sandbox.root}"
             ) from exc
         return resolved
+
+    def _resolve_read(self, path: str) -> Path:
+        """Read-only resolve: allow anywhere under the WORKSPACE (sibling
+        worktrees + the merged-main checkout), not just this agent's own
+        worktree — so an orchestrator can read/grep teammates' MERGED
+        deliverables to verify them (the read/grep "outside sandbox root"
+        errors came from this). Writes stay confined to the worktree via
+        _resolve(). For non-workspace convs this is identical to _resolve()."""
+        p = Path(path)
+        resolved = p.resolve() if p.is_absolute() else (self.sandbox.root / p).resolve()
+        roots = [self.sandbox.root.resolve()]
+        if self.sandbox.workspace_root is not None:
+            roots.append(self.sandbox.workspace_root.resolve())
+        for r in roots:
+            try:
+                resolved.relative_to(r)
+                return resolved
+            except ValueError:
+                continue
+        raise PermissionError(
+            f"path {path!r} resolves outside sandbox/workspace"
+        )
 
     async def git_commit(self, *, turn_id: str | None, message_suffix: str) -> str | None:
         """Stage all changes and commit with this agent's identity.
@@ -305,7 +342,7 @@ class _ReadTool(_ToolBase):
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        path = ctx._resolve(args["path"])
+        path = ctx._resolve_read(args["path"])
         if not path.exists():
             return {"error": f"file not found: {args['path']}"}
         if path.is_dir():
@@ -354,13 +391,12 @@ class _EditTool(_ToolBase):
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         path = ctx._resolve(args["path"])
-        # Manual merge mode gate: in manual mode this blocks until user
-        # decides. Auto mode returns immediately. See ADR-005.
-        approved = await _gate_via_pending_edit(
-            ctx, kind="edit", file_path=args["path"], args=args,
-        )
-        if not approved:
-            return {"error": "rejected by user", "kind": "rejected"}
+        # Manual merge mode gate (ADR-005): in manual mode this blocks until the
+        # user decides; auto mode returns immediately.
+        if rejected := await _require_edit_approval(
+            ctx, kind="edit", file_path=args["path"], args=args
+        ):
+            return rejected
         async with ctx.file_lock(args["path"]):
             return await self._do_edit(ctx, path, args)
 
@@ -447,11 +483,10 @@ class _WriteTool(_ToolBase):
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        approved = await _gate_via_pending_edit(
-            ctx, kind="write", file_path=args["path"], args=args,
-        )
-        if not approved:
-            return {"error": "rejected by user", "kind": "rejected"}
+        if rejected := await _require_edit_approval(
+            ctx, kind="write", file_path=args["path"], args=args
+        ):
+            return rejected
         path = ctx._resolve(args["path"])
         async with ctx.file_lock(args["path"]):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -488,14 +523,11 @@ class _ApplyPatchTool(_ToolBase):
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         # Gate the whole patch as one approval — manual mode user sees a
         # single ✓/✗ for the patch (not per-hunk). Reject = LLM gets error.
-        approved = await _gate_via_pending_edit(
-            ctx,
-            kind="apply_patch",
-            file_path="(multi-file patch)",
+        if rejected := await _require_edit_approval(
+            ctx, kind="apply_patch", file_path="(multi-file patch)",
             args={"patch_text": args.get("patch_text", "")[:2000]},
-        )
-        if not approved:
-            return {"error": "rejected by user", "kind": "rejected"}
+        ):
+            return rejected
         # Write the patch to a temp file inside sandbox, then `git apply`
         tmp = ctx.sandbox.root / ".polynoia" / "tmp_patch.diff"
         tmp.parent.mkdir(parents=True, exist_ok=True)
@@ -565,7 +597,7 @@ class _GrepTool(_ToolBase):
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        base = ctx._resolve(args.get("path", "."))
+        base = ctx._resolve_read(args.get("path", "."))
         pattern = args["pattern"]
         glob = args.get("glob")
         matches = []
@@ -584,7 +616,7 @@ class _GrepTool(_ToolBase):
                     continue
                 for i, line in enumerate(text.splitlines(), 1):
                     if rx.search(line):
-                        rel = fp.relative_to(ctx.sandbox.root)
+                        rel = fp.relative_to(base)
                         matches.append(f"{rel}:{i}:{line}")
                         if len(matches) >= 200:
                             return {"kind": "truncated", "matches": matches, "total": 200}
@@ -859,7 +891,13 @@ class _DispatchTool(_ToolBase):
         "paths, ports, data shapes), put that shared spec in `contract` — it "
         "is handed to EVERY teammate verbatim and is what you verify their "
         "deliverables against. Lock it here once; don't let each teammate "
-        "invent their own."
+        "invent their own.\n\n"
+        "⚠️ FORMAT — write `note` and `contract` as PLAIN PROSE. Describe "
+        "interfaces in words, e.g. `fields: from, to, amount (int); route "
+        "POST /settle`. Do NOT paste literal JSON objects with double-quoted "
+        "keys like {\"from\": str} into them — those embedded quotes corrupt "
+        "THIS tool call's own JSON and it gets rejected (you'll see "
+        "'tasks is a required property'). Keep quotes out of note/contract."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -874,18 +912,27 @@ class _DispatchTool(_ToolBase):
                     "Optional shared contract ALL sub-tasks must honor verbatim: "
                     "interface / field names / routes / ports / data shapes. "
                     "Injected into every teammate's prompt and used for final "
-                    "verification. Leave empty only for truly independent tasks."
+                    "verification. Leave empty only for truly independent tasks. "
+                    "PLAIN PROSE only — name fields in words (from, to, amount: int), "
+                    "do NOT embed quoted JSON literals; embedded quotes break this call."
                 ),
             },
             "tasks": {
                 "type": "array",
                 "minItems": 1,
+                "description": (
+                    "REQUIRED — the actual assignments (this IS the point of "
+                    "dispatch). One item per teammate, each {agent, note}. Always "
+                    "an array, even for a single teammate. NOTE: `contract` and "
+                    "`title` are extras — they do NOT replace `tasks`; you must "
+                    "still list who does what here."
+                ),
                 "items": {
                     "type": "object",
                     "properties": {
                         "agent": {"type": "string", "description": "Teammate display name"},
                         "label": {"type": "string", "description": "≤20-char UI label"},
-                        "note": {"type": "string", "description": "Complete self-contained prompt"},
+                        "note": {"type": "string", "description": "Complete self-contained prompt, PLAIN PROSE. Describe shapes in words (from/to/amount: int) — do NOT embed {\"...\"} JSON literals; the quotes break this call."},
                     },
                     "required": ["agent", "note"],
                 },
@@ -897,7 +944,7 @@ class _DispatchTool(_ToolBase):
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         tasks = args.get("tasks") or []
         if not isinstance(tasks, list) or not tasks:
-            return {"kind": "error", "error": "tasks must be a non-empty array"}
+            return {"kind": "error", "error": "tasks must be a non-empty array of {agent, note}"}
         ctx.append_audit("agent.dispatch", {
             "caller": ctx.agent_id,
             "count": len(tasks),
@@ -1052,12 +1099,146 @@ def _short_id() -> str:
 # ── Registry ────────────────────────────────────────────────────
 
 
+class _AskUserTool(_ToolBase):
+    name = "ask_user"
+    description = (
+        "Ask the human USER a question and BLOCK until they answer. Use this "
+        "whenever you need a decision only the user can make (scope, a choice "
+        "between options, an approval). It SUSPENDS your turn and returns their "
+        "answer, so you continue in the SAME turn with the decision in hand — "
+        "prefer this over guessing or writing '等用户指令'. Returns "
+        "{kind:'answered', answer:'…'}. Don't overuse it; ≤4 questions per call."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short title for the question card."},
+            "questions": {
+                "type": "array",
+                "minItems": 1,
+                "description": "1–4 questions for the user.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "short unique id"},
+                        "label": {"type": "string", "description": "the question text"},
+                        "kind": {"type": "string", "enum": ["single", "multi", "fill"]},
+                        "options": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "string"},
+                                    "label": {"type": "string"},
+                                    "desc": {"type": "string"},
+                                },
+                                "required": ["value", "label"],
+                            },
+                        },
+                        "optional": {"type": "boolean"},
+                        "placeholder": {"type": "string", "description": "for kind=fill"},
+                    },
+                    "required": ["id", "label", "kind"],
+                },
+            },
+        },
+        "required": ["questions"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        questions = args.get("questions") or []
+        if not isinstance(questions, list) or not questions:
+            return {"kind": "error", "error": "questions must be a non-empty array"}
+        reg = await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/ask",
+            json={"agent_id": ctx.agent_id, "title": args.get("title", ""), "questions": questions},
+            label="ask_user",
+        )
+        ask_id = reg.get("ask_id")
+        if not ask_id:
+            return {"kind": "error", "error": reg.get("error", "failed to register question")}
+        ctx.append_audit("tool.ask", {"ask_id": ask_id, "n": len(questions)})
+        # Block this turn: poll until the user answers (or ~10min timeout).
+        for _ in range(300):
+            await asyncio.sleep(2)
+            poll = await _callback_server(
+                f"/api/conversations/{ctx.conv_id}/ask/{ask_id}",
+                method="GET", label="ask_user",
+            )
+            if poll.get("answered"):
+                return {"kind": "answered", "answer": poll.get("answer", "")}
+        return {"kind": "error", "error": "user did not answer within 10 minutes"}
+
+
+class _RequestProjectAccessTool(_ToolBase):
+    name = "request_project_access"
+    description = (
+        "Request the USER's approval to work inside one of their PROJECTS. Use "
+        "this ONLY when you're in a private 1:1 (you have your own private "
+        "workspace but cannot see any project's code) and the user asks you to "
+        "work on a project. It SUSPENDS your turn, shows the user an approval "
+        "card (they pick which project + 批准/拒绝), and returns the result. On "
+        "approval the project is mounted with write access on your NEXT turn — "
+        "tell the user it's granted and to send the task again. Returns "
+        "{kind:'granted', workspace_id} or {kind:'denied'}."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Why you need project access — what you intend to do.",
+            },
+        },
+        "required": ["reason"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        reason = (args.get("reason") or "").strip()
+        base = os.environ.get("POLYNOIA_API_BASE")
+        if not base:
+            return {"kind": "error", "error": "no API base — cannot request access"}
+        ctx.append_audit("tool.request_project_access", {"reason": reason[:120]})
+        try:
+            async with httpx.AsyncClient(base_url=base, timeout=70.0, trust_env=False) as client:
+                r = await client.post("/api/pending-access", json={
+                    "conv_id": ctx.conv_id, "agent_id": ctx.agent_id, "reason": reason,
+                })
+                if r.status_code != 200:
+                    return {"kind": "error", "error": f"create failed {r.status_code}"}
+                pid = r.json().get("id")
+                if not pid:
+                    return {"kind": "error", "error": "no pending id"}
+                deadline = asyncio.get_event_loop().time() + 300  # 5 min budget
+                while True:
+                    r = await client.get(
+                        f"/api/pending-access/{pid}/wait", params={"timeout": 60},
+                    )
+                    if r.status_code != 200:
+                        return {"kind": "error", "error": "wait poll failed"}
+                    row = r.json()
+                    st = row.get("status")
+                    if st == "accepted":
+                        return {"kind": "granted", "workspace_id": row.get("workspace_id"),
+                                "note": "项目已授权,但要在你的下一轮才会挂载——请用户把任务再发一次。"}
+                    if st in ("rejected", "timeout"):
+                        return {"kind": "denied"}
+                    if asyncio.get_event_loop().time() >= deadline:
+                        with contextlib.suppress(Exception):
+                            await client.post(f"/api/pending-access/{pid}/decide",
+                                              json={"decision": "reject"})
+                        return {"kind": "denied"}
+        except (httpx.RequestError, httpx.HTTPError) as e:
+            return {"kind": "error", "error": f"transport failure: {e}"}
+
+
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
         _ReadTool, _EditTool, _WriteTool, _ApplyPatchTool,
         _BashTool, _GrepTool, _GlobTool, _RevertTool, _CallAgentTool,
-        _DispatchTool, _RememberTool, _RecallTool, _ReportTool,
+        _DispatchTool, _RememberTool, _RecallTool, _ReportTool, _AskUserTool,
+        _RequestProjectAccessTool,
     ]
 }
 
@@ -1066,24 +1247,30 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # agent is allowed to list/call. Filter applied in `mcp/server.py` based
 # on POLYNOIA_AGENT_ROLE env (set by the spawning adapter from Agent.tool_role).
 #
-# orchestrator: read-only + delegate (cannot edit files; only verifies + dispatches)
+# orchestrator: delegate + small edits (dispatch/verify; can also write in a project)
 # coder:        full toolset for backend / scripting work
 # designer:     HTML/CSS work — no shell, no patch (forces explicit Write/Edit)
 # writer:       docs work — same constraints as designer
 # critic:       read-only auditor — verifies others' work against the contract
 #               (read/grep/glob/recall) and records a verdict (report); no write.
 # generalist:   everything except call_agent (default for back-compat)
+# advisory:     read-only CONSULT mode — no write/edit/patch/bash. This is NOT a
+#               persona role; the adapter pool downgrades ANY contact to this when
+#               the conversation does not belong to a project/workspace (a
+#               free-floating homepage DM is for asking, not building — there's no
+#               shared sandbox the user can even see). See ADR-013 §location-gate.
 # `remember` + `recall` (shared memory R/W, ADR-014) are available to every role
 # — anyone can record AND read the group's decisions/artifacts/contracts.
 # `report` (closed-loop handoff verdict) is for WORKERS, not the orchestrator
 # (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
 ROLE_TOOLS: dict[str, set[str]] = {
-    "orchestrator": {"read", "grep", "glob", "dispatch", "bash", "remember", "recall"},
-    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report"},
-    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report"},
-    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report"},
+    "orchestrator": {"read", "grep", "glob", "dispatch", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user"},
+    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
     "critic":       {"read", "grep", "glob", "recall", "report"},
-    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report"},
+    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access"},
 }
 
 
@@ -1092,14 +1279,16 @@ def tools_for_role(role: str | None) -> dict[str, _ToolBase]:
 
     Empty role → generalist (back-compat for agents created before the role
     field existed). UNKNOWN role → fail-closed to the **most restrictive**
-    set (orchestrator: read-only). A typo in tool_role must not silently
-    upgrade an agent to write capability.
+    set (``advisory``: read-only, no write/bash). A typo in tool_role must
+    never silently upgrade an agent to write capability — note the previous
+    fallback was ``orchestrator``, which DOES carry edit/write, so a typo'd
+    role used to fail OPEN. ``advisory`` is the true read-only floor.
     """
     if not role:
         allowed = ROLE_TOOLS["generalist"]
     elif role in ROLE_TOOLS:
         allowed = ROLE_TOOLS[role]
     else:
-        log.warning("unknown tool_role %r → falling back to orchestrator (read-only)", role)
-        allowed = ROLE_TOOLS["orchestrator"]
+        log.warning("unknown tool_role %r → falling back to advisory (read-only)", role)
+        allowed = ROLE_TOOLS["advisory"]
     return {name: impl for name, impl in TOOL_REGISTRY.items() if name in allowed}

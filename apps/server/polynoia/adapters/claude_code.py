@@ -127,13 +127,20 @@ class ClaudeCodeAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",
         tool_role: str = "generalist",
+        read_only_workspace_id: str | None = None,
     ) -> ClaudeCodeSession:
-        # P1.1 routing — group convs in a workspace share git via worktrees,
-        # everything else uses legacy per-conv sandbox.
+        # P1.1 routing — group convs in a workspace share git via worktrees;
+        # a project-external DM opens its agent's workspace READ-ONLY (ADR-019)
+        # so read/grep/glob can inspect the project (writes already blocked by
+        # the advisory role); everything else uses a legacy per-conv sandbox.
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id, conv_id=conv_id, agent_id=agent_id,
             )
+        elif read_only_workspace_id:
+            sandbox = Sandbox.open_workspace_if_exists(
+                read_only_workspace_id
+            ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
         effective_cwd = cwd or str(sandbox.root)
@@ -346,6 +353,10 @@ async def _translate_claude_stream(
     block_tool_id: dict[int, str] = {}      # block_idx → tool_call_id
     tool_input_buf: dict[int, str] = {}     # block_idx → accumulated partial JSON
     tool_input_sent: dict[int, int] = {}    # block_idx → last-emitted length (throttle)
+    tool_input_raw: dict[str, str] = {}     # tool_call_id → full raw partial JSON
+    #   ^ kept so that when the model's args fail to parse (→ empty `input` +
+    #     "X is a required property" error) we can still SHOW the raw JSON the
+    #     model actually emitted on the error card.
 
     # Diagnostic: when POLYNOIA_LOG_CLAUDE_EVENTS=1, print every SDK message
     # type as it arrives. Useful for debugging "lost streaming" — if we see
@@ -377,6 +388,7 @@ async def _translate_claude_stream(
                 block_tool_id.clear()
                 tool_input_buf.clear()
                 tool_input_sent.clear()
+                tool_input_raw.clear()
             elif ev_type == "content_block_start":
                 idx = ev.get("index", 0)
                 block = ev.get("content_block", {})
@@ -467,6 +479,7 @@ async def _translate_claude_stream(
                             delta.get("partial_json", "") or ""
                         )
                         buf = tool_input_buf[idx]
+                        tool_input_raw[tool_id] = buf  # full raw, every delta
                         if len(buf) - tool_input_sent.get(idx, 0) >= 64:
                             tool_input_sent[idx] = len(buf)
                             prev = tool_call_payload.get(tool_id)
@@ -529,12 +542,24 @@ async def _translate_claude_stream(
                         tc_msg_id = _new_id()
                         part_id = _new_id()
                         tool_call_part_id[block.id] = (tc_msg_id, part_id)
+                    parsed_input = block.input or {}
+                    # If the parsed input came back empty but the model DID stream
+                    # raw JSON (e.g. malformed / bad-escape args that the SDK
+                    # couldn't parse → empty dict + "X is a required property"
+                    # error), keep the raw bytes as input_preview so the error
+                    # card still SHOWS what the model tried to send.
+                    preview: str | None = None
+                    if not parsed_input:
+                        raw = tool_input_raw.get(block.id, "")
+                        if raw.strip():
+                            preview = raw if len(raw) <= 4000 else ("…" + raw[-4000:])
                     payload = ToolCallPayload(
                         tool_call_id=block.id,
                         name=block.name,
-                        input=block.input or {},
+                        input=parsed_input,
+                        input_preview=preview,
                         state="running",
-                        summary=_tool_summary(block.name, block.input),
+                        summary=_tool_summary(block.name, parsed_input),
                     )
                     tool_call_payload[block.id] = payload
                     yield PartCompletedEvent(
