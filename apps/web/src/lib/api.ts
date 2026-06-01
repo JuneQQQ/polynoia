@@ -97,6 +97,29 @@ async function deleteJSON<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Same-origin GET-download via a transient <a download>. The server sets
+ * Content-Disposition so the browser saves instead of navigating. */
+function triggerDownload(url: string): void {
+  const a = document.createElement("a");
+  a.href = BASE + url;
+  // Empty filename = let the server's Content-Disposition decide.
+  a.setAttribute("download", "");
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/** Pull a filename out of a Content-Disposition header. Prefers RFC 5987
+ * filename* (UTF-8 percent-encoded) over the ASCII fallback. */
+function parseDispositionFilename(disposition: string): string | null {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  if (star) {
+    try { return decodeURIComponent(star[1]); } catch { /* fall through */ }
+  }
+  const plain = /filename="([^"]+)"/i.exec(disposition);
+  return plain ? plain[1] : null;
+}
+
 /**
  * Conversation list item — server returns Pydantic `Conversation.model_dump()`.
  * Times are ISO 8601 strings here, not Date objects, to keep the wire shape
@@ -341,6 +364,37 @@ export const api = {
   /** URL for embedding a workspace HTML file in an iframe. */
   workspacePreviewUrl: (wsId: string, file: string) =>
     `/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`,
+
+  /** Trigger a browser download of a single workspace file (any type/size). */
+  downloadWorkspaceFile: (wsId: string, path: string) => {
+    const url = `/api/workspaces/${wsId}/files/download?path=${encodeURIComponent(path)}`;
+    triggerDownload(url);
+  },
+  /** Trigger a browser download of the full workspace as a zip. */
+  downloadWorkspaceArchive: (wsId: string) => {
+    triggerDownload(`/api/workspaces/${wsId}/archive`);
+  },
+  /** Zip + download selected paths (files and/or dirs). Uses fetch POST then
+   * blob-URL because <a download> can't carry a JSON body. */
+  downloadWorkspaceSelection: async (wsId: string, paths: string[]) => {
+    const r = await fetch(`/api/workspaces/${wsId}/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const blob = await r.blob();
+    const disp = r.headers.get("content-disposition") || "";
+    const filename = parseDispositionFilename(disp) || "workspace-selection.zip";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
 
   /** Approve a manual-mode pending edit (user clicked ✓). Server flips
    * status=accepted, MCP tool unblocks + applies the edit. */
