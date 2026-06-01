@@ -294,6 +294,33 @@ class ToolCallPayload(BaseModel):
     input_preview: str | None = None
 
 
+class ErrorPayload(BaseModel):
+    """A turn- or conversation-level failure, persisted as a first-class card so
+    it 回显 survives a refresh.
+
+    Errors used to be live-only WS chunks (``{"type":"error"}``) that the client
+    rendered transiently and never wrote back — so on reload the turn looked like
+    it had silently stopped. This payload is the persisted record.
+
+    Distinct from a tool-call's own ``state="error"`` (one tool failed): this is
+    the WHOLE turn / routing failing — upstream 401/429/500, idle-timeout, adapter
+    crash, user abort, dispatch depth limit, or no routable contact.
+    """
+
+    kind: Literal["error"] = "error"
+    message: str
+    # The agent whose turn failed; None for conversation-level errors (routing /
+    # no adapter contact), which are attributed to the "system" sender.
+    agent_id: ULID | None = None
+    # Why it failed — drives the icon/tone in the UI ("aborted" is neutral, the
+    # rest read as a hard error).
+    reason: Literal[
+        "turn_failed", "exception", "timeout", "aborted", "unavailable", "depth_limit"
+    ] = "exception"
+    # Whether re-sending could plausibly succeed (transient upstream / timeout).
+    retryable: bool = False
+
+
 class AskQuestion(BaseModel):
     """One question in an ask-form."""
 
@@ -354,6 +381,57 @@ class ImagePayload(BaseModel):
     caption: str | None = None
 
 
+# ── Conflict (multi-agent same-file merge conflict, PR#4 closed-loop) ──
+ConflictType = Literal["content", "add_add", "modify_delete", "rename", "binary"]
+
+
+class ConflictFile(BaseModel):
+    """One conflicted file inside a ConflictPayload.
+
+    Which blobs are present depends on ``ctype``: ``content`` has text markers
+    + 3-way stage blobs; ``add_add`` has no base; ``modify_delete`` has a
+    missing side and NO markers; ``binary`` is take-side only (never decoded).
+    """
+
+    path: str
+    ctype: ConflictType = "content"
+    # Conflicted working-tree content with <<<<<<< ||||||| ======= >>>>>>>
+    # markers — only for text ``content`` conflicts.
+    markers: str | None = None
+    ours: str | None = None       # git stage :2: (main side); None if missing
+    theirs: str | None = None     # git stage :3: (branch side); None if missing
+    base: str | None = None       # git stage :1: (merge base); None for add_add
+    is_binary: bool = False
+    # Final resolved content (text ``content`` conflicts), filled on resolve.
+    resolution: str | None = None
+    # For non-content conflicts the resolution is a side choice, not text.
+    side: Literal["ours", "theirs", "delete"] | None = None
+    state: Literal["conflict", "resolved"] = "conflict"
+
+
+class ConflictPayload(BaseModel):
+    """Merge-conflict card: a branch that failed to auto-merge into main.
+
+    Four-state machine: open → resolving → resolved | abandoned. Re-emitted
+    with the same message id to flip state in place. Resolution happens via the
+    manual ConflictResolvePane or an LLM repair turn; both re-merge for real.
+    """
+
+    kind: Literal["conflict"] = "conflict"
+    conflict_id: ULID
+    conv_id: ULID
+    branch: str                   # agent/<id>/conv-<id> that failed to merge
+    agent_id: str                 # branch author (branch.split('/')[1])
+    base_agents: list[str] = Field(default_factory=list)
+    into: str = "main"
+    status: Literal["open", "resolving", "resolved", "abandoned"] = "open"
+    files: list[ConflictFile] = []
+    resolved_by: str | None = None       # agent_id or "you"
+    resolved_sha: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    decided_at: datetime | None = None
+
+
 # ── Discriminated union ──────────────────────────────────────────
 MessagePayload = Annotated[
     Union[
@@ -374,6 +452,8 @@ MessagePayload = Annotated[
         AskFormPayload,
         ImagePayload,
         FilePayload,
+        ErrorPayload,
+        ConflictPayload,
     ],
     Field(discriminator="kind"),
 ]

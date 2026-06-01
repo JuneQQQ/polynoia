@@ -1,5 +1,6 @@
 import { Menu } from "lucide-react";
 import { useEffect, useState } from "react";
+import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { PreviewPane } from "./components/preview/PreviewPane";
@@ -20,6 +21,7 @@ export function App() {
   const workspaces = useStore((s) => s.workspaces);
   const previewOpen = useStore((s) => s.preview.open);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const resetCenterTabs = useStore((s) => s.resetCenterTabs);
   const [activeConv, setActiveConv] = useState<{
     id: string;
     members: string[];
@@ -66,6 +68,12 @@ export function App() {
     setView("chat");
   };
 
+  // Switching conversation → drop any open center file/terminal tabs (they
+  // belong to the previous conv's workspace). Back to the chat tab.
+  useEffect(() => {
+    resetCenterTabs();
+  }, [activeConv?.id, resetCenterTabs]);
+
   // Members changed in the drawer (add/remove) → keep the active conv's member
   // list in sync so ChatPane's @mention + dispatch target the new roster
   // without a reload (closed loop).
@@ -84,7 +92,7 @@ export function App() {
   const renderMain = () => {
     if (view === "chat" && activeConv) {
       return (
-        <ChatPane
+        <CenterTabs
           convId={activeConv.id}
           members={activeConv.members}
           title={activeConv.title}

@@ -24,6 +24,10 @@ import type {
 export type AskFormEntry = AskFormPayload & {
   id: string;
   agent_id: string;
+  /** ⑥ True when this came from the blocking `ask_user` MCP tool — the panel
+   * resolves it via POST /ask/{id}/answer (the agent turn is suspended) instead
+   * of sending the answer as a new user message. */
+  blocking_tool?: boolean;
 };
 
 type ConvState = {
@@ -125,6 +129,10 @@ type Store = {
    * Server pushes via `data-pending-edit` WS chunk; UI renders ✓/✗ cards. */
   pendingEditsByConv: Map<string, import("./lib/api").PendingEdit[]>;
 
+  /** Multi-agent merge conflicts, keyed by conv_id. Server pushes via
+   * `data-conflict`; PreviewPane renders ConflictResolvePane when any is open. */
+  conflictsByConv: Map<string, import("./lib/api").Conflict[]>;
+
   /** Active ask-form questions awaiting user input, keyed by conv_id.
    * Server emits `data-ask-form` chunk when an agent's reply contains a
    * `<ask-form>{...}</ask-form>` block. Frontend renders these as a
@@ -168,6 +176,11 @@ type Store = {
   upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
   /** Replace the pending-edits list for a conv (used on initial hydrate). */
   hydratePendingEdits: (convId: string, edits: import("./lib/api").PendingEdit[]) => void;
+  upsertConflict: (c: import("./lib/api").Conflict) => void;
+  hydrateConflicts: (convId: string, rows: import("./lib/api").Conflict[]) => void;
+  /** Bumped when agent-written files land in main → CodeTab auto-refreshes. */
+  workspaceFilesTick: number;
+  bumpWorkspaceFiles: () => void;
   /** Push an incoming ask-form into the floating panel queue. */
   enqueueAskForm: (convId: string, entry: AskFormEntry) => void;
   /** Remove an ask-form (user submitted or dismissed). */
@@ -215,6 +228,30 @@ type Store = {
   closePreview: () => void;
   setPreviewTab: (tab: PreviewTab) => void;
 
+  /** Center editor tabs (Phase 2): file paths opened next to the "聊天" tab.
+   * Clicking a file in the right file tree opens it as a center code tab.
+   * activeCenterTab is "chat" or a file path. (The terminal is NOT a center
+   * tab — it docks in the bottom of the explorer pane, see terminalOpen.) */
+  centerFileTabs: string[];
+  activeCenterTab: string;
+  openCenterFile: (path: string) => void;
+  closeCenterFile: (path: string) => void;
+  /** Drag-to-reorder: move `fromPath`'s tab to `toPath`'s slot. */
+  reorderCenterFile: (fromPath: string, toPath: string) => void;
+  setActiveCenterTab: (id: string) => void;
+  resetCenterTabs: () => void;
+
+  /** Interactive terminal, docked in the BOTTOM half of the explorer pane
+   * (VS Code idiom). Toggled from the file-tree toolbar. Reset on conv switch. */
+  terminalOpen: boolean;
+  toggleTerminal: () => void;
+
+  /** Manual-review cursor (Phase 4): which pending edit the floating review
+   * bar / DiffReviewPane is currently showing. Index into the active conv's
+   * pending list; clamped by consumers. Reset on conv switch. */
+  reviewIndex: number;
+  setReviewIndex: (i: number) => void;
+
   /** Right-side info drawer — separate from PreviewPane.
    * `kind = null` = closed. Opening any kind auto-closes PreviewPane
    * (they share right-edge real estate). */
@@ -255,6 +292,8 @@ export const useStore = create<Store>((set, get) => ({
   convs: new Map(),
   replyingTo: null,
   pendingEditsByConv: new Map(),
+  conflictsByConv: new Map(),
+  workspaceFilesTick: 0,
   askFormsByConv: new Map(),
   enqueueAskForm: (convId, entry) => {
     const m = new Map(get().askFormsByConv);
@@ -285,10 +324,29 @@ export const useStore = create<Store>((set, get) => ({
     m.set(convId, [...edits]);
     set({ pendingEditsByConv: m });
   },
+  upsertConflict: (c) => {
+    const m = new Map(get().conflictsByConv);
+    const list = m.get(c.conv_id) ?? [];
+    const next = list.filter((x) => x.id !== c.id);
+    next.push(c);
+    next.sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+    m.set(c.conv_id, next);
+    set({ conflictsByConv: m });
+  },
+  hydrateConflicts: (convId, rows) => {
+    const m = new Map(get().conflictsByConv);
+    m.set(convId, [...rows]);
+    set({ conflictsByConv: m });
+  },
+  bumpWorkspaceFiles: () => set({ workspaceFilesTick: get().workspaceFilesTick + 1 }),
 
   // The right rail is now a code-only panel (file tree + open file). `tab`
   // is fixed to "code" — PreviewPane ignores it and always renders CodeTab.
   preview: { open: false, tab: "code", data: {} },
+  centerFileTabs: [],
+  activeCenterTab: "chat",
+  reviewIndex: 0,
+  terminalOpen: false,
 
   openPreview: (_tab, data) =>
     set((s) => ({
@@ -298,6 +356,39 @@ export const useStore = create<Store>((set, get) => ({
     })),
   closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),
   setPreviewTab: () => set((s) => ({ preview: { ...s.preview, tab: "code" } })),
+
+  openCenterFile: (path) =>
+    set((s) => ({
+      centerFileTabs: s.centerFileTabs.includes(path)
+        ? s.centerFileTabs
+        : [...s.centerFileTabs, path],
+      activeCenterTab: path,
+    })),
+  closeCenterFile: (path) =>
+    set((s) => {
+      const next = s.centerFileTabs.filter((p) => p !== path);
+      const active =
+        s.activeCenterTab === path
+          ? (next[next.length - 1] ?? "chat")
+          : s.activeCenterTab;
+      return { centerFileTabs: next, activeCenterTab: active };
+    }),
+  reorderCenterFile: (fromPath, toPath) =>
+    set((s) => {
+      if (fromPath === toPath) return {};
+      const tabs = [...s.centerFileTabs];
+      const from = tabs.indexOf(fromPath);
+      const to = tabs.indexOf(toPath);
+      if (from < 0 || to < 0) return {};
+      tabs.splice(from, 1);
+      tabs.splice(to, 0, fromPath);
+      return { centerFileTabs: tabs };
+    }),
+  setActiveCenterTab: (id) => set({ activeCenterTab: id }),
+  resetCenterTabs: () =>
+    set({ centerFileTabs: [], activeCenterTab: "chat", reviewIndex: 0, terminalOpen: false }),
+  setReviewIndex: (i) => set({ reviewIndex: Math.max(0, i) }),
+  toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
 
   // Left sidebar full-collapse (persisted). VS Code Cmd+B idiom.
   sidebarCollapsed:
@@ -567,7 +658,22 @@ export const useStore = create<Store>((set, get) => ({
       const existing = cur.msgById.get(action.messageId);
       const nextById = new Map(cur.msgById);
       if (existing) {
-        nextById.set(action.messageId, { ...existing, payload: action.payload });
+        let mergedPayload = action.payload;
+        if (action.cardKind === "tool-call") {
+          // A terminal (error/completed) tool-call chunk must NEVER erase the
+          // args the running card already showed. Keep prior input/preview if
+          // the new chunk dropped them — so the model's tool-call JSON stays
+          // visible on error.
+          const prev = existing.payload as any;
+          const next = action.payload as any;
+          const nextHasInput = next.input && Object.keys(next.input).length > 0;
+          mergedPayload = {
+            ...next,
+            input: nextHasInput ? next.input : (prev?.input ?? next.input),
+            input_preview: next.input_preview ?? prev?.input_preview ?? null,
+          };
+        }
+        nextById.set(action.messageId, { ...existing, payload: mergedPayload });
         convs.set(convId, { ...cur, msgById: nextById, streamTick: cur.streamTick + 1 });
       } else {
         nextById.set(action.messageId, {

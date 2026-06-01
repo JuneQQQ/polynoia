@@ -296,3 +296,40 @@ class PendingEditRow(Base):
         DateTime, default=_utcnow, nullable=False
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ── MergeConflict (multi-agent same-file conflict closed-loop, PR#4) ──
+class ConflictRow(Base):
+    __tablename__ = "merge_conflicts"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ULID
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    workspace_id: Mapped[str] = mapped_column(String(26), nullable=False, index=True)
+    # The agent branch that failed to merge: agent/{agent_id}/conv-{conv_id}
+    branch: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    into: Mapped[str] = mapped_column(String(16), default="main", nullable=False)
+    # open | resolving | resolved | abandoned
+    status: Mapped[str] = mapped_column(
+        String(16), default="open", nullable=False, index=True,
+    )
+    # Full ConflictFile dicts (per-file ctype + markers + :1:/:2:/:3: blobs).
+    files_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    # agent_id(s) whose changes are ALREADY in main on the conflicting side.
+    base_agents_json: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    resolved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolved_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Stable conflict-card message id → re-emitted with same id to flip state.
+    card_msg_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, nullable=False
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

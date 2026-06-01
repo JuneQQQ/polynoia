@@ -128,6 +128,7 @@ def enforce_budgets(
     caps: dict[str, int] = {
         "identity": b.identity,
         "project_brief": b.project_brief,
+        "shared_memory": b.shared_memory,
         "activity": b.activity,
         "history": b.history,
         "user_turn": b.user_turn,

@@ -32,6 +32,26 @@ from polynoia.adapters.opencode import OpenCodeAdapter
 _BASE_ADAPTERS: dict[str, Adapter] = {}
 
 
+# Appended to a contact's system prompt when it's spawned in a non-project
+# (homepage DM) conversation, where we downgrade it to the read-only "advisory"
+# role. Tells the model — whatever its persona — that it's in consult mode and
+# that "doing the work" lives inside a project, so it doesn't keep trying tools
+# it no longer has (which would just bounce back as "tool not available"). The
+# capability is enforced by ROLE_TOOLS["advisory"]; this only aligns behaviour.
+_ADVISORY_BANNER = """
+
+---
+# 当前模式:项目外单聊 · 只读咨询
+
+你在一个**不属于任何项目的单聊**里(咨询位)。这里你**没有** write / edit / apply_patch / bash —— 不写代码、不落盘。
+
+但你**可以**(也应该用起来):
+- 用 read / grep / glob **只读查看你参与项目的真实代码**(已为你挂好);
+- 回顾你**自己跨对话的工作**与**队友的相关工作**(见上方「你的工作记忆」);
+
+用户问你做了什么、某段代码怎样时,**去真读代码 + 凭工作记忆**给出有据可查的回答和评估,别臆造、别说“我来改 / 已落盘”。真要动手改代码,引导用户把这件事开进**项目**(项目里你才有完整的写 + 执行能力)。"""
+
+
 def _ensure_base_adapters() -> dict[str, Adapter]:
     """Lazy-init base adapter instances. One per CLI, shared across all contacts."""
     if not _BASE_ADAPTERS:
@@ -73,11 +93,16 @@ class AdapterPool:
 
             # Lazy DB lookup — avoid top-level import cycle.
             from polynoia.storage.db import SessionLocal
-            from polynoia.storage.repo import get_conversation, list_agents
+            from polynoia.storage.repo import (
+                get_conversation,
+                list_agents,
+                list_workspaces,
+            )
 
             async with SessionLocal() as db:
                 rows = await list_agents(db)
                 conv = await get_conversation(db, conv_id)
+                workspaces = await list_workspaces(db)
             agent = next((r for r in rows if r.id == agent_id), None)
             if agent is None or agent.setup is None or not agent.setup.adapter_id:
                 return None
@@ -105,15 +130,39 @@ class AdapterPool:
             # on pending-edit approval). See ADR-005.
             merge_mode = conv.merge_mode if conv else "auto"
 
+            # Location-gated write capability (ADR-013 §location-gate).
+            # Write/edit/bash only make sense inside a PROJECT (workspace): that's
+            # where the agent has a shared sandbox the user can actually see and
+            # the file ends up somewhere meaningful. A free-floating homepage DM
+            # is for consulting — so regardless of the contact's persona role, if
+            # the conv doesn't belong to a workspace we spawn it read-only via the
+            # "advisory" role and tell it so. (conv is None → fail closed.)
+            # Project DMs (workspace_id set, direct=true) DO get full write.
+            in_project = conv is not None and conv.workspace_id is not None
+            effective_role = agent.tool_role if in_project else "advisory"
+            system_prompt = agent.system_prompt
+            # Project-external DM (ADR-019): mount the agent's workspace READ-ONLY
+            # so it can read/grep/glob the project code it's being asked about.
+            # Writes stay blocked by the advisory role. If the agent belongs to
+            # several workspaces we take the first (multi-workspace disambiguation
+            # is a future refinement).
+            read_only_ws_id: str | None = None
+            if not in_project:
+                system_prompt = (system_prompt or "") + _ADVISORY_BANNER
+                my_ws = [w for w in workspaces if agent_id in (w.members or [])]
+                if my_ws:
+                    read_only_ws_id = my_ws[0].id
+
             new_sess = await base.start_session(
                 conv_id=conv_id,
                 model=agent.setup.model,
-                system_prompt=agent.system_prompt,
+                system_prompt=system_prompt,
                 allowed_tools=allowed,
                 workspace_id=ws_id,
                 agent_id=agent_id if ws_id else None,
                 merge_mode=merge_mode,
-                tool_role=agent.tool_role,
+                tool_role=effective_role,
+                read_only_workspace_id=read_only_ws_id,
             )
             self._sessions[key] = new_sess
             return new_sess

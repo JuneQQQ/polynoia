@@ -3,8 +3,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Compass,
-  Inbox,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -22,6 +20,7 @@ import { t } from "../lib/i18n";
 import { useStore } from "../store";
 import type { Agent } from "../lib/types";
 import { NewContactModal } from "./NewContactModal";
+import { BrandIcon } from "./BrandIcon";
 
 /** Adapter id → human label for display in contact rows. */
 const ADAPTER_LABEL: Record<string, string> = {
@@ -29,6 +28,7 @@ const ADAPTER_LABEL: Record<string, string> = {
   codex: "Codex",
   opencoder: "OpenCode",
 };
+import { ConvRolesModal } from "./ConvRolesModal";
 import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { OnboardingModal } from "./OnboardingModal";
@@ -45,7 +45,6 @@ export function Sidebar({
   const workspaces = useStore((s) => s.workspaces);
   const servers = useStore((s) => s.servers);
   const setView = useStore((s) => s.setView);
-  const view = useStore((s) => s.view);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
@@ -62,6 +61,17 @@ export function Sidebar({
   // 通过 editingContact 区分:null = 创建,有值 = 编辑。
   const [newContactOpen, setNewContactOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Agent | null>(null);
+  // Which contact row's ⋮ overflow menu is open (by agent id; null = none).
+  // Mirrors the ConvRow menu, but kept at this level because contact rows are
+  // an inline .map without their own component/state.
+  const [contactMenuOpen, setContactMenuOpen] = useState<string | null>(null);
+  // Close the contact ⋮ menu on any outside click (same pattern as ConvRow).
+  useEffect(() => {
+    if (!contactMenuOpen) return;
+    const close = () => setContactMenuOpen(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [contactMenuOpen]);
 
   // Listen for "edit-contact" events from AgentDetailView. Window event
   // chosen over prop drilling because the drawer is mounted globally in
@@ -304,31 +314,6 @@ export function Sidebar({
         >
           <Search size={17} />
         </button>
-        {/* Nav (same targets as the expanded Footer strip) */}
-        {([
-          { key: "inbox", icon: Inbox, label: "收件箱" },
-          { key: "marketplace", icon: Compass, label: "广场" },
-          { key: "archive", icon: Archive, label: "归档" },
-        ] as const).map((n) => {
-          const active = view === n.key;
-          return (
-            <button
-              key={n.key}
-              type="button"
-              onClick={() => setView(active ? "chat" : (n.key as typeof view))}
-              title={n.label}
-              aria-label={n.label}
-              aria-pressed={active}
-              className={`p-2 rounded-md transition-colors ${
-                active
-                  ? "bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-fg)]"
-                  : "text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)]"
-              }`}
-            >
-              <n.icon size={16} />
-            </button>
-          );
-        })}
         <div className="w-7 h-px bg-[var(--color-sidebar-line)] my-1" />
 
         {/* Primary column. Keeps the SAME relative order as the expanded
@@ -587,16 +572,11 @@ export function Sidebar({
         >
           <PanelLeftClose size={16} />
         </button>
-        {/* Monogram — stacked ABOVE the wordmark per Polynoia.html mockup
-            (40×40 rx=9 orange square w/ centered "P", with wordmark on
-            next line). Bigger than my earlier inline version. */}
-        <span
-          aria-hidden
-          className="w-10 h-10 grid place-items-center rounded-lg text-white font-display text-[22px] font-bold leading-none shadow-sm"
-          style={{ background: "var(--color-accent)" }}
-        >
-          P
-        </span>
+        {/* Brand mark — the 三色交叠 (triad) concept per the 图标 9版 handoff:
+            the in-app logo uses column 2 on all platforms (web favicon stays
+            the mono "P" — see assets/brand/README.md). 40×40 to match the old
+            monogram's footprint above the wordmark. */}
+        <BrandIcon concept="triad" platform="web" size={40} className="rounded-lg" />
         <div className="flex flex-col items-start leading-tight">
           <span
             className="font-display text-[20px] font-medium tracking-wide leading-none"
@@ -804,6 +784,12 @@ export function Sidebar({
                       animationDelay: `${idx * 30}ms`,
                     }}
                     className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left transition-all duration-200 ${
+                      // While this row's ⋮ menu is open, lift it into its own
+                      // stacking context (z-30) so the menu — rendered with
+                      // top-full and thus overlapping the NEXT row — paints
+                      // above the sibling rows below it instead of behind them.
+                      contactMenuOpen === a.id ? "z-30" : ""
+                    } ${
                       active
                         ? "bg-[var(--color-sidebar-active)]"
                         : "hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px]"
@@ -864,31 +850,115 @@ export function Sidebar({
                             })()}
                       </div>
                     </div>
-                    {/* Edit-persona pencil — only for user-created contacts
+                    {/* ⋮ overflow menu — only for user-created contacts
                         (template adapter rows like "claudeCode" can't be
-                        edited; they're managed via Adapter Manager). */}
+                        edited; they're managed via Adapter Manager). Mirrors
+                        the ConvRow menu; uses role="button" spans because the
+                        row itself is a <button> (no nested buttons). */}
                     {a.custom && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        title={t("editContact", lang)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingContact(a);
-                          setNewContactOpen(true);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
+                      <>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          title={t("editContact", lang)}
+                          aria-label={t("editContact", lang)}
+                          aria-haspopup="menu"
+                          onClick={(e) => {
                             e.stopPropagation();
-                            e.preventDefault();
-                            setEditingContact(a);
-                            setNewContactOpen(true);
-                          }
-                        }}
-                        className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
-                      >
-                        <Pencil size={11} className="text-[var(--color-sidebar-muted)]" />
-                      </span>
+                            setContactMenuOpen((cur) => (cur === a.id ? null : a.id));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setContactMenuOpen((cur) => (cur === a.id ? null : a.id));
+                            }
+                          }}
+                          className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
+                        >
+                          <MoreHorizontal
+                            size={13}
+                            className="text-[var(--color-sidebar-muted)]"
+                          />
+                        </span>
+                        {contactMenuOpen === a.id && (
+                          <div
+                            role="menu"
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            className="absolute right-2 top-full -mt-1 z-50 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
+                          >
+                            <span
+                              role="menuitem"
+                              tabIndex={0}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setContactMenuOpen(null);
+                                setEditingContact(a);
+                                setNewContactOpen(true);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  setContactMenuOpen(null);
+                                  setEditingContact(a);
+                                  setNewContactOpen(true);
+                                }
+                              }}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left cursor-pointer"
+                            >
+                              <Pencil size={12} />
+                              {t("editContact", lang)}
+                            </span>
+                            <span
+                              role="menuitem"
+                              tabIndex={0}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                setContactMenuOpen(null);
+                                if (
+                                  !window.confirm(
+                                    `删除联系人「${a.name}」?该操作不可撤销。`,
+                                  )
+                                )
+                                  return;
+                                const r = await api.deleteContact(a.id);
+                                if (r?.error) {
+                                  window.alert(r.error);
+                                  return;
+                                }
+                                const list = await api.agents();
+                                useStore.setState({ agents: list });
+                              }}
+                              onKeyDown={async (e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  setContactMenuOpen(null);
+                                  if (
+                                    !window.confirm(
+                                      `删除联系人「${a.name}」?该操作不可撤销。`,
+                                    )
+                                  )
+                                    return;
+                                  const r = await api.deleteContact(a.id);
+                                  if (r?.error) {
+                                    window.alert(r.error);
+                                    return;
+                                  }
+                                  const list = await api.agents();
+                                  useStore.setState({ agents: list });
+                                }
+                              }}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 text-left cursor-pointer"
+                            >
+                              <Trash2 size={12} />
+                              删除
+                            </span>
+                          </div>
+                        )}
+                      </>
                     )}
                   </button>
                 );
@@ -1034,6 +1104,7 @@ function ConvRow({
   onDeleted: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rolesOpen, setRolesOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const kindLabel = conv.direct ? "单聊" : conv.group ? "群聊" : "对话";
 
@@ -1141,6 +1212,19 @@ function ConvRow({
           onClick={(e) => e.stopPropagation()}
           className="absolute right-1 top-full mt-0.5 z-10 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
         >
+          {conv.group && (
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                setRolesOpen(true);
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left"
+            >
+              <Settings size={12} />
+              群聊设置
+            </button>
+          )}
           <button
             type="button"
             onClick={handleArchive}
@@ -1158,6 +1242,13 @@ function ConvRow({
             删除会话
           </button>
         </div>
+      )}
+      {rolesOpen && (
+        <ConvRolesModal
+          conv={conv}
+          onClose={() => setRolesOpen(false)}
+          onSaved={() => setRolesOpen(false)}
+        />
       )}
     </div>
   );
@@ -1229,15 +1320,8 @@ function Footer({
 }) {
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
-  const view = useStore((s) => s.view);
-  const setView = useStore((s) => s.setView);
   const status = adapterStatus ?? { enabled: 0, total: 0 };
   const hasEnabled = status.enabled > 0;
-  const navItems = [
-    { key: "inbox", icon: Inbox, label: lang === "zh" ? "收件箱" : "Inbox" },
-    { key: "marketplace", icon: Compass, label: lang === "zh" ? "广场" : "Discover" },
-    { key: "archive", icon: Archive, label: lang === "zh" ? "归档" : "Archive" },
-  ] as const;
   return (
     <footer className="relative px-3 pt-2.5 pb-3">
       {/* hair-line 替代黑色硬切 border */}
@@ -1245,31 +1329,6 @@ function Footer({
         aria-hidden
         className="absolute left-3 right-3 top-0 h-px bg-[var(--color-sidebar-active)]"
       />
-      {/* Nav strip — reach the Inbox / Discover (CreateHub) / Archive views.
-          Active view is highlighted; clicking again from chat goes there, and
-          opening a conv from those views returns to chat. */}
-      <nav className="flex items-center gap-1 mb-2">
-        {navItems.map((n) => {
-          const active = view === n.key;
-          return (
-            <button
-              key={n.key}
-              type="button"
-              onClick={() => setView(active ? "chat" : (n.key as typeof view))}
-              title={n.label}
-              aria-pressed={active}
-              className={`flex-1 inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm text-[11px] transition-colors ${
-                active
-                  ? "bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-fg)]"
-                  : "text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)]"
-              }`}
-            >
-              <n.icon size={13} />
-              <span>{n.label}</span>
-            </button>
-          );
-        })}
-      </nav>
       <div className="flex items-center gap-2.5">
         <div
           className="w-7 h-7 rounded-sm grid place-items-center text-white text-[11px] font-medium flex-shrink-0 transition-transform duration-200 hover:scale-[1.04]"

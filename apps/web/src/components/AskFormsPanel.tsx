@@ -7,7 +7,7 @@
  * sendUserMessage so the agent that asked sees the answer in next turn's
  * L4 history.
  */
-import { Check, MessageCircleQuestion, Send } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, MessageCircleQuestion, Send } from "lucide-react";
 import { useEffect } from "react";
 import { useState } from "react";
 import { api } from "../lib/api";
@@ -46,46 +46,67 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
     return () => { alive = false; };
   }, [convId, enqueue]);
 
+  const [collapsed, setCollapsed] = useState(false);
+
   if (list.length === 0) return null;
   const [active, ...queued] = list;
 
   const onAnswered = (af: AskFormEntry, answerText: string) => {
-    // 1) Render the answer as a user message
+    // 1) Render the answer as a user message (so it shows in the chat either way)
     appendUserMessage(convId, answerText);
-    // 2) Send via WS so the conv keeps moving (asking agent's next turn
-    //    sees it in L4 history). Address @ that asking agent so the conv
-    //    routes back to them.
-    const asker = agents.find((a) => a.id === af.agent_id);
-    const tagged = asker ? `@${asker.name} ${answerText}` : answerText;
-    ws?.sendUserMessage(tagged, members);
+    if (af.blocking_tool) {
+      // ⑥ Blocking `ask_user` tool: resolve the SUSPENDED agent turn — it
+      // continues with this answer. No new user message / WS turn needed.
+      api.answerAsk(convId, af.id, answerText).catch(() => {});
+    } else {
+      // Legacy <ask-form> text path: send via WS so the asking agent's NEXT
+      // turn sees it. In a group, @-address the asker so the conv routes back;
+      // in a 1:1 (单聊, ≤2 members) there's no one else to route to — no @.
+      const asker = agents.find((a) => a.id === af.agent_id);
+      const isDM = members.length <= 2;
+      const tagged = asker && !isDM ? `@${asker.name} ${answerText}` : answerText;
+      ws?.sendUserMessage(tagged, members);
+    }
     // 3) Drop the card
     dequeue(convId, af.id);
   };
 
   return (
-    <div className="px-6 pb-3 pt-3 space-y-2 border-t border-[var(--color-line)] bg-[var(--color-accent-soft)]/20">
-      <div className="flex items-center gap-2 text-[10.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-accent)] font-medium">
+    <div className="px-6 pt-2 pb-2 border-t border-[var(--color-line)] bg-[var(--color-accent-soft)]/20">
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center gap-2 py-0.5 text-[10.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-accent)] font-medium hover:opacity-80"
+      >
         <MessageCircleQuestion size={11} />
         <span>Awaiting your input · {list.length}</span>
-      </div>
-      <AskCard af={active} agents={agents} onAnswered={onAnswered} active />
-      {queued.length > 0 && (
-        <>
-          <div className="flex items-center gap-2 mt-3 text-[9.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)]">
-            <span className="h-px flex-1 bg-[var(--color-line)]" />
-            <span>Queued · {queued.length}</span>
-            <span className="h-px flex-1 bg-[var(--color-line)]" />
-          </div>
-          {queued.map((af) => (
-            <AskCard
-              key={af.id}
-              af={af}
-              agents={agents}
-              onAnswered={onAnswered}
-              active={false}
-            />
-          ))}
-        </>
+        <span className="ml-auto inline-flex items-center gap-0.5 normal-case tracking-normal text-[var(--color-fg-3)]">
+          {collapsed ? "展开作答" : "收起"}
+          {collapsed ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </span>
+      </button>
+      {!collapsed && (
+        <div className="mt-2 space-y-2 max-h-[30vh] overflow-y-auto pr-1">
+          <AskCard af={active} agents={agents} onAnswered={onAnswered} active />
+          {queued.length > 0 && (
+            <>
+              <div className="flex items-center gap-2 mt-3 text-[9.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)]">
+                <span className="h-px flex-1 bg-[var(--color-line)]" />
+                <span>Queued · {queued.length}</span>
+                <span className="h-px flex-1 bg-[var(--color-line)]" />
+              </div>
+              {queued.map((af) => (
+                <AskCard
+                  key={af.id}
+                  af={af}
+                  agents={agents}
+                  onAnswered={onAnswered}
+                  active={false}
+                />
+              ))}
+            </>
+          )}
+        </div>
       )}
     </div>
   );
@@ -130,10 +151,12 @@ function AskCard({
 
   const isAnswered = af.questions.every((q) => {
     if (q.optional) return true;
+    // Free-text 补充说明 is inherently optional — never block submit on a fill.
+    if (q.kind === "fill") return true;
     const v = answers[q.id];
     if (q.kind === "single") return typeof v === "string" && v.length > 0;
     if (q.kind === "multi") return Array.isArray(v) && v.length > 0;
-    return typeof v === "string" && v.trim().length > 0;
+    return true;
   });
 
   const submit = () => {
@@ -191,7 +214,7 @@ function AskCard({
       </div>
 
       {/* Questions */}
-      <div className="pl-4 pr-3 py-3 space-y-3">
+      <div className="pl-4 pr-3 py-2.5 space-y-2.5">
         {af.questions.map((q, qi) => (
           <div key={q.id}>
             <div className="flex items-baseline gap-2 mb-1.5">
@@ -223,7 +246,7 @@ function AskCard({
                     key={opt.value}
                     onClick={() => active && setSingle(q.id, opt.value)}
                     disabled={!active}
-                    className={`w-full flex items-start gap-2 px-2.5 py-2 rounded-md text-left border transition ${
+                    className={`w-full flex items-start gap-2 px-2.5 py-1.5 rounded-md text-left border transition ${
                       picked
                         ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
                         : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
@@ -257,7 +280,7 @@ function AskCard({
                     key={opt.value}
                     onClick={() => active && toggleMulti(q.id, opt.value)}
                     disabled={!active}
-                    className={`w-full flex items-start gap-2 px-2.5 py-2 rounded-md text-left border transition ${
+                    className={`w-full flex items-start gap-2 px-2.5 py-1.5 rounded-md text-left border transition ${
                       picked
                         ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
                         : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"

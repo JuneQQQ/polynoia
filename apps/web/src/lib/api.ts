@@ -1,5 +1,5 @@
 /** HTTP API client — Polynoia server REST. */
-import type { Agent, Provider, Server, Workspace } from "./types";
+import type { Agent, ConflictFile, Provider, Server, Workspace } from "./types";
 
 export type AdapterProbe = {
   id: string;
@@ -31,6 +31,23 @@ export type PendingEdit = {
   status: "pending" | "accepted" | "rejected" | "timeout";
   created_at: string | null;
   decided_at: string | null;
+};
+
+export type Conflict = {
+  id: string;
+  conv_id: string;
+  workspace_id?: string;
+  branch: string;
+  agent_id: string;
+  base_agents?: string[];
+  into?: string;
+  status: "open" | "resolving" | "resolved" | "abandoned";
+  files: ConflictFile[];
+  resolved_by?: string | null;
+  resolved_sha?: string | null;
+  card_msg_id?: string | null;
+  created_at?: string | null;
+  decided_at?: string | null;
 };
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -161,9 +178,13 @@ export const api = {
   /** Still-open ask-forms (agent questions awaiting an answer) — used to
    * re-hydrate the floating panel after a refresh. */
   openAskForms: (convId: string) =>
-    getJSON<{ ask_forms: Array<{ id: string; agent_id: string; kind: "ask-form"; title: string; blocking: boolean; questions: unknown[] }> }>(
+    getJSON<{ ask_forms: Array<{ id: string; agent_id: string; kind: "ask-form"; title: string; blocking: boolean; questions: unknown[]; blocking_tool?: boolean }> }>(
       `/api/conversations/${convId}/ask-forms`,
     ),
+  /** Resolve a blocking `ask_user` tool call (⑥) — the suspended agent turn
+   * continues with this answer. Only used for blocking_tool ask-forms. */
+  answerAsk: (convId: string, askId: string, answer: string) =>
+    postJSON<{ ok: boolean }>(`/api/conversations/${convId}/ask/${askId}/answer`, { answer }),
   /** Paginated message fetch. `before` is an ISO timestamp cursor —
    * `null` for the latest page, then pass back the oldest message's
    * `created_at` to walk further into the past. */
@@ -206,6 +227,12 @@ export const api = {
 
   // Onboarding — adapter layer
   probeAdapters: () => getJSON<AdapterProbe[]>("/api/onboarding/adapters"),
+  // Re-read host CLI logins into all sandboxes + evict cached sessions, so a
+  // switched account (claude/codex re-login) takes effect on the next turn.
+  refreshAdapterCredentials: () =>
+    postJSON<{ ok: boolean; sandboxes_refreshed: number; sessions_evicted: number }>(
+      "/api/adapters/refresh-credentials",
+    ),
   enableAgent: (id: string) => postJSON<{ agent: Agent }>(`/api/agents/${id}/enable`),
   disableAgent: (id: string) => postJSON<{ ok: boolean }>(`/api/agents/${id}/disable`),
 
@@ -249,7 +276,10 @@ export const api = {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       return r.json() as Promise<{ contact: Agent }>;
     }),
-  deleteContact: (id: string) => deleteJSON<{ ok: boolean }>(`/api/contacts/${id}`),
+  deleteContact: (id: string) =>
+    deleteJSON<{ ok: boolean; error?: string; kind?: string; workspaces?: string[] }>(
+      `/api/contacts/${id}`,
+    ),
 
   health: () => getJSON<{ status: string; version: string; time: string }>("/api/health"),
 
@@ -308,6 +338,32 @@ export const api = {
   listPendingEdits: (convId: string, status?: string) => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : "";
     return getJSON<PendingEdit[]>(`/api/conversations/${convId}/pending-edits${qs}`);
+  },
+
+  // ── Merge conflicts (closed-loop) ──
+  /** Resolve a merge conflict + re-merge for real. */
+  resolveConflict: (
+    id: string,
+    body: {
+      resolutions?: Record<string, string>;
+      sides?: Record<string, "ours" | "theirs">;
+      deletions?: string[];
+      resolved_by?: string;
+    },
+  ) =>
+    postJSON<{ ok?: boolean; sha?: string; error?: string } & Conflict>(
+      `/api/conflicts/${id}/resolve`,
+      body,
+    ),
+  /** Abandon a conflict — the branch stays un-merged, but explicitly. */
+  abandonConflict: (id: string) =>
+    postJSON<Conflict>(`/api/conflicts/${id}/abandon`, {}),
+  /** Full conflict row incl. file blobs (for the resolve pane). */
+  getConflict: (id: string) => getJSON<Conflict>(`/api/conflicts/${id}`),
+  /** Hydrate conflicts for a conv on conv switch / page refresh. */
+  listConflicts: (convId: string, status?: string) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return getJSON<Conflict[]>(`/api/conversations/${convId}/conflicts${qs}`);
   },
 
   /** Persist a user-side message with arbitrary payload (image / file /

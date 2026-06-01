@@ -21,10 +21,10 @@ from polynoia.context.briefs import build_project_briefs_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
 from polynoia.context.ledger import build_activity_ledger_layer
-from polynoia.context.shared import build_shared_memory_layer
+from polynoia.context.shared import build_shared_memory_layer, member_role_for
 from polynoia.context.budget import compute_budget
 from polynoia.context.window import enforce_budgets
-from polynoia.storage.repo import list_agents
+from polynoia.storage.repo import get_conversation, list_agents
 
 
 async def build_context_for_turn(
@@ -61,9 +61,15 @@ async def build_context_for_turn(
         # callers pass valid agent_ids.)
         return user_text
 
+    # Resolve the current conv ONCE for per-turn, conv-scoped facts: the
+    # per-project role (R2). member_role_for returns None unless this is a
+    # project conv, so out-of-project chats inject zero project-role text.
+    cur_conv = await get_conversation(db, conv_id)
+    member_role = member_role_for(cur_conv, agent_id)
+
     # 2. Build each layer
     layers: list[ContextLayer] = []
-    layers.append(build_identity_layer(agent))
+    layers.append(build_identity_layer(agent, member_role=member_role))
 
     briefs = await build_project_briefs_layer(db, agent_id, conv_id=conv_id)
     if briefs is not None:
@@ -75,9 +81,9 @@ async def build_context_for_turn(
     if ledger is not None:
         layers.append(ledger)
 
-    # L2.5 — conv-scoped shared memory (locked contract / decisions / artifacts
-    # every teammate must honor). ADR-014.
-    shared = await build_shared_memory_layer(db, conv_id)
+    # L2.5 — shared memory. Group/project conv: the conv-scoped locked board
+    # (ADR-014). Project-external DM: agent-level work memory (ADR-019).
+    shared = await build_shared_memory_layer(db, conv_id, agent_id=agent_id)
     if shared is not None:
         layers.append(shared)
 

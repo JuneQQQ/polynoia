@@ -125,6 +125,28 @@
     <p class="sub" style="margin-top:10px">改动点:<code>storage/models.py</code>(ConvMemoryRow)· <code>storage/repo.py</code> · <code>context/shared.py</code>(新)+ <code>assembler.py</code> · <code>mcp/tools.py</code>(_RememberTool + ROLE_TOOLS)· <code>routes.py</code>(memory 端点 + drain 自动入库)</p>
   </section>
 
+  <!-- Phase 3 — 钩子机制 -->
+  <section>
+    <h2>③ 钩子机制 <span class="tag skip">已研究 · 改用轻量提取(ADR-018)</span></h2>
+    <p class="sub">RuFlo 用 <code>settings.json</code> 声明生命周期事件 + matcher,调起 <code>npx ruflo hooks &lt;name&gt;</code>(~14–17 个 pre/post 钩子)。
+       我们<b>取思想、不搬机器</b>:RuFlo 是挂在外部 Claude Code 上、要让第三方注册自动化的<b>框架</b>;我们是<b>闭环 app</b>,横切关注点固定。给它装可插拔事件总线 = 过度抽象 + 控制流非局部化。</p>
+    <table>
+      <tr><th>痛点(workflow 实测)</th><th>过度方案</th><th>我们的轻量解</th></tr>
+      <tr><td><code>_call</code> 内联六件事(role 门/审计/isError/json/异常)</td><td class="gap">post_tool 事件总线</td><td class="ok">抽 <code>_arg_preview / _result_summary / _wrap_result / _error_result</code>,<code>_call</code> 变薄管线</td></tr>
+      <tr><td>edit 闸门抄 3 遍(edit/write/apply_patch)</td><td class="gap">pre_edit 钩子 + 注册表</td><td class="ok">一个 <code>_require_edit_approval()</code> helper;lock/commit 因语义不同<b>保留显式</b></td></tr>
+      <tr><td>回调 POST「重复」、git_commit message 各异</td><td class="gap">post_tool 回调钩子</td><td class="ok"><b>不动</b> —— <code>_callback_server</code> 已共享,message 本就该不同(非重复)</td></tr>
+      <tr><td>turn 路径横切(审计/状态/落盘/编排)</td><td class="gap">pre_turn/on_event/... 钩子层</td><td class="ok"><b>不动</b> —— <code>is_last</code> 竞态 / 锁 / 重试是临界同步点,包钩子=加风险换化妆</td></tr>
+    </table>
+    <div class="ba">
+      <div class="before"><h4>Before · _call</h4>
+        <p>40 行包装器里内联 role 检查 + arg 预览 + tool.start + execute + isError 检测 + tool.end + json.dumps + 异常→tool.error+信封。读一遍才知道发生了啥。</p></div>
+      <div class="after"><h4>After · _call</h4>
+        <p>一条薄管线:<code>role 门(可否决) → execute() → audit+isError 映射 / on-error 信封</code>。六件横切事各自一个 helper、可单测;加新工具不再抄样板。零行为变化。</p></div>
+    </div>
+    <p class="sub" style="margin-top:10px">何时反悔:若 P1+ 把「用户/插件自定义 per-tool 自动化」列为<b>产品功能</b>,事件总线就从投机抽象变成真需求 —— 届时再建。详见 <a href="../ADR/ADR-018-no-hook-framework.md">ADR-018</a>。</p>
+    <p class="sub">改动点:<code>mcp/server.py::_call</code>(+ 模块级 helper)· <code>mcp/tools.py::_require_edit_approval</code></p>
+  </section>
+
   <!-- 不做 -->
   <section>
     <h2>暂不做 <span class="tag skip">未来可选</span></h2>

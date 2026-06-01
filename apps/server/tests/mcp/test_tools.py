@@ -232,5 +232,45 @@ def test_dispatch_tool_schema_accepts_contract():
     props = schema["properties"]
     assert "contract" in props, "dispatch must expose a `contract` field"
     assert props["contract"]["type"] == "string"
-    # Tasks remain required; contract is optional.
+    # `tasks` is required (the actual assignments); contract/title are extras.
+    # (A tasks-less call yields the SDK's standard "'tasks' is a required
+    #  property" validation error, which the model reliably recovers from — a
+    #  custom execute-level error made it loop instead, so we keep it strict.)
     assert schema["required"] == ["tasks"]
+
+
+# ── Role-gated tool exposure (ADR-013 + location gate) ───────────
+
+
+def test_advisory_role_is_read_only():
+    """The `advisory` role (homepage-DM consult mode) exposes NO mutating
+    tool — no write/edit/apply_patch/revert and no bash."""
+    from polynoia.mcp.tools import tools_for_role
+
+    names = set(tools_for_role("advisory").keys())
+    # has read + chat-class
+    assert {"read", "grep", "glob", "remember", "recall", "ask_user", "report"} <= names
+    # but nothing that can change the sandbox or run a shell
+    assert names.isdisjoint({"write", "edit", "apply_patch", "revert", "bash", "dispatch"})
+
+
+def test_unknown_role_fails_closed_to_advisory():
+    """A typo'd / unknown tool_role must fail CLOSED to read-only, never open.
+
+    Regression guard: the fallback used to be `orchestrator`, which carries
+    edit/write/apply_patch — so an unknown role silently gained write."""
+    from polynoia.mcp.tools import tools_for_role
+
+    names = set(tools_for_role("totally-bogus-role").keys())
+    assert names.isdisjoint({"write", "edit", "apply_patch", "revert", "bash"})
+    # matches the advisory floor exactly
+    assert names == set(tools_for_role("advisory").keys())
+
+
+def test_designer_role_can_write():
+    """Sanity: a real persona role (designer) still carries write/edit — the
+    location gate, not the role, is what removes it in a homepage DM."""
+    from polynoia.mcp.tools import tools_for_role
+
+    names = set(tools_for_role("designer").keys())
+    assert {"write", "edit"} <= names

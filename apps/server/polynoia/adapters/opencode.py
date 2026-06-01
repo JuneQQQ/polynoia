@@ -164,12 +164,18 @@ class OpenCodeAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",  # P1.2 — OpenCode does use Polynoia MCP (see _start in session); merge_mode reserved
         tool_role: str = "generalist",
+        read_only_workspace_id: str | None = None,
     ) -> OpenCodeSession:
-        # P1.1 routing — see workspace-shared-git.md
+        # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
+        # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id, conv_id=conv_id, agent_id=agent_id,
             )
+        elif read_only_workspace_id:
+            sandbox = Sandbox.open_workspace_if_exists(
+                read_only_workspace_id
+            ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
         return OpenCodeSession(

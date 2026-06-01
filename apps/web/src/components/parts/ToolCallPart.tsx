@@ -24,16 +24,18 @@ import {
 import { useEffect, useRef, useState } from "react";
 import type { ToolCallPayload } from "../../lib/types";
 
-/** Strip MCP/server prefixes so users see a clean verb.
+/** Strip MCP/server prefixes so every adapter shows the SAME clean verb.
  *   mcp__polynoia__write → write   (Claude Code MCP naming)
+ *   polynoia::write      → write   (Codex MCP naming)
  *   polynoia_read        → read    (OpenCode naming)
  *   read                 → read    (built-in, unchanged)
  */
-function cleanToolName(raw: string): string {
+export function cleanToolName(raw: string): string {
   return raw
-    .replace(/^mcp__[^_]+__/, "")  // mcp__<server>__tool
-    .replace(/^[a-z0-9]+__/i, "")  // <server>__tool (double-underscore)
-    .replace(/^polynoia_+/i, "");  // polynoia_tool (single-underscore)
+    .replace(/^mcp__[^_]+__/, "")  // mcp__<server>__tool   (Claude Code)
+    .replace(/^[a-z0-9]+::/i, "")  // <server>::tool        (Codex)
+    .replace(/^[a-z0-9]+__/i, "")  // <server>__tool        (double-underscore)
+    .replace(/^polynoia_+/i, "");  // polynoia_tool         (single-underscore)
 }
 
 // Keyed by the CLEANED, lowercased tool name.
@@ -92,6 +94,7 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
   const displayName = cleanToolName(payload.name);
   const ToolIcon = TOOL_ICONS[displayName.toLowerCase()] ?? Settings;
   const ss = STATE_STYLE(payload.state);
+  const isError = payload.state === "error" || !!payload.is_error;
   const hasInput = payload.input && Object.keys(payload.input).length > 0;
   // Args still streaming in (big dispatch) → show the raw partial JSON in the
   // EXPANDED body, and auto-open so the user watches them build (like Cursor).
@@ -99,15 +102,20 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
   const prevStreaming = useRef(streamingArgs);
   useEffect(() => {
     if (userTouched.current) return;
-    if (streamingArgs) setExpanded(true);
+    // Auto-open while args stream AND when the call errored — so the user
+    // immediately sees what the model sent without having to expand.
+    if (streamingArgs || isError) setExpanded(true);
     else if (prevStreaming.current) setExpanded(false); // args done → tuck back
     prevStreaming.current = streamingArgs;
-  }, [streamingArgs]);
+  }, [streamingArgs, isError]);
   const outText = payload.output_text;
   const outIsString = typeof outText === "string" && outText.length > 0;
   const outIsObject =
     !outIsString && payload.output != null && typeof payload.output !== "string";
   const hasPreview = !hasInput && !!payload.input_preview;
+  // On error, always reveal the args the model sent — even an empty {} — so the
+  // user can see WHY it failed (e.g. dispatch called with no `tasks`).
+  const showEmptyInputOnError = isError && !hasInput && !hasPreview;
 
   return (
     <div className="border border-[var(--color-line)] rounded-md overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] max-w-[680px] text-[12px]">
@@ -148,23 +156,31 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 
       {expanded && (
         <div className="border-t border-[var(--color-line)] divide-y divide-[var(--color-line)]/60">
-          {hasInput && (
+          {(hasInput || showEmptyInputOnError) && (
             <div>
               <div className="px-2.5 py-1 bg-[var(--color-surface-2)] text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold">
-                输入
+                {showEmptyInputOnError ? "输入(模型未提供参数)" : "输入"}
               </div>
               <pre className="mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto bg-[var(--color-surface)] text-[var(--color-fg-2)]">
                 {prettyJSON(payload.input)}
               </pre>
             </div>
           )}
-          {/* Live-streaming raw args (before the input is final) — watch them
-              build inside the fold. */}
+          {/* Raw args. While the tool is still RUNNING this is the live
+              args-building preview ("生成中"). Once the call has finished
+              (completed/errored) it's the raw bytes the model actually sent —
+              so drop the spinner + "生成中" (it's done, not generating). */}
           {hasPreview && (
             <div>
               <div className="px-2.5 py-1 bg-[var(--color-surface-2)] text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold flex items-center gap-1.5">
-                <Loader2 size={9} className="animate-spin text-[var(--color-accent)]" />
-                输入(生成中)
+                {streamingArgs ? (
+                  <>
+                    <Loader2 size={9} className="animate-spin text-[var(--color-accent)]" />
+                    输入(生成中)
+                  </>
+                ) : (
+                  "输入(原始)"
+                )}
               </div>
               <pre className="mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto max-h-[260px] overflow-y-auto whitespace-pre-wrap bg-[var(--color-surface)] text-[var(--color-fg-3)]">
                 {payload.input_preview}

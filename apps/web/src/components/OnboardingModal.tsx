@@ -13,8 +13,10 @@
  *   3. 启用 → POST /api/agents/{id}/enable → 后端把 template 写入 DB → 前端 refetch agents
  */
 import {
+  Check,
   CheckCircle2,
   FolderKey,
+  KeyRound,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -35,6 +37,8 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // 刷新凭证 button: idle → busy (spinner) → done (✓ "已刷新", auto-reverts).
+  const [credState, setCredState] = useState<"idle" | "busy" | "done">("idle");
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -112,6 +116,26 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
     }
   };
 
+  /** Re-read the host's current CLI logins into all sandboxes + drop cached
+   * sessions, so a switched account (claude/codex re-login) takes effect on
+   * the next turn — no server restart. Spinner → ✓ 已刷新 feedback. */
+  const refreshCreds = async () => {
+    if (credState === "busy") return;
+    setCredState("busy");
+    setErr(null);
+    try {
+      await api.refreshAdapterCredentials();
+      await new Promise<void>((r) => setTimeout(r, MIN_BUSY_MS));
+      // Re-probe so auth status reflects the freshly-read login.
+      refresh().catch(() => {});
+      setCredState("done");
+      setTimeout(() => setCredState("idle"), 2200);
+    } catch (e) {
+      setErr(`刷新凭证失败:${e}`);
+      setCredState("idle");
+    }
+  };
+
   /** Prevent backdrop click + Esc closing while an enable/disable
    * roundtrip is in flight. User asked: "既然你没测完,你就不要让我的
    * 管理适配器的那个页面消失" — keep modal open until busy clears. */
@@ -137,6 +161,26 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
             <span className="font-display text-[18px] font-medium text-[var(--color-fg)] tracking-wide">接入智能体</span>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={refreshCreds}
+              disabled={credState === "busy"}
+              className="btn-ghost text-[12px] py-1.5 px-3 disabled:opacity-40"
+              title="换了账号 / CLI 重新登录后点这个:重新读取最新登录凭证并踢掉旧会话,下一条消息生效(免重启)"
+            >
+              {credState === "busy" ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : credState === "done" ? (
+                <Check size={12} className="text-[var(--color-green)]" />
+              ) : (
+                <KeyRound size={12} />
+              )}
+              {credState === "busy"
+                ? "刷新中…"
+                : credState === "done"
+                  ? "已刷新"
+                  : "刷新凭证"}
+            </button>
             <button
               type="button"
               onClick={refresh}

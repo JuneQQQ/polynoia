@@ -156,13 +156,17 @@ async def test_identity_layer_always_present(clean_db) -> None:
 
 @pytest.mark.asyncio
 async def test_workspace_briefs_filter_by_membership(clean_db) -> None:
-    """Agent only sees workspaces they're a member of."""
+    """Agent only sees workspaces they're a member of. Briefs are project-scoped
+    (R1): they render inside a PROJECT conv and are suppressed entirely in an
+    out-of-project DM — so we assert membership filtering from a project conv."""
     alice = await _seed_agent("Alice")
     bob = await _seed_agent("Bob")
-    await _seed_workspace("Alice 的项目", members=["you", alice.id])
+    aw = await _seed_workspace("Alice 的项目", members=["you", alice.id])
     await _seed_workspace("Bob 的私人项目", members=["you", bob.id])
 
-    conv = await _seed_conv("Alice DM", members=["you", alice.id], direct=True)
+    conv = await _seed_conv(
+        "Alice 项目对话", members=["you", alice.id], workspace_id=aw.id,
+    )
     async with db_module.SessionLocal() as db:
         prompt = await build_context_for_turn(
             db, agent_id=alice.id, conv_id=conv.id, user_text="hi"
@@ -394,7 +398,11 @@ async def test_dm_section_grouped_separately(clean_db) -> None:
     dm = await _seed_conv("私聊 DM", members=["you", alice.id], direct=True)
     await _post_message(dm.id, "you", "私聊内容", minutes_ago=5)
 
-    current = await _seed_conv("当前", members=["you", alice.id], direct=True)
+    # Current conv is IN the project — the project section is only rendered
+    # in-project (R1); out-of-project DMs show only the 私聊 bucket.
+    current = await _seed_conv(
+        "当前", members=["you", alice.id], workspace_id=ws.id,
+    )
     async with db_module.SessionLocal() as db:
         prompt = await build_context_for_turn(
             db, agent_id=alice.id, conv_id=current.id, user_text="?"
@@ -510,11 +518,15 @@ async def test_huge_single_message_gets_folded(clean_db) -> None:
 @pytest.mark.asyncio
 async def test_shared_memory_layer_injected(clean_db) -> None:
     """ADR-014: conv-scoped shared memory (contract/decision/artifact) is
-    injected into the prompt for any member's turn."""
+    injected into a PROJECT (workspace) conversation's turn, kind-layered
+    (contract before artifact)."""
     from polynoia.storage.repo import add_conv_memory
 
     alice = await _seed_agent("Alice")
-    conv = await _seed_conv("Shared mem", members=["you", alice.id], direct=True)
+    ws = await _seed_workspace("Proj", [alice.id])
+    conv = await _seed_conv(
+        "Shared mem", members=["you", alice.id], workspace_id=ws.id,
+    )
     async with db_module.SessionLocal() as session:
         await add_conv_memory(
             session, conv_id=conv.id, author_agent_id="you",
@@ -533,3 +545,42 @@ async def test_shared_memory_layer_injected(clean_db) -> None:
     assert "<shared_memory>" in prompt
     assert "[契约]" in prompt and "端口 8000" in prompt
     assert "[产物] Alice → api.py" in prompt
+
+
+@pytest.mark.asyncio
+async def test_external_dm_injects_agent_level_memory(clean_db) -> None:
+    """ADR-019 + R1: in a project-EXTERNAL DM, the shared-memory layer switches
+    to agent-level — the agent's OWN work across conversations. Teammates'
+    project work is NOT proactively injected (R1: no project-detail leak into an
+    out-of-project chat); it stays inside the project conv."""
+    from polynoia.storage.repo import add_conv_memory
+
+    alice = await _seed_agent("Alice")
+    bob = await _seed_agent("Bob")
+    ws = await _seed_workspace("Proj", [alice.id, bob.id])
+    proj = await _seed_conv(
+        "v1 group", members=["you", alice.id, bob.id], workspace_id=ws.id,
+    )
+    async with db_module.SessionLocal() as session:
+        await add_conv_memory(
+            session, conv_id=proj.id, author_agent_id=alice.id,
+            kind="artifact", content="Alice 实现了 settle.py 的分账算法",
+        )
+        await add_conv_memory(
+            session, conv_id=proj.id, author_agent_id=bob.id,
+            kind="artifact", content="Bob 写了结算 UI",
+        )
+        await session.commit()
+
+    # A standalone 1:1 DM with Alice — workspace_id=None → project-external.
+    dm = await _seed_conv("问 Alice", members=["you", alice.id], direct=True)
+    async with db_module.SessionLocal() as db:
+        prompt = await build_context_for_turn(
+            db, agent_id=alice.id, conv_id=dm.id, user_text="你最近做了啥?",
+        )
+    assert "<shared_memory>" in prompt
+    # Alice's own cross-conv work surfaces under 我的工作 (answer-when-asked)
+    assert "我的工作" in prompt and "settle.py 的分账算法" in prompt
+    # R1: teammates' project work is NOT proactively injected out-of-project.
+    assert "队友相关工作" not in prompt
+    assert "Bob 写了结算 UI" not in prompt

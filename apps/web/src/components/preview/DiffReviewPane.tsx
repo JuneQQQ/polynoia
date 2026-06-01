@@ -10,7 +10,7 @@
  */
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view.css";
-import { Check, FileEdit, Loader2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, FileEdit, Loader2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { api, type PendingEdit } from "../../lib/api";
 import { useStore } from "../../store";
@@ -45,10 +45,15 @@ export function DiffReviewPane({ convId }: { convId: string }) {
   const list = useStore((s) => s.pendingEditsByConv.get(convId) ?? EMPTY);
   const upsert = useStore((s) => s.upsertPendingEdit);
   const agents = useStore((s) => s.agents);
+  const reviewIndex = useStore((s) => s.reviewIndex);
+  const setReviewIndex = useStore((s) => s.setReviewIndex);
   const [busy, setBusy] = useState<"accept" | "reject" | null>(null);
 
   const pending = list.filter((e) => e.status === "pending");
-  const edit = pending[0];
+  // Follow the floating review bar's cursor (clamped) so the diff shown here
+  // matches whichever change the user is stepping through.
+  const idx = Math.min(reviewIndex, pending.length - 1);
+  const edit = pending[idx];
 
   const diff = useMemo(() => (edit ? editToUnified(edit) : null), [edit]);
   const diffData = useMemo(() => {
@@ -90,10 +95,35 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 
   return (
     <div className="h-full flex flex-col bg-[var(--color-surface)]">
-      {/* Review header — file + agent + +/− counts */}
+      {/* Review header — file + agent + +/− counts + ←/→ when queued */}
       <div className="border-b border-[var(--color-line)] px-3 py-2 bg-[var(--color-surface-2)] flex items-center gap-2">
         <FileEdit size={13} className="text-[var(--color-accent)] flex-shrink-0" />
         <span className="text-[12px] font-mono truncate flex-1 text-[var(--color-fg)]">{diff.file}</span>
+        {pending.length > 1 && (
+          <div className="flex items-center gap-0.5 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setReviewIndex(idx - 1)}
+              disabled={idx <= 0}
+              className="p-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)] disabled:opacity-30 disabled:cursor-not-allowed"
+              title="上一个改动"
+              aria-label="上一个改动"
+            >
+              <ChevronLeft size={13} />
+            </button>
+            <span className="text-[10px] font-mono text-[var(--color-fg-4)] tabular-nums">{idx + 1}/{pending.length}</span>
+            <button
+              type="button"
+              onClick={() => setReviewIndex(idx + 1)}
+              disabled={idx >= pending.length - 1}
+              className="p-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)] disabled:opacity-30 disabled:cursor-not-allowed"
+              title="下一个改动"
+              aria-label="下一个改动"
+            >
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        )}
         <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-4)]">{edit.kind}</span>
         <span className="text-[10.5px] px-1.5 py-0.5 rounded font-mono"
           style={{ background: "var(--color-green-soft)", color: "var(--color-green)" }}>+{diff.adds}</span>
@@ -122,9 +152,6 @@ export function DiffReviewPane({ convId }: { convId: string }) {
               style={{ background: agent.color }}>{agent.initials}</span>
             <span>{agent.name} 的改动</span>
           </span>
-        )}
-        {pending.length > 1 && (
-          <span className="text-[10.5px] font-mono text-[var(--color-fg-4)]">+{pending.length - 1} 待评审</span>
         )}
         <button
           type="button"

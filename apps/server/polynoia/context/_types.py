@@ -63,6 +63,7 @@ class LayerBudget:
 
     identity: int = 2_000
     project_brief: int = 3_000
+    shared_memory: int = 4_000
     activity: int = 15_000
     history: int = 35_000
     user_turn: int = 5_000
@@ -72,6 +73,7 @@ class LayerBudget:
         return (
             self.identity
             + self.project_brief
+            + self.shared_memory
             + self.activity
             + self.history
             + self.user_turn

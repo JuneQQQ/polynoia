@@ -163,7 +163,9 @@ function StructuredInline({ content }: { content: InlineSegment[] }) {
   );
 }
 
-const MARKDOWN_COMPONENTS = {
+// Exported so the code-editor Markdown preview (CodeEditor) renders docs with
+// the exact same styling as chat messages.
+export const MARKDOWN_COMPONENTS = {
   code: CodeBlock as any,
   // Tables — make them look right with Polynoia palette
   table: ({ children }: any) => (

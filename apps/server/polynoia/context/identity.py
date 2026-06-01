@@ -17,8 +17,16 @@ _PLATFORM_BLOCK = (
 )
 
 
-def build_identity_layer(agent: Agent) -> ContextLayer:
-    """Render L1 identity block for the given agent."""
+def build_identity_layer(
+    agent: Agent, *, member_role: str | None = None
+) -> ContextLayer:
+    """Render L1 identity block for the given agent.
+
+    ``member_role`` is the agent's PER-PROJECT role (from the conversation's
+    member_roles), passed by the assembler ONLY when the current conv is a
+    project conv. It is rendered above the global persona. Out-of-project chats
+    pass None, so no project role text is ever emitted (R2: role per-project,
+    persona global)."""
     setup = agent.setup
     adapter_id = setup.adapter_id if setup else None
     model = setup.model if setup else None
@@ -37,6 +45,14 @@ def build_identity_layer(agent: Agent) -> ContextLayer:
     parts.append("")
     parts.append("## 关于平台")
     parts.append(_PLATFORM_BLOCK)
+
+    # Per-project role (R2): only present in a project conv. Sits above the
+    # global persona so the project responsibility is the first role-level
+    # instruction, without mutating the agent's global persona.
+    if member_role:
+        parts.append("")
+        parts.append("## 你在本项目中的职责")
+        parts.append(member_role)
 
     persona = (agent.system_prompt or "").strip()
     if persona:
