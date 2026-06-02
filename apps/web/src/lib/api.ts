@@ -412,6 +412,19 @@ export const api = {
 		tools_whitelist?: string[];
 		max_context_tokens?: number | null;
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
+	/** 对话式创建: infer a contact config from a free-text description (prefills
+	 * the create form; user reviews + edits). Deterministic heuristics server-side. */
+	suggestContact: (description: string) =>
+		postJSON<{
+			adapter_id: string;
+			name: string;
+			tool_role: string;
+			tools_whitelist: string[];
+			system_prompt: string;
+			tagline: string;
+			caps: string[];
+			color: string;
+		}>("/api/contacts/suggest", { description }),
 	updateContact: (
 		id: string,
 		body: Partial<{

@@ -131,6 +131,17 @@ type Props = {
 	 * - submit calls updateContact(id) instead of createContact()
 	 * Null = create mode. */
 	editing?: Agent | null;
+	/** 对话式创建: seed CREATE-mode fields from a heuristic suggestion
+	 * (api.suggestContact). User still reviews + edits everything. Ignored in
+	 * edit mode. */
+	prefill?: {
+		adapter_id?: string;
+		name?: string;
+		tool_role?: string;
+		tools_whitelist?: string[];
+		system_prompt?: string;
+		color?: string;
+	} | null;
 };
 
 export function NewContactModal({
@@ -138,13 +149,16 @@ export function NewContactModal({
 	onOpenAdapterManager,
 	onCreated,
 	editing = null,
+	prefill = null,
 }: Props) {
 	const agents = useStore((s) => s.agents);
 	const isEdit = editing !== null;
+	// In create mode, a heuristic suggestion can seed fields (对话式创建).
+	const pf = isEdit ? null : prefill;
 
 	const [adapters, setAdapters] = useState<EnabledAdapter[] | null>(null);
 	const [adapterId, setAdapterId] = useState<string>(
-		editing?.setup?.adapter_id ?? "",
+		editing?.setup?.adapter_id ?? pf?.adapter_id ?? "",
 	);
 	const [model, setModel] = useState<string>(editing?.setup?.model ?? "");
 	const [customModel, setCustomModel] = useState(editing?.setup?.model ?? "");
@@ -166,23 +180,29 @@ export function NewContactModal({
 		_initCtx != null && !_presetHit ? String(_initCtx) : "",
 	);
 	const [useCustomModel, setUseCustomModel] = useState(false);
-	const [name, setName] = useState(editing?.name ?? "");
+	const [name, setName] = useState(editing?.name ?? pf?.name ?? "");
 	const [systemPrompt, setSystemPrompt] = useState(
-		editing?.system_prompt ?? "",
+		editing?.system_prompt ?? pf?.system_prompt ?? "",
 	);
-	const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
+	const [color, setColor] = useState(
+		editing?.color ?? pf?.color ?? COLOR_OPTIONS[0],
+	);
 	// Tool set (工具集) — role preset picks a tool bundle; the 高级 checkboxes
 	// can narrow it per-tool (Agent.tools_whitelist). Capability tags derive from
 	// the resulting set. See rule.md「设定工具集 + 能力标签」.
 	const _initRole =
-		(editing as { tool_role?: string } | null)?.tool_role ?? "generalist";
+		(editing as { tool_role?: string } | null)?.tool_role ??
+		pf?.tool_role ??
+		"generalist";
 	const [toolRole, setToolRole] = useState<string>(_initRole);
 	const [advancedOpen, setAdvancedOpen] = useState(false);
 	// Checked toggleable tools (always a subset of the role's toggleable set).
 	const [checkedTools, setCheckedTools] = useState<Set<string>>(() => {
 		const toggleable = ROLE_TOOLS[_initRole] ?? ROLE_TOOLS.generalist;
 		const wl =
-			(editing as { tools_whitelist?: string[] } | null)?.tools_whitelist ?? [];
+			(editing as { tools_whitelist?: string[] } | null)?.tools_whitelist ??
+			pf?.tools_whitelist ??
+			[];
 		return wl.length === 0
 			? new Set(toggleable)
 			: new Set(toggleable.filter((t) => wl.includes(t)));

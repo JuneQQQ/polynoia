@@ -410,6 +410,82 @@ async def set_adapter_proxy(adapter_id: str, body: dict):
     return {"adapter_id": adapter_id, "proxy": proxy, "proxy_kind": kind}
 
 
+@router.post("/api/contacts/suggest")
+async def suggest_contact(body: dict):
+    """对话式创建 (rule.md): infer a contact config from a free-text description.
+
+    Body: ``{ "description": "我要个会写前端、不能跑命令的设计师" }``
+    Returns ``{name, tool_role, tools_whitelist, system_prompt, tagline, caps,
+    color, adapter_id}`` to PREFILL the create form (user reviews + edits, then
+    POST /api/contacts). Deterministic keyword heuristics — no LLM round-trip, so
+    it's instant and free; the user gets the final say on every field."""
+    from polynoia.api.agent_templates import ADAPTER_VISUAL_DEFAULTS
+
+    desc = (body.get("description") or "").strip()
+    if not desc:
+        return {"error": "description required"}, 400
+    low = desc.lower()
+
+    def has(*kw: str) -> bool:
+        return any(k in desc or k.lower() in low for k in kw)
+
+    # Role: most-specific first. Read-only intent overrides write roles.
+    readonly = has("只读", "评审", "审查", "review", "不写", "不能改", "不改代码")
+    if has("协调", "编排", "拆解", "派活", "orchestr", "调度", "项目经理", "PM"):
+        role = "orchestrator"
+    elif has("前端", "界面", "ui", "样式", "css", "html", "设计", "视觉", "网页"):
+        role = "designer"
+    elif has("文档", "文案", "readme", "写作", "翻译", "doc", "markdown", "博客"):
+        role = "writer"
+    elif has("后端", "api", "python", "服务", "数据库", "脚本", "代码", "backend", "测试"):
+        role = "coder"
+    else:
+        role = "generalist"
+
+    # Tools: role default, narrowed if "不能跑命令 / 只读" intent is present.
+    from polynoia.mcp.tools import ROLE_TOOLS
+    role_tools = list(ROLE_TOOLS.get(role, ROLE_TOOLS["generalist"]))
+    no_bash = has("不能跑", "不跑命令", "无 bash", "no bash", "不执行命令")
+    tools = [t for t in role_tools if not (no_bash and t in ("bash", "apply_patch"))]
+    if readonly:
+        tools = [t for t in tools if t in ("read", "grep", "glob", "dispatch", "discuss")]
+    tools_whitelist = sorted({*tools, *_ALL_TOOL_NAMES.intersection({
+        "remember", "recall", "report", "ask_user", "request_project_access",
+    })})
+
+    # Pick adapter: prefer an onboarded one (claudeCode > codex > opencoder).
+    async with SessionLocal() as session:
+        onboarded = set(await storage_repo.list_onboarded_adapters(session))
+    adapter_id = next(
+        (a for a in ("claudeCode", "codex", "opencoder") if a in onboarded),
+        "claudeCode",
+    )
+    visuals = ADAPTER_VISUAL_DEFAULTS.get(adapter_id, {})
+
+    role_zh = {
+        "orchestrator": "协调者", "designer": "前端设计师", "writer": "文档写手",
+        "coder": "后端工程师", "generalist": "全能助手",
+    }[role]
+    # Name: a short word from the description, else the role label.
+    name = role_zh
+    tagline = f"由描述生成 · {role_zh}"
+    caps = _caps_from_tools(role, tools_whitelist)
+    system_prompt = (
+        f"你是一名{role_zh}。\n\n用户对你的期望:{desc}\n\n"
+        "按这个定位工作;具体的工具规则与协作纪律由平台自动注入,你专注做好本职。"
+    )
+    return {
+        "adapter_id": adapter_id,
+        "name": name,
+        "tool_role": role,
+        "tools_whitelist": tools_whitelist,
+        "system_prompt": system_prompt,
+        "tagline": tagline,
+        "caps": caps,
+        "color": visuals.get("color") or "#7A5AE0",
+    }
+
+
 @router.post("/api/contacts")
 async def create_contact(body: dict):
     """Create a new user-defined contact (agent) backed by an enabled adapter.
