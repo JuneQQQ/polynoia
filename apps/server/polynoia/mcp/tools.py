@@ -1328,7 +1328,9 @@ ROLE_TOOLS: dict[str, set[str]] = {
 }
 
 
-def tools_for_role(role: str | None) -> dict[str, _ToolBase]:
+def tools_for_role(
+    role: str | None, allow: set[str] | None = None
+) -> dict[str, _ToolBase]:
     """Return the filtered TOOL_REGISTRY subset visible to ``role``.
 
     Empty role → generalist (back-compat for agents created before the role
@@ -1337,6 +1339,11 @@ def tools_for_role(role: str | None) -> dict[str, _ToolBase]:
     never silently upgrade an agent to write capability — note the previous
     fallback was ``orchestrator``, which DOES carry edit/write, so a typo'd
     role used to fail OPEN. ``advisory`` is the true read-only floor.
+
+    ``allow`` is the contact's per-tool override (Agent.tools_whitelist, surfaced
+    as the 「高级」 tool checkboxes). When non-empty it can only NARROW the role's
+    set (``role ∩ allow``) — it never grants a tool the role doesn't have, so a
+    designer can't be checkbox-upgraded to bash. Empty/None → role set as-is.
     """
     if not role:
         allowed = ROLE_TOOLS["generalist"]
@@ -1345,4 +1352,6 @@ def tools_for_role(role: str | None) -> dict[str, _ToolBase]:
     else:
         log.warning("unknown tool_role %r → falling back to advisory (read-only)", role)
         allowed = ROLE_TOOLS["advisory"]
+    if allow:
+        allowed = allowed & allow  # narrow only — never upgrade
     return {name: impl for name, impl in TOOL_REGISTRY.items() if name in allowed}

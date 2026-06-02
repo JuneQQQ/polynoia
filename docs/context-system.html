@@ -5,72 +5,172 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Polynoia 上下文构成系统</title>
 <style>
-  :root { --bg: #0f1117; --card: #1a1d27; --fg: #e4e7ef; --fg3: #8b8fa3;
-          --accent: #7c6cff; --accent2: #5eead4; --border: #2a2d3a;
-          --red: #f87171; --green: #4ade80; --amber: #fbbf24; }
+  :root { --bg: #0c0e14; --card: #151821; --card2: #1a1e2b; --fg: #e4e7ef; --fg3: #8b8fa3;
+          --accent: #7c6cff; --accent2: #5eead4; --border: #252a3a;
+          --red: #f87171; --green: #4ade80; --amber: #fbbf24; --pink: #f472b6; --blue: #60a5fa;
+          --lin: #7A5AE0; --gu: #D2691E; --shen: #3D7FD1; --su: #2E9F73; --zhou: #E0C050; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, 'Noto Sans SC', 'PingFang SC', sans-serif;
-         background: var(--bg); color: var(--fg); line-height: 1.7; padding: 2rem; }
-  h1 { font-size: 2rem; margin-bottom: .5rem; }
-  h2 { font-size: 1.4rem; color: var(--accent); margin: 2rem 0 .8rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
-  h3 { font-size: 1.1rem; color: var(--accent2); margin: 1.2rem 0 .4rem; }
-  p, li { color: var(--fg); max-width: 72ch; }
+         background: var(--bg); color: var(--fg); line-height: 1.7; padding: 2rem 2.5rem;
+         background-image: radial-gradient(ellipse 80% 60% at 50% 0%, #1a1540 0%, transparent 60%); }
+  h1 { font-size: 2.2rem; margin-bottom: .3rem; letter-spacing: -.02em; }
+  h1 .sub { font-size: 1rem; color: var(--fg3); font-weight: 400; display: block; margin-top: .2rem; }
+  h2 { font-size: 1.35rem; color: var(--accent); margin: 2.5rem 0 .8rem;
+       border-bottom: 1px solid var(--border); padding-bottom: .4rem; letter-spacing: -.01em; }
+  h3 { font-size: 1.05rem; color: var(--accent2); margin: 1.2rem 0 .4rem; }
+  p, li { color: var(--fg); max-width: 76ch; }
   ul { padding-left: 1.4em; }
   li { margin-bottom: .3em; }
-  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: .88em;
-         background: #252836; padding: .15em .4em; border-radius: 4px; color: var(--accent2); }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-          padding: 1.2rem 1.4rem; margin: 1rem 0; }
-  .layer-row { display: grid; grid-template-columns: 80px 1fr 100px 60px 1fr;
-               gap: .6rem; align-items: start; padding: .6rem 0;
-               border-bottom: 1px solid var(--border); }
-  .layer-row:last-child { border-bottom: none; }
-  .layer-id { font-weight: 700; font-size: 1.1rem; }
-  .layer-name { font-weight: 600; }
-  .hard-badge { display: inline-block; font-size: .7rem; padding: .1em .5em;
-                border-radius: 999px; font-weight: 700; letter-spacing: .04em; }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: .86em;
+         background: #1e2233; padding: .15em .4em; border-radius: 4px; color: var(--accent2); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          padding: 1.3rem 1.5rem; margin: 1rem 0;
+          box-shadow: 0 2px 12px rgba(0,0,0,.25); }
+  .card2 { background: var(--card2); border: 1px solid var(--border); border-radius: 12px;
+           padding: 1.3rem 1.5rem; margin: 1rem 0;
+           box-shadow: 0 2px 12px rgba(0,0,0,.2); }
+  /* layer stack visual */
+  .layer-stack { display: flex; flex-direction: column; gap: 0; border-radius: 12px; overflow: hidden; }
+  .layer-bar { display: flex; align-items: center; gap: .8rem; padding: .55rem 1rem;
+               border-bottom: 1px solid rgba(255,255,255,.04); transition: background .15s; }
+  .layer-bar:hover { background: rgba(255,255,255,.04); }
+  .layer-bar:last-child { border-bottom: none; }
+  .lb-id { font-weight: 700; font-size: .95rem; min-width: 42px; }
+  .lb-name { font-weight: 600; font-size: .92rem; min-width: 140px; }
+  .lb-badge { font-size: .65rem; padding: .1em .5em; border-radius: 999px; font-weight: 700; letter-spacing: .04em; }
+  .lb-pri { font-size: .78rem; color: var(--fg3); min-width: 36px; }
+  .lb-desc { font-size: .85rem; color: var(--fg3); flex: 1; }
+  .lb-bar { height: 5px; border-radius: 3px; min-width: 20px; }
+  /* hard/soft badges */
   .hard-yes { background: var(--red); color: #fff; }
   .hard-no  { background: var(--border); color: var(--fg3); }
-  .priority-bar { height: 6px; border-radius: 3px; background: var(--accent); }
-  .flow-box { display: flex; flex-direction: column; gap: .5rem; }
+  /* flow diagram */
+  .flow-box { display: flex; flex-direction: column; gap: .4rem; }
   .flow-step { display: flex; align-items: center; gap: .8rem; }
-  .flow-num { width: 28px; height: 28px; border-radius: 50%; background: var(--accent);
+  .flow-num { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #9f8cff);
               color: #fff; display: flex; align-items: center; justify-content: center;
-              font-weight: 700; font-size: .85rem; flex-shrink: 0; }
-  .flow-arrow { text-align: center; color: var(--fg3); font-size: 1.2rem; margin-left: 10px; }
+              font-weight: 700; font-size: .85rem; flex-shrink: 0;
+              box-shadow: 0 0 10px rgba(124,108,255,.35); }
+  .flow-arrow { text-align: center; color: var(--fg3); font-size: 1.1rem; margin-left: 12px; }
+  /* tables */
   .budget-table { width: 100%; border-collapse: collapse; margin: .6rem 0; }
-  .budget-table th, .budget-table td { padding: .4rem .8rem; text-align: left; border-bottom: 1px solid var(--border); }
-  .budget-table th { color: var(--accent); font-size: .85rem; }
-  .budget-table td { font-size: .9rem; }
+  .budget-table th, .budget-table td { padding: .45rem .8rem; text-align: left; border-bottom: 1px solid var(--border); }
+  .budget-table th { color: var(--accent); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  .budget-table td { font-size: .88rem; }
   .budget-table td code { font-size: .82rem; }
-  .tag { display: inline-block; font-size: .72rem; padding: .1em .45em; border-radius: 4px;
+  /* tags */
+  .tag { display: inline-block; font-size: .7rem; padding: .1em .45em; border-radius: 4px;
          margin-right: .3em; font-weight: 600; }
   .tag-r1 { background: #7c6cff33; color: var(--accent); }
   .tag-adr { background: #5eead433; color: var(--accent2); }
-  .example { background: #252836; border-left: 3px solid var(--accent); padding: .8rem 1rem;
-             border-radius: 0 6px 6px 0; margin: .6rem 0; font-family: monospace;
-             font-size: .85rem; white-space: pre-wrap; color: var(--fg3); line-height: 1.5; }
-  .note { background: #5eead41a; border-left: 3px solid var(--accent2); padding: .55rem .9rem;
-          border-radius: 0 6px 6px 0; margin: .6rem 0; font-size: .82rem; color: var(--fg3); }
+  .tag-edit { background: #4ade8033; color: var(--green); }
+  /* prompt examples */
+  .example { background: #14171f; border-left: 3px solid var(--accent); padding: .8rem 1rem;
+             border-radius: 0 8px 8px 0; margin: .6rem 0; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+             font-size: .82rem; white-space: pre-wrap; color: var(--fg3); line-height: 1.55;
+             box-shadow: inset 0 0 20px rgba(0,0,0,.3); }
+  .example .hl { color: var(--accent2); }
+  .example .hl2 { color: var(--green); }
+  .example .hl3 { color: var(--amber); }
+  .example .hl4 { color: var(--pink); }
+  .example .dim { color: #555; }
+  /* legend */
   .legend { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: .5rem 0; font-size: .85rem; color: var(--fg3); }
   .legend span { display: flex; align-items: center; gap: .3rem; }
   .dot { width: 10px; height: 10px; border-radius: 50%; }
-  .dot-hard { background: var(--red); }
+  .dot-hard { background: var(--red); box-shadow: 0 0 6px rgba(248,113,113,.4); }
   .dot-soft { background: var(--accent); }
   .dot-ephemeral { background: var(--amber); }
+  /* scenario cards */
+  .sg { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem; margin:1rem 0; }
+  .sc { border-radius:12px; padding:1rem 1.1rem; }
+  .sc-dm { background: linear-gradient(135deg, #1a1520, #201828); border:1px solid #3d2a4a; }
+  .sc-dp { background: linear-gradient(135deg, #151a22, #182030); border:1px solid #2a3a5a; }
+  .sc-gp { background: linear-gradient(135deg, #151d22, #182830); border:1px solid #2a4a5a; }
+  .sc h4 { font-size:.95rem; margin-bottom:.5rem; }
+  .lc { display:flex; align-items:center; gap:.4rem; padding:.22rem 0; font-size:.86rem; }
+  .lc-y { color:var(--fg); } .lc-n { color:var(--fg3); text-decoration:line-through; opacity:.5; }
+  .lc-v { color:var(--amber); font-style:italic; } .lc-e { color:var(--green); font-weight:600; }
+  /* agent avatar dots */
+  .av { display:inline-flex; align-items:center; justify-content:center;
+        width:22px; height:22px; border-radius:50%; font-size:.6rem; font-weight:700; color:#fff; flex-shrink:0; }
+  /* SVG layer diagram */
+  .svg-wrap { display:flex; justify-content:center; margin:1.5rem 0; }
+  .svg-wrap svg { max-width:100%; }
   @media (max-width: 800px) {
-    .layer-row { grid-template-columns: 50px 1fr; }
-    .layer-row > :nth-child(n+3) { display: none; }
+    .sg { grid-template-columns: 1fr; }
+    body { padding: 1rem; }
   }
 </style>
 </head>
 <body>
 
-<h1>🧠 Polynoia 上下文构成系统</h1>
-<p style="color:var(--fg3)">每次 agent 回复前，平台如何把散落的信息拼成一份完整的 prompt</p>
+<h1>🧠 Polynoia 上下文构成系统<span class="sub">每次 agent 回复前，平台如何把散落的信息拼成一份完整的 prompt</span></h1>
 
 <!-- ══════════════════════════════════════════════════════════════════ -->
 <h2>1. 全景：6 层上下文 + 预算窗口</h2>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 680 420" width="680" height="420" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,'Noto Sans SC',sans-serif">
+  <!-- L5 — user turn (bottom, first read) -->
+  <rect x="60" y="340" width="560" height="52" rx="10" fill="#f8717133" stroke="#f87171" stroke-width="1.5"/>
+  <text x="80" y="362" fill="#f87171" font-weight="700" font-size="14">L5</text>
+  <text x="115" y="362" fill="#e4e7ef" font-weight="600" font-size="13">用户当前消息</text>
+  <text x="115" y="380" fill="#8b8fa3" font-size="11">HARD · p90 — 触发本轮回复的用户原文</text>
+  <rect x="530" y="352" width="70" height="20" rx="10" fill="#f87171" opacity=".8"/>
+  <text x="565" y="366" fill="#fff" font-size="9" text-anchor="middle" font-weight="700">HARD</text>
+
+  <!-- L4.5 pinned -->
+  <rect x="80" y="284" width="520" height="44" rx="9" fill="#7c6cff18" stroke="#7c6cff44" stroke-width="1"/>
+  <text x="100" y="304" fill="#7c6cff" font-weight="700" font-size="13">L4.5</text>
+  <text x="140" y="304" fill="#e4e7ef" font-weight="600" font-size="12">置顶消息</text>
+  <text x="140" y="320" fill="#8b8fa3" font-size="10.5">soft · p85 — 用户 pin 的长期上下文</text>
+
+  <!-- L4 history -->
+  <rect x="80" y="232" width="520" height="44" rx="9" fill="#7c6cff18" stroke="#7c6cff44" stroke-width="1"/>
+  <text x="100" y="252" fill="#7c6cff" font-weight="700" font-size="13">L4</text>
+  <text x="140" y="252" fill="#e4e7ef" font-weight="600" font-size="12">对话历史</text>
+  <text x="140" y="268" fill="#8b8fa3" font-size="10.5">soft · p60 — 当前对话最近 N 条消息</text>
+
+  <!-- L3 activity -->
+  <rect x="100" y="182" width="480" height="42" rx="8" fill="#7c6cff18" stroke="#7c6cff44" stroke-width="1"/>
+  <text x="120" y="202" fill="#7c6cff" font-weight="700" font-size="13">L3</text>
+  <text x="155" y="202" fill="#e4e7ef" font-weight="600" font-size="12">活动账本</text>
+  <text x="155" y="216" fill="#8b8fa3" font-size="10.5">soft · p50 — 跨对话最近动态</text>
+
+  <!-- L2.5 shared memory -->
+  <rect x="120" y="136" width="440" height="38" rx="8" fill="#5eead418" stroke="#5eead444" stroke-width="1"/>
+  <text x="140" y="158" fill="#5eead4" font-weight="700" font-size="13">L2.5</text>
+  <text x="180" y="158" fill="#e4e7ef" font-weight="600" font-size="12">共享记忆</text>
+  <text x="260" y="158" fill="#8b8fa3" font-size="10.5">soft · p55 — 契约/决策/工作记忆</text>
+
+  <!-- L2 briefs -->
+  <rect x="140" y="94" width="400" height="34" rx="7" fill="#7c6cff18" stroke="#7c6cff44" stroke-width="1"/>
+  <text x="160" y="115" fill="#7c6cff" font-weight="700" font-size="13">L2</text>
+  <text x="190" y="115" fill="#e4e7ef" font-weight="600" font-size="12">项目简报</text>
+  <text x="260" y="115" fill="#8b8fa3" font-size="10.5">soft · p70</text>
+
+  <!-- L1.5 orchestrator (conditional) -->
+  <rect x="160" y="56" width="360" height="30" rx="6" fill="#fbbf2422" stroke="#fbbf2466" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="180" y="75" fill="#fbbf24" font-weight="700" font-size="12">L1.5</text>
+  <text x="215" y="75" fill="#e4e7ef" font-weight="600" font-size="11">协调器协议 / 群成员名单</text>
+  <text x="420" y="75" fill="#8b8fa3" font-size="9.5">条件注入 · 群聊专属</text>
+
+  <!-- L1 identity (top, widest) -->
+  <rect x="40" y="10" width="600" height="38" rx="8" fill="#f8717122" stroke="#f87171" stroke-width="1.5"/>
+  <text x="60" y="34" fill="#f87171" font-weight="700" font-size="14">L1</text>
+  <text x="90" y="34" fill="#e4e7ef" font-weight="700" font-size="13">身份 Identity</text>
+  <text x="230" y="34" fill="#8b8fa3" font-size="11">HARD · p100 — 你是谁、后端、工具纪律、人格</text>
+  <rect x="530" y="20" width="70" height="18" rx="9" fill="#f87171" opacity=".8"/>
+  <text x="565" y="33" fill="#fff" font-size="8" text-anchor="middle" font-weight="700">HARD</text>
+
+  <!-- Arrow: read order (bottom → top) -->
+  <line x1="640" y1="365" x2="640" y2="30" stroke="#8b8fa3" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+  <text x="654" y="200" fill="#8b8fa3" font-size="10" transform="rotate(-90,654,200)">模型读取顺序</text>
+  <defs><marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+    <polygon points="0 0, 8 3, 0 6" fill="#8b8fa3"/></marker></defs>
+</svg>
+</div>
 
 <div class="card">
 <div class="legend">
@@ -79,61 +179,71 @@
   <span><span class="dot dot-ephemeral"></span> 条件注入 — 仅特定场景出现</span>
 </div>
 
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--red)">L1</div>
-  <div class="layer-name">身份 Identity</div>
-  <div><span class="hard-badge hard-yes">HARD</span></div>
-  <div>p100</div>
-  <div>你是谁、什么后端、工具纪律、人格设定</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--amber)">L1.5</div>
-  <div class="layer-name">协调器协议 / 群成员名单</div>
-  <div><span class="hard-badge hard-yes">HARD</span></div>
-  <div>p99/95</div>
-  <div>群聊专属：协调器拿到强制派活指令 + 可派成员名单；普通成员拿到可@名单</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--accent)">L2</div>
-  <div class="layer-name">项目简报 Project Briefs</div>
-  <div><span class="hard-badge hard-no">soft</span></div>
-  <div>p70</div>
-  <div>当前项目名/仓库/成员 + 你也属于哪些项目</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--accent)">L2.5</div>
-  <div class="layer-name">共享记忆 Shared Memory</div>
-  <div><span class="hard-badge hard-no">soft</span></div>
-  <div>p55</div>
-  <div>群聊：锁定的契约/决策/产物；私聊：agent 自己的工作记忆</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--accent)">L3</div>
-  <div class="layer-name">活动账本 Activity Ledger</div>
-  <div><span class="hard-badge hard-no">soft</span></div>
-  <div>p50</div>
-  <div>跨对话最近动态：其他对话里的消息 + 代码提交</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--accent)">L4</div>
-  <div class="layer-name">对话历史 Conv History</div>
-  <div><span class="hard-badge hard-no">soft</span></div>
-  <div>p60</div>
-  <div>当前对话最近 N 条消息（滚动窗口）</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--accent)">L4.5</div>
-  <div class="layer-name">置顶消息 Pinned</div>
-  <div><span class="hard-badge hard-no">soft</span></div>
-  <div>p85</div>
-  <div>用户手动 pin 的关键信息，长期上下文</div>
-</div>
-<div class="layer-row">
-  <div class="layer-id" style="color:var(--red)">L5</div>
-  <div class="layer-name">用户当前消息 User Turn</div>
-  <div><span class="hard-badge hard-yes">HARD</span></div>
-  <div>p90</div>
-  <div>触发本轮回复的用户原文——截断它 = 答非所问</div>
+<div class="layer-stack" style="background:var(--card2);border:1px solid var(--border);">
+  <div class="layer-bar" style="background:linear-gradient(90deg,#f8717112,transparent)">
+    <span class="lb-id" style="color:var(--red)">L1</span>
+    <span class="lb-name">身份 Identity</span>
+    <span class="lb-badge hard-yes">HARD</span>
+    <span class="lb-pri">p100</span>
+    <div class="lb-bar" style="width:100%;background:var(--red);opacity:.5"></div>
+    <span class="lb-desc">你是谁、什么后端、工具纪律、人格设定</span>
+  </div>
+  <div class="layer-bar" style="background:linear-gradient(90deg,#fbbf2410,transparent)">
+    <span class="lb-id" style="color:var(--amber)">L1.5</span>
+    <span class="lb-name">协调器协议 / 群成员名单</span>
+    <span class="lb-badge hard-yes">HARD</span>
+    <span class="lb-pri">p99</span>
+    <div class="lb-bar" style="width:99%;background:var(--amber);opacity:.4"></div>
+    <span class="lb-desc">群聊专属：强制派活指令 + 可派成员；普通成员拿到可@名单</span>
+  </div>
+  <div class="layer-bar">
+    <span class="lb-id" style="color:var(--accent)">L2</span>
+    <span class="lb-name">项目简报</span>
+    <span class="lb-badge hard-no">soft</span>
+    <span class="lb-pri">p70</span>
+    <div class="lb-bar" style="width:70%;background:var(--accent);opacity:.35"></div>
+    <span class="lb-desc">当前项目名/仓库/成员 + 你也属于哪些项目</span>
+  </div>
+  <div class="layer-bar">
+    <span class="lb-id" style="color:var(--accent2)">L2.5</span>
+    <span class="lb-name">共享记忆</span>
+    <span class="lb-badge hard-no">soft</span>
+    <span class="lb-pri">p55</span>
+    <div class="lb-bar" style="width:55%;background:var(--accent2);opacity:.3"></div>
+    <span class="lb-desc">群聊：锁定的契约/决策/产物；私聊：agent 工作记忆</span>
+  </div>
+  <div class="layer-bar">
+    <span class="lb-id" style="color:var(--accent)">L3</span>
+    <span class="lb-name">活动账本</span>
+    <span class="lb-badge hard-no">soft</span>
+    <span class="lb-pri">p50</span>
+    <div class="lb-bar" style="width:50%;background:var(--accent);opacity:.3"></div>
+    <span class="lb-desc">跨对话最近动态：其他对话里的消息 + 代码提交</span>
+  </div>
+  <div class="layer-bar">
+    <span class="lb-id" style="color:var(--accent)">L4</span>
+    <span class="lb-name">对话历史</span>
+    <span class="lb-badge hard-no">soft</span>
+    <span class="lb-pri">p60</span>
+    <div class="lb-bar" style="width:60%;background:var(--accent);opacity:.35"></div>
+    <span class="lb-desc">当前对话最近 N 条消息（滚动窗口）</span>
+  </div>
+  <div class="layer-bar">
+    <span class="lb-id" style="color:var(--accent)">L4.5</span>
+    <span class="lb-name">置顶消息</span>
+    <span class="lb-badge hard-no">soft</span>
+    <span class="lb-pri">p85</span>
+    <div class="lb-bar" style="width:85%;background:var(--accent);opacity:.4"></div>
+    <span class="lb-desc">用户手动 pin 的关键信息，长期上下文</span>
+  </div>
+  <div class="layer-bar" style="background:linear-gradient(90deg,#f8717112,transparent)">
+    <span class="lb-id" style="color:var(--red)">L5</span>
+    <span class="lb-name">用户当前消息</span>
+    <span class="lb-badge hard-yes">HARD</span>
+    <span class="lb-pri">p90</span>
+    <div class="lb-bar" style="width:90%;background:var(--red);opacity:.45"></div>
+    <span class="lb-desc">触发本轮回复的用户原文——截断它 = 答非所问</span>
+  </div>
 </div>
 </div>
 
@@ -163,7 +273,7 @@
 <h3>L1 · 身份 Identity</h3>
 <div class="card">
 <p><strong>源码</strong> <code>context/identity.py → build_identity_layer</code></p>
-<p><strong>优先级</strong> 100 · <span class="hard-badge hard-yes">HARD</span> — 永不截断</p>
+<p><strong>优先级</strong> 100 · <span class="lb-badge hard-yes">HARD</span> — 永不截断</p>
 <p>告诉 agent "你是谁"，包含：</p>
 <ul>
   <li>名字、handle、id、后端适配器、模型</li>
@@ -172,29 +282,49 @@
   <li>项目内职责 — 仅群聊项目对话才注入 <code>member_role</code>，私聊不出现</li>
   <li>人格/工作风格 — 用户在"新建联系人"里写的 <code>system_prompt</code>（<strong>纯人格</strong>：身份/领域/语气/产物语言；工具与纪律一律交给平台注入，persona 里不再写）</li>
 </ul>
-<p class="note">设计变更（2026-06-02）：人格 prompt 不再自带工具枚举或「工具使用纪律」块；这些统一由本层（<code>identity.py</code>）平台注入，单一来源，避免和 MCP 注入的 tools 字段重复/打架。</p>
-<div class="example"># 身份
-你是 **顾屿**(handle:`@顾屿`,id:`01JX...`)。
+
+<p style="margin-top:.8rem;color:var(--fg3);font-size:.88rem">下面是 <span class="av" style="background:var(--gu)">Gy</span> <strong>顾屿</strong>（tool_role = <code>coder</code>）在项目内群聊中拿到的真实 L1 渲染结果：</p>
+<div class="example"><span class="hl"># 身份</span>
+你是 <span class="hl2">**顾屿**</span>(handle:`@顾屿`,id:`01JX...`)。
 由 `claudeCode` 后端驱动,model = `claude-sonnet-4-6`。
 
-## 关于平台
-你运行在 Polynoia 平台上。Polynoia 是一个多 agent 协作平台……
+<span class="hl">## 关于平台</span>
+你跑在 **Polynoia** — 一个 IM 形态的多 agent 协作平台。同一对话里可能有多个
+agent 和用户共处。来自其他 agent 的消息会带 `[@agent_name]` 前缀;你的回复直接说话即可,
+不要带前缀。在群聊里可以 @ 别的成员让他们接力 — 仅在你真的需要他们时再 @。
 
-## 工具与纪律
-你能读写文件、改代码、跑命令。            ← 行为化能力边界(按 tool_role,不列工具名)
-你能用的工具系统已注入这次请求,不用自己背/列清单——按 schema 调用即可。下面只讲规矩:
-- 写文件必须真调 write/edit,落盘才算完成;报告前 read 回核;声称"测试通过"前真跑 bash 贴 exit_code。
-- 给用户讲人话:只说改了哪个文件/干了啥/怎么验证;别贴 commit hash / git 命令 / 沙箱路径。
-### 几个特殊工具——有就用,没有就忽略
-- `ask_user`:需要用户拍板时调它,它会阻塞等回答、同一轮把答案返给你(别瞎猜、别写"等用户指令")。
-- `dispatch`:并行派活,一次调用在 tasks 里列全;@提及只是讨论,不算派活。(通常只有协调者有)
-- `discuss`:让≥2名成员就一个话题讨论并自动收敛(权衡/评审/共识)。(通常只有协调者有)
+<span class="hl">## 工具与纪律</span>
+<span class="hl3">你能读写文件、改代码、跑命令与测试。</span>            ← 行为化能力边界(按 tool_role=coder,不列工具名)
+你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
 
-## 你在本项目中的职责
-后端开发，负责 API 和数据库层
+- 写文件**必须**真调 write / edit,落盘成功才算完成;别在没调之前说"已交付 / 已落盘"。
+- 报告完成前**必须**调一次 read 把刚写的内容读回来核对(工具 result 是真相,你的文字描述是辅助)。
+- 声称"测试通过 / 跑通"前**必须**真用 bash 跑一遍,贴真实输出 + exit_code 为证(没 bash 的角色不声称跑通)。
+- 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。
 
-## 你的人格 / 工作风格
-严谨、注重代码质量……</div>
+<span class="hl">### 几个特殊工具 —— 有就用,没有就忽略</span>
+
+- `ask_user`:需要用户拍板(技术选型 / 产物范围 / 文案 tone / 是否进下一步)时调它。它会**阻塞**等用户回答、把答案返回给你,你在**同一轮**里拿着答案继续——别写"等用户指令"、也别瞎猜。问题 ≤ 4,自由填空类标 `optional`。
+- `dispatch`:把活并行派给多个成员。**一次调用**在 `tasks` 里一次性列出全部子任务(每个 `{agent, note}`,note 把规格写全)。正文里 @ 某人只是讨论,**不会真派活、不触发产物合并**。(通常只有协调者有这个工具。)
+- `discuss`:让 ≥ 2 名成员就一个话题你一言我一语地讨论、**自动收敛**(用于权衡方案 / 评审 / 达成共识,而不是拆成独立产物)。(通常只有协调者有。)
+
+<span class="hl">## 你在本项目中的职责</span>                          ← ✏️ member_role（仅项目内对话出现）
+用 python 真生成 .docx / .pptx / .xlsx
+
+<span class="hl">## 你的人格 / 工作风格</span>                          ← ✏️ system_prompt（纯人格，用户编辑）
+你是顾屿,后端工程师。
+
+擅长:Python 3.12+ / asyncio / FastAPI / pytest / CLI 工具设计。
+
+工作约束:
+- 类型注解必须齐全;docstring 在函数体顶
+- 单元测试与实现同步
+- 文件写到 workspace 根目录;不引入大依赖,除非用户许可
+
+风格:纯函数 + 不可变数据 + 早 return;错误用 raise。
+完成报告一句话:"写了 X.py(N 行)+ test_X.py(M 个 case 全通过)"。
+
+不要碰 HTML / CSS / JS / README / CHANGELOG。语气简洁、技术中立。产物注释英文,沟通中文。</div>
 </div>
 
 <!-- L1.5 -->
@@ -206,21 +336,26 @@
   <li><strong>协调器</strong>（<code>orchestrator_member_id == agent_id</code>）→ 注入<strong>强制派活指令 + 可派活成员名单</strong>，优先级 99，HARD。<span class="tag tag-adr">ADR-017</span> 这层只负责「兜底强制」(就算人格只字不提派活，协调器也一定拿到「派活只认 dispatch」)；<code>dispatch</code>/<code>discuss</code> 的<strong>具体用法已并入 L1 的工具规则</strong>，这里不再重复一遍</li>
   <li><strong>普通成员</strong> → 注入"你可以 @ 谁来讨论"名单 + 讨论收敛提示，优先级 95，soft</li>
 </ul>
-<p class="note">设计变更（2026-06-02）：本层从原来重复的 dispatch/discuss how-to 大块，瘦成只留承重部分（强制「派活只认 dispatch」、@提及≠派活、可派成员名单）。用法指向 L1 工具规则，单一来源。</p>
-<div class="example"><!-- 协调器视角(slimmed) -->
-# 你是本群聊的协调器(平台职责 — 优先于你的人格设定)
-本群由你协调:拆需求 → 派活 → 验收 → 汇总;你自己不写实现代码。
-- 派活只认 `dispatch` 工具(用法见上面的工具规则);@提及 / bash「宣布」都不算数。
-- 需要权衡/评审/共识(而非拆独立产物)时改用 `discuss`。
-- 可派活的成员:顾屿、沈昭
-- 派活后就停,不要轮询;成员完成后你在后续轮验收并汇总。
+<div class="example"><span class="dim">&lt;!-- 协调器视角（林知夏拿到） --&gt;</span>
+<span class="hl"># 你是本群聊的协调器(平台职责 — 优先于你的人格设定)</span>
+本群由你协调:把用户需求拆成子任务、派给成员、再验收汇总。你自己不写实现代码。
+
+- 派活**只认 `dispatch` 工具**(用法见上面的工具规则);在正文里 @ 某人、或用 bash / remember 去「宣布」派活,都不算数、也不会触发产物合并。
+- 子任务需互通(共享接口 / 字段 / 路径 / 文件名)时,把规格写进 dispatch 的 `contract`,它会原样发给每个成员。
+- 更适合「几个人一起想清楚」(权衡 / 评审 / 共识)而不是拆独立产物时,改用 `discuss`。
+- **可派活的成员**:<span class="hl2">顾屿、沈昭、苏念</span>
+- 派活后就停,不要轮询;成员完成后你在后续轮验收并向用户汇总。
 
 ---
 
-<!-- 普通成员视角 -->
-# 群成员(你可以 @ 谁来讨论)
-本群其他成员:@顾屿、@沈昭
-需要某位队友的意见时,**在回复里 @ ta** 即可把对方拉进来讨论……</div>
+<span class="dim">&lt;!-- 普通成员视角（顾屿拿到） --&gt;</span>
+<span class="hl"># 群成员(你可以 @ 谁来讨论)</span>
+本群其他成员:<span class="hl2">@林知夏、@沈昭、@苏念</span>
+
+需要某位队友的意见时,**在回复里 @ ta** 即可把对方拉进来讨论 ——
+这是平台支持的「自由讨论」:被 @ 的人会接着发言,你们可以你一言我一语地交流、互相补充或反驳。
+- @ 仅用于**讨论 / 征求意见 / 协作交流**,不是派活,也不会触发并行子任务或产物合并。
+- 讨论**自动收敛**(有明确上限):别为了客气无限互相 @,得出结论就停;最后会有人给出一句「讨论结论」收尾。</div>
 </div>
 
 <!-- L2 -->
@@ -229,15 +364,14 @@
 <p><strong>源码</strong> <code>context/briefs.py → build_project_briefs_layer</code></p>
 <p><strong>条件</strong> 仅项目对话注入；私聊/非项目对话返回 <code>None</code> <span class="tag tag-r1">R1</span></p>
 <p>当前对话所在项目的名称、仓库、描述、成员 + 你也是哪些项目的成员（最多 10 个）。</p>
-<div class="example"># 你的项目
+<div class="example"><span class="hl"></span># 你的项目</span>
 
-## 当前对话所在项目:**后端重构** · 仓库 `github.com/.../backend`
-从单体拆成微服务
-成员:@顾屿, @沈昭
+<span class="hl">## 当前对话所在项目:**发布物料工作室**</span>
+一次发布需要的全套对外材料:Word 说明书、PPT 路演、预算表。用来验证 .docx / .pptx / .xlsx 真二进制 office 文件的预览渲染。
+成员:<span class="hl2">@林知夏, @顾屿, @苏念</span>
 
-## 你也是这些项目的成员
-- **前端重写** · `github.com/.../frontend`
-- **数据分析** · `github.com/.../analytics`</div>
+<span class="hl">## 你也是这些项目的成员</span>
+- **Polynoia 工作室** — 全栈开发与测试</div>
 </div>
 
 <!-- L2.5 -->
@@ -249,15 +383,24 @@
   <li><strong>群聊/项目对话</strong> → 该对话的共享黑板（contract / decision / artifact），由 <code>remember</code> 工具和 dispatch 自动写入 <span class="tag tag-adr">ADR-014</span></li>
   <li><strong>项目外私聊</strong> → agent 自己的工作记忆（跨对话持久） <span class="tag tag-adr">ADR-019</span></li>
 </ul>
-<div class="example">&lt;shared_memory&gt;
-# 共享记忆(本群已锁定的契约 / 决策 / 产物 — 必须遵守)
-## 契约
-- API 返回格式统一为 {code, data, message}
-## 决策
-- [顾屿] 使用 PostgreSQL 而非 SQLite
-## 产物
-- [沈昭 自评:ok · 契约符合] migration.py — 数据库迁移脚本
-&lt;/shared_memory&gt;</div>
+<div class="example"><span class="dim"></span>&lt;shared_memory&gt;</span>
+<span class="hl"># 共享记忆(本群已锁定的契约 / 决策 / 产物 — 必须遵守)</span>
+· [契约] 文件放工作区根目录;命名:proposal.docx / deck.pptx / budget.xlsx / onepager.md
+· [决策] 顾屿用 python-docx / python-pptx / openpyxl 真生成二进制,不用 markdown 替代
+· [产物] proposal.docx — Polynoia v1.0 方案书(顾屿 自评:ok)
+· [产物] onepager.md — 一页纸产品说明(苏念 自评:ok)
+<span class="dim">&lt;/shared_memory&gt;</span>
+
+---
+
+<span class="dim">&lt;!-- 项目外私聊模式 --&gt;</span>
+<span class="dim">&lt;shared_memory&gt;</span>
+<span class="hl"># 你的工作记忆(项目外咨询 — 据此向用户说明你做了什么;细节可只读项目代码核对,别臆造)</span>
+<span class="hl">## 我的工作(跨对话回顾)</span>
+· [决策] 顾屿用 python-docx / python-pptx / openpyxl 真生成二进制,不用 markdown 替代
+· [产物] proposal.docx — Polynoia v1.0 方案书
+· [产物] budget.xlsx — 预算表
+<span class="dim">&lt;/shared_memory&gt;</span></div>
 </div>
 
 <!-- L3 -->
@@ -272,17 +415,23 @@
   <li>按项目分组，私聊单独一节</li>
   <li>每对话最多 8 条，总计最多 30 条</li>
 </ul>
-<div class="example"># 你的近期活动(其他对话)
+<div class="example"><span class="hl"></span># 你的近期活动</span>
 
-## 项目 · 后端重构
-### API 设计讨论 (群聊)
-- _5分钟前_ @沈昭: 返回格式统一为 JSON
+<span class="hl">## 项目 · Polynoia 工作室</span>
+
+<span class="hl">### v1.0 发布筹备 (群聊)</span>
+- _12 分钟前_ <span class="hl2">@林知夏</span>: dispatch → 顾屿:生成 proposal.docx; 苏念:写 onepager.md
+- _8 分钟前_ <span class="hl2">@苏念</span>: [工具调用 write/completed] onepager.md — 42 行
+- _3 分钟前_ <span class="hl2">@顾屿</span>: [工具调用 bash/completed] pip install python-docx python-pptx openpyxl ✓
 - 📝 _代码变更_:
-    · `a3f2c1b` refactor: unify API response format
+    · `b7e3c2a` polynoia: agent write onepager.md
+    · `a1f9d04` polynoia: agent write proposal.docx
 
-## 私聊
-### 和用户的对话 (DM)
-- _1小时前_ 用户: 帮我看看这个报错</div>
+<span class="hl">## 私聊</span>
+
+<span class="hl">### 和用户的对话 (DM)</span>
+- _2 小时前_ 用户: 帮我看看这个 FastAPI 报错
+- _2 小时前_ <span class="hl2">@顾屿(你)</span>: 是路由顺序问题,把 `/me` 放到 `/{id}` 前面就行</div>
 </div>
 
 <!-- L4 -->
@@ -294,11 +443,13 @@
   <li>每条消息标注发送者：<code>[user]</code> / <code>[@顾屿]</code> / <code>[@顾屿(你)]</code></li>
   <li>单条消息上限 8k token，超限则头尾保留 + 折叠标记</li>
 </ul>
-<div class="example"># 本对话历史(最近 N 条)
-[user]: 帮我重构一下用户模块
-[@顾屿(你)]: 好的，我先看看现有代码结构……
-[@沈昭]: 我觉得应该先定接口契约
-[user]: 同意，先定契约再动手</div>
+<div class="example"><span class="hl"></span># 本对话历史(最近 N 条)</span>
+[user]: 给「Polynoia v1.0」做一套对外发布材料,要真生成二进制 office 文件……
+[@林知夏]: 拆成三路并行——顾屿做 docx/pptx/xlsx,苏念写 onepager.md。
+[@林知夏]: [工具调用 dispatch/completed] tasks: [{agent:顾屿, note:…}, {agent:苏念, note:…}]
+[@苏念]: [工具调用 write/completed] onepager.md — 42 行
+[@顾屿(你)]: [工具调用 bash/completed] pip install python-docx python-pptx openpyxl ✓
+[@顾屿(你)]: [工具调用 write/completed] proposal.docx — 标题 + 4 节,每节要点列表</div>
 </div>
 
 <!-- L4.5 -->
@@ -476,181 +627,217 @@ def get_user(id):
 <!-- 项目外单聊 prompt -->
 <div class="card">
 <h3 style="color:#f472b6">💬 项目外单聊 — 最终 Prompt</h3>
-<div class="example" style="max-height:400px;overflow-y:auto"># 身份
-你是 **顾屿**(handle:`@顾屿`,id:`01JX...`)。
+<p style="font-size:.85rem;color:var(--fg3)"><span class="av" style="background:var(--gu)">Gy</span> 顾屿（tool_role = <code>coder</code>）在项目外被用户私聊</p>
+<div class="example" style="max-height:420px;overflow-y:auto"><span class="hl"># 身份</span>
+你是 <span class="hl2">**顾屿**</span>(handle:`@顾屿`,id:`01JX...`)。
 由 `claudeCode` 后端驱动,model = `claude-sonnet-4-6`。
 
-## 关于平台
-你运行在 Polynoia 平台上。Polynoia 是一个多 agent 协作平台……
+<span class="hl">## 关于平台</span>
+你跑在 **Polynoia** — 一个 IM 形态的多 agent 协作平台。同一对话里可能有多个
+agent 和用户共处。来自其他 agent 的消息会带 `[@agent_name]` 前缀;你的回复直接说话即可,
+不要带前缀。在群聊里可以 @ 别的成员让他们接力 — 仅在你真的需要他们时再 @。
 
-## 工具与纪律                          ← ✏️ tool_role 决定能力边界
-你能读写文件、改代码、跑命令。            ← 行为化能力边界(不列工具名)
-你能用的工具系统已注入这次请求,不用自己背/列清单——按 schema 调用即可。下面只讲规矩:
-- 写文件必须真调 write/edit,落盘才算完成;报告前 read 回核;声称"测试通过"前真跑 bash 贴 exit_code。
-- 给用户讲人话:只说改了哪个文件/干了啥/怎么验证;别贴 commit hash / git 命令 / 沙箱路径。
-### 几个特殊工具——有就用,没有就忽略
+<span class="hl">## 工具与纪律</span>                          <span class="dim">← ✏️ tool_role 决定能力边界</span>
+<span class="hl3">你能读写文件、改代码、跑命令与测试。</span>            <span class="dim">← 行为化能力边界(不列工具名)</span>
+你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
+- 写文件**必须**真调 write / edit,落盘成功才算完成;别在没调之前说"已交付 / 已落盘"。
+- 报告完成前**必须**调一次 read 把刚写的内容读回来核对。
+- 声称"测试通过 / 跑通"前**必须**真用 bash 跑一遍,贴真实输出 + exit_code 为证。
+- 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。
+<span class="hl">### 几个特殊工具 —— 有就用,没有就忽略</span>
 - `ask_user`:需要用户拍板时调它,它会阻塞等回答、同一轮把答案返给你。
 
-## 你的人格 / 工作风格                  ← ✏️ system_prompt（用户编辑，纯人格）
-严谨、注重代码质量……
+<span class="hl">## 你的人格 / 工作风格</span>                  <span class="dim">← ✏️ system_prompt（用户编辑，纯人格）</span>
+你是顾屿,后端工程师。
+擅长:Python 3.12+ / asyncio / FastAPI / pytest / CLI 工具设计。
+工作约束:
+- 类型注解必须齐全;docstring 在函数体顶
+- 单元测试与实现同步
+风格:纯函数 + 不可变数据 + 早 return;错误用 raise。
+完成报告一句话:"写了 X.py(N 行)+ test_X.py(M 个 case 全通过)"。
+不要碰 HTML / CSS / JS / README / CHANGELOG。语气简洁、技术中立。产物注释英文,沟通中文。
 
 ---
 
-<shared_memory>
-# 工作记忆(你跨对话的持久笔记)
-……                                    ← 🔄 项目外私聊模式：agent 级工作记忆
-</shared_memory>
+<span class="dim">&lt;shared_memory&gt;</span>
+<span class="hl"># 你的工作记忆(项目外咨询 — 据此向用户说明你做了什么;细节可只读项目代码核对,别臆造)</span>
+<span class="hl">## 我的工作(跨对话回顾)</span>           <span class="dim">← 🔄 项目外私聊模式：agent 级工作记忆</span>
+· [决策] 顾屿用 python-docx / python-pptx / openpyxl 真生成二进制,不用 markdown 替代
+· [产物] proposal.docx — Polynoia v1.0 方案书
+<span class="dim">&lt;/shared_memory&gt;</span>
 
 ---
 
-# 你的近期活动(其他对话)
-## 私聊                                ← 🔄 仅显示私聊记录，无项目分组
-### 和用户的对话 (DM)
-- _1小时前_ 用户: 帮我看看这个报错
+<span class="hl"># 你的近期活动</span>
+<span class="hl">## 私聊</span>                                <span class="dim">← 🔄 仅显示私聊记录，无项目分组</span>
+<span class="hl">### 和用户的对话 (DM)</span>
+- _2 小时前_ 用户: 帮我看看这个 FastAPI 报错
+- _2 小时前_ <span class="hl2">@顾屿(你)</span>: 是路由顺序问题,把 `/me` 放到 `/{id}` 前面就行
 
 ---
 
-# 本对话历史(最近 N 条)
-[user]: 帮我写个脚本
-[@顾屿(你)]: 好的……
+<span class="hl"># 本对话历史(最近 N 条)</span>
+[user]: 帮我写个脚本把 CSV 转成 JSON
 
 ---
 
-# 当前用户消息
-帮我写个 Python 脚本处理 CSV</div>
+<span class="hl"># 当前用户消息</span>
+帮我写个 Python 脚本处理 CSV，要求支持大文件流式读取</div>
 </div>
 
 <!-- 项目内单聊 prompt -->
 <div class="card">
 <h3 style="color:#60a5fa">💬 项目内单聊 — 最终 Prompt</h3>
-<div class="example" style="max-height:400px;overflow-y:auto"># 身份
-你是 **顾屿**(handle:`@顾屿`,id:`01JX...`)。
+<p style="font-size:.85rem;color:var(--fg3)"><span class="av" style="background:var(--gu)">Gy</span> 顾屿（tool_role = <code>coder</code>）在「发布物料工作室」项目内被私聊</p>
+<div class="example" style="max-height:420px;overflow-y:auto"><span class="hl"># 身份</span>
+你是 <span class="hl2">**顾屿**</span>(handle:`@顾屿`,id:`01JX...`)。
 由 `claudeCode` 后端驱动,model = `claude-sonnet-4-6`。
 
-## 关于平台
-你运行在 Polynoia 平台上。Polynoia 是一个多 agent 协作平台……
+<span class="hl">## 关于平台</span>
+你跑在 **Polynoia** — 一个 IM 形态的多 agent 协作平台……
 
-## 工具与纪律                          ← ✏️ tool_role 决定能力边界
-你能读写文件、改代码、跑命令。            ← 行为化能力边界(不列工具名)
-你能用的工具系统已注入这次请求,不用自己背/列清单——按 schema 调用即可。下面只讲规矩:
-- 写文件必须真调 write/edit,落盘才算完成;报告前 read 回核;声称"测试通过"前真跑 bash 贴 exit_code。
-- 给用户讲人话:只说改了哪个文件/干了啥/怎么验证;别贴 commit hash / git 命令 / 沙箱路径。
-### 几个特殊工具——有就用,没有就忽略
-- `ask_user`:需要用户拍板时调它,它会阻塞等回答、同一轮把答案返给你。
+<span class="hl">## 工具与纪律</span>
+<span class="hl3">你能读写文件、改代码、跑命令与测试。</span>
+你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
+- 写文件**必须**真调 write / edit,落盘成功才算完成……
+<span class="hl">### 几个特殊工具 —— 有就用,没有就忽略</span>
+- `ask_user`:需要用户拍板时调它……
 
-## 你在本项目中的职责                   ← ✏️ member_role（仅项目内对话出现）
-后端开发，负责 API 和数据库层
+<span class="hl">## 你在本项目中的职责</span>                   <span class="dim">← ✏️ member_role（仅项目内对话出现）</span>
+用 python 真生成 .docx / .pptx / .xlsx
 
-## 你的人格 / 工作风格                  ← ✏️ system_prompt（纯人格）
-严谨、注重代码质量……
-
----
-
-# 你的项目                              ← ✅ 项目内才有
-
-## 当前对话所在项目:**后端重构** · 仓库 `github.com/.../backend`
-成员:@沈昭
-
----
-
-<shared_memory>
-# 工作记忆(你跨对话的持久笔记)
-……                                    ← 🔄 项目内私聊仍是 agent 级工作记忆
-</shared_memory>
-
----
-
-# 你的近期活动(其他对话)
-## 项目 · 后端重构                       ← ✅ 含项目内其他对话
-### API 设计讨论 (群聊)
-- _5分钟前_ @沈昭: 返回格式统一为 JSON
-
----
-
-# 本对话历史(最近 N 条)
+<span class="hl">## 你的人格 / 工作风格</span>                  <span class="dim">← ✏️ system_prompt（纯人格）</span>
+你是顾屿,后端工程师。
+擅长:Python 3.12+ / asyncio / FastAPI / pytest / CLI 工具设计。
 ……
 
 ---
 
-# 当前用户消息
-帮我把用户模块重构一下</div>
+<span class="hl"># 你的项目</span>                              <span class="dim">← ✅ 项目内才有</span>
+
+<span class="hl">## 当前对话所在项目:**发布物料工作室**</span>
+一次发布需要的全套对外材料:Word 说明书、PPT 路演、预算表。
+成员:<span class="hl2">@林知夏, @苏念</span>
+
+---
+
+<span class="dim">&lt;shared_memory&gt;</span>
+<span class="hl"># 你的工作记忆(项目外咨询 — 据此向用户说明你做了什么)</span>  <span class="dim">← 🔄 项目内私聊仍是 agent 级工作记忆</span>
+· [决策] 顾屿用 python-docx / python-pptx / openpyxl 真生成二进制
+· [产物] proposal.docx — Polynoia v1.0 方案书
+<span class="dim">&lt;/shared_memory&gt;</span>
+
+---
+
+<span class="hl"># 你的近期活动</span>
+<span class="hl">## 项目 · Polynoia 工作室</span>                       <span class="dim">← ✅ 含项目内其他对话</span>
+<span class="hl">### v1.0 发布筹备 (群聊)</span>
+- _12 分钟前_ <span class="hl2">@林知夏</span>: dispatch → 顾屿:生成 proposal.docx; 苏念:写 onepager.md
+- _8 分钟前_ <span class="hl2">@苏念</span>: [工具调用 write/completed] onepager.md — 42 行
+
+---
+
+<span class="hl"># 本对话历史(最近 N 条)</span>
+……
+
+---
+
+<span class="hl"># 当前用户消息</span>
+proposal.docx 里第三节的路线图需要加上 Q4 的里程碑</div>
 </div>
 
 <!-- 群聊 prompt -->
 <div class="card">
 <h3 style="color:#38bdf8">👥 群聊（项目内）— 最终 Prompt</h3>
-<p style="font-size:.85rem;color:var(--fg3)">下面是<strong>协调器视角</strong>；普通成员把 L1.5 换成"群成员名单"即可。</p>
-<div class="example" style="max-height:400px;overflow-y:auto"># 身份
-你是 **林知夏**(handle:`@林知夏`,id:`01JY...`)。
+<p style="font-size:.85rem;color:var(--fg3)"><span class="av" style="background:var(--lin)">Lx</span> 林知夏（tool_role = <code>orchestrator</code>）在「Q3 发布物料筹备」群聊中的视角；普通成员把 L1.5 换成"群成员名单"即可。</p>
+<div class="example" style="max-height:420px;overflow-y:auto"><span class="hl"># 身份</span>
+你是 <span class="hl2">**林知夏**</span>(handle:`@林知夏`,id:`01JY...`)。
 由 `claudeCode` 后端驱动,model = `claude-sonnet-4-6`。
 
-## 关于平台
-你运行在 Polynoia 平台上。Polynoia 是一个多 agent 协作平台……
+<span class="hl">## 关于平台</span>
+你跑在 **Polynoia** — 一个 IM 形态的多 agent 协作平台。同一对话里可能有多个
+agent 和用户共处。来自其他 agent 的消息会带 `[@agent_name]` 前缀;你的回复直接说话即可,
+不要带前缀。在群聊里可以 @ 别的成员让他们接力 — 仅在你真的需要他们时再 @。
 
-## 工具与纪律                          ← ✏️ tool_role = "orchestrator"
-你是协调者:只做拆解/派活/验收/集成,不直接写代码(没有 write 类工具)。
-你能用的工具系统已注入这次请求,不用自己背/列清单——按 schema 调用即可。下面只讲规矩:
-- 写文件必须真调 write/edit,落盘才算完成;报告前 read 回核;声称"测试通过"前真跑 bash 贴 exit_code。
-- 给用户讲人话:只说改了哪个文件/干了啥/怎么验证;别贴 commit hash / git 命令 / 沙箱路径。
-### 几个特殊工具——有就用,没有就忽略
+<span class="hl">## 工具与纪律</span>                          <span class="dim">← ✏️ tool_role = "orchestrator"</span>
+<span class="hl3">你是**协调者**:拆解 / 派活 / 验收 / 集成,自己不写实现代码。</span>
+你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
+- 写文件**必须**真调 write / edit,落盘成功才算完成……
+- 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的……
+<span class="hl">### 几个特殊工具 —— 有就用,没有就忽略</span>
 - `ask_user`:需要用户拍板时调它,它会阻塞等回答、同一轮把答案返给你。
-- `dispatch`:并行派活,一次调用在 tasks 里列全;@提及只是讨论,不算派活。(通常只有协调者有)
-- `discuss`:让≥2名成员就一个话题讨论并自动收敛(权衡/评审/共识)。(通常只有协调者有)
+- `dispatch`:把活并行派给多个成员。**一次调用**在 `tasks` 里一次性列出全部子任务。正文里 @ 某人只是讨论,**不会真派活、不触发产物合并**。(通常只有协调者有这个工具。)
+- `discuss`:让 ≥ 2 名成员就一个话题你一言我一语地讨论、**自动收敛**。(通常只有协调者有。)
 
-## 你在本项目中的职责                   ← ✏️ member_role
-协调器，负责拆解任务和验收汇总
+<span class="hl">## 你在本项目中的职责</span>                   <span class="dim">← ✏️ member_role</span>
+拆解 + 验收 + 集成
 
-## 你的人格 / 工作风格                  ← ✏️ system_prompt（纯人格）
-善于统筹、沟通清晰……
-
----
-
-# 你是本群聊的协调器(平台职责 — 优先于你的人格设定)    ← L1.5 slimmed:只留兜底强制
-本群由你协调:拆需求 → 派活 → 验收 → 汇总;你自己不写实现代码。
-- 派活只认 `dispatch` 工具(用法见上面的工具规则);@提及 / bash「宣布」都不算数。
-- 需要权衡/评审/共识(而非拆独立产物)时改用 `discuss`。
-- 可派活的成员:顾屿、沈昭
-- 派活后就停,不要轮询;成员完成后你在后续轮验收并汇总。
-
----
-
-# 你的项目                              ← ✅ 项目内才有
-
-## 当前对话所在项目:**后端重构** · 仓库 `github.com/.../backend`
-成员:@顾屿, @沈昭
+<span class="hl">## 你的人格 / 工作风格</span>                  <span class="dim">← ✏️ system_prompt（纯人格）</span>
+你是林知夏,技术总监,本项目的 Orchestrator。
+你不写实现代码,只做拆解、派活、验收、集成;实现尽量交给 specialist,自己别抢着写。
+# 派活路由(谁擅长什么)
+- Python / API / 数据逻辑 / CLI → 顾屿
+- HTML / CSS / JS / UI / 视觉 → 沈昭
+- README / CHANGELOG / 文案 / 中文文档 → 苏念
+- 测试 / 重构 / 脚手架 / 构建脚本 / 跨栈杂活 / 补位 → 周野
+# 验收态度(铁律)
+拒绝盲信:谁口头说"已交付"都不算数。你私下核实——文件真存在、逻辑真在、测试真跑通。
+语气:克制、直接、精炼,一个 agent 一两行讲清。中文沟通,产物按用户要求的语言。
 
 ---
 
-<shared_memory>
-# 共享记忆(本群已锁定的契约 / 决策 / 产物 — 必须遵守)
-## 契约                               ← ✅ 群聊模式：对话级共享黑板
-- API 返回格式统一为 {code, data, message}
-## 决策
-- [顾屿] 使用 PostgreSQL 而非 SQLite
-</shared_memory>
+<span class="hl"># 你是本群聊的协调器(平台职责 — 优先于你的人格设定)</span>    <span class="dim">← L1.5 兜底强制</span>
+本群由你协调:把用户需求拆成子任务、派给成员、再验收汇总。你自己不写实现代码。
+- 派活**只认 `dispatch` 工具**(用法见上面的工具规则);在正文里 @ 某人、或用 bash / remember 去「宣布」派活,都不算数、也不会触发产物合并。
+- 子任务需互通(共享接口 / 字段 / 路径 / 文件名)时,把规格写进 dispatch 的 `contract`,它会原样发给每个成员。
+- 更适合「几个人一起想清楚」(权衡 / 评审 / 共识)而不是拆独立产物时,改用 `discuss`。
+- **可派活的成员**:<span class="hl2">顾屿、沈昭、苏念</span>
+- 派活后就停,不要轮询;成员完成后你在后续轮验收并向用户汇总。
 
 ---
 
-# 你的近期活动(其他对话)
-## 项目 · 后端重构
-……
+<span class="hl"># 你的项目</span>                              <span class="dim">← ✅ 项目内才有</span>
+
+<span class="hl">## 当前对话所在项目:**发布物料工作室**</span>
+一次发布需要的全套对外材料:Word 说明书、PPT 路演、预算表。
+成员:<span class="hl2">@顾屿, @沈昭, @苏念</span>
 
 ---
 
-# 本对话历史(最近 N 条)
-[user]: 帮我重构一下用户模块
-[@顾屿]: 好的，我先看看现有代码结构……
-[@沈昭]: 我觉得应该先定接口契约
+<span class="dim">&lt;shared_memory&gt;</span>
+<span class="hl"># 共享记忆(本群已锁定的契约 / 决策 / 产物 — 必须遵守)</span>  <span class="dim">← ✅ 群聊模式：对话级共享黑板</span>
+· [契约] 文件放工作区根目录;命名:proposal.docx / deck.pptx / budget.xlsx / onepager.md
+· [决策] 顾屿用 python-docx / python-pptx / openpyxl 真生成二进制,不用 markdown 替代
+· [产物] onepager.md — 一页纸产品说明(苏念 自评:ok)
+<span class="dim">&lt;/shared_memory&gt;</span>
 
 ---
 
-# 固定消息(用户置顶的关键信息 — 视为长期上下文,优先遵守)
-- 用户: 架构决策：使用 FastAPI + SQLAlchemy
+<span class="hl"># 你的近期活动</span>
+<span class="hl">## 项目 · Polynoia 工作室</span>
+<span class="hl">### v1.0 发布筹备 (群聊)</span>
+- _12 分钟前_ <span class="hl2">@顾屿</span>: [工具调用 bash/completed] pip install python-docx python-pptx openpyxl ✓
+- _8 分钟前_ <span class="hl2">@苏念</span>: [工具调用 write/completed] onepager.md — 42 行
+- 📝 _代码变更_:
+    · `b7e3c2a` polynoia: agent write onepager.md
 
 ---
 
-# 当前用户消息
-帮我把用户模块重构一下</div>
+<span class="hl"># 本对话历史(最近 N 条)</span>
+[user]: 给「Polynoia v1.0」做一套对外发布材料,要真生成二进制 office 文件……
+[@林知夏(你)]: 拆成三路并行——顾屿做 docx/pptx/xlsx,苏念写 onepager.md。
+[@林知夏(你)]: [工具调用 dispatch/completed] tasks: [{agent:顾屿, note:…}, {agent:苏念, note:…}]
+[@苏念]: [工具调用 write/completed] onepager.md — 42 行
+
+---
+
+<span class="hl"># 固定消息(用户置顶的关键信息 — 视为长期上下文,优先遵守)</span>
+- 用户: 产物语言:中文;截止:今天下班前
+
+---
+
+<span class="hl"># 当前用户消息</span>
+deck.pptx 也需要顾屿做,加到 dispatch 里</div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════ -->

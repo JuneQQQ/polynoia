@@ -287,6 +287,50 @@ def _validate_tool_role(raw: object) -> str:
     return raw
 
 
+# Tools a contact's per-tool override (Agent.tools_whitelist) may contain —
+# mirror of mcp.tools.TOOL_REGISTRY. Unknown names are dropped (fail-safe).
+_ALL_TOOL_NAMES = frozenset({
+    "read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert",
+    "dispatch", "discuss", "remember", "recall", "report", "ask_user",
+    "request_project_access",
+})
+
+
+def _validate_tools_whitelist(raw: object) -> list[str]:
+    """REST input → clean tool list. Non-list / unknown names dropped. Order
+    preserved, deduped. Empty = contact uses its tool_role's full set."""
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in raw:
+        if isinstance(t, str) and t in _ALL_TOOL_NAMES and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _caps_from_tools(tool_role: str, tools: list[str]) -> list[str]:
+    """Capability tags (能力标签) derived from the EFFECTIVE tool set, so the
+    contact card honestly reflects what it can do. rule.md: 能力标签."""
+    from polynoia.mcp.tools import tools_for_role
+    eff = set(tools_for_role(tool_role, set(tools) or None).keys())
+    caps: list[str] = []
+    if eff & {"write", "edit", "apply_patch"}:
+        caps.append("写代码")
+    if "bash" in eff:
+        caps.append("跑命令/测试")
+    if "dispatch" in eff:
+        caps.append("派活")
+    if "discuss" in eff:
+        caps.append("讨论")
+    if not (eff & {"write", "edit", "apply_patch", "bash"}) and (
+        eff & {"read", "grep", "glob"}
+    ):
+        caps.append("只读")
+    return caps
+
+
 # ── Contacts (user-created agents using an enabled adapter) ─────────
 
 
@@ -405,6 +449,12 @@ async def create_contact(body: dict):
     bg = visuals.get("bg") or "#EFE9FB"
     tagline = body.get("tagline") or tmpl.tagline
 
+    tool_role = _validate_tool_role(body.get("tool_role"))
+    tools_whitelist = _validate_tools_whitelist(body.get("tools_whitelist"))
+    # 能力标签 = adapter template's domain tags + derived capability tags from the
+    # effective tool set (deduped, order-preserving).
+    caps = list(dict.fromkeys([*tmpl.caps, *_caps_from_tools(tool_role, tools_whitelist)]))
+
     contact = Agent(
         id=new_ulid(),
         name=name,
@@ -415,12 +465,13 @@ async def create_contact(body: dict):
         color=color,
         bg=bg,
         tagline=tagline,
-        caps=list(tmpl.caps),
+        caps=caps,
         online=True,
         enabled=True,
         custom=True,
         system_prompt=body.get("system_prompt") or tmpl.system_prompt,
-        tool_role=_validate_tool_role(body.get("tool_role")),
+        tool_role=tool_role,
+        tools_whitelist=tools_whitelist,
         setup=AgentSetup(
             cli_command=tmpl.setup.cli_command if tmpl.setup else None,
             detected=True,
@@ -471,6 +522,19 @@ async def update_contact(contact_id: str, body: dict):
             existing.system_prompt = sp
         if (tr := body.get("tool_role")) is not None:
             existing.tool_role = _validate_tool_role(tr)
+        if "tools_whitelist" in body:
+            existing.tools_whitelist = _validate_tools_whitelist(
+                body["tools_whitelist"]
+            )
+        # Re-derive capability tags whenever the tool set / role may have changed,
+        # so the contact card stays honest. Keep any non-derived (domain) tags.
+        if "tool_role" in body or "tools_whitelist" in body:
+            _derived = set(_caps_from_tools(
+                existing.tool_role, existing.tools_whitelist
+            ))
+            _all_derived = {"写代码", "跑命令/测试", "派活", "讨论", "只读"}
+            kept = [c for c in (existing.caps or []) if c not in _all_derived]
+            existing.caps = list(dict.fromkeys([*kept, *sorted(_derived)]))
         if (model := body.get("model")) is not None:
             if existing.setup is None:
                 from polynoia.domain.entities import AgentSetup

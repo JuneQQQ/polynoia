@@ -164,6 +164,7 @@ class OpenCodeAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",  # P1.2 — OpenCode does use Polynoia MCP (see _start in session); merge_mode reserved
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
@@ -202,6 +203,7 @@ class OpenCodeAdapter:
             env=_env,
             agent_id=self.meta.agent_id,
             tool_role=tool_role,
+            tools_whitelist=tools_whitelist,
         )
 
 
@@ -474,6 +476,7 @@ class OpenCodeSession:
         env: dict[str, str],
         agent_id: str,
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
         self.agent_id = agent_id
@@ -484,6 +487,7 @@ class OpenCodeSession:
         self._system_prompt = system_prompt
         self._env = env
         self._tool_role = tool_role
+        self._tools_whitelist = tools_whitelist or []
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
         self._acp_session_id: str | None = None
@@ -564,6 +568,7 @@ class OpenCodeSession:
                 {"name": "POLYNOIA_CONV_ID", "value": self._conv_id},
                 {"name": "POLYNOIA_AGENT_ID", "value": self.agent_id},
                 {"name": "POLYNOIA_AGENT_ROLE", "value": self._tool_role},
+                {"name": "POLYNOIA_AGENT_TOOLS", "value": ",".join(self._tools_whitelist)},
                 # Lets MCP tools call back into the server (pending-edit gate).
                 {"name": "POLYNOIA_API_BASE", "value": os.environ.get(
                     "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}")},

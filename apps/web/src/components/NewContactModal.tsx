@@ -42,6 +42,85 @@ const CONTEXT_PRESETS: { label: string; value: number }[] = [
 ];
 const DEFAULT_CONTEXT = 200_000;
 
+// ── Tool set (rule.md: 设定工具集 + 能力标签) ─────────────────────────────
+// Mirror of backend ROLE_TOOLS — the tools each role grants. tools_whitelist
+// can only NARROW within this (backend enforces; UI just shows role-relevant
+// toggles). Infra tools (remember/recall/report/ask_user/request_project_access)
+// are always kept implicitly — not shown as toggles.
+const ROLE_TOOLS: Record<string, string[]> = {
+	orchestrator: [
+		"read",
+		"grep",
+		"glob",
+		"dispatch",
+		"discuss",
+		"bash",
+		"edit",
+		"write",
+		"apply_patch",
+	],
+	coder: [
+		"read",
+		"edit",
+		"write",
+		"apply_patch",
+		"bash",
+		"grep",
+		"glob",
+		"revert",
+	],
+	designer: ["read", "edit", "write", "grep", "glob"],
+	writer: ["read", "edit", "write", "grep", "glob"],
+	generalist: [
+		"read",
+		"edit",
+		"write",
+		"apply_patch",
+		"bash",
+		"grep",
+		"glob",
+		"revert",
+	],
+};
+const INFRA_TOOLS = [
+	"remember",
+	"recall",
+	"report",
+	"ask_user",
+	"request_project_access",
+];
+const TOOL_LABEL: Record<string, string> = {
+	read: "读文件",
+	grep: "搜索",
+	glob: "找文件",
+	edit: "改文件",
+	write: "写文件",
+	apply_patch: "打补丁",
+	bash: "跑命令",
+	revert: "回滚",
+	dispatch: "派活",
+	discuss: "讨论",
+};
+
+/** Capability tags derived from an effective tool set — mirror of backend
+ * _caps_from_tools, for the live preview. */
+function capsFromTools(tools: Set<string>): string[] {
+	const caps: string[] = [];
+	if (tools.has("write") || tools.has("edit") || tools.has("apply_patch"))
+		caps.push("写代码");
+	if (tools.has("bash")) caps.push("跑命令/测试");
+	if (tools.has("dispatch")) caps.push("派活");
+	if (tools.has("discuss")) caps.push("讨论");
+	const hasWrite =
+		tools.has("write") ||
+		tools.has("edit") ||
+		tools.has("apply_patch") ||
+		tools.has("bash");
+	const hasRead = tools.has("read") || tools.has("grep") || tools.has("glob");
+	if (!hasWrite && hasRead) caps.push("只读");
+	return caps;
+}
+
 type Props = {
 	onClose: () => void;
 	onOpenAdapterManager: () => void;
@@ -92,11 +171,27 @@ export function NewContactModal({
 		editing?.system_prompt ?? "",
 	);
 	const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
-	// Tool set (工具集) — coarse-grained role that decides which mcp__polynoia__*
-	// tools the agent gets (backend ROLE_TOOLS). Was backend-only; now editable.
-	const [toolRole, setToolRole] = useState<string>(
-		(editing as { tool_role?: string } | null)?.tool_role ?? "generalist",
-	);
+	// Tool set (工具集) — role preset picks a tool bundle; the 高级 checkboxes
+	// can narrow it per-tool (Agent.tools_whitelist). Capability tags derive from
+	// the resulting set. See rule.md「设定工具集 + 能力标签」.
+	const _initRole =
+		(editing as { tool_role?: string } | null)?.tool_role ?? "generalist";
+	const [toolRole, setToolRole] = useState<string>(_initRole);
+	const [advancedOpen, setAdvancedOpen] = useState(false);
+	// Checked toggleable tools (always a subset of the role's toggleable set).
+	const [checkedTools, setCheckedTools] = useState<Set<string>>(() => {
+		const toggleable = ROLE_TOOLS[_initRole] ?? ROLE_TOOLS.generalist;
+		const wl =
+			(editing as { tools_whitelist?: string[] } | null)?.tools_whitelist ?? [];
+		return wl.length === 0
+			? new Set(toggleable)
+			: new Set(toggleable.filter((t) => wl.includes(t)));
+	});
+	// Changing the role resets the toggles to that role's full set.
+	const changeRole = (r: string) => {
+		setToolRole(r);
+		setCheckedTools(new Set(ROLE_TOOLS[r] ?? ROLE_TOOLS.generalist));
+	};
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
@@ -192,6 +287,12 @@ export function NewContactModal({
 				return Number.isFinite(n) && n > 0 ? n : DEFAULT_CONTEXT;
 			})();
 
+			// tools_whitelist: empty when all toggles are on (= use role default);
+			// otherwise the checked tools + infra (backend narrows role ∩ this).
+			const toggleable = ROLE_TOOLS[toolRole] ?? ROLE_TOOLS.generalist;
+			const allOn = toggleable.every((t) => checkedTools.has(t));
+			const toolsWhitelist = allOn ? [] : [...checkedTools, ...INFRA_TOOLS];
+
 			if (isEdit && editing) {
 				// Edit mode — adapter is locked, only persona-level fields move.
 				await api.updateContact(editing.id, {
@@ -200,6 +301,7 @@ export function NewContactModal({
 					system_prompt: systemPrompt.trim(),
 					color,
 					tool_role: toolRole,
+					tools_whitelist: toolsWhitelist,
 					max_context_tokens: parsedMaxCtx,
 				});
 			} else {
@@ -210,6 +312,7 @@ export function NewContactModal({
 					system_prompt: systemPrompt.trim() || undefined,
 					color,
 					tool_role: toolRole,
+					tools_whitelist: toolsWhitelist,
 					max_context_tokens: parsedMaxCtx ?? undefined,
 				});
 			}
@@ -376,9 +479,10 @@ export function NewContactModal({
 										/>
 									)}
 									<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
-										必填,且必须手动指定 —— 不再按模型名猜(对第三方/代理模型经常不准)。
-										选你这个模型的真实上下文上限;Polynoia 会扣掉 Claude Code 的固定开销(≈35k)
-										再分给历史/会话/项目几层。
+										必填,且必须手动指定 ——
+										不再按模型名猜(对第三方/代理模型经常不准)。
+										选你这个模型的真实上下文上限;Polynoia 会扣掉 Claude Code
+										的固定开销(≈35k) 再分给历史/会话/项目几层。
 									</div>
 								</div>
 							</Field>
@@ -409,10 +513,10 @@ export function NewContactModal({
 								/>
 							</Field>
 
-							<Field label="工具集 / 角色">
+							<Field label="工具集">
 								<select
 									value={toolRole}
-									onChange={(e) => setToolRole(e.target.value)}
+									onChange={(e) => changeRole(e.target.value)}
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
 								>
 									<option value="generalist">通用 generalist · 全套工具</option>
@@ -425,8 +529,59 @@ export function NewContactModal({
 										协调 orchestrator · 只拆解 / 派活
 									</option>
 								</select>
+								{/* 高级:在角色基础上逐个收紧工具(只能减、不能加) */}
+								<button
+									type="button"
+									onClick={() => setAdvancedOpen((v) => !v)}
+									className="mt-1.5 text-[10.5px] text-[var(--color-accent)] hover:underline"
+								>
+									{advancedOpen ? "▾ 收起工具集" : "▸ 高级:自定义工具集"}
+								</button>
+								{advancedOpen && (
+									<div className="mt-1.5 grid grid-cols-2 gap-1 p-2 rounded border border-[var(--color-line)] bg-[var(--color-bg)]">
+										{(ROLE_TOOLS[toolRole] ?? ROLE_TOOLS.generalist).map(
+											(t) => (
+												<label
+													key={t}
+													className="flex items-center gap-1.5 text-[11.5px] text-[var(--color-fg-2)] cursor-pointer"
+												>
+													<input
+														type="checkbox"
+														checked={checkedTools.has(t)}
+														onChange={(e) => {
+															setCheckedTools((prev) => {
+																const next = new Set(prev);
+																if (e.target.checked) next.add(t);
+																else next.delete(t);
+																return next;
+															});
+														}}
+													/>
+													<span className="font-mono text-[10.5px] text-[var(--color-fg-3)]">
+														{t}
+													</span>
+													<span>{TOOL_LABEL[t] ?? ""}</span>
+												</label>
+											),
+										)}
+									</div>
+								)}
+								{/* 能力标签:由工具集自动推导 */}
+								<div className="flex flex-wrap items-center gap-1 mt-1.5">
+									<span className="text-[10.5px] text-[var(--color-fg-3)]">
+										能力标签:
+									</span>
+									{capsFromTools(checkedTools).map((c) => (
+										<span
+											key={c}
+											className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+										>
+											{c}
+										</span>
+									))}
+								</div>
 								<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed mt-1">
-									决定该 agent 能用哪些工具(平台按角色注入对应「工具与纪律」)。
+									选角色给一组工具;「高级」里可逐个收紧(只能减)。标签按最终工具集自动生成。
 								</div>
 							</Field>
 

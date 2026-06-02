@@ -222,6 +222,7 @@ class Adapter(Protocol):
         agent_id: str | None = None,
         merge_mode: str = "auto",
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",

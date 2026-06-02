@@ -206,6 +206,9 @@ class AdapterPool:
                 agent_id=agent_id,
                 merge_mode=merge_mode,
                 tool_role=effective_role,
+                # Per-contact tool override (narrows the role set). Contact-level
+                # only — the conv override above picks a role, not a tool set.
+                tools_whitelist=agent.tools_whitelist,
                 read_only_workspace_id=read_only_ws_id,
                 proxy=proxy,
                 proxy_kind=proxy_kind,

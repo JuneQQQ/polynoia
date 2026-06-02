@@ -409,6 +409,7 @@ export const api = {
 		initials?: string;
 		tagline?: string;
 		tool_role?: string;
+		tools_whitelist?: string[];
 		max_context_tokens?: number | null;
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
 	updateContact: (
@@ -421,6 +422,7 @@ export const api = {
 			initials: string;
 			tagline: string;
 			tool_role: string;
+			tools_whitelist: string[];
 			max_context_tokens: number | null;
 		}>,
 	) =>

@@ -71,7 +71,11 @@ async def run_server(*, conv_id: str, agent_id: str) -> None:
     await ctx.ensure_sandbox()
 
     role = os.environ.get("POLYNOIA_AGENT_ROLE", "generalist").strip() or "generalist"
-    role_tools = tools_for_role(role)
+    # Per-contact tool override (Agent.tools_whitelist → POLYNOIA_AGENT_TOOLS, a
+    # comma-separated list). Narrows the role's set only (see tools_for_role).
+    _raw_tools = os.environ.get("POLYNOIA_AGENT_TOOLS", "").strip()
+    allow = {t.strip() for t in _raw_tools.split(",") if t.strip()} or None
+    role_tools = tools_for_role(role, allow)
 
     @app.list_tools()
     async def _list() -> list[Tool]:

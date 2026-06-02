@@ -107,7 +107,7 @@ _MCP_BLOCK_MARKER = "[mcp_servers.polynoia]"
 
 def _polynoia_mcp_block(
     *, conv_id: str, agent_id: str, pythonpath: str, sandbox_root: str,
-    tool_role: str = "generalist", api_base: str = "",
+    tool_role: str = "generalist", tools: str = "", api_base: str = "",
     worktree_root: str = "", workspace_root: str = "",
 ) -> str:
     """Build the ``[mcp_servers.polynoia]`` TOML block.
@@ -132,6 +132,7 @@ args = ["-m", "polynoia.mcp"]
 POLYNOIA_CONV_ID = "{conv_id}"
 POLYNOIA_AGENT_ID = "{agent_id}"
 POLYNOIA_AGENT_ROLE = "{tool_role}"
+POLYNOIA_AGENT_TOOLS = "{tools}"
 POLYNOIA_API_BASE = "{api_base}"
 POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
 {worktree_lines}PYTHONPATH = "{pythonpath}"
@@ -216,6 +217,7 @@ class CodexAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",  # P1.2 — Codex does use Polynoia MCP via config.toml; merge_mode reserved
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
@@ -256,6 +258,7 @@ class CodexAdapter:
             pythonpath=server_pkg_root,
             sandbox_root=str(sandbox.root.parent),
             tool_role=tool_role,
+            tools=",".join(tools_whitelist or []),
             api_base=os.environ.get(
                 "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
             ),

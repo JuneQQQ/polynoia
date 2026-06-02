@@ -127,6 +127,7 @@ class ClaudeCodeAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
@@ -167,6 +168,8 @@ class ClaudeCodeAdapter:
                 "POLYNOIA_CONV_ID": conv_id,
                 "POLYNOIA_AGENT_ID": self.meta.agent_id,
                 "POLYNOIA_AGENT_ROLE": tool_role,
+                # Per-contact tool override (narrows the role set; empty = role default).
+                "POLYNOIA_AGENT_TOOLS": ",".join(tools_whitelist or []),
                 # IMPORTANT: MCP subprocess inherits Claude SDK's sandboxed
                 # HOME, so Path.home() resolves wrong. Pin sandbox_root via env.
                 "POLYNOIA_SANDBOX_ROOT": str(sandbox.root.parent),
@@ -249,7 +252,9 @@ class ClaudeCodeAdapter:
         # Net effect: every file mutation flows through mcp__polynoia__* —
         # audited (.polynoia/audit.jsonl), sandbox-bounded, gateable (ADR-005),
         # and role-filtered (ADR-013).
-        role_tool_names = set(tools_for_role(tool_role).keys())
+        role_tool_names = set(
+            tools_for_role(tool_role, set(tools_whitelist or []) or None).keys()
+        )
         effective_allowed = allowed_tools if allowed_tools else [
             f"mcp__polynoia__{name}" for name in sorted(role_tool_names)
         ]
