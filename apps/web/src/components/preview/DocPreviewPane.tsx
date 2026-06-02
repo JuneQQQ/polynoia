@@ -2,6 +2,7 @@
  *   - .md (document)      → CrepeEditor (WYSIWYG, editable, saves back)
  *   - Marp .md / .marp    → MarpPreview (slides; edit source in the code editor)
  *   - .xlsx               → WorkbookPreview (editable binary workbook)
+ *   - .csv / .tsv         → SheetPreview (read-only table view)
  *   - .html               → sandboxed iframe (static)
  *
  * Driven by props (path + current content) so it slots into CodeEditor's
@@ -14,6 +15,7 @@ import { CrepeEditor } from "./CrepeEditor";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarpPreview } from "./MarpPreview";
 import { OfficePreview } from "./OfficePreview";
+import { SheetPreview } from "./SheetPreview";
 import { WorkbookPreview } from "./WorkbookPreview";
 
 function isMarp(content: string): boolean {
@@ -28,6 +30,7 @@ export type DocKind =
 	| "marp"
 	| "html"
 	| "workbook"
+	| "sheet"
 	| "word"
 	| "slides"
 	| "other";
@@ -35,6 +38,7 @@ export type DocKind =
 export function docKind(path: string, content: string): DocKind {
 	if (/\.html?$/i.test(path)) return "html";
 	if (/\.xlsx$/i.test(path)) return "workbook";
+	if (/\.(csv|tsv)$/i.test(path)) return "sheet";
 	if (/\.docx$/i.test(path)) return "word";
 	if (/\.pptx$/i.test(path)) return "slides";
 	if (/\.marp$/i.test(path)) return "marp";
@@ -86,6 +90,9 @@ export function DocPreviewPane({
 			<Empty text="表格编辑需要在项目对话(workspace)里。" />
 		);
 	}
+	if (kind === "sheet") {
+		return <SheetPreview content={content} fileName={name} />;
+	}
 	if (kind === "word" || kind === "slides") {
 		return workspaceId ? (
 			<OfficePreview workspaceId={workspaceId} path={path} kind={kind} />
@@ -101,7 +108,7 @@ export function DocPreviewPane({
 	}
 	return (
 		<Empty
-			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.xlsx(表格)、.docx/.pptx(Office)、.html。`}
+			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.xlsx(可编辑表格)、.csv/.tsv(只读表格)、.docx/.pptx(Office)、.html。`}
 		/>
 	);
 }

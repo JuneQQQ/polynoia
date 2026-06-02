@@ -1312,6 +1312,13 @@ class _PresentTool(_ToolBase):
         target = ctx._resolve_read(rel)
         if not target.exists() or target.is_dir():
             return {"error": f"file not found: {rel}"}
+        # Capture the file in git BEFORE emitting the card. Untracked side-
+        # products (e.g. a CSV produced by running a script via the bash tool)
+        # would otherwise stay in the worktree, never merge to main, and the
+        # card's src URL would 404 because the download endpoint reads from
+        # main. git_commit is a no-op if the worktree has no pending changes.
+        with contextlib.suppress(Exception):
+            await ctx.git_commit(turn_id=None, message_suffix=f"present {rel}")
         # Workspace address: a project workspace_id when in one, else the contact's
         # private per-conv sandbox (conv:<conv_id>) — matches the preview pane.
         ws_id = os.environ.get("POLYNOIA_WORKSPACE_ID") or f"conv:{ctx.conv_id}"

@@ -201,7 +201,12 @@ class OpenCodeAdapter:
             model=model,
             system_prompt=system_prompt,
             env=_env,
-            agent_id=self.meta.agent_id,
+            # Pass the CONTACT's ULID (caller-supplied), not the adapter's
+            # static id. Same bug as the claudeCode fix — POLYNOIA_AGENT_ID
+            # downstream becomes the `sender_id` on present cards / audit
+            # events; using "opencoder" collapses every OpenCode-backed agent
+            # into one generic sender → UI shows "Agent BOT".
+            agent_id=agent_id or self.meta.agent_id,
             tool_role=tool_role,
             tools_whitelist=tools_whitelist,
         )

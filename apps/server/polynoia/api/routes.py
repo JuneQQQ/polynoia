@@ -3896,18 +3896,25 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     )
 
             # Post-turn auto-merge: drain this conv's unmerged worktree commits
-            # into main UNLESS a burst will do it. A burst owns the merge only
-            # when one actually started (`_burst_started`) — a dispatcher turn
-            # that dispatched nothing (orchestrator replied / wrote files itself,
-            # or a sub-agent @mention that fell back to the orchestrator) must
-            # still drain, or its writes never reach main (the「@子Agent少文件」bug).
-            # Burst worker turns (burst_card_id set) skip here — _merge_burst_to_main
-            # drains them, preserving conflict-card `base_agents` order.
+            # into main after EVERY non-failed turn — burst worker, dispatcher,
+            # free single-agent, all of them. Drain is idempotent: when a burst
+            # later fires _merge_burst_to_main it becomes a no-op for what we
+            # already merged. The reason to NOT skip burst workers (as we used
+            # to) is the orphaned-burst case: if the dispatcher errors AFTER
+            # spawning workers, `is_last → _merge_burst_to_main` never trips
+            # and the worker's deliverable stays stuck in its branch forever.
+            # Letting the worker self-drain rescues it. The cost is `base_agents`
+            # in conflict cards may now reflect turn-completion order rather
+            # than burst-end branch-iteration order, which is actually MORE
+            # correct (the agent who committed first IS the base for later).
             #
-            # suppress(Exception): a transient git/merge error must never crash the
-            # user-facing turn (worst case: file surfaces on the next turn).
-            _skip_drain = bool(burst_card_id) or (is_dispatcher and _burst_started)
-            if not _skip_drain and not turn_failed:
+            # Skip: failed turns only. Their worktree may be half-written;
+            # forcing a merge now could land partial garbage in main. The next
+            # successful turn picks up where they left off.
+            #
+            # suppress(Exception): a transient git/merge error must never crash
+            # the user-facing turn (worst case: file surfaces on the next turn).
+            if not turn_failed:
                 _ws_id_for_merge: str | None = None
                 with suppress(Exception):
                     async with SessionLocal() as _db:

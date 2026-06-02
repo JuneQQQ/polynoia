@@ -160,13 +160,23 @@ class ClaudeCodeAdapter:
         api_base = os.environ.get(
             "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
         )
+        # POLYNOIA_AGENT_ID must be the CONTACT's ULID (passed in as `agent_id`),
+        # not the adapter's static id ("claudeCode"). MCP tools attribute audit
+        # events + emit messages with this id as `sender_id`; using the static
+        # adapter id collapses every claudeCode-backed agent into a single
+        # generic "claudeCode" sender → UI shows "Agent BOT" instead of the
+        # real contact + the per-conv member context is lost. Codex/OpenCode
+        # adapters already pass through `agent_id` correctly; this fixes the
+        # parity gap. Fall back to adapter id only if a caller forgot to pass
+        # one (defensive — pool.py always passes the real ULID).
+        contact_agent_id = agent_id or self.meta.agent_id
         polynoia_mcp = McpStdioServerConfig(
             type="stdio",
             command="python",
             args=["-m", "polynoia.mcp"],
             env={
                 "POLYNOIA_CONV_ID": conv_id,
-                "POLYNOIA_AGENT_ID": self.meta.agent_id,
+                "POLYNOIA_AGENT_ID": contact_agent_id,
                 "POLYNOIA_AGENT_ROLE": tool_role,
                 # Per-contact tool override (narrows the role set; empty = role default).
                 "POLYNOIA_AGENT_TOOLS": ",".join(tools_whitelist or []),
