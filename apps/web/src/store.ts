@@ -98,10 +98,45 @@ export type AgentStatus = {
 	ts: number;
 };
 
+/** Strip MCP/server prefixes → just the key verb. Mirror of ToolCallPart's
+ * cleanToolName (kept here so store has no component dependency):
+ *   mcp__polynoia__write → write · polynoia::write → write · polynoia_read → read */
+export function cleanToolName(raw: string): string {
+	return raw
+		.replace(/^mcp__[^_]+__/, "")
+		.replace(/^[a-z0-9]+::/i, "")
+		.replace(/^[a-z0-9]+__/i, "")
+		.replace(/^polynoia_+/i, "");
+}
+
+/** Chinese label for known tools (keyed by the cleaned, lower-cased name).
+ * Unknown tools fall back to the cleaned English key (rule: English → just the
+ * last key name; known → Chinese). Never shows an mcp__polynoia__ prefix. */
+const _TOOL_ZH: Record<string, string> = {
+	read: "读取", write: "写入", edit: "编辑", apply_patch: "打补丁",
+	bash: "执行命令", grep: "搜索", glob: "查找文件", revert: "回滚",
+	dispatch: "派活", discuss: "讨论", remember: "记录", recall: "回忆",
+	report: "汇报", ask_user: "询问", request_project_access: "申请项目权限",
+	present: "展示文件", task: "子任务", todowrite: "更新待办",
+	webfetch: "抓取网页", websearch: "联网搜索", multiedit: "批量编辑",
+};
+
+/** Display name for a tool in the status pill: cleaned key, translated to
+ * Chinese when known. e.g. `mcp__polynoia__read` → 读取; `dispatch` → 派活;
+ * an unknown `foo` → foo. */
+export function toolDisplayName(raw?: string): string {
+	if (!raw) return "";
+	const key = cleanToolName(raw);
+	return _TOOL_ZH[key.toLowerCase()] ?? key;
+}
+
 /** Coarse phase → Chinese status label (shared by the running pill + member dots). */
 export function phaseLabel(phase?: AgentPhase, tool?: string): string {
 	if (phase === "thinking") return "正在思考";
-	if (phase === "executing") return tool ? `正在执行 ${tool}` : "正在执行任务";
+	if (phase === "executing") {
+		const name = toolDisplayName(tool);
+		return name ? `正在执行 ${name}` : "正在执行任务";
+	}
 	if (phase === "replying") return "正在回复";
 	return "运行中";
 }
