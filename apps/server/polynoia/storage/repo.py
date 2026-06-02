@@ -276,14 +276,23 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
 
 
 async def clear_conversation_messages(session: AsyncSession, conv_id: str) -> int:
-    """Delete all messages + pins for a conv but KEEP the conv itself.
+    """Reset a conv to empty but KEEP the conv (id / members / roles).
 
-    Returns the number of messages removed. Used to reset a conv for a clean
-    re-test without churning its id / membership.
+    Deletes messages + pins AND the conv's diff / conflict-loop state — merge
+    conflicts, pending edits, pending project-access. Without the latter, a
+    scenario re-run (the reuse path calls this) inherited STALE 待解决冲突 cards +
+    pending diff-review rows from the previous run (the「重置脚本没动 diff 数据库」
+    bug). Returns the number of MESSAGES removed. Used for a clean re-test.
     """
     from sqlalchemy import func
 
-    from polynoia.storage.models import MessageRow, PinRow
+    from polynoia.storage.models import (
+        ConflictRow,
+        MessageRow,
+        PendingAccessRow,
+        PendingEditRow,
+        PinRow,
+    )
 
     count = (
         await session.execute(
@@ -292,6 +301,10 @@ async def clear_conversation_messages(session: AsyncSession, conv_id: str) -> in
     ).scalar_one()
     await session.execute(MessageRow.__table__.delete().where(MessageRow.conv_id == conv_id))
     await session.execute(PinRow.__table__.delete().where(PinRow.conv_id == conv_id))
+    # Diff / conflict-loop state — else a re-run inherits old conflict + pending cards.
+    await session.execute(ConflictRow.__table__.delete().where(ConflictRow.conv_id == conv_id))
+    await session.execute(PendingEditRow.__table__.delete().where(PendingEditRow.conv_id == conv_id))
+    await session.execute(PendingAccessRow.__table__.delete().where(PendingAccessRow.conv_id == conv_id))
     await session.flush()
     return int(count or 0)
 

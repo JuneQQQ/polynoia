@@ -166,8 +166,23 @@ export function ChatPane({ convId, members, title }: Props) {
 						// stream; this link is redundant UI noise. Silently drop.
 					} else if (chunk.type === "data-conv-cleared") {
 						// Conv was wiped server-side (POST /clear). Drop the in-memory
-						// timeline so the open chat empties without a refresh.
+						// timeline AND the diff/conflict-loop cards (conflicts + pending
+						// edits + pending access) so the open chat empties without a
+						// refresh — matches the server now clearing those tables too.
 						hydrateMessages(convId, [], { mode: "replace", hasMore: false });
+						useStore.setState((s) => {
+							const conflictsByConv = new Map(s.conflictsByConv);
+							const pendingEditsByConv = new Map(s.pendingEditsByConv);
+							const pendingAccessByConv = new Map(s.pendingAccessByConv);
+							conflictsByConv.delete(convId);
+							pendingEditsByConv.delete(convId);
+							pendingAccessByConv.delete(convId);
+							return {
+								conflictsByConv,
+								pendingEditsByConv,
+								pendingAccessByConv,
+							};
+						});
 					} else if (chunk.type === "data-stream-resume") {
 						// Refresh/reconnect mid-stream: server sent the accumulated content
 						// of an agent's in-progress message. Rebuild it so the 思考块 + 回复
