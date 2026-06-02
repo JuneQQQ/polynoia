@@ -15,6 +15,24 @@ from polynoia.settings import settings
 
 _IS_WINDOWS = os.name == "nt"
 
+# Local-dependency dirs to keep OUT of git. Policy: each conv/workspace manages
+# deps INSIDE its own working dir — Python via uv (.venv), Node via node_modules,
+# etc. (steered by env_for_agent + the platform tool-rules). Committing these into
+# the worktree would bloat the shared workspace git and cause spurious merge
+# conflicts, so they're always gitignored. Appended to every sandbox .gitignore.
+_LOCAL_DEPS_GITIGNORE = (
+    ".venv/\n"
+    "venv/\n"
+    ".uv/\n"
+    "node_modules/\n"
+    ".pnpm-store/\n"
+    "dist/\n"
+    "build/\n"
+    "*.egg-info/\n"
+    "target/\n"        # Rust/Java
+    "vendor/\n"        # Go/PHP
+)
+
 # git 子进程超时 + 非交互 env:卡住的 git(凭据/编辑器提示、慢 filter、异常 stdin
 # 等待)会永久占住 workspace 合并锁、拖垮整个 workspace 的合并/冲突解决,故一律设
 # 超时 + 关交互 + stdin=DEVNULL。
@@ -319,6 +337,7 @@ class Sandbox:
             ".pytest_cache/\n"
             ".ruff_cache/\n"
             ".mypy_cache/\n"
+            + _LOCAL_DEPS_GITIGNORE
         )
         await scratch._run(["git", "add", ".gitignore"])
         await scratch._run([
@@ -362,6 +381,7 @@ class Sandbox:
             ".pytest_cache/\n"
             ".ruff_cache/\n"
             ".mypy_cache/\n"
+            + _LOCAL_DEPS_GITIGNORE
         )
         await self._run(["git", "add", ".gitignore"])
         # Initial commit including .gitignore so the base has it tracked.
@@ -1328,6 +1348,18 @@ class Sandbox:
             # not a double-nested ``<parent>/<conv>/<conv>``.
             "POLYNOIA_CONV_ID": self.conv_id,
             "POLYNOIA_SANDBOX_ROOT": str(self.root.parent),
+            # ── Local-dependency policy ─────────────────────────────────
+            # Each conv/workspace keeps its deps INSIDE its own working dir.
+            # Python: uv creates the venv at <workdir>/.venv (project env), so
+            # `uv add` / `uv run` / `uv pip install` all land locally — never in
+            # a global site-packages. Cache stays under the sandbox too.
+            "UV_PROJECT_ENVIRONMENT": ".venv",
+            "UV_CACHE_DIR": str(self.root / ".polynoia" / "uv-cache"),
+            # Node: keep npm/pnpm caches + global prefix inside the sandbox so a
+            # stray `npm i -g` can't escape to the host; normal installs already
+            # land in the local node_modules.
+            "npm_config_cache": str(self.root / ".polynoia" / "npm-cache"),
+            "npm_config_prefix": str(self.root / ".polynoia" / "npm-global"),
         })
         # Workspace-shared mode: add WORKSPACE_ID + AGENT_ID + BRANCH so the
         # MCP subprocess + spawned tools know which (agent, conv, branch)
