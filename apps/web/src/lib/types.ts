@@ -287,6 +287,9 @@ export type Message = {
 	in_reply_to?: ULID | null;
 	/** User can pin individual messages (separate from workspace-level Pin). */
 	pinned?: boolean;
+	/** Workspace main HEAD sha at this message's creation (workspace convs only).
+	 * Drives「回到这个对话」code restore. Null = DM / no workspace. */
+	code_sha?: string | null;
 	created_at: string;
 	edited_at?: string | null;
 };
@@ -336,11 +339,14 @@ export type Agent = {
 	human?: boolean;
 	system_prompt?: string | null;
 	tools_whitelist?: string[];
-	proxy?: string | null;
-	proxy_kind?: "system" | "direct" | "custom";
+	// NOTE: no proxy here — network egress is adapter-level (set in 适配器管理),
+	// shared by all contacts of an adapter. See api.setAdapterProxy.
 	foreign_from?: string | null;
 	setup?: AgentSetup | null;
 };
+
+/** Network egress kind for an adapter's spawned CLI subprocesses. */
+export type ProxyKind = "system" | "direct" | "custom";
 
 export type Server = {
 	id: ULID;

@@ -20,23 +20,36 @@ _PLATFORM_BLOCK = (
 # Platform-injected tool-use discipline, keyed by tool_role. The PLATFORM owns
 # this boilerplate so users NEVER have to type it into a contact's persona —
 # the persona field is for the agent's unique character/style ONLY. Auto-injected
-# unless the persona already carries its own discipline section (the detailed
-# seeded demo agents do — we don't double it up; see build_identity_layer).
+# unless the persona already carries its own discipline section.
+#
+# NOTE: we do NOT enumerate tool names here. The MCP layer already discovers the
+# role's tools and injects their schemas into the request's `tools` field — the
+# model can SEE exactly what it has. So this is a behavioral capability/constraint
+# line, not an inventory.
 _ROLE_TOOLS_DESC: dict[str, str] = {
-    "orchestrator": "你是**协调者**:只做拆解 / 派活(`dispatch`)/ 验收 / 集成,**不直接写代码**(没有 write 类工具)。",
-    "coder": "你有全套工具:`read` / `edit` / `write` / `apply_patch` / `bash` / `grep` / `glob`。",
-    "designer": "你有 `read` / `edit` / `write` / `grep` / `glob`(**没有 bash**,不能跑命令)。",
-    "writer": "你有 `read` / `edit` / `write` / `grep` / `glob`(**没有 bash**)。",
-    "generalist": "你有全套工具:`read` / `edit` / `write` / `apply_patch` / `bash` / `grep` / `glob`。",
-    "advisory": "当前为只读咨询:你有 `read` / `grep` / `glob`,**没有** write / edit / bash —— 不落盘。",
+    "orchestrator": "你是**协调者**:拆解 / 派活 / 验收 / 集成,自己不写实现代码。",
+    "coder": "你能读写文件、改代码、跑命令与测试。",
+    "designer": "你能读写文件,但**不能跑命令**(无终端)。",
+    "writer": "你能读写文件,但**不能跑命令**。",
+    "generalist": "你能读写文件、改代码、跑命令。",
+    "advisory": "当前为**只读咨询**:能看不能改、不跑命令、不落盘。",
 }
 
 _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)
 
-- 写文件**必须**调 `mcp__polynoia__write` / `mcp__polynoia__edit`,落盘成功才算完成;别在没调 write 前说“已交付 / 已落盘”。
-- 报告完成前**必须**调一次 `read` 把刚写的内容读回来核对(工具 result 是真相,你的文字描述是辅助)。
-- 声称“测试通过 / 跑通”前**必须**真用 `bash` 跑一遍,贴真实输出 + exit_code 为证(没 bash 的角色不声称跑通)。
-- 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。"""
+你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
+
+- 写文件**必须**真调 write / edit,落盘成功才算完成;别在没调之前说“已交付 / 已落盘”。
+- 报告完成前**必须**调一次 read 把刚写的内容读回来核对(工具 result 是真相,你的文字描述是辅助)。
+- 声称“测试通过 / 跑通”前**必须**真用 bash 跑一遍,贴真实输出 + exit_code 为证(没 bash 的角色不声称跑通)。
+- 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。
+- **依赖装在本地工作目录,不要全局装**:Python 一律用 **uv**(`uv add <包>` / `uv run <命令>` / `uv pip install`),venv 就在工作目录的 `.venv`;Node 用本地 `node_modules`(`npm i` / `pnpm add`,**不要 `-g`)。`.venv` / `node_modules` 已被 gitignore,不会污染提交。
+
+## 几个特殊工具 —— 有就用,没有就忽略
+
+- `ask_user`:需要用户拍板(技术选型 / 产物范围 / 文案 tone / 是否进下一步)时调它。它会**阻塞**等用户回答、把答案返回给你,你在**同一轮**里拿着答案继续——别写“等用户指令”、也别瞎猜。问题 ≤ 4,自由填空类标 `optional`。
+- `dispatch`:把活并行派给多个成员。**一次调用**在 `tasks` 里一次性列出全部子任务(每个 `{agent, note}`,note 把规格写全)。正文里 @ 某人只是讨论,**不会真派活、不触发产物合并**。(通常只有协调者有这个工具。)
+- `discuss`:让 ≥ 2 名成员就一个话题你一言我一语地讨论、**自动收敛**(用于权衡方案 / 评审 / 达成共识,而不是拆成独立产物)。(通常只有协调者有。)"""
 
 
 def build_identity_layer(

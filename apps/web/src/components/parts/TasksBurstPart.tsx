@@ -63,6 +63,8 @@ function TasksBurstPartInner({
 	convId: string;
 }) {
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
+	const en = lang === "en";
 	const reduce = useReducedMotion();
 
 	const tasks = payload.tasks ?? [];
@@ -71,22 +73,27 @@ function TasksBurstPartInner({
 	const failedCount = tasks.filter((t) => t.state === "failed").length;
 	const allDone = doneCount === totalCount && totalCount > 0;
 
-	// Aggregate status pill color
+	// Aggregate status pill color (localized).
+	const doneLabel = `${doneCount}/${totalCount}`;
 	const aggregate: { label: string; bg: string; color: string } =
 		failedCount > 0
 			? {
-					label: `${doneCount}/${totalCount} 完成 · ${failedCount} 失败`,
+					label: en
+						? `${doneLabel} done · ${failedCount} failed`
+						: `${doneLabel} 完成 · ${failedCount} 失败`,
 					bg: "var(--color-red-soft)",
 					color: "var(--color-red)",
 				}
 			: allDone
 				? {
-						label: `${doneCount}/${totalCount} 全部完成`,
+						label: en ? `${doneLabel} all done` : `${doneLabel} 全部完成`,
 						bg: "var(--color-green-soft)",
 						color: "var(--color-green)",
 					}
 				: {
-						label: `${doneCount}/${totalCount} 完成 · 进行中`,
+						label: en
+							? `${doneLabel} done · running`
+							: `${doneLabel} 完成 · 进行中`,
 						bg: "var(--color-amber-soft)",
 						color: "var(--color-amber)",
 					};
@@ -257,7 +264,7 @@ function TasksBurstPartInner({
 							>
 								{lane.length === 0 ? (
 									<div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
-										等待开始…
+										{en ? "Waiting to start…" : "等待开始…"}
 									</div>
 								) : (
 									lane.map((mid, i) => (

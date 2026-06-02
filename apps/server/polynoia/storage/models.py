@@ -73,8 +73,10 @@ class AgentRow(Base):
     tool_role: Mapped[str] = mapped_column(
         String(16), default="generalist", nullable=False,
     )
-    proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    proxy_kind: Mapped[str] = mapped_column(String(16), default="system", nullable=False)
+    # NOTE: network proxy is NOT a per-contact knob. Egress (HTTP_PROXY) follows
+    # the adapter's LLM endpoint, which is host/adapter-level (~/.claude/settings
+    # .json etc.) — so proxy lives on OnboardedAdapterRow, shared by all contacts
+    # of that adapter. See the proxy columns there.
     setup: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     human: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     foreign_from: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -142,6 +144,11 @@ class ConversationRow(Base):
     orchestrator_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Per-conv role assignment for each member (agent_id → free-text role).
     member_roles: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    # Per-conv tool-capability OVERRIDE (agent_id → tool_role). Empty = contact
+    # default. Lets the same contact have different tools per conversation.
+    member_tool_roles: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     # Which member is designated as orchestrator (None = flat group).
     orchestrator_member_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -210,6 +217,11 @@ class MessageRow(Base):
     # Reply-to threading: ULID of the message being replied to (no FK to keep
     # cascade-delete on the conv simple). Frontend renders a "回复 @X" header.
     in_reply_to: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # Code checkpoint: the workspace main HEAD sha at the moment this message was
+    # created (only stamped for workspace convs). Lets「回到这个对话」restore the
+    # code to the state at this point (Cursor-checkpoint style). Null = DM / no
+    # workspace / pre-feature message.
+    code_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False, index=True
     )
@@ -262,6 +274,14 @@ class OnboardedAdapterRow(Base):
     adapter_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     enabled_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False
+    )
+    # Network egress for this adapter's spawned CLI subprocesses. Shared by all
+    # contacts backed by this adapter (they hit the same endpoint).
+    # proxy_kind: "system" (inherit host HTTP_PROXY), "direct" (strip all proxy
+    # env), "custom" (use `proxy` as HTTP_PROXY/HTTPS_PROXY). See adapters/base.py.
+    proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    proxy_kind: Mapped[str] = mapped_column(
+        String(16), default="system", nullable=False
     )
 
 

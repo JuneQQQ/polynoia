@@ -1,5 +1,12 @@
 /** HTTP API client — Polynoia server REST. */
-import type { Agent, ConflictFile, Provider, Server, Workspace } from "./types";
+import type {
+	Agent,
+	ConflictFile,
+	Provider,
+	ProxyKind,
+	Server,
+	Workspace,
+} from "./types";
 
 export type AdapterProbe = {
 	id: string;
@@ -16,6 +23,17 @@ export type AdapterProbe = {
 	tagline: string;
 	/** Whether the user has explicitly clicked 启用 on this adapter card. */
 	enabled: boolean;
+};
+
+/** An onboarded adapter as returned by /api/adapters/enabled. Network proxy
+ * lives here (adapter-level), not on individual contacts. */
+export type EnabledAdapter = {
+	id: string;
+	models: string[];
+	default_model: string | null;
+	model_hint: string | null;
+	proxy: string | null;
+	proxy_kind: ProxyKind;
 };
 
 const BASE = ""; // vite proxy 转发 /api → server
@@ -183,6 +201,9 @@ export type ConversationSummary = {
 	/** Per-member role assignment (agent_id → free-text role).
 	 * Empty/missing keys = no role assigned for that member. */
 	member_roles: Record<string, string>;
+	/** Per-member tool-capability OVERRIDE (agent_id → tool_role) for this conv.
+	 * Empty/missing = that member uses its contact default tool_role. */
+	member_tool_roles: Record<string, string>;
 	/** Designated orchestrator member (null = flat group). */
 	orchestrator_member_id: string | null;
 };
@@ -325,6 +346,13 @@ export const api = {
 			`/api/conversations/${convId}/member_roles`,
 			{ roles },
 		),
+	/** Replace per-member tool-capability OVERRIDES (agent_id → tool_role).
+	 * Empty/invalid value for a member clears it → contact default. */
+	setMemberToolRoles: (convId: string, toolRoles: Record<string, string>) =>
+		patchJSON<ConversationSummary>(
+			`/api/conversations/${convId}/member_tool_roles`,
+			{ tool_roles: toolRoles },
+		),
 	/** Replace a group conv's FULL member list (add/remove). The designated
 	 * orchestrator must stay in the list. Returns the updated conv summary. */
 	setConvMembers: (convId: string, members: string[]) =>
@@ -353,15 +381,25 @@ export const api = {
 		postJSON<{ ok: boolean }>(`/api/agents/${id}/disable`),
 
 	// Contacts — user-created agents using an enabled adapter
-	listEnabledAdapters: () =>
-		getJSON<
-			{
-				id: string;
-				models: string[];
-				default_model: string | null;
-				model_hint: string | null;
-			}[]
-		>("/api/adapters/enabled"),
+	listEnabledAdapters: () => getJSON<EnabledAdapter[]>("/api/adapters/enabled"),
+	// Network egress for an adapter (shared by all its contacts). proxy is only
+	// honored when proxy_kind === "custom".
+	setAdapterProxy: (
+		id: string,
+		body: { proxy_kind: ProxyKind; proxy: string | null },
+	) =>
+		fetch(`/api/adapters/${id}/proxy`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		}).then((r) => {
+			if (!r.ok) throw new Error(`setAdapterProxy ${id}: ${r.status}`);
+			return r.json() as Promise<{
+				adapter_id: string;
+				proxy: string | null;
+				proxy_kind: ProxyKind;
+			}>;
+		}),
 	createContact: (body: {
 		adapter_id: string;
 		name: string;
@@ -371,8 +409,43 @@ export const api = {
 		initials?: string;
 		tagline?: string;
 		tool_role?: string;
+		tools_whitelist?: string[];
 		max_context_tokens?: number | null;
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
+	/**「回到这个对话」dry-run: what reverting workspace main to `sha` would undo. */
+	restorePreview: (wsId: string, sha: string, convId?: string) =>
+		getJSON<{
+			ok: boolean;
+			commits: number;
+			files: string[];
+			authors: string[];
+			head: string;
+			blocked: boolean;
+			error?: string;
+		}>(
+			`/api/workspaces/${wsId}/restore-preview?sha=${encodeURIComponent(sha)}${
+				convId ? `&conv_id=${encodeURIComponent(convId)}` : ""
+			}`,
+		),
+	/**「回到这个对话」: hard-reset workspace main to `sha` (records undo ref). */
+	restoreWorkspace: (wsId: string, sha: string, convId?: string) =>
+		postJSON<{ ok: boolean; restored: string; undo_sha: string }>(
+			`/api/workspaces/${wsId}/restore`,
+			{ sha, conv_id: convId },
+		),
+	/** 对话式创建: infer a contact config from a free-text description (prefills
+	 * the create form; user reviews + edits). Deterministic heuristics server-side. */
+	suggestContact: (description: string) =>
+		postJSON<{
+			adapter_id: string;
+			name: string;
+			tool_role: string;
+			tools_whitelist: string[];
+			system_prompt: string;
+			tagline: string;
+			caps: string[];
+			color: string;
+		}>("/api/contacts/suggest", { description }),
 	updateContact: (
 		id: string,
 		body: Partial<{
@@ -383,6 +456,7 @@ export const api = {
 			initials: string;
 			tagline: string;
 			tool_role: string;
+			tools_whitelist: string[];
 			max_context_tokens: number | null;
 		}>,
 	) =>
@@ -501,6 +575,17 @@ export const api = {
 	workspacePreviewUrl: (wsId: string, file: string) =>
 		`/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`,
 
+	/** Read a workspace file as raw bytes (for binary doc preview: docx/xlsx/pptx).
+	 * Reuses the byte-faithful /files/download endpoint — its Content-Disposition:
+	 * attachment is irrelevant to fetch().arrayBuffer() (no browser navigation). The
+	 * text /files/raw endpoint can't serve these (it rejects non-UTF-8 + caps at 1MB). */
+	workspaceFileBytes: async (wsId: string, path: string) => {
+		const r = await fetch(
+			`/api/workspaces/${wsId}/files/download?path=${encodeURIComponent(path)}`,
+		);
+		if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+		return r.arrayBuffer();
+	},
 	/** Commit history of a workspace branch (newest first). */
 	workspaceCommits: (wsId: string, ref = "main", limit = 80, skip = 0) =>
 		getJSON<{ commits: CommitMeta[] }>(

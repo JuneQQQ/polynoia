@@ -24,32 +24,31 @@ import "highlight.js/styles/github.css";
 
 function Mention({ agentId }: { agentId: string }) {
 	const agents = useStore((s) => s.agents);
+	const openAgentDetail = useStore((s) => s.openAgentDetail);
 	const agent = agents.find((a) => a.id === agentId);
-	// Unrecognized → plain muted text (no emphasis). Recognized member →
-	// prominent chip: colored dot + member color + soft bg + tinted border.
+	// Unrecognized → plain muted text (no emphasis).
 	if (!agent) {
 		return (
 			<span className="text-[var(--color-fg-3)] font-medium">@{agentId}</span>
 		);
 	}
+	// Recognized member → clean inline mention (Slack/Linear style): member-colored
+	// text on a faint same-color tint, no border, no dot. Clicking opens the agent.
 	const c = agent.color || "var(--color-accent)";
 	return (
-		<span
-			className="inline-flex items-center gap-1 px-1.5 py-[1px] mx-[1px] rounded-md font-semibold align-baseline whitespace-nowrap border"
+		<button
+			type="button"
+			onClick={() => openAgentDetail(agent.id)}
+			title={`查看 @${agent.name}`}
+			className="inline rounded px-[3px] py-px font-medium align-baseline whitespace-nowrap transition-colors cursor-pointer hover:brightness-95"
 			style={{
 				color: c,
-				background: agent.bg ?? "var(--color-accent-soft)",
-				borderColor: agent.color ? `${agent.color}55` : "var(--color-accent)",
-				fontSize: "0.9em",
+				background: `color-mix(in srgb, ${c} 12%, transparent)`,
 			}}
-			title={`@${agent.name}`}
 		>
-			<span
-				className="w-[5px] h-[5px] rounded-full flex-shrink-0"
-				style={{ background: c }}
-			/>
-			@{agent.name}
-		</span>
+			<span style={{ opacity: 0.6 }}>@</span>
+			{agent.name}
+		</button>
 	);
 }
 
@@ -381,7 +380,7 @@ export const TextPart = memo(function TextPart({
 	payload: TextPayload;
 	isStreaming?: boolean;
 }) {
-	return (
+	const inner = (
 		<div className="text-[13px] text-[var(--color-fg)]">
 			{payload.body.map((block, i) =>
 				typeof block.c === "string" ? (
@@ -393,6 +392,21 @@ export const TextPart = memo(function TextPart({
 					</p>
 				),
 			)}
+		</div>
+	);
+	// A multi-agent discussion's wrap-up (synthesizer leads with 「讨论结论:」) gets
+	// a subtle accent card + badge so it reads as the conclusion, not just another
+	// reply. Detection is prefix-only (no new payload kind needed).
+	const first = payload.body[0]?.c;
+	const isSummary =
+		typeof first === "string" && /^\s*(?:\*\*|##\s*)?讨论结论/.test(first);
+	if (!isSummary) return inner;
+	return (
+		<div className="rounded-md border border-[var(--color-accent)]/30 border-l-[3px] border-l-[var(--color-accent)] bg-[var(--color-accent-soft)]/30 pl-3 pr-2.5 py-2">
+			<div className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-accent)] mb-1 font-medium">
+				讨论结论
+			</div>
+			{inner}
 		</div>
 	);
 });

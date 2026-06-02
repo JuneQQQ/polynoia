@@ -107,7 +107,7 @@ _MCP_BLOCK_MARKER = "[mcp_servers.polynoia]"
 
 def _polynoia_mcp_block(
     *, conv_id: str, agent_id: str, pythonpath: str, sandbox_root: str,
-    tool_role: str = "generalist", api_base: str = "",
+    tool_role: str = "generalist", tools: str = "", api_base: str = "",
     worktree_root: str = "", workspace_root: str = "", turn_agent_id: str = "",
 ) -> str:
     """Build the ``[mcp_servers.polynoia]`` TOML block.
@@ -133,6 +133,7 @@ POLYNOIA_CONV_ID = "{conv_id}"
 POLYNOIA_AGENT_ID = "{agent_id}"
 POLYNOIA_TURN_AGENT_ID = "{turn_agent_id}"
 POLYNOIA_AGENT_ROLE = "{tool_role}"
+POLYNOIA_AGENT_TOOLS = "{tools}"
 POLYNOIA_API_BASE = "{api_base}"
 POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
 {worktree_lines}PYTHONPATH = "{pythonpath}"
@@ -217,7 +218,10 @@ class CodexAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",  # P1.2 — Codex does use Polynoia MCP via config.toml; merge_mode reserved
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
+        proxy: str | None = None,
+        proxy_kind: str = "system",
     ) -> CodexSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
@@ -256,6 +260,7 @@ class CodexAdapter:
             pythonpath=server_pkg_root,
             sandbox_root=str(sandbox.root.parent),
             tool_role=tool_role,
+            tools=",".join(tools_whitelist or []),
             api_base=os.environ.get(
                 "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
             ),
@@ -266,11 +271,24 @@ class CodexAdapter:
             _merge_mcp_into_config(existing, mcp_block), encoding="utf-8"
         )
 
+        # ── Proxy egress control (proxy_kind) ───────────────────────
+        _env = dict(env or {})
+        if proxy_kind == "direct":
+            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy"):
+                _env.pop(_k, None)
+        elif proxy_kind == "custom" and proxy:
+            _env["HTTP_PROXY"] = proxy
+            _env["HTTPS_PROXY"] = proxy
+            _env["ALL_PROXY"] = proxy
+            _env["http_proxy"] = proxy
+            _env["https_proxy"] = proxy
+            _env["all_proxy"] = proxy
         return CodexSession(
             sandbox=sandbox,
             model=model,
             system_prompt=system_prompt,
-            extra_env=env or {},
+            extra_env=_env,
             agent_id=self.meta.agent_id,
         )
 

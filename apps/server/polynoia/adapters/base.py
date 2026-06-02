@@ -222,7 +222,10 @@ class Adapter(Protocol):
         agent_id: str | None = None,
         merge_mode: str = "auto",
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
+        proxy: str | None = None,
+        proxy_kind: str = "system",
     ) -> AdapterSession:
         """Start a fresh session.
 
@@ -244,5 +247,10 @@ class Adapter(Protocol):
             model, system_prompt, allowed_tools: standard knobs.
             env: extra env vars merged on top of ``sandbox.env_for_agent()``.
             workspace_id, agent_id: enable workspace-shared mode when both set.
+            proxy: custom proxy URL (e.g. http://127.0.0.1:7890). Only used
+                when proxy_kind == "custom".
+            proxy_kind: "system" (inherit host HTTP_PROXY etc.), "direct"
+                (strip all proxy env vars), or "custom" (set proxy URL as
+                HTTP_PROXY + HTTPS_PROXY).
         """
         ...

@@ -65,16 +65,28 @@ export function FileTree({
 		[workspaceId, dirs],
 	);
 
-	// Root load + refresh (manual button OR agent wrote files → filesTick).
+	// New workspace → full reset (collapse to root, load root).
 	useEffect(() => {
-		let alive = true;
 		setDirs({});
 		setExpanded(new Set([""]));
+		loadDir("", true);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [workspaceId]);
+
+	// Files changed (agent merged → filesTick) OR manual refresh (refreshTick):
+	// re-list the currently-OPEN dirs IN PLACE — keep the tree's expansion, never
+	// collapse. Only directory listings are re-fetched (cheap); file content stays
+	// lazy (loaded on click). This is what makes the list "sync" feel instant.
+	useEffect(() => {
+		if (refreshTick === 0 && filesTick === 0) return; // initial: handled above
+		let alive = true;
 		const userTriggered = refreshTick > 0;
 		const started = performance.now();
 		setRefreshing(true);
 		setJustRefreshed(false);
-		loadDir("", true).finally(() => {
+		// Reload root + every open subdir concurrently (force).
+		const open = new Set(["", ...expanded]);
+		Promise.all([...open].map((d) => loadDir(d, true))).finally(() => {
 			const wait = Math.max(0, 420 - (performance.now() - started));
 			window.setTimeout(() => {
 				if (!alive) return;
@@ -89,7 +101,7 @@ export function FileTree({
 			alive = false;
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [workspaceId, refreshTick, filesTick]);
+	}, [refreshTick, filesTick]);
 
 	const toggleDir = (dirPath: string) => {
 		setExpanded((prev) => {

@@ -101,8 +101,6 @@ def _agent_from_row(r: AgentRow) -> Agent:
         system_prompt=r.system_prompt,
         tools_whitelist=r.tools_whitelist or [],
         tool_role=(r.tool_role or "generalist"),  # type: ignore[arg-type]
-        proxy=r.proxy,
-        proxy_kind=r.proxy_kind,  # type: ignore[arg-type]
         setup=setup,
         human=r.human,
         foreign_from=r.foreign_from,
@@ -142,8 +140,6 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
         existing.system_prompt = a.system_prompt
         existing.tools_whitelist = a.tools_whitelist
         existing.tool_role = a.tool_role
-        existing.proxy = a.proxy
-        existing.proxy_kind = a.proxy_kind
         existing.setup = setup_dict
         existing.human = a.human
         existing.foreign_from = a.foreign_from
@@ -154,7 +150,7 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
             caps=a.caps, online=a.online, enabled=a.enabled, custom=a.custom,
             system_prompt=a.system_prompt, tools_whitelist=a.tools_whitelist,
             tool_role=a.tool_role,
-            proxy=a.proxy, proxy_kind=a.proxy_kind, setup=setup_dict,
+            setup=setup_dict,
             human=a.human, foreign_from=a.foreign_from,
         ))
     await session.flush()
@@ -253,6 +249,7 @@ def _conv_from_row(r: ConversationRow) -> Conversation:
         group=r.group,
         orchestrator_profile=r.orchestrator_profile,  # type: ignore[arg-type]
         member_roles=r.member_roles or {},
+        member_tool_roles=r.member_tool_roles or {},
         orchestrator_member_id=r.orchestrator_member_id,
         pinned=r.pinned,
         archived=r.archived,
@@ -354,6 +351,7 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
         id=c.id, workspace_id=c.workspace_id, title=c.title, members=c.members,
         direct=c.direct, group=c.group, orchestrator_profile=c.orchestrator_profile,
         member_roles=c.member_roles or {},
+        member_tool_roles=c.member_tool_roles or {},
         orchestrator_member_id=c.orchestrator_member_id,
         pinned=c.pinned, archived=c.archived, unread=c.unread,
         last_message_at=c.last_message_at,
@@ -442,6 +440,41 @@ async def set_member_roles(
     return True, before, after
 
 
+_VALID_OVERRIDE_ROLES = frozenset(
+    {"orchestrator", "coder", "designer", "writer", "generalist", "critic", "advisory"}
+)
+
+
+async def set_member_tool_roles(
+    session: AsyncSession,
+    conv_id: str,
+    tool_roles: dict[str, str],
+) -> tuple[bool, dict[str, str], dict[str, str]]:
+    """Replace a conv's per-member tool_role OVERRIDE map. Returns
+    ``(ok, before, after)``.
+
+    Empty / invalid values delete that member's override (→ contact default).
+    Keys not in ``conv.members`` are dropped. The designated orchestrator's
+    effective role is still forced to "orchestrator" at dispatch (ADR-017),
+    regardless of any override here.
+    """
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False, {}, {}
+    before = dict(row.member_tool_roles or {})
+    members = set(row.members or [])
+    after: dict[str, str] = {}
+    for k, v in tool_roles.items():
+        if k not in members:
+            continue
+        cleaned = (v or "").strip()
+        if cleaned in _VALID_OVERRIDE_ROLES:
+            after[k] = cleaned
+    row.member_tool_roles = after
+    await session.flush()
+    return True, before, after
+
+
 async def set_members(
     session: AsyncSession,
     conv_id: str,
@@ -517,15 +550,17 @@ async def append_message(
     payload: dict[str, Any],
     msg_id: str | None = None,
     in_reply_to: str | None = None,
+    code_sha: str | None = None,
 ) -> str:
     """Persist one message; updates conversation.last_message_at and bumps unread.
 
-    Returns the new message ID.
+    ``code_sha`` records the workspace main HEAD at creation (workspace convs
+    only) so「回到这个对话」can restore the code to this point. Returns the new ID.
     """
     mid = msg_id or new_ulid()
     session.add(MessageRow(
         id=mid, conv_id=conv_id, sender_id=sender_id, payload=payload,
-        in_reply_to=in_reply_to,
+        in_reply_to=in_reply_to, code_sha=code_sha,
     ))
     # Update conv timestamp + unread (skip user-side messages)
     from datetime import datetime
@@ -559,6 +594,30 @@ async def update_message_payload(
     row.payload = payload
     await session.flush()
     return True
+
+
+async def upsert_message(
+    session: AsyncSession,
+    *,
+    conv_id: str,
+    sender_id: str,
+    payload: dict[str, Any],
+    msg_id: str,
+) -> str:
+    """Insert a message, or overwrite its payload if a row with ``msg_id``
+    already exists. Lets a tool-call/diff part persist incrementally (the moment
+    it completes, so a mid-stream refresh keeps the trace) AND be re-written at
+    turn-end with its final state — same stable id, no duplicate row. Caller
+    commits."""
+    row = await session.get(MessageRow, msg_id)
+    if row is not None:
+        row.payload = payload
+        await session.flush()
+        return msg_id
+    return await append_message(
+        session, conv_id=conv_id, sender_id=sender_id,
+        payload=payload, msg_id=msg_id,
+    )
 
 
 async def add_conv_memory(
@@ -675,6 +734,7 @@ async def list_messages(
             "payload": r.payload,
             "pinned": bool(r.pinned),
             "in_reply_to": r.in_reply_to,
+            "code_sha": r.code_sha,
             "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         }
         for r in rows
@@ -720,6 +780,39 @@ async def list_onboarded_adapters(session: AsyncSession) -> list[str]:
     """Return the adapter_ids the user has explicitly onboarded."""
     result = await session.execute(select(OnboardedAdapterRow))
     return [r.adapter_id for r in result.scalars().all()]
+
+
+async def list_onboarded_adapter_rows(
+    session: AsyncSession,
+) -> list[OnboardedAdapterRow]:
+    """Return the full onboarded-adapter rows (incl. proxy config)."""
+    result = await session.execute(select(OnboardedAdapterRow))
+    return list(result.scalars().all())
+
+
+async def get_adapter_proxy(
+    session: AsyncSession, adapter_id: str
+) -> tuple[str | None, str]:
+    """Return (proxy_url, proxy_kind) for an adapter. Defaults to (None, "system")
+    when the adapter is not onboarded — i.e. inherit host env."""
+    row = await session.get(OnboardedAdapterRow, adapter_id)
+    if row is None:
+        return None, "system"
+    return row.proxy, row.proxy_kind
+
+
+async def set_adapter_proxy(
+    session: AsyncSession, adapter_id: str, proxy: str | None, proxy_kind: str
+) -> bool:
+    """Set an adapter's network egress. Returns False if the adapter isn't
+    onboarded. `proxy` is only retained when proxy_kind == "custom"."""
+    row = await session.get(OnboardedAdapterRow, adapter_id)
+    if row is None:
+        return False
+    row.proxy_kind = proxy_kind
+    row.proxy = proxy if proxy_kind == "custom" else None
+    await session.flush()
+    return True
 
 
 async def add_onboarded_adapter(session: AsyncSession, adapter_id: str) -> None:

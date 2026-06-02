@@ -98,12 +98,55 @@ export type AgentStatus = {
 	ts: number;
 };
 
-/** Coarse phase → Chinese status label (shared by the running pill + member dots). */
-export function phaseLabel(phase?: AgentPhase, tool?: string): string {
-	if (phase === "thinking") return "正在思考";
-	if (phase === "executing") return tool ? `正在执行 ${tool}` : "正在执行任务";
-	if (phase === "replying") return "正在回复";
-	return "运行中";
+/** Strip MCP/server prefixes → just the key verb. Mirror of ToolCallPart's
+ * cleanToolName (kept here so store has no component dependency):
+ *   mcp__polynoia__write → write · polynoia::write → write · polynoia_read → read */
+export function cleanToolName(raw: string): string {
+	return raw
+		.replace(/^mcp__[^_]+__/, "")
+		.replace(/^[a-z0-9]+::/i, "")
+		.replace(/^[a-z0-9]+__/i, "")
+		.replace(/^polynoia_+/i, "");
+}
+
+/** Chinese label for known tools (keyed by the cleaned, lower-cased name).
+ * Unknown tools fall back to the cleaned English key (rule: English → just the
+ * last key name; known → Chinese). Never shows an mcp__polynoia__ prefix. */
+const _TOOL_ZH: Record<string, string> = {
+	read: "读取", write: "写入", edit: "编辑", apply_patch: "打补丁",
+	bash: "执行命令", grep: "搜索", glob: "查找文件", revert: "回滚",
+	dispatch: "派活", discuss: "讨论", remember: "记录", recall: "回忆",
+	report: "汇报", ask_user: "询问", request_project_access: "申请项目权限",
+	present: "展示文件", task: "子任务", todowrite: "更新待办",
+	webfetch: "抓取网页", websearch: "联网搜索", multiedit: "批量编辑",
+};
+
+/** Display name for a tool in the status pill: cleaned key (no mcp__polynoia__
+ * prefix). In zh, known tools are translated (read→读取, dispatch→派活); in en,
+ * just the cleaned key (read, dispatch). Unknown tools → cleaned key in both. */
+export function toolDisplayName(raw?: string, lang: import("./lib/i18n").Lang = "zh"): string {
+	if (!raw) return "";
+	const key = cleanToolName(raw);
+	if (lang === "en") return key;
+	return _TOOL_ZH[key.toLowerCase()] ?? key;
+}
+
+/** Coarse phase → status label (shared by the running pill + member dots),
+ * localized. Defaults to zh for back-compat callers that don't pass lang. */
+export function phaseLabel(
+	phase?: AgentPhase,
+	tool?: string,
+	lang: import("./lib/i18n").Lang = "zh",
+): string {
+	const en = lang === "en";
+	if (phase === "thinking") return en ? "Thinking" : "正在思考";
+	if (phase === "executing") {
+		const name = toolDisplayName(tool, lang);
+		if (en) return name ? `Running ${name}` : "Running";
+		return name ? `正在执行 ${name}` : "正在执行任务";
+	}
+	if (phase === "replying") return en ? "Replying" : "正在回复";
+	return en ? "Running" : "运行中";
 }
 
 export type PreviewTab = "web" | "code" | "diff" | "tasks";
@@ -111,6 +154,9 @@ export type PreviewTab = "web" | "code" | "diff" | "tasks";
 type PreviewState = {
 	open: boolean;
 	tab: PreviewTab;
+	/** File currently previewed in the right rail (relative to workspace root).
+	 * Set by clicking a file in the explorer; null = show the file tree. */
+	previewFile: string | null;
 	/** Latest payload shown — useful when a card click navigates to a specific tab */
 	data: {
 		web?: WebPayload | null;
@@ -262,6 +308,8 @@ type Store = {
 			conv_id: string;
 			sender_id: string;
 			payload: Record<string, unknown>;
+			in_reply_to?: string | null;
+			code_sha?: string | null;
 			created_at: string;
 		}>,
 		options: { mode: "replace" | "prepend"; hasMore: boolean },
@@ -272,6 +320,9 @@ type Store = {
 	openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
 	closePreview: () => void;
 	setPreviewTab: (tab: PreviewTab) => void;
+	/** Open a file in the right-rail preview (sets previewFile + opens the pane).
+	 * Pass null to clear → the explorer file tree shows again. */
+	openPreviewFile: (path: string | null) => void;
 
 	/** Center editor tabs (Phase 2): file paths opened next to the "聊天" tab.
 	 * Clicking a file in the right file tree opens it as a center code tab.
@@ -344,6 +395,11 @@ export type ChunkAction =
 	  }
 	| { kind: "reasoning-delta"; partId: string; delta: string }
 	| { kind: "reasoning-end"; partId: string }
+	| {
+			kind: "stream-resume";
+			senderId: string;
+			parts: { id: string; kind: "text" | "reasoning"; text: string }[];
+	  }
 	| {
 			kind: "card";
 			cardKind: string;
@@ -433,7 +489,7 @@ export const useStore = create<Store>((set, get) => ({
 	},
 	// The right rail is now a code-only panel (file tree + open file). `tab`
 	// is fixed to "code" — PreviewPane ignores it and always renders CodeTab.
-	preview: { open: false, tab: "code", data: {} },
+	preview: { open: false, tab: "code", previewFile: null, data: {} },
 	centerFileTabs: [],
 	activeCenterTab: "chat",
 	commitsTabOpen: false,
@@ -449,6 +505,7 @@ export const useStore = create<Store>((set, get) => ({
 			// Mutual-exclude with RightDrawer (both occupy right edge)
 			rightDrawer: { kind: null },
 			preview: {
+				...s.preview,
 				open: true,
 				tab: "code",
 				data: { ...s.preview.data, ...(data ?? {}) },
@@ -456,6 +513,11 @@ export const useStore = create<Store>((set, get) => ({
 		})),
 	closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),
 	setPreviewTab: () => set((s) => ({ preview: { ...s.preview, tab: "code" } })),
+	openPreviewFile: (path) =>
+		set((s) => ({
+			rightDrawer: { kind: null },
+			preview: { ...s.preview, open: true, previewFile: path },
+		})),
 
 	openCenterFile: (path) =>
 		set((s) => ({
@@ -573,6 +635,8 @@ export const useStore = create<Store>((set, get) => ({
 				conv_id: m.conv_id,
 				sender_id: m.sender_id,
 				payload: m.payload as Message["payload"],
+				in_reply_to: m.in_reply_to ?? null,
+				code_sha: (m as { code_sha?: string | null }).code_sha ?? null,
 				created_at: m.created_at,
 			});
 			newOrder.push(m.id);
@@ -714,6 +778,48 @@ export const useStore = create<Store>((set, get) => ({
 			return;
 		}
 
+		if (action.kind === "stream-resume") {
+			// Refresh-safe resume: server handed us the accumulated content of an
+			// agent's IN-PROGRESS message. Rebuild each part's placeholder +
+			// streaming buffer by REPLACING (not appending) the text, so it's
+			// correct whether the store was empty (refresh) or held a partial
+			// (tab switch-back). Subsequent live deltas then append normally.
+			const senderId = action.senderId;
+			const nextById = new Map(cur.msgById);
+			const newStreaming = new Map(cur.streamingTexts);
+			const order = [...cur.messageOrder];
+			for (const part of action.parts) {
+				const partKind = part.kind === "reasoning" ? "reasoning" : "text";
+				const messageId =
+					partKind === "reasoning" ? `rsn-${part.id}` : `msg-${part.id}`;
+				const streamKey = `${senderId}::${part.id}`;
+				const msg: Message = {
+					id: messageId,
+					conv_id: convId,
+					sender_id: senderId,
+					payload: { kind: partKind, body: [{ t: "p", c: part.text }] },
+					created_at: new Date().toISOString(),
+				};
+				if (!nextById.has(messageId)) order.push(messageId);
+				nextById.set(messageId, msg);
+				newStreaming.set(streamKey, {
+					messageId,
+					senderId,
+					text: part.text,
+					kind: partKind,
+				});
+			}
+			convs.set(convId, {
+				...cur,
+				messageOrder: order,
+				msgById: nextById,
+				streamingTexts: newStreaming,
+				streamTick: cur.streamTick + 1,
+			});
+			set({ convs });
+			return;
+		}
+
 		if (action.kind === "text-delta" || action.kind === "reasoning-delta") {
 			// Find the matching stream entry — its key includes senderId, but the
 			// delta chunk only has partId, so we scan for the unique suffix match.
@@ -790,7 +896,34 @@ export const useStore = create<Store>((set, get) => ({
 					message: data.message,
 					ts: Date.now(),
 				});
-				convs.set(convId, { ...cur, agentStatus: newStatus });
+				// Turn ended (idle/aborted/error) → any of THIS agent's tool-call
+				// cards still stuck at pending/running never got a part.completed
+				// (turn died mid-tool-input). Flip them to a terminal state so the
+				// card stops showing "进行中" forever (the「卡住」symptom).
+				let patchedById: Map<string, Message> | null = null;
+				if (status === "idle" || status === "aborted" || status === "error") {
+					const terminal = status === "error" ? "error" : "completed";
+					for (const mid of cur.messageOrder) {
+						const msg = cur.msgById.get(mid);
+						if (!msg || msg.sender_id !== agentId) continue;
+						const p = msg.payload as { kind?: string; state?: string };
+						if (
+							p?.kind === "tool-call" &&
+							(p.state === "pending" || p.state === "running")
+						) {
+							if (!patchedById) patchedById = new Map(cur.msgById);
+							patchedById.set(mid, {
+								...msg,
+								payload: { ...p, state: terminal } as Message["payload"],
+							});
+						}
+					}
+				}
+				convs.set(convId, {
+					...cur,
+					agentStatus: newStatus,
+					...(patchedById ? { msgById: patchedById } : {}),
+				});
 				set({ convs });
 				return;
 			}

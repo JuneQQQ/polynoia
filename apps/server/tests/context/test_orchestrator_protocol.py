@@ -61,8 +61,9 @@ def test_protocol_layer_content() -> None:
     c = layer.content
     assert "协调器" in c
     assert "dispatch" in c
-    assert "严禁用 @提及" in c
-    assert "不写文件" in c
+    # @提及 / bash「宣布」都不是真派活 — the load-bearing @≠dispatch invariant.
+    assert "@" in c and "不算数" in c
+    assert "不写实现代码" in c
     assert "阿码" in c and "阿写" in c
     assert layer.hard is True
 
@@ -86,7 +87,7 @@ async def test_orchestrator_gets_protocol_despite_custom_persona(clean_db) -> No
         )
     assert "你是本群聊的协调器" in prompt
     assert "dispatch" in prompt
-    assert "严禁用 @提及" in prompt
+    assert "不算数" in prompt
     # roster lists the OTHER members, not the orchestrator itself
     assert "码甲" in prompt and "码乙" in prompt
 

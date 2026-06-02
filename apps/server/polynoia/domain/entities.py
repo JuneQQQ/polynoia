@@ -52,13 +52,12 @@ class AgentSetup(BaseModel):
     docs: str | None = None
     adapter_id: str | None = None  # claudeCode / codex / opencoder
     model: str | None = None  # backend model id, e.g. "claude-sonnet-4"
-    # User-provided model context-window ceiling, in tokens. When None,
-    # Polynoia falls back to context.budget.KNOWN_MODEL_CONTEXT table by
-    # model id (200k for Claude 4.x, 256k for GPT-5, 262k for MiMo v2.5,
-    # etc). Critical for third-party / proxy models where the adapter
-    # CLI's own context estimate is wrong. Polynoia subtracts Claude
-    # Code's fixed overhead (~35k) from this to compute the L1-L5 budget.
-    # See ADR-012.
+    # User-specified model context-window ceiling, in tokens. The contact modal
+    # requires picking a preset (128k / 200k / 256k / 1M / custom) — there is no
+    # model→context guessing table (it mis-guessed third-party / proxy models).
+    # When None (older rows / API callers that omit it), budget falls back to
+    # context.budget.DEFAULT_FALLBACK_CONTEXT (128k). Polynoia subtracts Claude
+    # Code's fixed overhead (~35k) from this to compute the L1-L5 budget. ADR-012.
     max_context_tokens: int | None = None
 
 
@@ -89,8 +88,8 @@ class Agent(BaseModel):
     tool_role: Literal[
         "orchestrator", "coder", "designer", "writer", "generalist",
     ] = "generalist"
-    proxy: str | None = None
-    proxy_kind: Literal["system", "direct", "custom"] = "system"
+    # Network proxy is adapter-level, not per-contact — see OnboardedAdapterRow
+    # (egress follows the adapter's shared LLM endpoint, not the persona).
     setup: AgentSetup | None = None
     # P1 hooks
     human: bool = False
@@ -139,6 +138,12 @@ class Conversation(BaseModel):
     # e.g. {"01KS...": "后端实现", "02KS...": "前端样式"}
     # Used by the context assembler to prefix each member's system prompt.
     member_roles: dict[ULID, str] = {}
+    # Per-member tool-capability OVERRIDE for this conv (agent_id → tool_role).
+    # Contact's own tool_role is the default; this lets the same contact be e.g.
+    # read-only "critic" in a review conv and full "coder" in a build conv. The
+    # designated orchestrator is still forced to "orchestrator" (ADR-017). Empty
+    # = every member uses its contact default. See adapters/pool.py.
+    member_tool_roles: dict[ULID, str] = {}
     # Which member is acting as orchestrator in this conv. None = no
     # orchestrator (group operates flat). The designated member gets the
     # ORCHESTRATOR_PROMPT prepended to their per-turn system prompt.

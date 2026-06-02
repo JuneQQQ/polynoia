@@ -1,21 +1,24 @@
-/** Right rail — the workspace file tree (explorer).
+/** Right rail — workspace file explorer + single-file preview, no mode toggle.
+ * Default shows the file tree; clicking a file previews it directly (sets
+ * previewFile), and a ← back arrow in the header returns to the tree.
  *
- * IDE-style: this panel is the explorer. It auto-opens for conversations
- * that have a workspace (ChatPane sets preview.open on conv switch) and the
- * left sidebar can fully collapse, giving a three-pane editor feel. Clicking
- * a file opens it as a CENTER code tab (CenterTabs) rather than inline here.
- *
- * Layout: header (workspace title + close) → FileTree. When there's a pending
- * review it shows DiffReviewPane, and a live merge conflict shows
- * ConflictResolvePane (both block the tree until resolved).
- * Resize handle on the left edge (360–900px), persisted to localStorage.
+ * Layout: header (workspace title, or ← back + filename when previewing) → body.
+ * Conflicts/diff-review still hard-take the body (block the tree/preview) until
+ * resolved. Resize handle on the left edge (360–900px), persisted.
  */
-import { Code2, GitMerge, GitPullRequestArrow, X } from "lucide-react";
+import {
+	ArrowLeft,
+	FolderTree,
+	GitMerge,
+	GitPullRequestArrow,
+	X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../../store";
 import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
 import { FileTree } from "./FileTree";
+import { RightPreviewFile } from "./RightPreviewFile";
 import { TerminalTab } from "./TerminalTab";
 
 export function PreviewPane() {
@@ -25,9 +28,11 @@ export function PreviewPane() {
 	);
 	const closePreview = useStore((s) => s.closePreview);
 	const activeConvId = useStore((s) => s.activeConvId);
-	const openCenterFile = useStore((s) => s.openCenterFile);
-	const activeCenterTab = useStore((s) => s.activeCenterTab);
 	const terminalOpen = useStore((s) => s.terminalOpen);
+	// No 文件/预览 toggle anymore: clicking a file in the tree previews it
+	// directly (sets previewFile); a back arrow returns to the tree.
+	const openPreviewFile = useStore((s) => s.openPreviewFile);
+	const previewFile = useStore((s) => s.preview.previewFile);
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
 	const reviewing = useStore(
@@ -129,7 +134,7 @@ export function PreviewPane() {
 				<div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-transparent group-hover:bg-[var(--color-accent)] transition-colors" />
 			</div>
 
-			{/* Header — workspace title + close */}
+			{/* Header — workspace title (or ← back + filename when previewing a file) + close */}
 			<header className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
 				{hasConflict ? (
 					<GitMerge
@@ -141,8 +146,18 @@ export function PreviewPane() {
 						size={14}
 						className="text-[var(--color-green)] flex-shrink-0"
 					/>
+				) : previewFile ? (
+					<button
+						type="button"
+						onClick={() => openPreviewFile(null)}
+						title="返回文件列表"
+						aria-label="返回文件列表"
+						className="p-0.5 -ml-0.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-2)] flex-shrink-0"
+					>
+						<ArrowLeft size={15} />
+					</button>
 				) : (
-					<Code2
+					<FolderTree
 						size={14}
 						className="text-[var(--color-accent)] flex-shrink-0"
 					/>
@@ -153,26 +168,29 @@ export function PreviewPane() {
 							? "合并冲突 · 待解决"
 							: reviewing
 								? "代码评审 · 待接受改动"
-								: wsName
-									? `${wsName} · 代码`
-									: "代码"}
+								: previewFile
+									? (previewFile.split("/").pop() ?? previewFile)
+									: (wsName ?? "工作区")}
 					</div>
-					<div className="text-[10px] font-mono text-[var(--color-fg-3)]">
-						main · 工作目录
+					<div className="text-[10px] font-mono text-[var(--color-fg-3)] truncate">
+						{previewFile && !hasConflict && !reviewing
+							? previewFile
+							: "main · 工作目录"}
 					</div>
 				</div>
 				<button
 					type="button"
 					onClick={closePreview}
-					title="收起代码区"
-					aria-label="收起代码区"
+					title="收起右侧面板"
+					aria-label="收起右侧面板"
 					className="p-1 hover:bg-[var(--color-line)] rounded text-[var(--color-fg-3)]"
 				>
 					<X size={13} />
 				</button>
 			</header>
 
-			{/* Body — top: conflict resolve (blocks) → diff review → file tree.
+			{/* Body — conflict/diff still take priority. Otherwise: a file is being
+			    previewed (previewFile) → single-file preview; else → file tree.
 			    Bottom (when open): the interactive terminal, draggable divider. */}
 			<div
 				ref={bodyRef}
@@ -183,16 +201,18 @@ export function PreviewPane() {
 						<ConflictResolvePane convId={activeConvId} />
 					) : reviewing && activeConvId ? (
 						<DiffReviewPane convId={activeConvId} />
-					) : workspaceId ? (
-						<FileTree
-							workspaceId={workspaceId}
-							onOpen={openCenterFile}
-							activePath={activeCenterTab}
-						/>
-					) : (
+					) : !workspaceId ? (
 						<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
 							无工作区
 						</div>
+					) : previewFile ? (
+						<RightPreviewFile workspaceId={workspaceId} path={previewFile} />
+					) : (
+						<FileTree
+							workspaceId={workspaceId}
+							onOpen={openPreviewFile}
+							activePath={previewFile}
+						/>
 					)}
 				</div>
 				{terminalOpen && workspaceId && (

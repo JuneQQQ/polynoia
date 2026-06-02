@@ -15,6 +15,24 @@ from polynoia.settings import settings
 
 _IS_WINDOWS = os.name == "nt"
 
+# Local-dependency dirs to keep OUT of git. Policy: each conv/workspace manages
+# deps INSIDE its own working dir — Python via uv (.venv), Node via node_modules,
+# etc. (steered by env_for_agent + the platform tool-rules). Committing these into
+# the worktree would bloat the shared workspace git and cause spurious merge
+# conflicts, so they're always gitignored. Appended to every sandbox .gitignore.
+_LOCAL_DEPS_GITIGNORE = (
+    ".venv/\n"
+    "venv/\n"
+    ".uv/\n"
+    "node_modules/\n"
+    ".pnpm-store/\n"
+    "dist/\n"
+    "build/\n"
+    "*.egg-info/\n"
+    "target/\n"        # Rust/Java
+    "vendor/\n"        # Go/PHP
+)
+
 # git 子进程超时 + 非交互 env:卡住的 git(凭据/编辑器提示、慢 filter、异常 stdin
 # 等待)会永久占住 workspace 合并锁、拖垮整个 workspace 的合并/冲突解决,故一律设
 # 超时 + 关交互 + stdin=DEVNULL。
@@ -29,23 +47,6 @@ def _git_env() -> dict[str, str]:
         "GIT_EDITOR": "true",
         "GIT_PAGER": "cat",
     }
-
-
-# ── Per-workspace merge serialization ────────────────────────────────
-# The workspace root shares ONE HEAD/index across all worktrees AND all convs,
-# so concurrent merges from sibling convs would corrupt the shared .git. The
-# whole probe→conclude critical section must run under this lock, keyed by
-# workspace_id (NOT conv_id). See docs/design/conflict-closed-loop-2026-05-30.md.
-_WS_MERGE_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
-    """Return the process-wide merge lock for a workspace (lazily created)."""
-    lock = _WS_MERGE_LOCKS.get(workspace_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _WS_MERGE_LOCKS[workspace_id] = lock
-    return lock
 
 
 # ── Per-workspace merge serialization ────────────────────────────────
@@ -200,6 +201,55 @@ class Sandbox:
         conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
         worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         branch = f"agent/{agent_id}/conv-{conv_id}"
+        reused = False  # True when an existing, git-registered worktree is reused
+
+        # Guard against orphan worktree dirs: a previous scenario reset (rmtree
+        # with ignore_errors=True) or a half-failed worktree-add can leave the
+        # directory on disk WITHOUT registering it in `git worktree list`. Then
+        # `if not worktree_dir.exists()` skips creation, the agent gets a
+        # Sandbox handle that works for file I/O but is invisible to git — so
+        # commit_pending_worktrees / branch_ahead_of_main / merge_to_main all
+        # silently skip it and the agent's writes never reach main.
+        if worktree_dir.exists():
+            proc = await asyncio.create_subprocess_exec(
+                "git", "worktree", "list", "--porcelain",
+                cwd=str(ws_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_git_env(),
+            )
+            try:
+                wt_out, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=_GIT_TIMEOUT
+                )
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                raise RuntimeError(
+                    f"git worktree list timed out ({_GIT_TIMEOUT}s)"
+                ) from None
+            registered = (
+                f"worktree {worktree_dir}".encode() in wt_out
+                or f"worktree {worktree_dir.resolve()}".encode() in wt_out
+            )
+            reused = registered
+            if not registered:
+                # Orphan — sidestep it so the worktree-add path below can
+                # recreate cleanly. Files inside are usually leftovers from a
+                # half-failed reset, but COULD be real agent writes the user
+                # hasn't seen surface yet (the orphan-skip bug this guards
+                # against would have left them stranded). Renaming preserves
+                # them under `.recovered/<orig>-<ts>` instead of deleting,
+                # which is cheap and avoids destroying work on detection.
+                ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+                recovered_root = ws_root / "worktrees" / ".recovered"
+                recovered_root.mkdir(parents=True, exist_ok=True)
+                worktree_dir.rename(
+                    recovered_root / f"{worktree_dir.name}-{ts}"
+                )
 
         if not worktree_dir.exists():
             # Ensure parent exists for git
@@ -253,7 +303,7 @@ class Sandbox:
                         f"{e2.decode()[:200]}"
                     )
 
-        return cls(
+        sandbox = cls(
             root=worktree_dir,
             conv_id=conv_id,
             workspace_root=ws_root,
@@ -261,6 +311,55 @@ class Sandbox:
             agent_id=agent_id,
             branch=branch,
         )
+        # A FRESH branch was just cut from main → already current. A REUSED one
+        # (2nd/3rd turn) is still on the base it branched from + its own commits;
+        # pull the latest main in so this turn sees teammates' already-merged work
+        # instead of stale code.
+        if reused:
+            await sandbox._sync_branch_with_main()
+        return sandbox
+
+    async def _sync_branch_with_main(self) -> None:
+        """Best-effort, non-destructive: bring the agent's worktree branch up to
+        the latest workspace ``main`` at the start of a reused turn.
+
+        - dirty worktree (uncommitted writes) → skip (don't disturb in-flight work)
+        - already current / behind → ``git merge --no-edit main`` fast-forwards or
+          makes a merge commit
+        - conflict → ``git merge --abort``; the turn proceeds on the un-synced
+          branch and the conflict surfaces later at the normal merge-to-main
+        Runs in the worktree (its own HEAD/index); never touches the shared root.
+        """
+        wt = str(self.root)
+
+        async def _run(cmd: list[str]) -> tuple[int, str]:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=wt, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL,
+                env=_git_env(),
+            )
+            try:
+                out, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=_GIT_TIMEOUT
+                )
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                return 124, "timeout"
+            return proc.returncode or 0, out.decode("utf-8", "replace")
+
+        with contextlib.suppress(Exception):
+            rc, status = await _run(["git", "status", "--porcelain"])
+            if rc != 0 or status.strip():
+                return  # dirty or status failed → leave it alone
+            rc, _out = await _run(["git", "merge", "--no-edit", "main"])
+            if rc != 0:
+                # Conflict / other failure → abort so the worktree stays clean;
+                # the turn proceeds, and merge-to-main surfaces any real conflict.
+                with contextlib.suppress(Exception):
+                    await _run(["git", "merge", "--abort"])
 
     @classmethod
     async def ensure_workspace(cls, workspace_id: str) -> Path:
@@ -277,6 +376,87 @@ class Sandbox:
         if not (ws_root / ".git").exists():
             await cls._bootstrap_workspace(ws_root, workspace_id)
         return ws_root
+
+    @classmethod
+    async def reset_workspace(cls, workspace_id: str) -> Path:
+        """TEST/dev: nuke a workspace's shared git (+ every agent worktree) and
+        re-create an EMPTY main. Used by scenario re-seed so a fresh run doesn't
+        add-add-conflict against files the previous run left in main. Guarded by
+        the workspace merge lock (won't run mid-merge). Caller should evict the
+        adapter pool first (cached sessions point at the about-to-be-deleted
+        worktrees). DESTRUCTIVE — wipes all committed work in this workspace.
+        """
+        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        async with workspace_merge_lock(workspace_id):
+            if ws_root.exists():
+                shutil.rmtree(ws_root, ignore_errors=True)
+            ws_root.mkdir(parents=True, exist_ok=True)
+            await cls._bootstrap_workspace(ws_root, workspace_id)
+        return ws_root
+
+    async def preview_restore_main(self, sha: str) -> dict:
+        """Dry-run for「回到这个对话」: what reverting main to ``sha`` would undo.
+        Returns ``{ok, commits, files:[path], authors:[name], head}``. ok=False
+        if sha is unknown / not an ancestor-reachable commit."""
+        if self.workspace_root is None:
+            return {"ok": False, "error": "not a workspace"}
+        rc, _o, _e = await self._workspace_run(
+            ["git", "rev-parse", "--verify", "-q", f"{sha}^{{commit}}"]
+        )
+        if rc != 0:
+            return {"ok": False, "error": f"unknown commit: {sha}"}
+        head = await self.main_head_sha() or ""
+        _rc, cnt, _ = await self._workspace_run(
+            ["git", "rev-list", "--count", f"{sha}..main"]
+        )
+        commits = int(cnt.strip() or "0") if _rc == 0 else 0
+        files = [p for _st, p in await self.files_in_range(sha, "main")]
+        _rc2, alog, _ = await self._workspace_run(
+            ["git", "log", "--format=%an", f"{sha}..main"]
+        )
+        authors = sorted({a.strip() for a in alog.splitlines() if a.strip()}) \
+            if _rc2 == 0 else []
+        return {
+            "ok": True, "commits": commits, "files": files,
+            "authors": authors, "head": head,
+        }
+
+    async def restore_main_to(self, sha: str) -> dict:
+        """「回到这个对话」: hard-reset workspace main to ``sha`` (Cursor-checkpoint
+        style). Records an undo ref at the pre-restore HEAD first (safety net), so
+        the caller can offer 撤销. Guarded by the workspace merge lock; aborts any
+        half-merge first so main is clean. Returns ``{ok, restored, undo_sha}``.
+        DESTRUCTIVE to main's history pointer (commits become unreachable but the
+        undo ref keeps the old tip alive)."""
+        if self.workspace_root is None or self.workspace_id is None:
+            return {"ok": False, "error": "not a workspace"}
+        async with workspace_merge_lock(self.workspace_id):
+            # Clean any in-progress merge so reset can't fail on a dirty index.
+            await self._workspace_run(["git", "merge", "--abort"])
+            rc, _o, _e = await self._workspace_run(
+                ["git", "rev-parse", "--verify", "-q", f"{sha}^{{commit}}"]
+            )
+            if rc != 0:
+                return {"ok": False, "error": f"unknown commit: {sha}"}
+            # Full pre-restore HEAD sha → undo ref (safety net).
+            _rc, undo_sha, _ = await self._workspace_run(
+                ["git", "rev-parse", "main"]
+            )
+            undo_sha = undo_sha.strip()
+            ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+            await self._workspace_run(
+                ["git", "update-ref", f"refs/polynoia/undo/{ts}", undo_sha]
+            )
+            rc2, _o2, err2 = await self._workspace_run(
+                ["git", "reset", "--hard", sha]
+            )
+            if rc2 != 0:
+                return {"ok": False, "error": err2 or "reset failed"}
+            return {
+                "ok": True,
+                "restored": await self.main_head_sha() or "",
+                "undo_sha": undo_sha,
+            }
 
     @classmethod
     def open_workspace_if_exists(cls, workspace_id: str) -> "Sandbox | None":
@@ -319,6 +499,7 @@ class Sandbox:
             ".pytest_cache/\n"
             ".ruff_cache/\n"
             ".mypy_cache/\n"
+            + _LOCAL_DEPS_GITIGNORE
         )
         await scratch._run(["git", "add", ".gitignore"])
         await scratch._run([
@@ -362,6 +543,7 @@ class Sandbox:
             ".pytest_cache/\n"
             ".ruff_cache/\n"
             ".mypy_cache/\n"
+            + _LOCAL_DEPS_GITIGNORE
         )
         await self._run(["git", "add", ".gitignore"])
         # Initial commit including .gitignore so the base has it tracked.
@@ -657,6 +839,43 @@ class Sandbox:
         if rc != 0:
             return None
         return out.strip() or None
+
+    async def files_in_range(
+        self, base: str, head: str
+    ) -> list[tuple[str, str]]:
+        """Return ``[(status, path), ...]`` for files changed between
+        ``base..head`` on the workspace root.
+
+        ``status`` is git's ``--name-status`` letter — ``A`` (added),
+        ``M`` (modified), ``D`` (deleted), ``R<n>`` (rename), etc. Empty
+        list on any error or when the range resolves to no changes. Used
+        by the file-card emitter to attribute agent-generated files.
+        """
+        if self.workspace_root is None or not base or not head or base == head:
+            return []
+        rc, out, _err = await self._workspace_run([
+            "git", "diff", "--name-status", "-z", f"{base}..{head}",
+        ])
+        if rc != 0:
+            return []
+        # `-z` emits NUL-separated entries; a rename is `R<score>\0<old>\0<new>`,
+        # everything else is `<letter>\0<path>`. We only need (status, path);
+        # for renames return the destination path.
+        items = [p for p in out.split("\x00") if p]
+        result: list[tuple[str, str]] = []
+        i = 0
+        while i < len(items):
+            tag = items[i]
+            if tag.startswith(("R", "C")) and i + 2 < len(items):
+                # R/C carry an old + new path; we want the new (destination).
+                result.append((tag[0], items[i + 2]))
+                i += 3
+            elif i + 1 < len(items):
+                result.append((tag, items[i + 1]))
+                i += 2
+            else:
+                break
+        return result
 
     # ── commit-history browser (read-only; NO merge lock) ───────────
     # These back the front-end "提交历史 + diff" view. They only read
@@ -1296,6 +1515,18 @@ class Sandbox:
             # not a double-nested ``<parent>/<conv>/<conv>``.
             "POLYNOIA_CONV_ID": self.conv_id,
             "POLYNOIA_SANDBOX_ROOT": str(self.root.parent),
+            # ── Local-dependency policy ─────────────────────────────────
+            # Each conv/workspace keeps its deps INSIDE its own working dir.
+            # Python: uv creates the venv at <workdir>/.venv (project env), so
+            # `uv add` / `uv run` / `uv pip install` all land locally — never in
+            # a global site-packages. Cache stays under the sandbox too.
+            "UV_PROJECT_ENVIRONMENT": ".venv",
+            "UV_CACHE_DIR": str(self.root / ".polynoia" / "uv-cache"),
+            # Node: keep npm/pnpm caches + global prefix inside the sandbox so a
+            # stray `npm i -g` can't escape to the host; normal installs already
+            # land in the local node_modules.
+            "npm_config_cache": str(self.root / ".polynoia" / "npm-cache"),
+            "npm_config_prefix": str(self.root / ".polynoia" / "npm-global"),
         })
         # Workspace-shared mode: add WORKSPACE_ID + AGENT_ID + BRANCH so the
         # MCP subprocess + spawned tools know which (agent, conv, branch)

@@ -127,7 +127,10 @@ class ClaudeCodeAdapter:
         agent_id: str | None = None,
         merge_mode: str = "auto",
         tool_role: str = "generalist",
+        tools_whitelist: list[str] | None = None,
         read_only_workspace_id: str | None = None,
+        proxy: str | None = None,
+        proxy_kind: str = "system",
     ) -> ClaudeCodeSession:
         # P1.1 routing — group convs in a workspace share git via worktrees;
         # a project-external DM opens its agent's workspace READ-ONLY (ADR-019)
@@ -168,6 +171,8 @@ class ClaudeCodeAdapter:
                 # so proactive diff cards attribute to this agent + its lane.
                 "POLYNOIA_TURN_AGENT_ID": agent_id or self.meta.agent_id,
                 "POLYNOIA_AGENT_ROLE": tool_role,
+                # Per-contact tool override (narrows the role set; empty = role default).
+                "POLYNOIA_AGENT_TOOLS": ",".join(tools_whitelist or []),
                 # IMPORTANT: MCP subprocess inherits Claude SDK's sandboxed
                 # HOME, so Path.home() resolves wrong. Pin sandbox_root via env.
                 "POLYNOIA_SANDBOX_ROOT": str(sandbox.root.parent),
@@ -201,6 +206,22 @@ class ClaudeCodeAdapter:
         extra_env = dict(env or {})
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             extra_env.setdefault("IS_SANDBOX", "1")
+        # ── Proxy egress control (proxy_kind) ───────────────────────
+        # system  → inherit host HTTP_PROXY / HTTPS_PROXY etc. (default,
+        #   env_for_agent already copies them from os.environ)
+        # direct  → strip all proxy env vars so the agent goes direct
+        # custom  → override HTTP_PROXY + HTTPS_PROXY with the given URL
+        if proxy_kind == "direct":
+            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy"):
+                extra_env.pop(_k, None)
+        elif proxy_kind == "custom" and proxy:
+            extra_env["HTTP_PROXY"] = proxy
+            extra_env["HTTPS_PROXY"] = proxy
+            extra_env["ALL_PROXY"] = proxy
+            extra_env["http_proxy"] = proxy
+            extra_env["https_proxy"] = proxy
+            extra_env["all_proxy"] = proxy
         sandbox_env = sandbox.env_for_agent(extra_env)
         # ── merged: feat used `env_for_agent(env or {})`; main's root-aware
         #    IS_SANDBOX path above is a strict superset, so it wins. ──
@@ -234,7 +255,9 @@ class ClaudeCodeAdapter:
         # Net effect: every file mutation flows through mcp__polynoia__* —
         # audited (.polynoia/audit.jsonl), sandbox-bounded, gateable (ADR-005),
         # and role-filtered (ADR-013).
-        role_tool_names = set(tools_for_role(tool_role).keys())
+        role_tool_names = set(
+            tools_for_role(tool_role, set(tools_whitelist or []) or None).keys()
+        )
         effective_allowed = allowed_tools if allowed_tools else [
             f"mcp__polynoia__{name}" for name in sorted(role_tool_names)
         ]

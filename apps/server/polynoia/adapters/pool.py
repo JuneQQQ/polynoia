@@ -102,6 +102,7 @@ class AdapterPool:
                 get_conversation,
                 active_access_grant,
                 list_agents,
+                list_onboarded_adapter_rows,
                 list_workspaces,
             )
 
@@ -111,9 +112,19 @@ class AdapterPool:
                 workspaces = await list_workspaces(db)
                 # ADR-020: did the user approve project access for this DM?
                 granted_ws = await active_access_grant(db, conv_id, agent_id)
+                # Network egress is adapter-level, shared by all the adapter's
+                # contacts (they hit the same LLM endpoint) — look it up by the
+                # contact's adapter_id below.
+                adapter_proxy = {
+                    r.adapter_id: (r.proxy, r.proxy_kind)
+                    for r in await list_onboarded_adapter_rows(db)
+                }
             agent = next((r for r in rows if r.id == agent_id), None)
             if agent is None or agent.setup is None or not agent.setup.adapter_id:
                 return None
+            proxy, proxy_kind = adapter_proxy.get(
+                agent.setup.adapter_id, (None, "system")
+            )
 
             base = _ensure_base_adapters().get(agent.setup.adapter_id)
             if base is None:
@@ -157,7 +168,18 @@ class AdapterPool:
             # project's code into every DM. A DM now sees zero project files;
             # project access is opt-in via the approval flow (request_project_access).
             in_project = conv is not None and conv.workspace_id is not None
-            effective_role = agent.tool_role  # writable in its own sandbox either way
+            # Effective tool_role precedence:
+            #   1. designated conv orchestrator → forced "orchestrator" (ADR-017)
+            #   2. per-conv override (conv.member_tool_roles[agent_id]) — lets the
+            #      same contact have different tools in different conversations
+            #   3. the contact's own default tool_role
+            if is_conv_orch:
+                effective_role = "orchestrator"
+            else:
+                effective_role = (
+                    (conv.member_tool_roles.get(agent_id) if conv else None)
+                    or agent.tool_role
+                )
             system_prompt = agent.system_prompt
             read_only_ws_id: str | None = None
             if not in_project:
@@ -184,7 +206,12 @@ class AdapterPool:
                 agent_id=agent_id,
                 merge_mode=merge_mode,
                 tool_role=effective_role,
+                # Per-contact tool override (narrows the role set). Contact-level
+                # only — the conv override above picks a role, not a tool set.
+                tools_whitelist=agent.tools_whitelist,
                 read_only_workspace_id=read_only_ws_id,
+                proxy=proxy,
+                proxy_kind=proxy_kind,
             )
             self._sessions[key] = new_sess
             return new_sess
