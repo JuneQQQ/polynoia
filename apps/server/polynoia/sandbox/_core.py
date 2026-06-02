@@ -201,6 +201,7 @@ class Sandbox:
         conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
         worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         branch = f"agent/{agent_id}/conv-{conv_id}"
+        reused = False  # True when an existing, git-registered worktree is reused
 
         # Guard against orphan worktree dirs: a previous scenario reset (rmtree
         # with ignore_errors=True) or a half-failed worktree-add can leave the
@@ -234,6 +235,7 @@ class Sandbox:
                 f"worktree {worktree_dir}".encode() in wt_out
                 or f"worktree {worktree_dir.resolve()}".encode() in wt_out
             )
+            reused = registered
             if not registered:
                 # Orphan — sidestep it so the worktree-add path below can
                 # recreate cleanly. Files inside are usually leftovers from a
@@ -301,7 +303,7 @@ class Sandbox:
                         f"{e2.decode()[:200]}"
                     )
 
-        return cls(
+        sandbox = cls(
             root=worktree_dir,
             conv_id=conv_id,
             workspace_root=ws_root,
@@ -309,6 +311,55 @@ class Sandbox:
             agent_id=agent_id,
             branch=branch,
         )
+        # A FRESH branch was just cut from main → already current. A REUSED one
+        # (2nd/3rd turn) is still on the base it branched from + its own commits;
+        # pull the latest main in so this turn sees teammates' already-merged work
+        # instead of stale code.
+        if reused:
+            await sandbox._sync_branch_with_main()
+        return sandbox
+
+    async def _sync_branch_with_main(self) -> None:
+        """Best-effort, non-destructive: bring the agent's worktree branch up to
+        the latest workspace ``main`` at the start of a reused turn.
+
+        - dirty worktree (uncommitted writes) → skip (don't disturb in-flight work)
+        - already current / behind → ``git merge --no-edit main`` fast-forwards or
+          makes a merge commit
+        - conflict → ``git merge --abort``; the turn proceeds on the un-synced
+          branch and the conflict surfaces later at the normal merge-to-main
+        Runs in the worktree (its own HEAD/index); never touches the shared root.
+        """
+        wt = str(self.root)
+
+        async def _run(cmd: list[str]) -> tuple[int, str]:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=wt, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL,
+                env=_git_env(),
+            )
+            try:
+                out, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=_GIT_TIMEOUT
+                )
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                return 124, "timeout"
+            return proc.returncode or 0, out.decode("utf-8", "replace")
+
+        with contextlib.suppress(Exception):
+            rc, status = await _run(["git", "status", "--porcelain"])
+            if rc != 0 or status.strip():
+                return  # dirty or status failed → leave it alone
+            rc, _out = await _run(["git", "merge", "--no-edit", "main"])
+            if rc != 0:
+                # Conflict / other failure → abort so the worktree stays clean;
+                # the turn proceeds, and merge-to-main surfaces any real conflict.
+                with contextlib.suppress(Exception):
+                    await _run(["git", "merge", "--abort"])
 
     @classmethod
     async def ensure_workspace(cls, workspace_id: str) -> Path:

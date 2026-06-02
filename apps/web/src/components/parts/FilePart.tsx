@@ -124,7 +124,7 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 
 	return (
 		<div
-			className="inline-flex flex-col gap-2 w-full max-w-[420px] p-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] hover:border-[var(--color-accent)] transition group"
+			className="flex items-center gap-3 w-full max-w-[520px] p-2.5 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] hover:border-[var(--color-accent)] transition group"
 			role="group"
 			aria-label={`文件 ${payload.name}`}
 		>
@@ -132,14 +132,14 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 				type="button"
 				onClick={wsFile ? onPreview : undefined}
 				disabled={!wsFile}
-				className={`flex items-center gap-3 text-left ${wsFile ? "cursor-pointer" : "cursor-default"}`}
+				className={`flex items-center gap-2.5 min-w-0 flex-1 text-left ${wsFile ? "cursor-pointer" : "cursor-default"}`}
 				title={wsFile ? "点击打开预览" : payload.name}
 			>
 				<div
-					className="w-10 h-10 rounded-lg grid place-items-center flex-shrink-0 relative"
+					className="w-9 h-9 rounded-lg grid place-items-center flex-shrink-0 relative"
 					style={{ background: bg, color: fg }}
 				>
-					<Icon size={18} />
+					<Icon size={16} />
 					<span
 						className="absolute -bottom-1 -right-1 px-1 py-px rounded text-[8px] font-bold leading-none"
 						style={{ background: fg, color: "white" }}
@@ -156,7 +156,7 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 					</div>
 				</div>
 			</button>
-			<div className="flex items-center gap-2 pl-[52px]">
+			<div className="flex items-center gap-1 flex-shrink-0">
 				{wsFile && (
 					<button
 						type="button"
@@ -175,11 +175,6 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 					<Download size={11} />
 					下载
 				</button>
-				{payload.caption && (
-					<span className="text-[10px] text-[var(--color-fg-4)] truncate ml-auto">
-						{payload.caption}
-					</span>
-				)}
 			</div>
 		</div>
 	);
