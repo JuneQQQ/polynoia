@@ -48,23 +48,6 @@ def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
     return lock
 
 
-# ── Per-workspace merge serialization ────────────────────────────────
-# The workspace root shares ONE HEAD/index across all worktrees AND all convs,
-# so concurrent merges from sibling convs would corrupt the shared .git. The
-# whole probe→conclude critical section must run under this lock, keyed by
-# workspace_id (NOT conv_id). See docs/design/conflict-closed-loop-2026-05-30.md.
-_WS_MERGE_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
-    """Return the process-wide merge lock for a workspace (lazily created)."""
-    lock = _WS_MERGE_LOCKS.get(workspace_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _WS_MERGE_LOCKS[workspace_id] = lock
-    return lock
-
-
 class Sandbox:
     """A per-conversation sandbox directory.
 

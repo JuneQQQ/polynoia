@@ -35,10 +35,10 @@ const COLOR_OPTIONS = [
 // mis-guessed third-party / proxy models) — the user picks one explicitly.
 // "custom" reveals a free number input. Default = 200k (Claude 4.x / Kimi).
 const CONTEXT_PRESETS: { label: string; value: number }[] = [
-	{ label: "128k(DeepSeek / GLM / GPT-4o)", value: 128_000 },
-	{ label: "200k(Claude 4.x / Kimi)", value: 200_000 },
-	{ label: "256k(GPT-5.x)", value: 256_000 },
-	{ label: "1M(Claude 1M beta / Gemini)", value: 1_000_000 },
+	{ label: "128K", value: 128_000 },
+	{ label: "200K", value: 200_000 },
+	{ label: "256K", value: 256_000 },
+	{ label: "1M", value: 1_000_000 },
 ];
 const DEFAULT_CONTEXT = 200_000;
 
