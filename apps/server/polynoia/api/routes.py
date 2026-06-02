@@ -3490,6 +3490,27 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         "failed" if turn_failed else "done",
                     )
 
+            # Post-turn auto-merge: when this turn is NOT part of a burst (no
+            # burst_card_id, not the dispatcher) and not a terminal failure,
+            # drain this conv's unmerged worktree commits into main. Without
+            # this, single-agent free-conv writes stay stuck on the agent's
+            # branch forever and never surface in the right rail. Burst flows
+            # already drain on completion via _merge_burst_to_main; skipping
+            # them here keeps the conflict-card `base_agents` order correct.
+            #
+            # Wrapped in suppress(Exception) so a transient git/merge error
+            # never crashes the user-facing turn (worst case: file just
+            # doesn't surface; next turn picks it up).
+            if not burst_card_id and not is_dispatcher and not turn_failed:
+                _ws_id_for_merge: str | None = None
+                with suppress(Exception):
+                    async with SessionLocal() as _db:
+                        _conv = await storage_repo.get_conversation(_db, conv_id)
+                        _ws_id_for_merge = _conv.workspace_id if _conv else None
+                if _ws_id_for_merge:
+                    with suppress(Exception):
+                        await _drain_unmerged_branches(_ws_id_for_merge, agent_id)
+
     async def dispatch_user_message(
         text: str, members: list[str], in_reply_to: str | None = None,
     ) -> None:

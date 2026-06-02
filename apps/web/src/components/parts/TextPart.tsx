@@ -24,30 +24,29 @@ import "highlight.js/styles/github.css";
 
 function Mention({ agentId }: { agentId: string }) {
   const agents = useStore((s) => s.agents);
+  const openAgentDetail = useStore((s) => s.openAgentDetail);
   const agent = agents.find((a) => a.id === agentId);
-  // Unrecognized → plain muted text (no emphasis). Recognized member →
-  // prominent chip: colored dot + member color + soft bg + tinted border.
+  // Unrecognized → plain muted text (no emphasis).
   if (!agent) {
     return <span className="text-[var(--color-fg-3)] font-medium">@{agentId}</span>;
   }
+  // Recognized member → clean inline mention (Slack/Linear style): member-colored
+  // text on a faint same-color tint, no border, no dot. Clicking opens the agent.
   const c = agent.color || "var(--color-accent)";
   return (
-    <span
-      className="inline-flex items-center gap-1 px-1.5 py-[1px] mx-[1px] rounded-md font-semibold align-baseline whitespace-nowrap border"
+    <button
+      type="button"
+      onClick={() => openAgentDetail(agent.id)}
+      title={`查看 @${agent.name}`}
+      className="inline rounded px-[3px] py-px font-medium align-baseline whitespace-nowrap transition-colors cursor-pointer hover:brightness-95"
       style={{
         color: c,
-        background: agent.bg ?? "var(--color-accent-soft)",
-        borderColor: agent.color ? `${agent.color}55` : "var(--color-accent)",
-        fontSize: "0.9em",
+        background: `color-mix(in srgb, ${c} 12%, transparent)`,
       }}
-      title={`@${agent.name}`}
     >
-      <span
-        className="w-[5px] h-[5px] rounded-full flex-shrink-0"
-        style={{ background: c }}
-      />
-      @{agent.name}
-    </span>
+      <span style={{ opacity: 0.6 }}>@</span>
+      {agent.name}
+    </button>
   );
 }
 
