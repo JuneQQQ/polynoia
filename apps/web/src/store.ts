@@ -896,7 +896,34 @@ export const useStore = create<Store>((set, get) => ({
 					message: data.message,
 					ts: Date.now(),
 				});
-				convs.set(convId, { ...cur, agentStatus: newStatus });
+				// Turn ended (idle/aborted/error) → any of THIS agent's tool-call
+				// cards still stuck at pending/running never got a part.completed
+				// (turn died mid-tool-input). Flip them to a terminal state so the
+				// card stops showing "进行中" forever (the「卡住」symptom).
+				let patchedById: Map<string, Message> | null = null;
+				if (status === "idle" || status === "aborted" || status === "error") {
+					const terminal = status === "error" ? "error" : "completed";
+					for (const mid of cur.messageOrder) {
+						const msg = cur.msgById.get(mid);
+						if (!msg || msg.sender_id !== agentId) continue;
+						const p = msg.payload as { kind?: string; state?: string };
+						if (
+							p?.kind === "tool-call" &&
+							(p.state === "pending" || p.state === "running")
+						) {
+							if (!patchedById) patchedById = new Map(cur.msgById);
+							patchedById.set(mid, {
+								...msg,
+								payload: { ...p, state: terminal } as Message["payload"],
+							});
+						}
+					}
+				}
+				convs.set(convId, {
+					...cur,
+					agentStatus: newStatus,
+					...(patchedById ? { msgById: patchedById } : {}),
+				});
 				set({ convs });
 				return;
 			}
