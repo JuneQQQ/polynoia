@@ -61,6 +61,8 @@ function TasksBurstPartInner({
   convId: string;
 }) {
   const agents = useStore((s) => s.agents);
+  const lang = useStore((s) => s.lang);
+  const en = lang === "en";
   const reduce = useReducedMotion();
 
   const tasks = payload.tasks ?? [];
@@ -69,13 +71,14 @@ function TasksBurstPartInner({
   const failedCount = tasks.filter((t) => t.state === "failed").length;
   const allDone = doneCount === totalCount && totalCount > 0;
 
-  // Aggregate status pill color
+  // Aggregate status pill color (localized).
+  const _done = `${doneCount}/${totalCount}`;
   const aggregate: { label: string; bg: string; color: string } =
     failedCount > 0
-      ? { label: `${doneCount}/${totalCount} 完成 · ${failedCount} 失败`, bg: "var(--color-red-soft)", color: "var(--color-red)" }
+      ? { label: en ? `${_done} done · ${failedCount} failed` : `${_done} 完成 · ${failedCount} 失败`, bg: "var(--color-red-soft)", color: "var(--color-red)" }
       : allDone
-        ? { label: `${doneCount}/${totalCount} 全部完成`, bg: "var(--color-green-soft)", color: "var(--color-green)" }
-        : { label: `${doneCount}/${totalCount} 完成 · 进行中`, bg: "var(--color-amber-soft)", color: "var(--color-amber)" };
+        ? { label: en ? `${_done} all done` : `${_done} 全部完成`, bg: "var(--color-green-soft)", color: "var(--color-green)" }
+        : { label: en ? `${_done} done · running` : `${_done} 完成 · 进行中`, bg: "var(--color-amber-soft)", color: "var(--color-amber)" };
 
   return (
     // Width matches the message TEXT column exactly: left at 68px (px-6 +
@@ -215,7 +218,7 @@ function TasksBurstPartInner({
               <div className={`flex flex-col py-2 min-h-[60px] ${isDone ? "anim-done-glow" : ""}`}>
                 {lane.length === 0 ? (
                   <div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
-                    等待开始…
+                    {en ? "Waiting to start…" : "等待开始…"}
                   </div>
                 ) : (
                   lane.map((mid, i) => (

@@ -121,24 +121,32 @@ const _TOOL_ZH: Record<string, string> = {
 	webfetch: "抓取网页", websearch: "联网搜索", multiedit: "批量编辑",
 };
 
-/** Display name for a tool in the status pill: cleaned key, translated to
- * Chinese when known. e.g. `mcp__polynoia__read` → 读取; `dispatch` → 派活;
- * an unknown `foo` → foo. */
-export function toolDisplayName(raw?: string): string {
+/** Display name for a tool in the status pill: cleaned key (no mcp__polynoia__
+ * prefix). In zh, known tools are translated (read→读取, dispatch→派活); in en,
+ * just the cleaned key (read, dispatch). Unknown tools → cleaned key in both. */
+export function toolDisplayName(raw?: string, lang: import("./lib/i18n").Lang = "zh"): string {
 	if (!raw) return "";
 	const key = cleanToolName(raw);
+	if (lang === "en") return key;
 	return _TOOL_ZH[key.toLowerCase()] ?? key;
 }
 
-/** Coarse phase → Chinese status label (shared by the running pill + member dots). */
-export function phaseLabel(phase?: AgentPhase, tool?: string): string {
-	if (phase === "thinking") return "正在思考";
+/** Coarse phase → status label (shared by the running pill + member dots),
+ * localized. Defaults to zh for back-compat callers that don't pass lang. */
+export function phaseLabel(
+	phase?: AgentPhase,
+	tool?: string,
+	lang: import("./lib/i18n").Lang = "zh",
+): string {
+	const en = lang === "en";
+	if (phase === "thinking") return en ? "Thinking" : "正在思考";
 	if (phase === "executing") {
-		const name = toolDisplayName(tool);
+		const name = toolDisplayName(tool, lang);
+		if (en) return name ? `Running ${name}` : "Running";
 		return name ? `正在执行 ${name}` : "正在执行任务";
 	}
-	if (phase === "replying") return "正在回复";
-	return "运行中";
+	if (phase === "replying") return en ? "Replying" : "正在回复";
+	return en ? "Running" : "运行中";
 }
 
 export type PreviewTab = "web" | "code" | "diff" | "tasks";

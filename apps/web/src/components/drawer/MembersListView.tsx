@@ -14,6 +14,7 @@ import { type AgentStatus, phaseLabel, selectAgentStatuses, useStore } from "../
 export function MembersListView() {
   const activeConvId = useStore((s) => s.activeConvId);
   const agents = useStore((s) => s.agents);
+  const lang = useStore((s) => s.lang);
   const openAgentDetail = useStore((s) => s.openAgentDetail);
 
   // Subscribe to live status pings for the active conv
@@ -206,7 +207,11 @@ export function MembersListView() {
                   <div className="text-[10.5px] truncate mt-0.5 font-mono">
                     {status?.status === "streaming" || status?.status === "starting" ? (
                       <span className="text-[var(--color-amber)]">
-                        {status.status === "starting" ? "准备中" : phaseLabel(status.phase, status.tool)}
+                        {status.status === "starting"
+                          ? lang === "en"
+                            ? "Starting"
+                            : "准备中"
+                          : phaseLabel(status.phase, status.tool, lang)}
                       </span>
                     ) : (
                       <span className="text-[var(--color-fg-3)]">

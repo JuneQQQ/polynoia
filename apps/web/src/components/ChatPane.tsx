@@ -55,6 +55,7 @@ export function ChatPane({ convId, members, title }: Props) {
 	const hydrateMessages = useStore((s) => s.hydrateMessages);
 	const setLoadingOlder = useStore((s) => s.setLoadingOlder);
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 	const previewOpen = useStore((s) => s.preview.open);
 	const openPreview = useStore((s) => s.openPreview);
 	const closePreview = useStore((s) => s.closePreview);
@@ -607,8 +608,10 @@ export function ChatPane({ convId, members, title }: Props) {
 							const agent = agents.find((x) => x.id === a.id);
 							const label =
 								a.status === "starting"
-									? "准备中"
-									: phaseLabel(a.phase, a.tool);
+									? lang === "en"
+										? "Starting"
+										: "准备中"
+									: phaseLabel(a.phase, a.tool, lang);
 							return (
 								<button
 									type="button"
