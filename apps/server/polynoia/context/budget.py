@@ -17,12 +17,13 @@ That sums to ~35k of overhead. The remaining `max - 35k` is what Polynoia
 can actually use for L1-L5.
 
 This module:
-1. `KNOWN_MODEL_CONTEXT` — fallback table when the user didn't set
-   `setup.max_context_tokens` explicitly
-2. `CLAUDE_CODE_OVERHEAD` constant (35k)
-3. `compute_budget(model, override?) → LayerBudget` — picks max from
-   override → known table → conservative default, subtracts overhead,
-   scales the 5 layers proportionally
+1. `CLAUDE_CODE_OVERHEAD` constant (35k)
+2. `DEFAULT_FALLBACK_CONTEXT` (128k) — used when the contact has no explicit
+   `setup.max_context_tokens` (the modal now requires picking one; this is just
+   the safety net for older rows / API callers that omit it)
+3. `compute_budget(override?) → LayerBudget` — max_total = override or 128k,
+   subtracts overhead, scales the 5 layers proportionally. There is NO model→
+   context guessing table — it mis-guessed third-party / proxy models too often.
 
 See ADR-012 for the overhead-derivation rationale.
 """
@@ -38,80 +39,6 @@ CLAUDE_CODE_OVERHEAD: int = 35_000
 # 128k matches Claude Code's typical lower-bound third-party (DeepSeek
 # V3.5, GPT-4o etc).
 DEFAULT_FALLBACK_CONTEXT: int = 128_000
-
-
-# Known-models table — context-window ceilings as of late 2025.
-# Keys are matched case-insensitive, with substring fallback so users can
-# type "claude-opus-4-7" OR "anthropic/claude-opus-4-7" OR
-# "opencode-go/mimo-v2.5" and we find them.
-#
-# Sources (kept in code as evidence,not links since URLs rot):
-# - Anthropic Claude 4.x (opus / sonnet / haiku): 200k
-# - OpenAI GPT-5.1 / GPT-5 (Codex backend default): 256k
-# - Google Gemini 1.5/2.0 Pro: 1M (cap to 512k for safety)
-# - Kimi K2 / K2.5: 200-256k
-# - DeepSeek V3.5: 128k
-# - Xiaomi MiMo V2.5 / V2.5-Pro: 262k (verified from user's
-#   ~/.config/opencode/opencode.json)
-# - OpenCode-Go bundled deepseek-v4-flash: 128k
-# - GLM-4.5: 128k
-KNOWN_MODEL_CONTEXT: dict[str, int] = {
-    # Anthropic — default 200k. The 1M variant uses suffix `[1m]`,e.g.
-    # `claude-opus-4-7[1m]`(beta 1M-token program). Match the bracketed
-    # variant BEFORE the plain name so the longer key wins.
-    "claude-opus-4-7[1m]": 1_000_000,
-    "claude-opus-4-6[1m]": 1_000_000,
-    "claude-sonnet-4-6[1m]": 1_000_000,
-    "claude-opus-4-7": 200_000,
-    "claude-opus-4-6": 200_000,
-    "claude-sonnet-4-6": 200_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-haiku-4-5": 200_000,
-    # OpenAI
-    "gpt-5.1": 256_000,
-    "gpt-5": 256_000,
-    "gpt-4o": 128_000,
-    "o1": 200_000,
-    # Google
-    "gemini-1.5-pro": 512_000,
-    "gemini-2.0-pro": 512_000,
-    # Mistral / Moonshot
-    "kimi-k2.5": 200_000,
-    "kimi-k2": 200_000,
-    # DeepSeek
-    "deepseek-v3.5": 128_000,
-    "deepseek-v4-flash": 128_000,
-    # Xiaomi MiMo
-    "mimo-v2.5": 262_144,
-    "mimo-v2.5-pro": 262_144,
-    # Zhipu
-    "glm-4.5": 128_000,
-}
-
-
-def lookup_default_context(model: str | None) -> int:
-    """Best-effort lookup of the model's max context.
-
-    Match is case-insensitive. Tries exact then substring (so prefixes like
-    "anthropic/claude-opus-4-7" or "opencode-go/mimo-v2.5" resolve).
-    Falls back to ``DEFAULT_FALLBACK_CONTEXT`` if unknown.
-    """
-    if not model:
-        return DEFAULT_FALLBACK_CONTEXT
-    m = model.strip().lower()
-    # Exact
-    if m in KNOWN_MODEL_CONTEXT:
-        return KNOWN_MODEL_CONTEXT[m]
-    # Strip provider prefix("anthropic/claude-opus-4-7" → "claude-opus-4-7")
-    if "/" in m:
-        tail = m.split("/")[-1]
-        if tail in KNOWN_MODEL_CONTEXT:
-            return KNOWN_MODEL_CONTEXT[tail]
-    # Substring(rare,but matches "claude-opus-4-7-beta" etc)
-    for known, ctx in KNOWN_MODEL_CONTEXT.items():
-        if known in m or m in known:
-            return ctx
-    return DEFAULT_FALLBACK_CONTEXT
 
 
 def compute_budget(
@@ -140,7 +67,10 @@ def compute_budget(
     When the override or default is very low(< 60k),the floors saturate
     and the budget collapses back to the previous fixed 60k(safe).
     """
-    max_total = max_context_override or lookup_default_context(model)
+    # Context ceiling is USER-SPECIFIED (setup.max_context_tokens, surfaced as a
+    # required preset in 新建/编辑联系人). No model→context guessing table — it was
+    # wrong too often for third-party / proxy models. Null → conservative 128k.
+    max_total = max_context_override or DEFAULT_FALLBACK_CONTEXT
     # Don't let overhead drive available negative — clamp at 30k minimum
     available = max(30_000, max_total - overhead)
 

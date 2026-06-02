@@ -31,48 +31,16 @@ const COLOR_OPTIONS = [
 	"#E74C3C", // red
 ];
 
-// Mirror of backend KNOWN_MODEL_CONTEXT — same model id, same default.
-// Used only to show the placeholder "默认 256000" hint as the user types
-// the model id;the real fallback always happens server-side via
-// context.budget.lookup_default_context().
-const KNOWN_MODEL_DEFAULTS: Record<string, number> = {
-	// Anthropic [1m] variants — 1M-token beta. Plain id = 200k.
-	"claude-opus-4-7[1m]": 1_000_000,
-	"claude-opus-4-6[1m]": 1_000_000,
-	"claude-sonnet-4-6[1m]": 1_000_000,
-	"claude-opus-4-7": 200_000,
-	"claude-opus-4-6": 200_000,
-	"claude-sonnet-4-6": 200_000,
-	"claude-sonnet-4-5": 200_000,
-	"claude-haiku-4-5": 200_000,
-	"gpt-5.1": 256_000,
-	"gpt-5": 256_000,
-	"gpt-4o": 128_000,
-	o1: 200_000,
-	"gemini-1.5-pro": 512_000,
-	"gemini-2.0-pro": 512_000,
-	"kimi-k2.5": 200_000,
-	"kimi-k2": 200_000,
-	"deepseek-v3.5": 128_000,
-	"deepseek-v4-flash": 128_000,
-	"mimo-v2.5": 262_144,
-	"mimo-v2.5-pro": 262_144,
-	"glm-4.5": 128_000,
-};
-
-function knownDefaultPlaceholder(model: string | null | undefined): string {
-	if (!model) return "默认 128000 (未知模型 fallback)";
-	const m = model.trim().toLowerCase();
-	const tail = m.includes("/") ? m.split("/").pop()! : m;
-	if (KNOWN_MODEL_DEFAULTS[m] !== undefined)
-		return `默认 ${KNOWN_MODEL_DEFAULTS[m]} (本表知道这个模型)`;
-	if (KNOWN_MODEL_DEFAULTS[tail] !== undefined)
-		return `默认 ${KNOWN_MODEL_DEFAULTS[tail]} (本表知道这个模型)`;
-	for (const [k, v] of Object.entries(KNOWN_MODEL_DEFAULTS)) {
-		if (m.includes(k) || k.includes(m)) return `默认 ${v} (模糊匹配 ${k})`;
-	}
-	return "默认 128000 (未知模型 fallback)";
-}
+// Context-window ceiling presets. No model→context guessing table (it
+// mis-guessed third-party / proxy models) — the user picks one explicitly.
+// "custom" reveals a free number input. Default = 200k (Claude 4.x / Kimi).
+const CONTEXT_PRESETS: { label: string; value: number }[] = [
+	{ label: "128k(DeepSeek / GLM / GPT-4o)", value: 128_000 },
+	{ label: "200k(Claude 4.x / Kimi)", value: 200_000 },
+	{ label: "256k(GPT-5.x)", value: 256_000 },
+	{ label: "1M(Claude 1M beta / Gemini)", value: 1_000_000 },
+];
+const DEFAULT_CONTEXT = 200_000;
 
 type Props = {
 	onClose: () => void;
@@ -101,13 +69,22 @@ export function NewContactModal({
 	);
 	const [model, setModel] = useState<string>(editing?.setup?.model ?? "");
 	const [customModel, setCustomModel] = useState(editing?.setup?.model ?? "");
-	// User-set context-window ceiling. Empty string = use server default
-	// (KNOWN_MODEL_CONTEXT table lookup). Critical for third-party proxy
-	// models where Claude Code's built-in tokenizer is wrong.
-	const [maxContextInput, setMaxContextInput] = useState<string>(
-		editing?.setup?.max_context_tokens != null
-			? String(editing.setup.max_context_tokens)
-			: "",
+	// Context-window ceiling — required, chosen from presets (or 自定义). The
+	// dropdown value is the preset number as a string, or "custom"; customCtx
+	// holds the free-typed number when "custom". Seeds from the editing value:
+	// matches a preset → that preset, else → custom.
+	const _initCtx = editing?.setup?.max_context_tokens ?? null;
+	const _presetHit =
+		_initCtx != null && CONTEXT_PRESETS.some((p) => p.value === _initCtx);
+	const [ctxMode, setCtxMode] = useState<string>(
+		_initCtx == null
+			? String(DEFAULT_CONTEXT)
+			: _presetHit
+				? String(_initCtx)
+				: "custom",
+	);
+	const [customCtx, setCustomCtx] = useState<string>(
+		_initCtx != null && !_presetHit ? String(_initCtx) : "",
 	);
 	const [useCustomModel, setUseCustomModel] = useState(false);
 	const [name, setName] = useState(editing?.name ?? "");
@@ -207,12 +184,12 @@ export function NewContactModal({
 		setBusy(true);
 		setErr(null);
 		try {
-			// Parse max_context_tokens — empty / non-numeric = null = server fallback
+			// Context ceiling: preset value, or the custom number when "custom".
+			// Custom non-numeric → fall back to the 200k default (never null/0).
 			const parsedMaxCtx = (() => {
-				const trimmed = maxContextInput.trim();
-				if (!trimmed) return null;
-				const n = parseInt(trimmed, 10);
-				return Number.isFinite(n) && n > 0 ? n : null;
+				if (ctxMode !== "custom") return Number.parseInt(ctxMode, 10);
+				const n = Number.parseInt(customCtx.trim(), 10);
+				return Number.isFinite(n) && n > 0 ? n : DEFAULT_CONTEXT;
 			})();
 
 			if (isEdit && editing) {
@@ -373,23 +350,35 @@ export function NewContactModal({
 								</div>
 							</Field>
 
-							<Field label="模型最大上下文长度(可选)">
+							<Field label="模型最大上下文长度" required>
 								<div className="space-y-1.5">
-									<input
-										type="number"
-										min={1024}
-										step={1024}
-										value={maxContextInput}
-										onChange={(e) => setMaxContextInput(e.target.value)}
-										placeholder={knownDefaultPlaceholder(finalModel)}
-										className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
-									/>
+									<select
+										value={ctxMode}
+										onChange={(e) => setCtxMode(e.target.value)}
+										className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+									>
+										{CONTEXT_PRESETS.map((p) => (
+											<option key={p.value} value={String(p.value)}>
+												{p.label}
+											</option>
+										))}
+										<option value="custom">自定义…</option>
+									</select>
+									{ctxMode === "custom" && (
+										<input
+											type="number"
+											min={1024}
+											step={1024}
+											value={customCtx}
+											onChange={(e) => setCustomCtx(e.target.value)}
+											placeholder="自定义 token 总数,如 262144"
+											className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
+										/>
+									)}
 									<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
-										第三方代理(LiteLLM / 小蜜蜜 / 月之暗面 等)的模型,Claude Code
-										自带的 上下文估计经常不准。手填这里的总长度,Polynoia
-										会自动扣掉 Claude Code
-										的固定开销(≈35k)再分给历史/会话/项目几层。留空 =
-										用我们的默认表。
+										必填,且必须手动指定 —— 不再按模型名猜(对第三方/代理模型经常不准)。
+										选你这个模型的真实上下文上限;Polynoia 会扣掉 Claude Code 的固定开销(≈35k)
+										再分给历史/会话/项目几层。
 									</div>
 								</div>
 							</Field>

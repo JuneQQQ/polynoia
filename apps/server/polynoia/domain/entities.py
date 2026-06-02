@@ -52,13 +52,12 @@ class AgentSetup(BaseModel):
     docs: str | None = None
     adapter_id: str | None = None  # claudeCode / codex / opencoder
     model: str | None = None  # backend model id, e.g. "claude-sonnet-4"
-    # User-provided model context-window ceiling, in tokens. When None,
-    # Polynoia falls back to context.budget.KNOWN_MODEL_CONTEXT table by
-    # model id (200k for Claude 4.x, 256k for GPT-5, 262k for MiMo v2.5,
-    # etc). Critical for third-party / proxy models where the adapter
-    # CLI's own context estimate is wrong. Polynoia subtracts Claude
-    # Code's fixed overhead (~35k) from this to compute the L1-L5 budget.
-    # See ADR-012.
+    # User-specified model context-window ceiling, in tokens. The contact modal
+    # requires picking a preset (128k / 200k / 256k / 1M / custom) — there is no
+    # model→context guessing table (it mis-guessed third-party / proxy models).
+    # When None (older rows / API callers that omit it), budget falls back to
+    # context.budget.DEFAULT_FALLBACK_CONTEXT (128k). Polynoia subtracts Claude
+    # Code's fixed overhead (~35k) from this to compute the L1-L5 budget. ADR-012.
     max_context_tokens: int | None = None
 
 
