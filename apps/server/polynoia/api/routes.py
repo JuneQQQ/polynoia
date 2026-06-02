@@ -10,7 +10,7 @@ import os
 import re
 import urllib.parse
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
 from typing import cast
@@ -3186,7 +3186,21 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # completed tool-call/diff parts so the work trace is persisted too
             # (not live-only) and survives a refresh.
             response_buffer: list[str] = []
-            tool_parts: list[dict] = []
+            # msg_id (tc-<part_id>) → payload. Tool-call/diff are persisted
+            # incrementally (durable mid-stream) via _persist_tool_part; the
+            # turn-end / abort persist UPSERTS the same ids (no dup rows).
+            tool_parts: dict[str, dict] = {}
+
+            async def _persist_tool_part(mid: str, payload: dict) -> None:
+                """Persist one completed tool-call/diff part immediately so the
+                trace survives a refresh mid-turn. Upsert by stable id."""
+                async with SessionLocal() as _tdb:
+                    await storage_repo.upsert_message(
+                        _tdb, conv_id=conv_id, sender_id=agent_id,
+                        payload=payload, msg_id=mid,
+                    )
+                    await _tdb.commit()
+
             emitted_any = False
             # An adapter can stream a TERMINAL error (e.g. a 401/429/500 surfaces
             # as a TurnFailedEvent → error chunk) WITHOUT raising — the stream
@@ -3220,10 +3234,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     return
                 with suppress(Exception):
                     async with SessionLocal() as _pdb:
-                        for _p in tool_parts:
-                            await storage_repo.append_message(
+                        for _mid, _p in tool_parts.items():
+                            await storage_repo.upsert_message(
                                 _pdb, conv_id=conv_id, sender_id=agent_id,
-                                payload=_p, msg_id=f"tc-{uuid.uuid4().hex[:12]}",
+                                payload=_p, msg_id=_mid,
                             )
                         if partial:
                             await storage_repo.append_message(
@@ -3273,7 +3287,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # backend (no output) must fail the turn, not freeze the
                         # lane forever.
                         agen = adapter_events_to_chunks(
-                            _tap_text_into(events_iter, response_buffer, tool_parts),
+                            _tap_text_into(
+                                events_iter, response_buffer, tool_parts,
+                                on_tool_part=_persist_tool_part,
+                            ),
                             agent_id=agent_id,
                             conv_id=conv_id,
                             sender_label=agent_id,
@@ -3475,10 +3492,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # live-only + persisted after the card → wrong order.)
             if tool_parts or full_text:
                 async with SessionLocal() as _persist_db:
-                    for p in tool_parts:
-                        await storage_repo.append_message(
+                    for _mid, p in tool_parts.items():
+                        # Upsert by stable id: tool-call/diff were already written
+                        # incrementally (durable mid-stream) → this updates them to
+                        # final state; reasoning is inserted here. No dup rows.
+                        await storage_repo.upsert_message(
                             _persist_db, conv_id=conv_id, sender_id=agent_id,
-                            payload=p, msg_id=f"tc-{uuid.uuid4().hex[:12]}",
+                            payload=p, msg_id=_mid,
                         )
                     if full_text:
                         await storage_repo.append_message(
@@ -4258,18 +4278,25 @@ def _phase_from_chunk(chunk: str) -> tuple[str, dict] | None:
 async def _tap_text_into(
     events: AsyncIterator[AdapterEvent],
     buffer: list[str],
-    parts: list[dict] | None = None,
+    parts: dict[str, dict] | None = None,
+    on_tool_part: Callable[[str, dict], Awaitable[None]] | None = None,
 ) -> AsyncIterator[AdapterEvent]:
     """Pass-through async iterator that side-effects every text bit into
     ``buffer`` so the caller can reassemble the full agent response after the
-    stream ends. If ``parts`` is given, also captures completed non-text parts
-    (tool-call / diff / reasoning) in stream order so the caller can persist them
-    and the trace survives a refresh (otherwise they'd be live-only). Reasoning
-    deltas are streamed through but kept OUT of ``buffer`` — thinking is not the
-    agent's reply, must not be persisted as the reply, nor scanned for @mentions.
+    stream ends.
+
+    If ``parts`` is given, also captures completed non-text parts
+    (tool-call / diff / reasoning) — keyed by a STABLE message id ``tc-<part_id>``
+    so re-emits of the same tool (running → completed) overwrite one entry, and
+    so the turn-end persist upserts (no dup rows). If ``on_tool_part`` is given,
+    tool-call / diff parts are persisted IMMEDIATELY on completion (durable
+    mid-stream — the trace survives a refresh even while the turn is still
+    running, the「刷新丢工具调用」fix). Reasoning deltas stream through but stay
+    OUT of ``buffer`` (thinking is not the reply) and are NOT persisted
+    incrementally (the stream-resume covers them live; they land at turn-end).
     """
-    part_row_idx: dict[str, int] = {}  # part_id → its index in `parts`
     reasoning_parts: set[str] = set()  # part_ids whose deltas are thinking
+    _anon = 0  # fallback counter for parts with no part_id
     async for ev in events:
         t = ev.type
         if t == "part.started":
@@ -4298,19 +4325,24 @@ async def _tap_text_into(
                         buffer.append(c)
             elif parts is not None and kind in _PERSIST_PART_KINDS:
                 # A single tool emits part.completed more than once under the
-                # same part_id as it advances (running → completed). Persist ONE
-                # row per tool at its latest state by overwriting in place, so a
-                # reloaded trace shows each tool once (not a running/completed
-                # pair, which is what the live card collapses).
+                # same part_id as it advances (running → completed). Key by a
+                # STABLE msg id so the latest state overwrites one entry (the
+                # reloaded trace shows each tool once), and so the turn-end
+                # persist upserts by the same id.
                 with suppress(Exception):
                     dump = part.model_dump(mode="json")
                     pid = getattr(ev, "part_id", None) or dump.get("tool_call_id")
-                    if pid is not None and pid in part_row_idx:
-                        parts[part_row_idx[pid]] = dump
-                    else:
-                        if pid is not None:
-                            part_row_idx[pid] = len(parts)
-                        parts.append(dump)
+                    if pid is None:
+                        _anon += 1
+                        pid = f"anon{_anon}"
+                    mid = f"tc-{pid}"
+                    parts[mid] = dump
+                    # Durable mid-stream: persist tool-call / diff the moment they
+                    # complete, so a refresh during the turn keeps the trace.
+                    # (reasoning is left to turn-end — covered live by resume.)
+                    if on_tool_part is not None and kind in ("tool-call", "diff"):
+                        with suppress(Exception):
+                            await on_tool_part(mid, dump)
         yield ev
 
 

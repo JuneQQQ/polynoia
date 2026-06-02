@@ -596,6 +596,30 @@ async def update_message_payload(
     return True
 
 
+async def upsert_message(
+    session: AsyncSession,
+    *,
+    conv_id: str,
+    sender_id: str,
+    payload: dict[str, Any],
+    msg_id: str,
+) -> str:
+    """Insert a message, or overwrite its payload if a row with ``msg_id``
+    already exists. Lets a tool-call/diff part persist incrementally (the moment
+    it completes, so a mid-stream refresh keeps the trace) AND be re-written at
+    turn-end with its final state — same stable id, no duplicate row. Caller
+    commits."""
+    row = await session.get(MessageRow, msg_id)
+    if row is not None:
+        row.payload = payload
+        await session.flush()
+        return msg_id
+    return await append_message(
+        session, conv_id=conv_id, sender_id=sender_id,
+        payload=payload, msg_id=msg_id,
+    )
+
+
 async def add_conv_memory(
     session: AsyncSession,
     *,
