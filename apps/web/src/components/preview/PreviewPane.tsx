@@ -190,7 +190,8 @@ export function PreviewPane() {
 			</header>
 
 			{/* Body — conflict/diff still take priority. Otherwise: a file is being
-			    previewed (previewFile) → single-file preview; else → file tree. */}
+			    previewed (previewFile) → single-file preview; else → file tree.
+			    Bottom (when open): the interactive terminal, draggable divider. */}
 			<div
 				ref={bodyRef}
 				className="flex-1 min-h-0 flex flex-col overflow-hidden"

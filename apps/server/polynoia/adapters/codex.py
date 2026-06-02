@@ -108,7 +108,8 @@ _MCP_BLOCK_MARKER = "[mcp_servers.polynoia]"
 def _polynoia_mcp_block(
     *, conv_id: str, agent_id: str, pythonpath: str, sandbox_root: str,
     tool_role: str = "generalist", tools: str = "", api_base: str = "",
-    worktree_root: str = "", workspace_root: str = "",
+    worktree_root: str = "", workspace_root: str = "", turn_agent_id: str = "",
+    workspace_id: str = "",
 ) -> str:
     """Build the ``[mcp_servers.polynoia]`` TOML block.
 
@@ -118,7 +119,12 @@ def _polynoia_mcp_block(
     """
     worktree_lines = ""
     if worktree_root and workspace_root:
+        # POLYNOIA_WORKSPACE_ID is what `present` reads to build the file
+        # card's src URL — without it the tool falls back to `conv:<conv_id>`
+        # and the card 404s on click. Codex spawns MCP via its own toml config
+        # (this block), so we must set it explicitly here.
         worktree_lines = (
+            f'POLYNOIA_WORKSPACE_ID = "{workspace_id}"\n'
             f'POLYNOIA_WORKTREE_ROOT = "{worktree_root}"\n'
             f'POLYNOIA_WORKSPACE_ROOT = "{workspace_root}"\n'
         )
@@ -131,6 +137,7 @@ args = ["-m", "polynoia.mcp"]
 [mcp_servers.polynoia.env]
 POLYNOIA_CONV_ID = "{conv_id}"
 POLYNOIA_AGENT_ID = "{agent_id}"
+POLYNOIA_TURN_AGENT_ID = "{turn_agent_id}"
 POLYNOIA_AGENT_ROLE = "{tool_role}"
 POLYNOIA_AGENT_TOOLS = "{tools}"
 POLYNOIA_API_BASE = "{api_base}"
@@ -255,6 +262,7 @@ class CodexAdapter:
         mcp_block = _polynoia_mcp_block(
             conv_id=conv_id,
             agent_id=self.meta.agent_id,
+            turn_agent_id=(agent_id or self.meta.agent_id),
             pythonpath=server_pkg_root,
             sandbox_root=str(sandbox.root.parent),
             tool_role=tool_role,
@@ -264,6 +272,7 @@ class CodexAdapter:
             ),
             worktree_root=(str(sandbox.root) if sandbox.workspace_root else ""),
             workspace_root=(str(sandbox.workspace_root) if sandbox.workspace_root else ""),
+            workspace_id=(sandbox.workspace_id or ""),
         )
         config_path.write_text(
             _merge_mcp_into_config(existing, mcp_block), encoding="utf-8"

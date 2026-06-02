@@ -59,6 +59,21 @@ function dayKey(iso: string): string {
 	return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日`;
 }
 
+/** Humanize Polynoia's machine-generated commit subjects so the list reads
+ * cleanly; agent commits ("edit X (+N/-M)") pass through unchanged. */
+function prettySubject(s: string): string {
+	if (s.startsWith("polynoia: workspace init")) return "初始化工作区";
+	if (s.startsWith("polynoia: merge ")) return "合并分支";
+	if (s.startsWith("polynoia: resolve+merge ")) return "解决冲突并合并";
+	if (s.startsWith("polynoia: capture")) return "收集未提交改动";
+	const ue = /^polynoia: (?:revert|apply) diff (.+)$/.exec(s);
+	if (ue)
+		return `${s.startsWith("polynoia: revert") ? "撤销" : "应用"} ${ue[1].split("/").pop()}`;
+	const u = /^polynoia: user edit (.+)$/.exec(s);
+	if (u) return `用户编辑 ${u[1].split("/").pop()}`;
+	return s.replace(/^polynoia:\s*/, "");
+}
+
 /** The commit author (git %an) is the agent_id for agent commits; map it back
  * to the live agent so we can colour the row. User/system edits won't match. */
 function findAgent(agents: Agent[], author: string): Agent | undefined {
@@ -210,7 +225,9 @@ function CommitList({
 											size={12}
 											className="text-[var(--color-fg-3)] flex-shrink-0"
 										/>
-										<span className="truncate flex-1">{c.subject}</span>
+										<span className="truncate flex-1" title={c.subject}>
+											{prettySubject(c.subject)}
+										</span>
 									</div>
 									<div className="flex items-center gap-2 text-[10px] text-[var(--color-fg-3)] pl-[18px]">
 										<AgentChip
@@ -244,17 +261,27 @@ function CommitList({
 function FileDiffCard({
 	file,
 	split,
-}: { file: CommitFileDiff; split: boolean }) {
+	defaultOpen,
+}: { file: CommitFileDiff; split: boolean; defaultOpen: boolean }) {
 	const heavy =
 		file.binary ||
 		file.too_large ||
 		file.additions + file.deletions > HEAVY_LINES;
-	const [open, setOpen] = useState(!heavy);
+	const [open, setOpen] = useState(defaultOpen && !heavy);
 	// folded (±3 context) vs full-file context — uses lineDiffUnified's two modes.
 	const [full, setFull] = useState(false);
 
+	// 展开全部/折叠全部 flips defaultOpen → re-sync WITHOUT a remount, so a bulk
+	// toggle doesn't re-run every file's LCS. Manual per-card toggles don't
+	// change defaultOpen, so they survive unrelated re-renders.
+	useEffect(() => {
+		setOpen(defaultOpen && !heavy);
+	}, [defaultOpen, heavy]);
+
+	// Only compute the (O(n·m) LCS) diff when this card is actually open — a
+	// collapsed card in a big commit costs nothing.
 	const data = useMemo(() => {
-		if (file.binary || file.too_large) return null;
+		if (!open || file.binary || file.too_large) return null;
 		const lang = inferLang(file.path);
 		const { unified } = lineDiffUnified(
 			file.old_text,
@@ -267,7 +294,7 @@ function FileDiffCard({
 			newFile: { fileName: file.path, fileLang: lang },
 			hunks: [unified],
 		};
-	}, [file, full]);
+	}, [file, full, open]);
 
 	return (
 		<div className="border-b border-[var(--color-line)]">
@@ -319,14 +346,24 @@ function FileDiffCard({
 						文件较大,已省略 diff 内容(+{file.additions} −{file.deletions})。
 					</div>
 				) : data ? (
-					<DiffView
-						// biome-ignore lint/suspicious/noExplicitAny: @git-diff-view's DiffFile data shape (matches DiffTab/DiffReviewPane usage).
-						data={data as any}
-						diffViewMode={split ? DiffModeEnum.Split : DiffModeEnum.Unified}
-						diffViewHighlight={true}
-						diffViewWrap={false}
-						diffViewFontSize={12}
-					/>
+					// content-visibility:auto lets the browser skip layout/paint of this
+					// file's diff while it's scrolled off-screen (git-diff-view itself
+					// doesn't virtualize rows) — the key lever against big-commit jank.
+					<div
+						style={{
+							contentVisibility: "auto",
+							containIntrinsicSize: "0 320px",
+						}}
+					>
+						<DiffView
+							// biome-ignore lint/suspicious/noExplicitAny: @git-diff-view's DiffFile data shape (matches DiffTab/DiffReviewPane usage).
+							data={data as any}
+							diffViewMode={split ? DiffModeEnum.Split : DiffModeEnum.Unified}
+							diffViewHighlight={true}
+							diffViewWrap={false}
+							diffViewFontSize={12}
+						/>
+					</div>
 				) : null)}
 		</div>
 	);
@@ -346,6 +383,10 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 	const [diff, setDiff] = useState<CommitDiff | null>(null);
 	const [diffLoading, setDiffLoading] = useState(false);
 	const cache = useRef<Map<string, CommitDiff>>(new Map());
+	// Big commits start fully collapsed (file headers only) so we don't mount N
+	// DiffViews at once; null = use the per-commit default, true/false = bulk
+	// expand/collapse the user toggled.
+	const [expandAll, setExpandAll] = useState<boolean | null>(null);
 
 	// Load the commit list + working summary. Re-runs when agents commit to main
 	// (filesTick); keeps the current selection if it still exists.
@@ -403,6 +444,12 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 		};
 	}, [selected, workspaceId, filesTick]);
 
+	// Reset bulk expand/collapse when switching commits.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `selected` is the trigger, not read in the body.
+	useEffect(() => {
+		setExpandAll(null);
+	}, [selected]);
+
 	const totals = useMemo(() => {
 		if (!diff) return { adds: 0, dels: 0 };
 		return diff.files.reduce(
@@ -413,6 +460,11 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 			{ adds: 0, dels: 0 },
 		);
 	}, [diff]);
+
+	// >25 changed files → default every card collapsed so we don't mount dozens
+	// of DiffViews on open (the "撑爆" fix). expandAll overrides per user toggle.
+	const manyFiles = (diff?.files.length ?? 0) > 25;
+	const effectiveOpen = expandAll ?? !manyFiles;
 
 	if (commits === null) {
 		return (
@@ -447,6 +499,16 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 					)}
 					<StatChips adds={totals.adds} dels={totals.dels} />
 					<span className="flex-1" />
+					{diff && diff.files.length > 1 && (
+						<button
+							type="button"
+							onClick={() => setExpandAll(!effectiveOpen)}
+							className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]/50"
+							title={effectiveOpen ? "全部折叠" : "全部展开"}
+						>
+							{effectiveOpen ? "折叠全部" : "展开全部"}
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => setSplit(!split)}
@@ -469,12 +531,14 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 					) : (
 						<>
 							{diff.files.map((f) => (
-								// Key by selection+path so switching commits remounts each card
-								// (fresh open/full state) instead of leaking it across commits.
+								// Key by selection+path only (NOT expandAll) so bulk toggling
+								// re-syncs open-state via effect instead of remounting +
+								// recomputing every card. Switching commits still remounts.
 								<FileDiffCard
 									key={`${selected}:${f.path}`}
 									file={f}
 									split={split}
+									defaultOpen={effectiveOpen}
 								/>
 							))}
 							{diff.truncated && (

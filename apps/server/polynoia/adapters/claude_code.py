@@ -160,23 +160,16 @@ class ClaudeCodeAdapter:
         api_base = os.environ.get(
             "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
         )
-        # POLYNOIA_AGENT_ID must be the CONTACT's ULID (passed in as `agent_id`),
-        # not the adapter's static id ("claudeCode"). MCP tools attribute audit
-        # events + emit messages with this id as `sender_id`; using the static
-        # adapter id collapses every claudeCode-backed agent into a single
-        # generic "claudeCode" sender → UI shows "Agent BOT" instead of the
-        # real contact + the per-conv member context is lost. Codex/OpenCode
-        # adapters already pass through `agent_id` correctly; this fixes the
-        # parity gap. Fall back to adapter id only if a caller forgot to pass
-        # one (defensive — pool.py always passes the real ULID).
-        contact_agent_id = agent_id or self.meta.agent_id
         polynoia_mcp = McpStdioServerConfig(
             type="stdio",
             command="python",
             args=["-m", "polynoia.mcp"],
             env={
                 "POLYNOIA_CONV_ID": conv_id,
-                "POLYNOIA_AGENT_ID": contact_agent_id,
+                "POLYNOIA_AGENT_ID": self.meta.agent_id,
+                # The per-turn worker ULID (contact), not the static adapter id —
+                # so proactive diff cards attribute to this agent + its lane.
+                "POLYNOIA_TURN_AGENT_ID": agent_id or self.meta.agent_id,
                 "POLYNOIA_AGENT_ROLE": tool_role,
                 # Per-contact tool override (narrows the role set; empty = role default).
                 "POLYNOIA_AGENT_TOOLS": ",".join(tools_whitelist or []),
@@ -186,8 +179,13 @@ class ClaudeCodeAdapter:
                 # The EXACT worktree this agent runs in, so MCP tools write +
                 # commit to the agent's own branch (not a separate per-conv
                 # sandbox). Only set in workspace mode.
+                # POLYNOIA_WORKSPACE_ID is what `present` reads to build the
+                # card's src URL. Listed explicitly so this doesn't depend on
+                # claude_agent_sdk's parent-env inheritance (which opencode +
+                # codex don't have). Keeps all three adapters symmetrical.
                 **(
                     {
+                        "POLYNOIA_WORKSPACE_ID": sandbox.workspace_id or "",
                         "POLYNOIA_WORKTREE_ROOT": str(sandbox.root),
                         "POLYNOIA_WORKSPACE_ROOT": str(sandbox.workspace_root),
                     }
