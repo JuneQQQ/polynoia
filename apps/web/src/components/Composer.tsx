@@ -308,10 +308,11 @@ export function Composer({
     : `发消息给 ${otherAgent?.name ?? "Agent"}`;
 
   return (
-    // No outer divider rectangle — let it float (灵动). A soft upward fade
-    // separates it from the message stream instead of a hard border line.
-    <div className="bg-gradient-to-t from-[var(--color-bg)] via-[var(--color-bg)] to-transparent">
-      <div className="px-6 pt-2 pb-4 relative">
+    // No outer container/rectangle/bg at all — fully transparent so the rounded
+    // input pill (below) visually FLOATS over the message stream (悬空). The pill
+    // carries its own surface bg + shadow.
+    <div className="bg-transparent">
+      <div className="px-6 pt-2 pb-3 relative">
         {/* @-mention picker */}
         {mention && filtered.length > 0 && (
           <div className="absolute bottom-full left-5 right-5 mb-1 z-30 bg-[var(--color-surface)] border border-[var(--color-line)] rounded-lg shadow-lg overflow-hidden max-h-[280px] overflow-y-auto">

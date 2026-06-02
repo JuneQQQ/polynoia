@@ -147,34 +147,23 @@ function PptxView({
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const ref = useRef<HTMLDivElement | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-	// HEIGHT-FIT — slide height = full pane visible height; slide width grows
-	// to maintain 16:9 (overflows pane width on narrow panes → horizontal
-	// scroll). This is the only way to eliminate the bottom whitespace when
-	// the pane is taller than 16:9 aspect, matching presenter-view UX.
-	const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+	// WIDTH-FIT — slide width fills the available pane width minus 12px
+	// padding on each side. Slide height = width × 9/16 (16:9 aspect). Never
+	// crops horizontally; slides stack vertically and the outer container
+	// gives a vertical scrollbar when total height exceeds the pane.
+	const [width, setWidth] = useState<number | null>(null);
 
 	// ResizeObserver, debounced 200ms so dragging the pane handle only re-
 	// renders once at the end (pptx-preview re-parses the whole deck on init).
 	useEffect(() => {
 		const el = containerRef.current;
 		if (!el) return;
-		const PAD_X = 16; // p-2 horizontal padding budget
-		const PAD_Y = 16; // p-2 vertical padding budget
+		const PAD = 12; // each side; 24px horizontal budget total
 		const MIN = 280; // below this slides become unreadable
 		let timer: number | null = null;
 		const measure = () => {
-			const ch = Math.max(MIN, el.clientHeight - PAD_Y);
-			const cw = Math.max(MIN, el.clientWidth - PAD_X);
-			// Always height-fit (slide fills pane vertically). Width grows
-			// from height * 16/9. If that's narrower than the pane (very
-			// wide pane), bump up to pane width instead — never want unused
-			// horizontal space if we can use it.
-			const heightFitW = Math.round((ch * 16) / 9);
-			const w = Math.max(heightFitW, cw);
-			const h = Math.round((w * 9) / 16);
-			// If width-driven height exceeds pane height, we accept vertical
-			// overflow on the FIRST slide (subsequent slides stack normally).
-			setSize({ w, h });
+			const w = Math.max(MIN, el.clientWidth - PAD * 2);
+			setWidth(w);
 		};
 		measure();
 		const ro = new ResizeObserver(() => {
@@ -189,7 +178,7 @@ function PptxView({
 	}, []);
 
 	useEffect(() => {
-		if (!size) return;
+		if (!width) return;
 		let alive = true;
 		setErr(null);
 		import("pptx-preview")
@@ -204,8 +193,8 @@ function PptxView({
 				};
 				const m = mod as unknown as PptxPreviewModule;
 				const previewer = m.init(ref.current, {
-					width: size.w,
-					height: size.h,
+					width,
+					height: Math.round((width * 9) / 16),
 				});
 				return previewer.preview(buf);
 			})
@@ -215,23 +204,20 @@ function PptxView({
 		return () => {
 			alive = false;
 		};
-	}, [buf, size]);
+	}, [buf, width]);
 
 	if (err) return <Fallback name={name} reason={err} onDownload={onDownload} />;
 	return (
 		<div
 			ref={containerRef}
-			className="h-full w-full overflow-auto bg-[var(--color-surface-2)] p-2"
-			style={{ scrollSnapType: "y proximity" }}
+			className="h-full w-full overflow-y-auto overflow-x-hidden bg-[var(--color-surface-2)]"
+			style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 12, paddingBottom: 12 }}
 		>
 			<div ref={ref} className="pptx-preview pptx-preview-fit" />
-			{/* Per-slide spacing + smooth scroll snap so the wheel lands at
-			    each slide boundary. Targets pptx-preview's slide root regardless
-			    of which class name the lib uses (.pptx-preview-slide / .slide). */}
+			{/* Inter-slide spacing only — no horizontal/vertical stretching of slides. */}
 			<style>{`
 				.pptx-preview-fit > * {
 					margin-bottom: 12px;
-					scroll-snap-align: start;
 				}
 				.pptx-preview-fit > *:last-child {
 					margin-bottom: 0;

@@ -268,8 +268,22 @@ function TasksBurstPartInner({
 								style={{ scrollbarGutter: "stable" }}
 							>
 								{lane.length === 0 ? (
+									// Empty lane: only show "等待开始" while genuinely PENDING/RUNNING.
+									// A done/failed lane with no claimed messages must NOT show
+									// "等待开始" (the "Done + 等待开始" contradiction) — show a quiet
+									// terminal note instead.
 									<div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
-										{en ? "Waiting to start…" : "等待开始…"}
+										{isDone
+											? en
+												? "Done · no output"
+												: "已完成 · 无输出"
+											: t.state === "failed"
+												? en
+													? "Failed"
+													: "已失败"
+												: en
+													? "Waiting to start…"
+													: "等待开始…"}
 									</div>
 								) : (
 									lane.map((mid, i) => (

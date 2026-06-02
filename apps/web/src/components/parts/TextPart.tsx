@@ -280,11 +280,13 @@ export const MARKDOWN_COMPONENTS = {
  */
 const CJK_RE = /[一-鿿　-〿＀-￯]/;
 function fixCjkMarkdown(s: string): string {
-	// After `**` or `__` immediately followed by CJK,or preceded by CJK,
-	// insert ZWSP so the parser treats them as proper delimiter runs.
-	return s
-		.replace(/([一-鿿　-〿＀-￯])(\*\*|__)/g, "$1​$2")
-		.replace(/(\*\*|__)([一-鿿　-〿＀-￯])/g, "$1​$2");
+	// NO-OP. The previous ZWSP normalization BROKE CJK-leading bold: inserting a
+	// zero-width space between an opening `**` and the following CJK char
+	// (`**顾屿` → `**​顾屿`) made `**` be followed by whitespace, so CommonMark no
+	// longer treats it as an emphasis opener → it rendered LITERALLY (the user's
+	// `**顾屿 ✓**` bug). react-markdown + remark-gfm handle `**中文**` correctly on
+	// their own, so we pass the text through untouched.
+	return s;
 }
 void CJK_RE; // exported pattern reserved for future detectors
 
