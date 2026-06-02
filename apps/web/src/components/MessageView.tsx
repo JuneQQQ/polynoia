@@ -500,19 +500,24 @@ function MessageActions({
 			>
 				{pinned ? <PinOff size={11} /> : <Pin size={11} />}
 			</button>
+			{/* 从此处回滚 — ALWAYS visible at each (user) message that carries a code
+			    checkpoint, not hover-only: it's a primary affordance ("把代码回退到
+			    我发这条消息之前的状态"). codeSha is stamped on user messages in a
+			    workspace conv, so this naturally appears per user input. */}
 			{codeSha && workspaceId && (
 				<button
 					type="button"
 					onClick={restoreHere}
 					disabled={restoreBusy}
-					title="回到这个对话(把代码回退到此刻)"
-					className={`p-0.5 rounded-sm transition-opacity duration-200 ${
+					title="回滚至此:把工作区代码恢复到你发这条消息时的状态"
+					className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
 						restoreBusy
-							? "opacity-70 text-[var(--color-accent)]"
-							: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
+							? "text-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+							: "text-[var(--color-fg-3)] bg-[var(--color-surface-2)] hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
 					}`}
 				>
-					<History size={11} />
+					<History size={10} />
+					回滚至此
 				</button>
 			)}
 			{undoSha && (

@@ -347,7 +347,11 @@ export function NewContactModal({
 
 	return (
 		<div
-			className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+			// z-[60] — ABOVE the RightDrawer (z-50, rendered later in the DOM). The
+			// 编辑联系人 button lives in the drawer (AgentDetailView) and dispatches
+			// polynoia:edit-contact → this modal opens; at equal z the later-mounted
+			// drawer stacked on top so the modal appeared "no-response" behind it.
+			className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4"
 			onClick={onClose}
 			role="dialog"
 			aria-modal="true"
