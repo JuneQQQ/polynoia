@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <defs>
+    <filter id="cardShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="2" result="offsetblur"/>
+      <feFlood flood-color="#0F172A" flood-opacity="0.06" result="shadowColor"/>
+      <feComposite in="shadowColor" in2="offsetblur" operator="in" result="shadow"/>
+      <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1280" height="720" fill="#F7FAFC"/>
+  <rect x="0" y="0" width="1280" height="4" fill="#1A365D"/>
+  <text x="80" y="60" font-family="Georgia, 'Microsoft YaHei', 'PingFang SC', serif" font-size="32" font-weight="bold" fill="#1A365D">系统总体架构 — Polynoia</text>
+  <text x="80" y="88" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="14" fill="#718096">THREE-TIER COLLABORATION PLATFORM WITH PROTOCOL-BASED ADAPTER LAYER</text>
+  <!-- Layer 1: Interaction Layer -->
+  <rect x="40" y="115" width="40" height="130" rx="8" fill="#2B6CB0"/>
+  <text x="60" y="188" text-anchor="middle" font-family="Georgia, serif" font-size="22" font-weight="bold" fill="#FFFFFF">03</text>
+  <rect x="96" y="115" width="1144" height="130" rx="12" fill="#EBF8FF" fill-opacity="0.4" stroke="#90CDF4" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="668" y="138" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="13" font-weight="bold" fill="#2B6CB0">交互与展示层 · INTERACTION &amp; PRESENTATION LAYER</text>
+  <!-- Interaction cards -->
+  <g filter="url(#cardShadow)">
+    <rect x="114" y="158" width="230" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="229" y="186" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">FastAPI Server</text>
+    <text x="229" y="210" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">REST + WebSocket API</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="358" y="158" width="230" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="473" y="186" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">React Frontend</text>
+    <text x="473" y="210" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">BurstCard · MessagePart · 17 Kinds</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="602" y="158" width="230" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="717" y="186" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">AI SDK 6 Protocol</text>
+    <text x="717" y="210" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">28 Chunk Types · SSE / WS</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="846" y="158" width="230" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="961" y="186" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">Pydantic v2 Models</text>
+    <text x="961" y="210" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">12 Message Kinds · ULID</text>
+  </g>
+  <!-- Layer 2: Scheduling Layer -->
+  <rect x="40" y="270" width="40" height="130" rx="8" fill="#1A365D"/>
+  <text x="60" y="343" text-anchor="middle" font-family="Georgia, serif" font-size="22" font-weight="bold" fill="#FFFFFF">02</text>
+  <rect x="96" y="270" width="1144" height="130" rx="12" fill="#EDF2F7" fill-opacity="0.4" stroke="#A0AEC0" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="668" y="293" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="13" font-weight="bold" fill="#1A365D">调度与上下文层 · ORCHESTRATION &amp; CONTEXT LAYER</text>
+  <g filter="url(#cardShadow)">
+    <rect x="114" y="313" width="254" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="241" y="341" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">Orchestrator Agent</text>
+    <text x="241" y="365" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">任务分解与分配</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="382" y="313" width="254" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="509" y="341" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">Context Budget Engine</text>
+    <text x="509" y="365" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">4-Layer Budget · Token Saving</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="650" y="313" width="254" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="777" y="341" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">MCP Server</text>
+    <text x="777" y="365" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">Role-based Tools · Security</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="918" y="313" width="254" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="1045" y="341" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">Sandbox</text>
+    <text x="1045" y="365" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">Isolated Workspace · Git Merge</text>
+  </g>
+  <!-- Layer 1: Adapter Layer -->
+  <rect x="40" y="425" width="40" height="130" rx="8" fill="#3182CE"/>
+  <text x="60" y="498" text-anchor="middle" font-family="Georgia, serif" font-size="22" font-weight="bold" fill="#FFFFFF">01</text>
+  <rect x="96" y="425" width="1144" height="130" rx="12" fill="#EBF8FF" fill-opacity="0.6" stroke="#90CDF4" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="668" y="448" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="13" font-weight="bold" fill="#2B6CB0">适配器层 · ADAPTER LAYER (PAP Protocol)</text>
+  <g filter="url(#cardShadow)">
+    <rect x="114" y="468" width="320" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="274" y="496" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">ClaudeCodeAdapter</text>
+    <text x="274" y="520" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">subprocess · stream-json output</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="448" y="468" width="320" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="608" y="496" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">OpenCodeAdapter</text>
+    <text x="608" y="520" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">ACP v1 · JSON-RPC over NDJSON</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="782" y="468" width="320" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    <text x="942" y="496" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" font-weight="bold" fill="#2D3748">CodexAdapter</text>
+    <text x="942" y="520" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#718096">codex exec --json</text>
+  </g>
+  <!-- Bottom: Stack -->
+  <rect x="40" y="580" width="40" height="70" rx="8" fill="#718096"/>
+  <text x="60" y="621" text-anchor="middle" font-family="Georgia, serif" font-size="22" font-weight="bold" fill="#FFFFFF">S</text>
+  <rect x="96" y="580" width="1144" height="70" rx="12" fill="#F7FAFC" stroke="#E2E8F0" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="668" y="598" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="13" font-weight="bold" fill="#718096">STACK · DATA &amp; INFRASTRUCTURE</text>
+  <rect x="116" y="612" width="210" height="28" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="221" y="632" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#2D3748">Python 3.12 + FastAPI</text>
+  <rect x="338" y="612" width="210" height="28" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="443" y="632" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#2D3748">React 18 + TypeScript + Vite</text>
+  <rect x="560" y="612" width="210" height="28" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="665" y="632" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#2D3748">SQLite + Alembic</text>
+  <rect x="782" y="612" width="210" height="28" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="887" y="632" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#2D3748">LiteLLM + Tool Whitelist</text>
+  <rect x="1004" y="612" width="210" height="28" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1109" y="632" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="12" fill="#2D3748">Git Sandbox + Subprocess</text>
+  <text x="1200" y="700" font-family="Georgia, 'Microsoft YaHei', serif" font-size="11" fill="#718096" text-anchor="end">05</text>
+</svg>

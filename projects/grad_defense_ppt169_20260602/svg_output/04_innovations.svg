@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <rect width="1280" height="720" fill="#F7FAFC"/>
+  <rect x="0" y="0" width="1280" height="4" fill="#1A365D"/>
+  <text x="80" y="60" font-family="Georgia, 'Microsoft YaHei', 'PingFang SC', serif" font-size="32" font-weight="bold" fill="#1A365D">研究内容与创新点</text>
+  <line x1="80" y1="78" x2="1200" y2="78" stroke="#E2E8F0" stroke-width="1"/>
+  <!-- Card 1: 统一适配器 -->
+  <rect x="80" y="105" width="540" height="260" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="80" y="105" width="540" height="6" rx="12" fill="#2B6CB0"/>
+  <rect x="110" y="135" width="48" height="48" rx="10" fill="#2B6CB0" fill-opacity="0.1"/>
+  <text x="180" y="165" font-family="Georgia, 'Microsoft YaHei', serif" font-size="22" font-weight="bold" fill="#1A365D">统一适配器架构</text>
+  <text x="110" y="210" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">PAP 协议统一接入 Claude Code、</text>
+  <text x="110" y="234" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">OpenCode、Codex 三大 CLI，</text>
+  <text x="110" y="258" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">Adapter Pool 支持并发调度</text>
+  <text x="110" y="295" font-family="Georgia, serif" font-size="26" font-weight="bold" fill="#2B6CB0">3</text>
+  <text x="142" y="295" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" fill="#718096">CLI Adapters</text>
+  <!-- Card 2: 上下文预算 -->
+  <rect x="660" y="105" width="540" height="260" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="660" y="105" width="540" height="6" rx="12" fill="#2B6CB0"/>
+  <rect x="690" y="135" width="48" height="48" rx="10" fill="#2B6CB0" fill-opacity="0.1"/>
+  <text x="760" y="165" font-family="Georgia, 'Microsoft YaHei', serif" font-size="22" font-weight="bold" fill="#1A365D">四层上下文预算引擎</text>
+  <text x="690" y="210" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">系统层 / 历史层 / 工具层 / 扩散层</text>
+  <text x="690" y="234" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">分区分治，滑动窗口 + 摘要压缩</text>
+  <text x="690" y="258" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">支持多 Agent 共享有限窗口</text>
+  <text x="690" y="295" font-family="Georgia, serif" font-size="26" font-weight="bold" fill="#38A169">43%</text>
+  <text x="770" y="295" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" fill="#718096">Token 节省率</text>
+  <!-- Card 3: 冲突闭环 -->
+  <rect x="80" y="390" width="540" height="260" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="80" y="390" width="540" height="6" rx="12" fill="#2B6CB0"/>
+  <rect x="110" y="420" width="48" height="48" rx="10" fill="#2B6CB0" fill-opacity="0.1"/>
+  <text x="180" y="450" font-family="Georgia, 'Microsoft YaHei', serif" font-size="22" font-weight="bold" fill="#1A365D">冲突闭环机制</text>
+  <text x="110" y="495" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">pending-edit 门控 + Git Three-way</text>
+  <text x="110" y="519" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">Merge 自动合并，冲突自动检测</text>
+  <text x="110" y="543" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">BurstCard 可视化冲突 lane</text>
+  <text x="110" y="580" font-family="Georgia, serif" font-size="26" font-weight="bold" fill="#38A169">67%</text>
+  <text x="180" y="580" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" fill="#718096">冲突解决时间缩短</text>
+  <!-- Card 4: IM界面 -->
+  <rect x="660" y="390" width="540" height="260" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="660" y="390" width="540" height="6" rx="12" fill="#2B6CB0"/>
+  <rect x="690" y="420" width="48" height="48" rx="10" fill="#2B6CB0" fill-opacity="0.1"/>
+  <text x="760" y="450" font-family="Georgia, 'Microsoft YaHei', serif" font-size="22" font-weight="bold" fill="#1A365D">IM 形态协作界面</text>
+  <text x="690" y="495" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">MessagePart 注册表模式</text>
+  <text x="690" y="519" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">17 种消息卡片类型并行展示</text>
+  <text x="690" y="543" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#2D3748">类 Slack / Lark 多 Agent 聊天体验</text>
+  <text x="690" y="580" font-family="Georgia, serif" font-size="26" font-weight="bold" fill="#2B6CB0">17</text>
+  <text x="740" y="580" font-family="'Microsoft YaHei', 'PingFang SC', Arial, sans-serif" font-size="15" fill="#718096">MessagePart Kinds</text>
+  <text x="1200" y="700" font-family="Georgia, 'Microsoft YaHei', serif" font-size="11" fill="#718096" text-anchor="end">04</text>
+</svg>

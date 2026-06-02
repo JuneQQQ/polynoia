@@ -130,72 +130,111 @@ function CommitList({
 
 	const workingCount = working?.files.length ?? 0;
 
-	return (
-		<div className="w-[266px] flex-shrink-0 border-r border-[var(--color-line)] overflow-y-auto bg-[var(--color-surface-2)]">
-			{/* Pinned: uncommitted working-tree changes. */}
-			<button
-				type="button"
-				onClick={() => onSelect(WORKING)}
-				className={`w-full text-left px-3 py-2 border-b border-[var(--color-line)] flex items-center gap-2 text-[11.5px] ${
-					selected === WORKING
-						? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-						: "text-[var(--color-fg-2)] hover:bg-[var(--color-line)]/40"
-				}`}
-			>
-				<FileDiff size={13} className="flex-shrink-0" />
-				<span className="truncate flex-1">工作区改动(未提交)</span>
-				{workingCount > 0 ? (
-					<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-accent)] text-white">
-						{workingCount}
-					</span>
-				) : (
-					<span className="text-[10px] text-[var(--color-fg-3)]">无</span>
-				)}
-			</button>
+	// Resizable sidebar width (drag the right edge; persisted).
+	const [width, setWidth] = useState(() => {
+		const s = Number.parseInt(
+			localStorage.getItem("polynoia:commits-w") || "0",
+			10,
+		);
+		return s >= 180 && s <= 520 ? s : 266;
+	});
+	useEffect(() => {
+		localStorage.setItem("polynoia:commits-w", String(width));
+	}, [width]);
+	const onResize = (e: React.MouseEvent) => {
+		e.preventDefault();
+		const startX = e.clientX;
+		const startW = width;
+		const onMove = (ev: MouseEvent) =>
+			setWidth(Math.max(180, Math.min(520, startW + (ev.clientX - startX))));
+		const onUp = () => {
+			document.body.classList.remove("polynoia-resizing");
+			window.removeEventListener("mousemove", onMove);
+			window.removeEventListener("mouseup", onUp);
+		};
+		document.body.classList.add("polynoia-resizing");
+		window.addEventListener("mousemove", onMove);
+		window.addEventListener("mouseup", onUp);
+	};
 
-			{commits.length === 0 ? (
-				<div className="px-3 py-6 text-[11px] text-[var(--color-fg-3)] leading-relaxed">
-					还没有提交。Agent 对该工作区的改动合并到 main 后会出现在这里。
-				</div>
-			) : (
-				groups.map(([day, rows]) => (
-					<div key={day}>
-						<div className="sticky top-0 z-10 px-3 py-1 text-[10px] font-semibold text-[var(--color-fg-3)] bg-[var(--color-surface-2)]/95 backdrop-blur border-b border-[var(--color-line)]/60">
-							{day}
-						</div>
-						{rows.map((c) => (
-							<button
-								type="button"
-								key={c.sha}
-								onClick={() => onSelect(c.sha)}
-								className={`w-full text-left px-3 py-2 border-b border-[var(--color-line)]/50 flex flex-col gap-1 ${
-									selected === c.sha
-										? "bg-[var(--color-accent-soft)]"
-										: "hover:bg-[var(--color-line)]/30"
-								}`}
-							>
-								<div className="flex items-center gap-2 text-[11.5px] text-[var(--color-fg)]">
-									<GitCommitHorizontal
-										size={12}
-										className="text-[var(--color-fg-3)] flex-shrink-0"
-									/>
-									<span className="truncate flex-1">{c.subject}</span>
-								</div>
-								<div className="flex items-center gap-2 text-[10px] text-[var(--color-fg-3)] pl-[18px]">
-									<AgentChip
-										agent={findAgent(agents, c.author)}
-										author={c.author}
-									/>
-									<span className="font-mono flex-shrink-0">{c.short}</span>
-									<span className="flex-shrink-0">{relTime(c.date)}</span>
-									<span className="flex-1" />
-									<StatChips adds={c.additions} dels={c.deletions} />
-								</div>
-							</button>
-						))}
+	return (
+		<div
+			className="relative flex-shrink-0 border-r border-[var(--color-line)] bg-[var(--color-surface-2)]"
+			style={{ width }}
+		>
+			<div className="h-full overflow-y-auto">
+				{/* Pinned: uncommitted working-tree changes. */}
+				<button
+					type="button"
+					onClick={() => onSelect(WORKING)}
+					className={`w-full text-left px-3 py-2 border-b border-[var(--color-line)] flex items-center gap-2 text-[11.5px] ${
+						selected === WORKING
+							? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+							: "text-[var(--color-fg-2)] hover:bg-[var(--color-line)]/40"
+					}`}
+				>
+					<FileDiff size={13} className="flex-shrink-0" />
+					<span className="truncate flex-1">工作区改动(未提交)</span>
+					{workingCount > 0 ? (
+						<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-accent)] text-white">
+							{workingCount}
+						</span>
+					) : (
+						<span className="text-[10px] text-[var(--color-fg-3)]">无</span>
+					)}
+				</button>
+
+				{commits.length === 0 ? (
+					<div className="px-3 py-6 text-[11px] text-[var(--color-fg-3)] leading-relaxed">
+						还没有提交。Agent 对该工作区的改动合并到 main 后会出现在这里。
 					</div>
-				))
-			)}
+				) : (
+					groups.map(([day, rows]) => (
+						<div key={day}>
+							<div className="sticky top-0 z-10 px-3 py-1 text-[10px] font-semibold text-[var(--color-fg-3)] bg-[var(--color-surface-2)]/95 backdrop-blur border-b border-[var(--color-line)]/60">
+								{day}
+							</div>
+							{rows.map((c) => (
+								<button
+									type="button"
+									key={c.sha}
+									onClick={() => onSelect(c.sha)}
+									className={`w-full text-left px-3 py-2 border-b border-[var(--color-line)]/50 flex flex-col gap-1 ${
+										selected === c.sha
+											? "bg-[var(--color-accent-soft)]"
+											: "hover:bg-[var(--color-line)]/30"
+									}`}
+								>
+									<div className="flex items-center gap-2 text-[11.5px] text-[var(--color-fg)]">
+										<GitCommitHorizontal
+											size={12}
+											className="text-[var(--color-fg-3)] flex-shrink-0"
+										/>
+										<span className="truncate flex-1">{c.subject}</span>
+									</div>
+									<div className="flex items-center gap-2 text-[10px] text-[var(--color-fg-3)] pl-[18px]">
+										<AgentChip
+											agent={findAgent(agents, c.author)}
+											author={c.author}
+										/>
+										<span className="font-mono flex-shrink-0">{c.short}</span>
+										<span className="flex-shrink-0">{relTime(c.date)}</span>
+										<span className="flex-1" />
+										<StatChips adds={c.additions} dels={c.deletions} />
+									</div>
+								</button>
+							))}
+						</div>
+					))
+				)}
+			</div>
+			<div
+				onMouseDown={onResize}
+				title="拖动调节列表宽度"
+				className="absolute top-0 right-0 bottom-0 w-1.5 cursor-col-resize z-20 group"
+			>
+				<div className="absolute inset-y-0 right-0 w-0.5 bg-transparent group-hover:bg-[var(--color-accent)] transition-colors" />
+			</div>
 		</div>
 	);
 }
