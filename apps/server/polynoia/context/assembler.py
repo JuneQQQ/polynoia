@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from polynoia.context._types import ContextLayer
 from polynoia.context.briefs import build_project_briefs_layer
 from polynoia.context.budget import compute_budget
+from polynoia.context.group_members import build_group_members_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
 from polynoia.context.ledger import build_activity_ledger_layer, _format_message_body
@@ -78,15 +79,24 @@ async def build_context_for_turn(
     # delegation is guaranteed even when a user wrote a custom persona that never
     # mentions dispatching. ADR-017.
     conv = await get_conversation(db, conv_id)
-    if conv is not None and conv.group and conv.orchestrator_member_id == agent_id:
+    if conv is not None and conv.group:
+        # Teammate display names (every group member sees the roster now — the
+        # orchestrator as a dispatch target list, everyone else as people they
+        # can @mention to DISCUSS). Gated on conv.group so out-of-project DMs
+        # never get a roster (R1).
         roster = [
             a.name
             for a in rows
             if a.id in (conv.members or []) and a.id not in (agent_id, "you")
         ]
-        layers.append(
-            build_orchestrator_protocol_layer(agent_id=agent_id, roster=roster)
-        )
+        if conv.orchestrator_member_id == agent_id:
+            layers.append(
+                build_orchestrator_protocol_layer(agent_id=agent_id, roster=roster)
+            )
+        else:
+            gm = build_group_members_layer(agent_id=agent_id, roster=roster)
+            if gm is not None:
+                layers.append(gm)
 
     briefs = await build_project_briefs_layer(db, agent_id, conv_id=conv_id)
     if briefs is not None:

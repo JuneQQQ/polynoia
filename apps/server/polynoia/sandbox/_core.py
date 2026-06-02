@@ -658,6 +658,43 @@ class Sandbox:
             return None
         return out.strip() or None
 
+    async def files_in_range(
+        self, base: str, head: str
+    ) -> list[tuple[str, str]]:
+        """Return ``[(status, path), ...]`` for files changed between
+        ``base..head`` on the workspace root.
+
+        ``status`` is git's ``--name-status`` letter — ``A`` (added),
+        ``M`` (modified), ``D`` (deleted), ``R<n>`` (rename), etc. Empty
+        list on any error or when the range resolves to no changes. Used
+        by the file-card emitter to attribute agent-generated files.
+        """
+        if self.workspace_root is None or not base or not head or base == head:
+            return []
+        rc, out, _err = await self._workspace_run([
+            "git", "diff", "--name-status", "-z", f"{base}..{head}",
+        ])
+        if rc != 0:
+            return []
+        # `-z` emits NUL-separated entries; a rename is `R<score>\0<old>\0<new>`,
+        # everything else is `<letter>\0<path>`. We only need (status, path);
+        # for renames return the destination path.
+        items = [p for p in out.split("\x00") if p]
+        result: list[tuple[str, str]] = []
+        i = 0
+        while i < len(items):
+            tag = items[i]
+            if tag.startswith(("R", "C")) and i + 2 < len(items):
+                # R/C carry an old + new path; we want the new (destination).
+                result.append((tag[0], items[i + 2]))
+                i += 3
+            elif i + 1 < len(items):
+                result.append((tag, items[i + 1]))
+                i += 2
+            else:
+                break
+        return result
+
     async def merge_branch_into_main(
         self, branch: str, *, no_ff: bool = True
     ) -> tuple[bool, str, str]:

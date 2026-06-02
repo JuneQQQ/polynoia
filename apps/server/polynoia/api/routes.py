@@ -45,6 +45,14 @@ _MENTION_RE = re.compile(
 )
 _ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
 _MAX_MENTION_CHAIN_DEPTH = 5
+# Agent↔agent discussion (free-form @mention back-and-forth) convergence caps.
+# Depth (above) bounds any single linear chain; the GLOBAL turn budget bounds the
+# whole fan-out TREE of one discussion (a chain forks via @mentions, so depth
+# alone never caps total turns) — budget is the authoritative convergence
+# trigger. Fan-out cap bounds how many peers a single message may actually pull
+# in, so one message can't spawn a wide burst of turns.
+_DISCUSSION_TURN_BUDGET = 10
+_DISCUSSION_FANOUT_CAP = 2
 # If an agent produces NO output for this long, treat its turn as hung (slow/
 # dead model backend, wedged CLI session) → fail the turn instead of freezing
 # the burst lane forever. Idle-based (not total) so productive long turns live.
@@ -64,6 +72,13 @@ _conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = {}
 # `tasks` are raw `{agent, label, note}` dicts — resolution happens at drain.
 _pending_dispatches: dict[str, list[dict]] = {}
 
+# Pending DISCUSSION batches recorded by the orchestrator-only `discuss` MCP tool
+# during an in-flight turn (parallels `_pending_dispatches`). Drained at the
+# orchestrator turn-end on a SEPARATE, non-burst path: it posts a framing @
+# message and spawns the participants' first turns into a discussion session.
+# Keyed by conv_id; each entry is one `discuss` call's `{topic, participants}`.
+_pending_discussions: dict[str, list[dict]] = {}
+
 # ⑥ Blocking ask_user: ask_id → answer text (None = still waiting). The
 # `ask_user` MCP tool registers an entry then polls it (suspending the agent's
 # turn); the frontend POSTs the answer to resolve it. poll_ask pops on delivery.
@@ -80,6 +95,12 @@ _pending_asks: dict[str, str | None] = {}
 _conv_agent_tasks: dict[str, dict[str, asyncio.Task]] = {}   # conv_id → agent_id → task (abort/status handle)
 _conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = {}   # conv_id → agent_id → lock
 _conv_bursts: dict[str, dict[str, dict]] = {}                # conv_id → tp_id → burst reg
+# conv_id → ONE active discussion reg (free-form @mention discussion session).
+# reg = {budget:int, inflight:int, participants:set[str], seeder:str,
+#        synthesized:bool}. One discussion per conv at a time (a conv has one
+# logical "current thread"). Module-level so it survives a client refresh, like
+# bursts. Created lazily on the first qualifying @mention spawn (or by `discuss`).
+_conv_discussions: dict[str, dict] = {}
 # Strong refs to EVERY live turn task (workers, follow-ups, summaries, orch). The
 # by-id `_conv_agent_tasks` map is last-writer-wins, so when two turns share an
 # agent_id (dup teammate in a batch, worker→chain-follow-up, orch turn vs its
@@ -111,6 +132,8 @@ def _maybe_prune_conv(conv_id: str) -> None:
     _conv_inflight.pop(conv_id, None)
     _conv_dispatchers.pop(conv_id, None)
     _pending_dispatches.pop(conv_id, None)
+    _conv_discussions.pop(conv_id, None)
+    _pending_discussions.pop(conv_id, None)
 
 
 def _spawn_turn(conv_id: str, agent_id: str, coro) -> asyncio.Task:
@@ -284,7 +307,9 @@ async def list_enabled_adapters():
     )
 
     async with SessionLocal() as session:
-        ids = await storage_repo.list_onboarded_adapters(session)
+        rows = await storage_repo.list_onboarded_adapter_rows(session)
+    ids = [r.adapter_id for r in rows]
+    proxy_by_id = {r.adapter_id: (r.proxy, r.proxy_kind) for r in rows}
 
     adapters_map = _ensure_base_adapters()
 
@@ -306,10 +331,39 @@ async def list_enabled_adapters():
             "models": await _models_for(adapter_id),
             "default_model": ADAPTER_DEFAULT_MODEL.get(adapter_id),
             "model_hint": ADAPTER_MODEL_HINT.get(adapter_id),
+            "proxy": proxy_by_id.get(adapter_id, (None, "system"))[0],
+            "proxy_kind": proxy_by_id.get(adapter_id, (None, "system"))[1],
         }
         for adapter_id in ids
         if adapter_id in ADAPTER_AGENT_TEMPLATES
     ]
+
+
+@router.put("/api/adapters/{adapter_id}/proxy")
+async def set_adapter_proxy(adapter_id: str, body: dict):
+    """Set an adapter's network egress (shared by all its contacts).
+
+    Body: {"proxy_kind": "system"|"direct"|"custom", "proxy": "http://..."}.
+    Egress follows the adapter's LLM endpoint (host/adapter-level), so this is
+    NOT a per-contact knob — all contacts backed by this adapter inherit it.
+    """
+    kind = body.get("proxy_kind") or "system"
+    if kind not in ("system", "direct", "custom"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid proxy_kind: {kind!r}",
+        )
+    proxy = body.get("proxy") if kind == "custom" else None
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_adapter_proxy(session, adapter_id, proxy, kind)
+        if not ok:
+            await session.rollback()
+            raise HTTPException(
+                status_code=404,
+                detail=f"adapter not onboarded: {adapter_id}",
+            )
+        await session.commit()
+    return {"adapter_id": adapter_id, "proxy": proxy, "proxy_kind": kind}
 
 
 @router.post("/api/contacts")
@@ -873,6 +927,48 @@ async def record_dispatch(conv_id: str, body: dict):
         "task_ids": task_ids,
         "count": len(task_ids),
         "note": "Teammates are now working in parallel. Stop here; verify their output in a later turn.",
+    }
+
+
+@router.post("/api/conversations/{conv_id}/discuss")
+async def record_discuss(conv_id: str, body: dict):
+    """Record a `discuss` MCP tool call from an orchestrator's in-flight turn.
+
+    Sibling of ``record_dispatch`` but for a free-form DISCUSSION (not parallel
+    work): we stash {topic, participants, author} on ``_pending_discussions``.
+    The orchestrator's ``run_adapter_turn`` drains it at turn-end (that scope has
+    the mention resolver + spawn helpers): it seeds each participant's first
+    discussion turn, and they @mention each other until the session converges to
+    one 讨论结论. See the discuss-drain block in run_adapter_turn.
+    """
+    topic = (body.get("topic") or "").strip()
+    participants = body.get("participants") or []
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
+    if not isinstance(participants, list) or len(participants) < 2:
+        raise HTTPException(status_code=400, detail="participants must list ≥2 teammates")
+    author = (body.get("author_agent_id") or "").strip()
+    try:
+        async with SessionLocal() as _s:
+            _conv = await storage_repo.get_conversation(_s, conv_id)
+    except Exception:
+        _conv = None
+    if _conv is not None:
+        _others = [m for m in (_conv.members or []) if m not in ("you", author)]
+        if len(_others) < 2:
+            return {
+                "kind": "error",
+                "error": "讨论需要至少两位可参与的队友——当前会话人数不足,无法发起讨论。",
+            }
+    _pending_discussions.setdefault(conv_id, []).append({
+        "topic": topic,
+        "participants": participants,
+        "author_agent_id": author,
+    })
+    return {
+        "kind": "discussing",
+        "participants": participants,
+        "note": "已开场,参与者将各自加入讨论。你先停,讨论收敛后会在后续轮里给出结论。",
     }
 
 
@@ -2360,6 +2456,75 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 ),
             )
 
+    # ── Discussion (free-form @mention) lifecycle ──────────────────
+    # A discussion session is one entry in `_conv_discussions[conv_id]` (created
+    # lazily when an agent/user/orchestrator @mentions a teammate in a GROUP
+    # conv). Each spawned discussion turn runs via `_run_discussion_turn`, which
+    # ALWAYS settles on completion (even on error). When the whole fan-out tree
+    # drains, exactly ONE 讨论结论 synthesis turn fires. Caps: global turn budget
+    # + per-message fan-out + per-branch depth (see _DISCUSSION_* + the chain loop).
+    async def _settle_discussion_turn(*, fallback_agent: str) -> None:
+        """One discussion turn finished. Decrement in-flight; when the tree has
+        fully drained, fire EXACTLY ONE synthesis — orchestrator if the conv has
+        one, else the seeder / a participant. Idempotent (claim + pop before any
+        await, mirroring the burst is_last latch) so concurrent branches settling
+        never double-fire."""
+        reg = _conv_discussions.get(conv_id)
+        if not reg:
+            return
+        reg["inflight"] = max(0, reg["inflight"] - 1)
+        if reg["inflight"] > 0:
+            return  # tree still active
+        if reg.get("synthesized"):
+            return
+        reg["synthesized"] = True
+        participants = set(reg.get("participants") or ())
+        seeder = reg.get("seeder") or fallback_agent
+        _conv_discussions.pop(conv_id, None)   # remove BEFORE await → no double-fire
+        # A lone participant never warranted a discussion → no summary.
+        if len(participants) < 2:
+            return
+        async with SessionLocal() as _db:
+            _conv = await storage_repo.get_conversation(_db, conv_id)
+        synth_id = (
+            (_conv.orchestrator_member_id if _conv else None)
+            or (seeder if seeder != "you" else None)
+            or next((p for p in participants if p != "you"), None)
+        )
+        if not synth_id or synth_id == "you":
+            return
+        nudge = (
+            "上面是一段多人讨论(大家互相 @ 交流)。请给出**讨论结论**:综合各方观点、"
+            "点明共识与分歧、给出下一步建议。**以「讨论结论:」开头**,一段话即可。"
+            "这是收尾——不要再 @ 任何人,也不要 dispatch 派活,直接面向用户给结论。"
+        )
+        log.info(
+            "discussion %s settled → synthesis by %s (participants=%d)",
+            conv_id, synth_id, len(participants),
+        )
+        _spawn_turn(
+            conv_id, synth_id,
+            run_adapter_turn(
+                synth_id, nudge, depth=1, parent_agent_id=None,
+                inject_history=True, suppress_dispatch=True,
+            ),
+        )
+
+    async def _run_discussion_turn(
+        target: str, text: str, *, depth: int, parent_agent_id: str | None,
+    ) -> None:
+        """Run a discussion (mention-chain) turn, then ALWAYS settle the session
+        — even if the turn raises — so a failed turn can't leak the in-flight
+        count and stall the synthesis."""
+        try:
+            await run_adapter_turn(
+                target, text, depth=depth, parent_agent_id=parent_agent_id,
+                inject_history=True,
+            )
+        finally:
+            with suppress(Exception):
+                await _settle_discussion_turn(fallback_agent=target)
+
     async def _surface_conflict(
         ws_id: str, branch: str, author: str, files: list[dict], orch_id: str,
         base_agents: list[str] | None = None,
@@ -2989,6 +3154,61 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         ),
                     )
 
+            # Drain `discuss` batches — orchestrator-convened free-form discussion
+            # (the non-burst sibling of dispatch). Seed each named participant's
+            # first turn into a discussion session; they @mention each other and it
+            # converges to one 讨论结论. Terminal/worker turns never convene.
+            _disc_batches = (
+                []
+                if (suppress_dispatch or burst_task_id is not None)
+                else _pending_discussions.pop(conv_id, [])
+            )
+            for _db_batch in _disc_batches:
+                _topic = (_db_batch.get("topic") or "").strip()
+                _pids: list[str] = []
+                for _nm in _db_batch.get("participants") or []:
+                    _tok = str(_nm or "").strip().lstrip("@")
+                    _pid = resolver.get(_tok) or resolver.get(_tok.lower())
+                    if not _pid or _pid in ("you", agent_id) or _pid in _pids:
+                        continue
+                    _su = _agent_setup_by_id.get(_pid)
+                    if _su and _su.adapter_id:
+                        _pids.append(_pid)
+                if not _topic or len(_pids) < 2:
+                    continue
+                # Open the session (seeder = the convening orchestrator) and
+                # pre-charge in-flight for ALL seeds SYNCHRONOUSLY (before any
+                # spawn runs) so the tree can't settle prematurely. Budget-bounded;
+                # the per-message fan-out cap doesn't apply to an explicit convene
+                # (the orchestrator named these people on purpose).
+                _reg = _conv_discussions.get(conv_id)
+                if _reg is None:
+                    _reg = _conv_discussions[conv_id] = {
+                        "budget": _DISCUSSION_TURN_BUDGET, "inflight": 0,
+                        "participants": {agent_id}, "seeder": agent_id,
+                        "synthesized": False,
+                    }
+                _seed: list[str] = []
+                for _pid in _pids:
+                    if _reg["budget"] <= 0:
+                        break
+                    _reg["budget"] -= 1
+                    _reg["inflight"] += 1
+                    _reg["participants"].add(_pid)
+                    _seed.append(_pid)
+                _seed_nudge = (
+                    f"协调器发起了一场讨论,主题:{_topic}。请发表你的看法;需要听取某位"
+                    "队友意见时,可在回复里 @ ta 继续讨论(讨论会自动收敛,别无限互相 @)。"
+                )
+                for _pid in _seed:
+                    await emit_chain_link(caller=agent_id, callee=_pid, depth=1)
+                    _spawn_turn(
+                        conv_id, _pid,
+                        _run_discussion_turn(
+                            _pid, _seed_nudge, depth=1, parent_agent_id=agent_id,
+                        ),
+                    )
+
             mentioned = _parse_mentions(
                 full_text, exclude={agent_id}, resolver=resolver,
             )
@@ -3023,20 +3243,66 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             #     "3/3 done" while the orchestrator spins for ~40s. The
             #     orchestrator's auto-summary is the single wrap-up path.
             _skip_chain = suppress_dispatch or burst_task_id is not None
-            for target in ([] if _skip_chain else mentioned):
-                setup = _agent_setup_by_id.get(target)
-                if not setup or not setup.adapter_id:
-                    continue  # not a real agent we can spawn
-                if depth + 1 >= _MAX_MENTION_CHAIN_DEPTH:
-                    await _persist_and_emit_error(
-                        emit, conv_id=conv_id, sender_id=agent_id,
-                        message=(
-                            f"@提及链路深度达到上限 {_MAX_MENTION_CHAIN_DEPTH}"
-                            f"({agent_id} → {target}),已停止继续接力"
-                        ),
-                        reason="depth_limit",
-                    )
-                    break
+            _raw_targets = [] if _skip_chain else mentioned
+            # A free-form discussion forms when an agent @mentions a TEAMMATE in a
+            # GROUP conv. We wrap the existing chain with a per-conv discussion
+            # session (global turn budget over the whole fan-out tree + per-message
+            # fan-out cap), converging to ONE 讨论结论 synthesis. Members-only +
+            # group-only keeps DMs/non-members out (R1). Resolve membership once.
+            _disc_members: set[str] = set()
+            if _raw_targets:
+                async with SessionLocal() as _db:
+                    _dc = await storage_repo.get_conversation(_db, conv_id)
+                if _dc and _dc.group:
+                    _disc_members = set(_dc.members or [])
+            # Depth is per-branch + target-independent: if the next hop exceeds it,
+            # stop the whole chain with one notice.
+            _depth_capped = bool(_raw_targets) and depth + 1 >= _MAX_MENTION_CHAIN_DEPTH
+            # Phase 1 — SYNCHRONOUS (no await): decide who to spawn and charge the
+            # discussion budget/in-flight ATOMICALLY here, so a fast early target
+            # can't drain in-flight to 0 mid-fan-out and fire synthesis prematurely
+            # (mirrors burst pre-populating `pending` before any worker runs).
+            _to_spawn: list[tuple[str, bool]] = []   # (target, is_discussion_turn)
+            if not _depth_capped:
+                _fanout = 0
+                for target in _raw_targets:
+                    setup = _agent_setup_by_id.get(target)
+                    if not setup or not setup.adapter_id:
+                        continue  # not a real agent we can spawn
+                    if target in _disc_members:
+                        reg = _conv_discussions.get(conv_id)
+                        if reg is None:
+                            reg = _conv_discussions[conv_id] = {
+                                "budget": _DISCUSSION_TURN_BUDGET,
+                                "inflight": 0,
+                                "participants": {agent_id},
+                                "seeder": parent_agent_id or agent_id,
+                                "synthesized": False,
+                            }
+                        if reg["budget"] <= 0 or _fanout >= _DISCUSSION_FANOUT_CAP:
+                            continue  # tree budget spent / per-message cap hit
+                        reg["budget"] -= 1
+                        reg["inflight"] += 1
+                        reg["participants"].add(target)
+                        _fanout += 1
+                        _to_spawn.append((target, True))
+                    else:
+                        # Non-member / non-group: pre-existing plain chain
+                        # (no discussion accounting) — behavior unchanged.
+                        _to_spawn.append((target, False))
+            # Phase 2 — async: notice depth cap (once), then emit chain-link +
+            # spawn each chosen turn. Discussion turns go through the wrapper so
+            # they always settle.
+            if _depth_capped:
+                await _persist_and_emit_error(
+                    emit, conv_id=conv_id, sender_id=agent_id,
+                    message=(
+                        f"@提及链路深度达到上限 {_MAX_MENTION_CHAIN_DEPTH}"
+                        f"({agent_id}),已停止继续接力"
+                    ),
+                    reason="depth_limit",
+                )
+            for target, _is_disc in _to_spawn:
                 await emit_chain_link(
                     caller=agent_id, callee=target, depth=depth + 1
                 )
@@ -3050,16 +3316,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # Strong-ref'd via _conv_inflight so it isn't GC'd even if the
                 # by-id slot is later overwritten; per-agent lock serializes
                 # execution against any other turn for the same agent.
-                _spawn_turn(
-                    conv_id, target,
-                    run_adapter_turn(
-                        target,
-                        nudge,
-                        depth=depth + 1,
-                        parent_agent_id=agent_id,
-                        inject_history=True,
-                    ),
-                )
+                if _is_disc:
+                    _spawn_turn(
+                        conv_id, target,
+                        _run_discussion_turn(
+                            target, nudge, depth=depth + 1,
+                            parent_agent_id=agent_id,
+                        ),
+                    )
+                else:
+                    _spawn_turn(
+                        conv_id, target,
+                        run_adapter_turn(
+                            target, nudge, depth=depth + 1,
+                            parent_agent_id=agent_id, inject_history=True,
+                        ),
+                    )
 
             # Flip the burst lane: failed if the turn streamed a terminal error
             # (401/429/upstream — produced nothing usable), done otherwise. This
@@ -3108,6 +3380,47 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 )
                 await db.commit()
 
+        # Parse @mentions + detect a discussion intent up-front (both the orch
+        # and flat branches use them). A user-initiated discussion forms when the
+        # user @mentions ≥2 teammates, OR says 讨论/discuss while ≥2 will respond.
+        async with SessionLocal() as session:
+            all_agents = await storage_repo.list_agents(session)
+        agent_by_id = {a.id: a for a in all_agents}
+        known_adapters = {"claudeCode", "opencoder", "codex"}
+        resolver = _build_mention_resolver(all_agents)
+        mentioned_ids = set(_parse_mentions(text, exclude=set(), resolver=resolver))
+        member_set = set(members)
+        _has_disc_kw = ("讨论" in text) or ("discuss" in text.lower())
+
+        def _agent_ok(aid: str) -> bool:
+            a = agent_by_id.get(aid)
+            return bool(a and a.setup and a.setup.adapter_id in known_adapters)
+
+        def _seed_user_discussion(seed_targets: list[str]) -> None:
+            """Seed a user-convened discussion (seeder='you'): pre-charge in-flight
+            SYNCHRONOUSLY for all seeds (no premature settle), then spawn each as a
+            discussion turn. They @mention each other → one 讨论结论 at the end."""
+            reg = _conv_discussions.get(conv_id)
+            if reg is None:
+                reg = _conv_discussions[conv_id] = {
+                    "budget": _DISCUSSION_TURN_BUDGET, "inflight": 0,
+                    "participants": {"you"}, "seeder": "you",
+                    "synthesized": False,
+                }
+            seeded: list[str] = []
+            for _aid in seed_targets:
+                if reg["budget"] <= 0:
+                    break
+                reg["budget"] -= 1
+                reg["inflight"] += 1
+                reg["participants"].add(_aid)
+                seeded.append(_aid)
+            for _aid in seeded:
+                _spawn_turn(
+                    conv_id, _aid,
+                    _run_discussion_turn(_aid, text, depth=0, parent_agent_id=None),
+                )
+
         if use_orch:
             # Tool-based orchestration (ADR-013). The orchestrator member runs a
             # normal adapter turn whose session carries the role-scoped `dispatch`
@@ -3121,6 +3434,31 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # via a tool *call*, not a JSON block, so routing it here was a no-op:
             # the recorded dispatch batch was never drained. See the e2e dispatch
             # self-test (scripts/test_dispatch_flow.py).
+            #
+            # EXCEPTION: if the user explicitly @mentioned ≥2 non-orchestrator
+            # members (or named some + said 讨论/discuss), they want those people
+            # to DISCUSS — not a work dispatch. Seed the discussion directly,
+            # bypassing the orchestrator's dispatch; the orchestrator still gives
+            # the final 讨论结论 (it's the conv orchestrator → the synthesizer).
+            disc_targets = [
+                m for m in mentioned_ids
+                if m in member_set and m != "you" and m != orch_id and _agent_ok(m)
+            ]
+            # @≥2 teammates → they discuss; the orchestrator synthesizes 讨论结论.
+            if len(disc_targets) >= 2:
+                _seed_user_discussion(disc_targets)
+                return
+            # @ exactly one teammate (and NOT the orchestrator) → talk to them
+            # DIRECTLY, bypassing the orchestrator (Slack-style: @someone reaches
+            # that person, not the front desk).
+            if len(disc_targets) == 1 and orch_id not in mentioned_ids:
+                _spawn_turn(
+                    conv_id, disc_targets[0],
+                    run_adapter_turn(disc_targets[0], text),
+                )
+                return
+            # No @ (or you @'d the orchestrator itself) → the orchestrator fronts
+            # it: reply / dispatch / convene a discussion (it can call `discuss`).
             _spawn_turn(
                 conv_id, orch_id,
                 run_adapter_turn(orch_id, text, is_dispatcher=True),
@@ -3131,27 +3469,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # setup.adapter_id is one of the known adapters. Contacts created
         # through /api/contacts have ULID ids and `setup.adapter_id=claudeCode`
         # (or codex/opencoder) — those count too.
-        async with SessionLocal() as session:
-            all_agents = await storage_repo.list_agents(session)
-        agent_by_id = {a.id: a for a in all_agents}
-        known_adapters = {"claudeCode", "opencoder", "codex"}
-
-        # Mention narrowing: if the user text contains @-mentions, ONLY
-        # dispatch to those targets. Otherwise (no @) fall back to fan-out
-        # across the whole conv. This matches Slack/Lark semantics — typing
-        # "@Alice 帮我 X" in a group should not auto-trigger Bob and Carol.
-        # Without this, fast adapters (OpenCode/MiMo) race ahead of slower
-        # ones (Opus) and answer before the mentioned person can think.
-        resolver = _build_mention_resolver(all_agents)
-        mentioned_ids = set(_parse_mentions(text, exclude=set(), resolver=resolver))
-
+        # (all_agents / agent_by_id / known_adapters / resolver / mentioned_ids /
+        # member_set were computed above and shared with the orchestrator branch.)
+        #
+        # Mention narrowing: if the user text contains @-mentions, ONLY dispatch
+        # to those targets. Otherwise (no @) fall back to fan-out across the whole
+        # conv. Slack/Lark semantics — "@Alice 帮我 X" shouldn't auto-trigger Bob
+        # and Carol (fast adapters would otherwise race ahead of slower ones).
         candidate_pool: list[str]
         if mentioned_ids:
-            # Restrict to mentions that are also conv members AND backed by
-            # a known adapter. Ignore mentions of non-members(users can't
-            # summon someone outside the conv on the first dispatch level —
-            # chain-mention from inside an agent's reply does support that).
-            member_set = set(members)
+            # Restrict to mentions that are also conv members. Ignore mentions of
+            # non-members (users can't summon someone outside the conv at the
+            # first level — chain-mention from inside a reply does support that).
             candidate_pool = [m for m in mentioned_ids if m in member_set]
         else:
             candidate_pool = list(members)
@@ -3178,11 +3507,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             )
             return
 
-        # Spawn one concurrent task per target agent. A second message to the
-        # same agent while its first turn runs just blocks on the per-agent
-        # lock; the earlier task keeps its strong ref via _conv_inflight.
-        for agent_id in targets:
-            _spawn_turn(conv_id, agent_id, run_adapter_turn(agent_id, text))
+        # User-convened discussion (flat group, no orchestrator): the user named
+        # ≥2 teammates, OR said 讨论/discuss with ≥2 about to respond. Seed them as
+        # discussion turns so they @ each other and converge to one 讨论结论.
+        # Otherwise plain parallel fan-out (unchanged) — each answers on its own.
+        _mentioned_members = [m for m in mentioned_ids if m in member_set and m != "you"]
+        want_discussion = len(targets) >= 2 and (
+            len(_mentioned_members) >= 2 or _has_disc_kw
+        )
+        if want_discussion:
+            _seed_user_discussion(targets)
+        else:
+            # Spawn one concurrent task per target agent. A second message to the
+            # same agent while its first turn runs just blocks on the per-agent
+            # lock; the earlier task keeps its strong ref via _conv_inflight.
+            for agent_id in targets:
+                _spawn_turn(conv_id, agent_id, run_adapter_turn(agent_id, text))
 
     # ── Main receive loop ───────────────────────────────────────
     try:

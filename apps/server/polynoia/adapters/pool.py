@@ -102,6 +102,7 @@ class AdapterPool:
                 get_conversation,
                 active_access_grant,
                 list_agents,
+                list_onboarded_adapter_rows,
                 list_workspaces,
             )
 
@@ -111,9 +112,19 @@ class AdapterPool:
                 workspaces = await list_workspaces(db)
                 # ADR-020: did the user approve project access for this DM?
                 granted_ws = await active_access_grant(db, conv_id, agent_id)
+                # Network egress is adapter-level, shared by all the adapter's
+                # contacts (they hit the same LLM endpoint) — look it up by the
+                # contact's adapter_id below.
+                adapter_proxy = {
+                    r.adapter_id: (r.proxy, r.proxy_kind)
+                    for r in await list_onboarded_adapter_rows(db)
+                }
             agent = next((r for r in rows if r.id == agent_id), None)
             if agent is None or agent.setup is None or not agent.setup.adapter_id:
                 return None
+            proxy, proxy_kind = adapter_proxy.get(
+                agent.setup.adapter_id, (None, "system")
+            )
 
             base = _ensure_base_adapters().get(agent.setup.adapter_id)
             if base is None:
@@ -185,6 +196,8 @@ class AdapterPool:
                 merge_mode=merge_mode,
                 tool_role=effective_role,
                 read_only_workspace_id=read_only_ws_id,
+                proxy=proxy,
+                proxy_kind=proxy_kind,
             )
             self._sessions[key] = new_sess
             return new_sess

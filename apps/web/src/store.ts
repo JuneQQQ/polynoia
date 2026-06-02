@@ -92,9 +92,19 @@ export function phaseLabel(phase?: AgentPhase, tool?: string): string {
 
 export type PreviewTab = "web" | "code" | "diff" | "tasks";
 
+/** Right-rail mode: file tree (explorer) or single-file preview pane.
+ * Doubao-style: default is "preview" so chat takes center stage; user can
+ * flip to "files" to browse the workspace tree explicitly. */
+export type PreviewMode = "files" | "preview";
+
 type PreviewState = {
   open: boolean;
   tab: PreviewTab;
+  /** Right-rail mode toggle (文件 | 预览). Persisted across remount. */
+  mode: PreviewMode;
+  /** Currently previewed file path (relative to workspace root). When set
+   * + mode==="preview", the right rail renders DocPreviewPane for it. */
+  previewFile: string | null;
   /** Latest payload shown — useful when a card click navigates to a specific tab */
   data: {
     web?: WebPayload | null;
@@ -240,6 +250,11 @@ type Store = {
   openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
   closePreview: () => void;
   setPreviewTab: (tab: PreviewTab) => void;
+  /** Flip the right rail between 文件 (file tree) and 预览 (DocPreviewPane). */
+  setPreviewMode: (mode: PreviewMode) => void;
+  /** Open a file in the right-rail preview pane. Switches mode → "preview"
+   * + sets previewFile. Pass `null` to clear the preview. */
+  openPreviewFile: (path: string | null) => void;
 
   /** Center editor tabs (Phase 2): file paths opened next to the "聊天" tab.
    * Clicking a file in the right file tree opens it as a center code tab.
@@ -279,11 +294,6 @@ type Store = {
   /** Cmd+K / search button → full-screen search overlay. */
   searchOverlayOpen: boolean;
   setSearchOverlayOpen: (v: boolean) => void;
-
-  /** Bumped when agent-written files land in main (data-workspace-files WS
-   * chunk) → CodeTab auto-refreshes its file tree, no manual refresh. */
-  workspaceFilesTick: number;
-  bumpWorkspaceFiles: () => void;
 };
 
 export type ChunkAction =
@@ -373,9 +383,9 @@ export const useStore = create<Store>((set, get) => ({
   },
   bumpWorkspaceFiles: () => set({ workspaceFilesTick: get().workspaceFilesTick + 1 }),
 
-  // The right rail is now a code-only panel (file tree + open file). `tab`
-  // is fixed to "code" — PreviewPane ignores it and always renders CodeTab.
-  preview: { open: false, tab: "code", data: {} },
+  // Right rail: file-tree explorer (文件) OR single-file preview (预览). Doubao-
+  // style default = 预览 — chat is primary, browsing is opt-in.
+  preview: { open: false, tab: "code", mode: "preview", previewFile: null, data: {} },
   centerFileTabs: [],
   activeCenterTab: "chat",
   reviewIndex: 0,
@@ -388,10 +398,27 @@ export const useStore = create<Store>((set, get) => ({
     set((s) => ({
       // Mutual-exclude with RightDrawer (both occupy right edge)
       rightDrawer: { kind: null },
-      preview: { open: true, tab: "code", data: { ...s.preview.data, ...(data ?? {}) } },
+      preview: {
+        ...s.preview,
+        open: true,
+        tab: "code",
+        data: { ...s.preview.data, ...(data ?? {}) },
+      },
     })),
   closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),
   setPreviewTab: () => set((s) => ({ preview: { ...s.preview, tab: "code" } })),
+  setPreviewMode: (mode) =>
+    set((s) => ({ preview: { ...s.preview, mode } })),
+  openPreviewFile: (path) =>
+    set((s) => ({
+      rightDrawer: { kind: null },
+      preview: {
+        ...s.preview,
+        open: true,
+        mode: path ? "preview" : s.preview.mode,
+        previewFile: path,
+      },
+    })),
 
   openCenterFile: (path) =>
     set((s) => ({
@@ -459,9 +486,6 @@ export const useStore = create<Store>((set, get) => ({
 
   searchOverlayOpen: false,
   setSearchOverlayOpen: (v) => set({ searchOverlayOpen: v }),
-
-  workspaceFilesTick: 0,
-  bumpWorkspaceFiles: () => set((s) => ({ workspaceFilesTick: s.workspaceFilesTick + 1 })),
 
   setSeed: (s) => set(s),
   setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),

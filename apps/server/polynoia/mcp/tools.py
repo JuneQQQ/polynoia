@@ -965,6 +965,60 @@ class _DispatchTool(_ToolBase):
         )
 
 
+class _DiscussTool(_ToolBase):
+    name = "discuss"
+    description = (
+        "Open a free-form DISCUSSION among teammates — NOT parallel work. Use "
+        "this when a question is better answered by several people thinking "
+        "together (weighing options, reviewing a design, reaching consensus) "
+        "rather than split into independent deliverables (that's `dispatch`).\n\n"
+        "Give a `topic` and ≥2 `participants` (teammate display names). The "
+        "platform posts an opening message and each participant joins the "
+        "conversation; they can @mention each other to go back and forth. The "
+        "discussion AUTO-CONVERGES (bounded — it won't loop forever) and ends "
+        "with a single 讨论结论. This call returns immediately — after calling "
+        "it, STOP and let them talk; you'll see the conclusion in a later turn.\n\n"
+        "PLAIN PROSE for `topic`; do not embed quoted JSON."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "What the team should discuss (plain prose).",
+            },
+            "participants": {
+                "type": "array",
+                "minItems": 2,
+                "description": "≥2 teammate display names who should weigh in.",
+                "items": {"type": "string", "description": "Teammate display name"},
+            },
+        },
+        "required": ["topic", "participants"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        topic = str(args.get("topic") or "").strip()
+        participants = args.get("participants") or []
+        if not topic:
+            return {"kind": "error", "error": "topic is required"}
+        if not isinstance(participants, list) or len(participants) < 2:
+            return {"kind": "error", "error": "participants must list ≥2 teammates"}
+        ctx.append_audit("agent.discuss", {
+            "caller": ctx.agent_id,
+            "participants": [p for p in participants if isinstance(p, str)],
+        })
+        return await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/discuss",
+            json={
+                "topic": topic,
+                "participants": participants,
+                "author_agent_id": ctx.agent_id,
+            },
+            label="discuss",
+        )
+
+
 class _RememberTool(_ToolBase):
     name = "remember"
     description = (
@@ -1237,8 +1291,8 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
     for cls in [
         _ReadTool, _EditTool, _WriteTool, _ApplyPatchTool,
         _BashTool, _GrepTool, _GlobTool, _RevertTool, _CallAgentTool,
-        _DispatchTool, _RememberTool, _RecallTool, _ReportTool, _AskUserTool,
-        _RequestProjectAccessTool,
+        _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
+        _AskUserTool, _RequestProjectAccessTool,
     ]
 }
 
@@ -1264,7 +1318,7 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # `report` (closed-loop handoff verdict) is for WORKERS, not the orchestrator
 # (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
 ROLE_TOOLS: dict[str, set[str]] = {
-    "orchestrator": {"read", "grep", "glob", "dispatch", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user"},
+    "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user"},
     "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
     "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
     "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},

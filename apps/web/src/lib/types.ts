@@ -239,7 +239,8 @@ export type ConflictPayload = {
 	conv_id: ULID;
 	branch: string;
 	agent_id: string;
-	/** agent(s) already merged into main on the conflicting side. */
+	/** agent(s) already merged into main on the conflicting side (the "main"
+	 * side of the conflict). Lets the UI name it instead of abstract "main". */
 	base_agents?: string[];
 	into: string;
 	status: "open" | "resolving" | "resolved" | "abandoned";
@@ -248,37 +249,6 @@ export type ConflictPayload = {
 	resolved_sha?: string | null;
 	created_at?: string;
 	decided_at?: string | null;
-};
-
-export type ConflictType = "content" | "add_add" | "modify_delete" | "rename" | "binary";
-export type ConflictFile = {
-  path: string;
-  ctype: ConflictType;
-  markers?: string | null;
-  ours?: string | null;
-  theirs?: string | null;
-  base?: string | null;
-  is_binary?: boolean;
-  resolution?: string | null;
-  side?: "ours" | "theirs" | "delete" | null;
-  state?: "conflict" | "resolved";
-};
-export type ConflictPayload = {
-  kind: "conflict";
-  conflict_id: ULID;
-  conv_id: ULID;
-  branch: string;
-  agent_id: string;
-  /** agent(s) already merged into main on the conflicting side (the "main"
-   * side of the conflict). Lets the UI name it instead of abstract "main". */
-  base_agents?: string[];
-  into: string;
-  status: "open" | "resolving" | "resolved" | "abandoned";
-  files: ConflictFile[];
-  resolved_by?: string | null;
-  resolved_sha?: string | null;
-  created_at?: string;
-  decided_at?: string | null;
 };
 
 export type MessagePayload =
@@ -360,11 +330,14 @@ export type Agent = {
 	human?: boolean;
 	system_prompt?: string | null;
 	tools_whitelist?: string[];
-	proxy?: string | null;
-	proxy_kind?: "system" | "direct" | "custom";
+	// NOTE: no proxy here — network egress is adapter-level (set in 适配器管理),
+	// shared by all contacts of an adapter. See api.setAdapterProxy.
 	foreign_from?: string | null;
 	setup?: AgentSetup | null;
 };
+
+/** Network egress kind for an adapter's spawned CLI subprocesses. */
+export type ProxyKind = "system" | "direct" | "custom";
 
 export type Server = {
 	id: ULID;

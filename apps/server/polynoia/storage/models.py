@@ -73,8 +73,10 @@ class AgentRow(Base):
     tool_role: Mapped[str] = mapped_column(
         String(16), default="generalist", nullable=False,
     )
-    proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    proxy_kind: Mapped[str] = mapped_column(String(16), default="system", nullable=False)
+    # NOTE: network proxy is NOT a per-contact knob. Egress (HTTP_PROXY) follows
+    # the adapter's LLM endpoint, which is host/adapter-level (~/.claude/settings
+    # .json etc.) — so proxy lives on OnboardedAdapterRow, shared by all contacts
+    # of that adapter. See the proxy columns there.
     setup: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     human: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     foreign_from: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -262,6 +264,14 @@ class OnboardedAdapterRow(Base):
     adapter_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     enabled_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False
+    )
+    # Network egress for this adapter's spawned CLI subprocesses. Shared by all
+    # contacts backed by this adapter (they hit the same endpoint).
+    # proxy_kind: "system" (inherit host HTTP_PROXY), "direct" (strip all proxy
+    # env), "custom" (use `proxy` as HTTP_PROXY/HTTPS_PROXY). See adapters/base.py.
+    proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    proxy_kind: Mapped[str] = mapped_column(
+        String(16), default="system", nullable=False
     )
 
 

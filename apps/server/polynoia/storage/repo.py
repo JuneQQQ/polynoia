@@ -101,8 +101,6 @@ def _agent_from_row(r: AgentRow) -> Agent:
         system_prompt=r.system_prompt,
         tools_whitelist=r.tools_whitelist or [],
         tool_role=(r.tool_role or "generalist"),  # type: ignore[arg-type]
-        proxy=r.proxy,
-        proxy_kind=r.proxy_kind,  # type: ignore[arg-type]
         setup=setup,
         human=r.human,
         foreign_from=r.foreign_from,
@@ -142,8 +140,6 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
         existing.system_prompt = a.system_prompt
         existing.tools_whitelist = a.tools_whitelist
         existing.tool_role = a.tool_role
-        existing.proxy = a.proxy
-        existing.proxy_kind = a.proxy_kind
         existing.setup = setup_dict
         existing.human = a.human
         existing.foreign_from = a.foreign_from
@@ -154,7 +150,7 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
             caps=a.caps, online=a.online, enabled=a.enabled, custom=a.custom,
             system_prompt=a.system_prompt, tools_whitelist=a.tools_whitelist,
             tool_role=a.tool_role,
-            proxy=a.proxy, proxy_kind=a.proxy_kind, setup=setup_dict,
+            setup=setup_dict,
             human=a.human, foreign_from=a.foreign_from,
         ))
     await session.flush()
@@ -720,6 +716,39 @@ async def list_onboarded_adapters(session: AsyncSession) -> list[str]:
     """Return the adapter_ids the user has explicitly onboarded."""
     result = await session.execute(select(OnboardedAdapterRow))
     return [r.adapter_id for r in result.scalars().all()]
+
+
+async def list_onboarded_adapter_rows(
+    session: AsyncSession,
+) -> list[OnboardedAdapterRow]:
+    """Return the full onboarded-adapter rows (incl. proxy config)."""
+    result = await session.execute(select(OnboardedAdapterRow))
+    return list(result.scalars().all())
+
+
+async def get_adapter_proxy(
+    session: AsyncSession, adapter_id: str
+) -> tuple[str | None, str]:
+    """Return (proxy_url, proxy_kind) for an adapter. Defaults to (None, "system")
+    when the adapter is not onboarded — i.e. inherit host env."""
+    row = await session.get(OnboardedAdapterRow, adapter_id)
+    if row is None:
+        return None, "system"
+    return row.proxy, row.proxy_kind
+
+
+async def set_adapter_proxy(
+    session: AsyncSession, adapter_id: str, proxy: str | None, proxy_kind: str
+) -> bool:
+    """Set an adapter's network egress. Returns False if the adapter isn't
+    onboarded. `proxy` is only retained when proxy_kind == "custom"."""
+    row = await session.get(OnboardedAdapterRow, adapter_id)
+    if row is None:
+        return False
+    row.proxy_kind = proxy_kind
+    row.proxy = proxy if proxy_kind == "custom" else None
+    await session.flush()
+    return True
 
 
 async def add_onboarded_adapter(session: AsyncSession, adapter_id: str) -> None:

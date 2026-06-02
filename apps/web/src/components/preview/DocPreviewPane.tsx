@@ -22,15 +22,36 @@ function isMarp(content: string): boolean {
 	);
 }
 
-export type DocKind = "doc" | "marp" | "html" | "sheet" | "other";
+export type DocKind =
+	| "doc"
+	| "marp"
+	| "html"
+	| "sheet"
+	| "word"
+	| "xlsx"
+	| "slides"
+	| "other";
 
 export function docKind(path: string, content: string): DocKind {
 	if (/\.html?$/i.test(path)) return "html";
 	if (/\.(csv|tsv)$/i.test(path)) return "sheet";
+	// Binary office (OOXML) — rendered client-side from raw bytes (OfficePreview).
+	// .xls handled by SheetJS too; legacy .doc/.ppt (OLE) have no client renderer
+	// and fall through to "other" (download to view).
+	if (/\.docx$/i.test(path)) return "word";
+	if (/\.xlsx?$/i.test(path)) return "xlsx";
+	if (/\.pptx$/i.test(path)) return "slides";
 	if (/\.marp$/i.test(path)) return "marp";
 	if (/\.(md|markdown|mdx)$/i.test(path))
 		return isMarp(content) ? "marp" : "doc";
 	return "other";
+}
+
+/** Binary office kinds — read as raw bytes (ArrayBuffer), NOT UTF-8 text, and
+ * rendered by OfficePreview (not this text-driven pane). Used by CodeEditor to
+ * skip the text read + suppress the source/编辑 toggle (no meaningful source). */
+export function isBinaryDocKind(kind: DocKind): boolean {
+	return kind === "word" || kind === "xlsx" || kind === "slides";
 }
 
 function basename(path: string): string {
@@ -80,7 +101,7 @@ export function DocPreviewPane({
 	}
 	return (
 		<Empty
-			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.csv/.tsv(表格)、.html。`}
+			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.csv/.tsv(表格)、.html、以及 .docx/.xlsx/.pptx(Office)。`}
 		/>
 	);
 }

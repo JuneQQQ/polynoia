@@ -217,6 +217,8 @@ class CodexAdapter:
         merge_mode: str = "auto",  # P1.2 — Codex does use Polynoia MCP via config.toml; merge_mode reserved
         tool_role: str = "generalist",
         read_only_workspace_id: str | None = None,
+        proxy: str | None = None,
+        proxy_kind: str = "system",
     ) -> CodexSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
@@ -264,11 +266,24 @@ class CodexAdapter:
             _merge_mcp_into_config(existing, mcp_block), encoding="utf-8"
         )
 
+        # ── Proxy egress control (proxy_kind) ───────────────────────
+        _env = dict(env or {})
+        if proxy_kind == "direct":
+            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy"):
+                _env.pop(_k, None)
+        elif proxy_kind == "custom" and proxy:
+            _env["HTTP_PROXY"] = proxy
+            _env["HTTPS_PROXY"] = proxy
+            _env["ALL_PROXY"] = proxy
+            _env["http_proxy"] = proxy
+            _env["https_proxy"] = proxy
+            _env["all_proxy"] = proxy
         return CodexSession(
             sandbox=sandbox,
             model=model,
             system_prompt=system_prompt,
-            extra_env=env or {},
+            extra_env=_env,
             agent_id=self.meta.agent_id,
         )
 

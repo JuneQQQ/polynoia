@@ -89,8 +89,8 @@ class Agent(BaseModel):
     tool_role: Literal[
         "orchestrator", "coder", "designer", "writer", "generalist",
     ] = "generalist"
-    proxy: str | None = None
-    proxy_kind: Literal["system", "direct", "custom"] = "system"
+    # Network proxy is adapter-level, not per-contact — see OnboardedAdapterRow
+    # (egress follows the adapter's shared LLM endpoint, not the persona).
     setup: AgentSetup | None = None
     # P1 hooks
     human: bool = False

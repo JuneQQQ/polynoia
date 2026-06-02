@@ -19,8 +19,9 @@ import {
 	X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, type PendingEdit } from "../lib/api";
+import { type PendingEdit, api } from "../lib/api";
 import { useStore } from "../store";
+import { editToUnified } from "./preview/diffUnified";
 
 const EMPTY: readonly PendingEdit[] = [];
 
@@ -52,6 +53,9 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 	const idx = Math.min(reviewIndex, pending.length - 1);
 	const edit = pending[idx];
 	const agent = agents.find((a) => a.id === edit.agent_id);
+	// +N / −M line-change counts for the focused edit (same helper + style as
+	// DiffReviewPane), so the compact bar also shows how big the change is.
+	const stat = editToUnified(edit);
 
 	const decide = async (decision: "accept" | "reject") => {
 		if (busy) return;
@@ -107,6 +111,28 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 					{edit.kind}
 				</span>
 			</button>
+
+			{/* +N / −M line-change stat (green / red), same style as DiffReviewPane */}
+			<span
+				className="text-[10.5px] px-1.5 py-0.5 rounded font-mono flex-shrink-0"
+				style={{
+					background: "var(--color-green-soft)",
+					color: "var(--color-green)",
+				}}
+			>
+				+{stat.adds}
+			</span>
+			{stat.dels > 0 && (
+				<span
+					className="text-[10.5px] px-1.5 py-0.5 rounded font-mono flex-shrink-0"
+					style={{
+						background: "var(--color-red-soft)",
+						color: "var(--color-red)",
+					}}
+				>
+					−{stat.dels}
+				</span>
+			)}
 
 			{agent && (
 				<span className="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--color-fg-2)] flex-shrink-0">

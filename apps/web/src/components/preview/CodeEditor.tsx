@@ -32,7 +32,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
-import { DocPreviewPane, docKind } from "./DocPreviewPane";
+import { DocPreviewPane, docKind, isBinaryDocKind } from "./DocPreviewPane";
+import { OfficePreview } from "./OfficePreview";
 
 const MINIMAP_EXT: Extension = showMinimap.compute([], () => ({
 	create: () => ({ dom: document.createElement("div") }),
@@ -111,6 +112,11 @@ export function CodeEditor({
 	// a doc to read it). The CodeMirror source view is the "编辑" mode.
 	const kind = docKind(path, content ?? "");
 	const isDoc = kind !== "other";
+	// Binary office files (docx/xlsx/pptx) are rendered from raw BYTES by
+	// OfficePreview — there's no UTF-8 source to read or edit, so we skip the text
+	// load below and hide the 源码/保存 controls. Path-based so it's stable across
+	// renders, unlike `kind` which can flip once Marp front-matter loads.
+	const binary = isBinaryDocKind(docKind(path, ""));
 	const [preview, setPreview] = useState(() => docKind(path, "") !== "other");
 
 	const dirty = content !== null && content !== original;
@@ -119,6 +125,12 @@ export function CodeEditor({
 	// clobber unsaved edits — an agent wrote files to main).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is a reload trigger; content/original are read via functional setState, so listing them would re-fetch on every keystroke.
 	useEffect(() => {
+		// Binary office kinds bypass the text read entirely (the UTF-8 endpoint
+		// would 415) — OfficePreview fetches their bytes itself.
+		if (binary) {
+			setLoading(false);
+			return;
+		}
 		let alive = true;
 		setLoading(content === null);
 		api
@@ -138,7 +150,7 @@ export function CodeEditor({
 		return () => {
 			alive = false;
 		};
-	}, [workspaceId, path, filesTick]);
+	}, [workspaceId, path, filesTick, binary]);
 
 	const save = useCallback(async () => {
 		if (content === null || content === original || saving) return;
@@ -186,7 +198,7 @@ export function CodeEditor({
 				<span className="text-[11px] mono text-[var(--color-fg-3)] truncate flex-1">
 					{path}
 				</span>
-				{isDoc && (
+				{isDoc && !binary && (
 					<button
 						type="button"
 						onClick={() => setPreview((v) => !v)}
@@ -202,7 +214,7 @@ export function CodeEditor({
 						{preview ? "源码" : "预览"}
 					</button>
 				)}
-				{!preview && (
+				{!preview && !binary && (
 					<>
 						<button
 							type="button"
@@ -233,26 +245,30 @@ export function CodeEditor({
 						</button>
 					</>
 				)}
-				<button
-					type="button"
-					onClick={save}
-					disabled={!dirty || saving}
-					className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
-					title="保存 (Ctrl+S)"
-				>
-					{saving ? (
-						<Loader2 size={11} className="animate-spin" />
-					) : (
-						<Save size={11} />
-					)}
-					{dirty ? "保存" : "已保存"}
-				</button>
+				{!binary && (
+					<button
+						type="button"
+						onClick={save}
+						disabled={!dirty || saving}
+						className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
+						title="保存 (Ctrl+S)"
+					>
+						{saving ? (
+							<Loader2 size={11} className="animate-spin" />
+						) : (
+							<Save size={11} />
+						)}
+						{dirty ? "保存" : "已保存"}
+					</button>
+				)}
 			</div>
 			<div className="flex-1 overflow-hidden">
 				{loading ? (
 					<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
 						<Loader2 size={14} className="animate-spin" />
 					</div>
+				) : binary ? (
+					<OfficePreview workspaceId={workspaceId} path={path} kind={kind} />
 				) : isDoc && preview ? (
 					<DocPreviewPane
 						workspaceId={workspaceId}
@@ -280,8 +296,14 @@ export function CodeEditor({
 			<footer className="flex items-center gap-3 px-3 py-1 border-t border-[var(--color-line)] bg-[var(--color-surface-2)] text-[10.5px] text-[var(--color-fg-3)] mono">
 				<span className="truncate flex-1">{path}</span>
 				<span>{extOf(path).toUpperCase() || "TEXT"}</span>
-				<span>UTF-8</span>
-				<span>{(content ?? "").split("\n").length} 行</span>
+				{binary ? (
+					<span>二进制 · 预览</span>
+				) : (
+					<>
+						<span>UTF-8</span>
+						<span>{(content ?? "").split("\n").length} 行</span>
+					</>
+				)}
 			</footer>
 		</div>
 	);

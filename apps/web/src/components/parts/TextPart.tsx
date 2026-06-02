@@ -357,7 +357,7 @@ export const TextPart = memo(function TextPart({
   payload: TextPayload;
   isStreaming?: boolean;
 }) {
-  return (
+  const inner = (
     <div className="text-[13px] text-[var(--color-fg)]">
       {payload.body.map((block, i) =>
         typeof block.c === "string" ? (
@@ -369,6 +369,21 @@ export const TextPart = memo(function TextPart({
           </p>
         ),
       )}
+    </div>
+  );
+  // A multi-agent discussion's wrap-up (synthesizer leads with 「讨论结论:」) gets
+  // a subtle accent card + badge so it reads as the conclusion, not just another
+  // reply. Detection is prefix-only (no new payload kind needed).
+  const first = payload.body[0]?.c;
+  const isSummary =
+    typeof first === "string" && /^\s*(?:\*\*|##\s*)?讨论结论/.test(first);
+  if (!isSummary) return inner;
+  return (
+    <div className="rounded-md border border-[var(--color-accent)]/30 border-l-[3px] border-l-[var(--color-accent)] bg-[var(--color-accent-soft)]/30 pl-3 pr-2.5 py-2">
+      <div className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-accent)] mb-1 font-medium">
+        讨论结论
+      </div>
+      {inner}
     </div>
   );
 });

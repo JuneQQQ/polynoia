@@ -128,6 +128,8 @@ class ClaudeCodeAdapter:
         merge_mode: str = "auto",
         tool_role: str = "generalist",
         read_only_workspace_id: str | None = None,
+        proxy: str | None = None,
+        proxy_kind: str = "system",
     ) -> ClaudeCodeSession:
         # P1.1 routing — group convs in a workspace share git via worktrees;
         # a project-external DM opens its agent's workspace READ-ONLY (ADR-019)
@@ -198,6 +200,22 @@ class ClaudeCodeAdapter:
         extra_env = dict(env or {})
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             extra_env.setdefault("IS_SANDBOX", "1")
+        # ── Proxy egress control (proxy_kind) ───────────────────────
+        # system  → inherit host HTTP_PROXY / HTTPS_PROXY etc. (default,
+        #   env_for_agent already copies them from os.environ)
+        # direct  → strip all proxy env vars so the agent goes direct
+        # custom  → override HTTP_PROXY + HTTPS_PROXY with the given URL
+        if proxy_kind == "direct":
+            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy"):
+                extra_env.pop(_k, None)
+        elif proxy_kind == "custom" and proxy:
+            extra_env["HTTP_PROXY"] = proxy
+            extra_env["HTTPS_PROXY"] = proxy
+            extra_env["ALL_PROXY"] = proxy
+            extra_env["http_proxy"] = proxy
+            extra_env["https_proxy"] = proxy
+            extra_env["all_proxy"] = proxy
         sandbox_env = sandbox.env_for_agent(extra_env)
         # ── merged: feat used `env_for_agent(env or {})`; main's root-aware
         #    IS_SANDBOX path above is a strict superset, so it wins. ──

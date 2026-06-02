@@ -165,6 +165,8 @@ class OpenCodeAdapter:
         merge_mode: str = "auto",  # P1.2 — OpenCode does use Polynoia MCP (see _start in session); merge_mode reserved
         tool_role: str = "generalist",
         read_only_workspace_id: str | None = None,
+        proxy: str | None = None,
+        proxy_kind: str = "system",
     ) -> OpenCodeSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
@@ -178,13 +180,26 @@ class OpenCodeAdapter:
             ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
+        # ── Proxy egress control (proxy_kind) ───────────────────────
+        _env = dict(env or {})
+        if proxy_kind == "direct":
+            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy"):
+                _env.pop(_k, None)
+        elif proxy_kind == "custom" and proxy:
+            _env["HTTP_PROXY"] = proxy
+            _env["HTTPS_PROXY"] = proxy
+            _env["ALL_PROXY"] = proxy
+            _env["http_proxy"] = proxy
+            _env["https_proxy"] = proxy
+            _env["all_proxy"] = proxy
         return OpenCodeSession(
             sandbox=sandbox,
             conv_id=conv_id,
             cwd=cwd or str(sandbox.root),
             model=model,
             system_prompt=system_prompt,
-            env=env or {},
+            env=_env,
             agent_id=self.meta.agent_id,
             tool_role=tool_role,
         )
