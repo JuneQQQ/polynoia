@@ -44,19 +44,25 @@ def _repair_arguments(arguments: Any) -> dict[str, Any]:
             return {}
     if not isinstance(arguments, dict):
         return {}
-    # Unwrap a single-key envelope whose value is the real arg dict.
+    # Unwrap a single-key envelope ONLY when its value is (or parses to) a dict.
+    # A plain single-arg tool — bash {"command": "ls"}, glob {"pattern": "*.py"} —
+    # must pass through untouched: its value is a normal string, NOT a wrapped
+    # arg object. (Bug fix: json.loads("ls") raises "Expecting value"; the empty
+    # contextlib.suppress() caught nothing, so every single-arg tool errored.)
     if len(arguments) == 1:
         (only_v,) = arguments.values()
         if isinstance(only_v, str):
-            with _suppress():
-                only_v = json.loads(only_v)
+            with _suppress(ValueError, TypeError):
+                parsed = json.loads(only_v)
+                if isinstance(parsed, dict):
+                    only_v = parsed
         if isinstance(only_v, dict) and only_v:
             arguments = only_v
     # Coerce list-ish fields that arrived as JSON strings.
     for k in ("tasks", "participants", "questions"):
         v = arguments.get(k)
         if isinstance(v, str):
-            with _suppress():
+            with _suppress(ValueError, TypeError):
                 parsed = json.loads(v)
                 if isinstance(parsed, list):
                     arguments[k] = parsed
