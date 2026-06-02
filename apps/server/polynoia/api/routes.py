@@ -2693,28 +2693,33 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             + "}\n\n"
         )
 
-    async def _merge_burst_to_main(reg: dict) -> None:
-        """All burst workers done → fold their branches into main via REAL
-        conflict-detecting merges (conflict closed-loop, PR#4).
+    async def _drain_unmerged_branches(
+        ws_id: str, orch_id: str = "orchestrator"
+    ) -> int:
+        """Single merge code path — used by BOTH burst completion AND post-turn
+        auto-merge so the conflict closed-loop stays in one place.
 
-        Clean branches merge silently (as before). A true git conflict is no
-        longer a silent abort-and-drop: it's frozen into a `conflict` card the
-        user can resolve. Critical section serialized per-workspace (shared root
-        has ONE HEAD/index across all worktrees AND convs).
+        Iterates every agent branch for this conv that's ahead of main, probes
+        each merge:
+          - clean    → committed silently, author appended to merged_authors
+          - conflict → frozen into a `conflict` card via _surface_conflict
+          - error    → logged, branch left ahead of main (visible to next call)
+
+        Skips branches that already have an open/resolving/abandoned conflict
+        card (probe_merge is transient — would otherwise spawn duplicate rows
+        on every call). Critical section serialized per-workspace; the shared
+        root has ONE HEAD/index across all worktrees AND all convs.
+
+        ``orch_id`` is the sender attributed to any conflict card produced —
+        the orchestrator that owned the burst, or the speaking agent itself
+        for free single-agent turns. Returns count of clean merges.
         """
-        ws_id = reg.get("workspace_id")
-        if not ws_id:
-            return
         ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
         if ws_sandbox is None:
-            return
-        orch_id = reg.get("orch") or "orchestrator"
+            return 0
         async with workspace_merge_lock(ws_id):
             # Capture native-tool writes (OpenCode) as commits before merging.
             await ws_sandbox.commit_pending_worktrees(conv_id)
-            # Don't re-surface a branch that already has a live conflict card:
-            # probe_merge is transient, so an unresolved/abandoned branch stays
-            # ahead of main and would otherwise spawn a duplicate row each burst.
             async with SessionLocal() as _db:
                 already = {
                     r.branch
@@ -2738,11 +2743,26 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     )
                 elif status == "error":
                     log.warning(
-                        "burst merge: %s → error: %s", b, detail.get("message", "")
+                        "merge: %s → error: %s", b, detail.get("message", "")
                     )
             if merged_authors:
                 # Files just landed in main → nudge the code tab to auto-refresh.
                 await emit('data: {"type":"data-workspace-files","data":{}}\n\n')
+            return len(merged_authors)
+
+    async def _merge_burst_to_main(reg: dict) -> None:
+        """All burst workers done → drain their branches into main.
+
+        Thin wrapper over `_drain_unmerged_branches` — conflict closed-loop +
+        ledger semantics live there. Kept as a separate function because
+        `_mark_burst_task` / `is_last` call it by name on burst completion
+        (load-bearing per docs/design/conflict-closed-loop-CHARTER.md).
+        """
+        ws_id = reg.get("workspace_id")
+        if not ws_id:
+            return
+        orch_id = reg.get("orch") or "orchestrator"
+        await _drain_unmerged_branches(ws_id, orch_id)
 
     async def run_adapter_turn(
         agent_id: str,

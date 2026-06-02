@@ -10,9 +10,11 @@ HTTP helpers, so the cast is identical to a normal clean-init.
 How seeding works (same model as seed_demo.py):
   - The live server must be running (`make dev` / `make server`, :7780) — seeding
     talks to its HTTP API.
-  - `--fresh` first WIPES the DB (drop_all + bootstrap) for a clean slate; without
-    it the script is idempotent reuse-or-create and ACCUMULATES (you can run
-    several scenarios into one DB and switch between them in the UI).
+  - `--fresh` first WIPES the WHOLE DB (drop_all + bootstrap) for a clean slate.
+  - Without it the script ACCUMULATES (reuse-or-create), and re-running a scenario
+    CLEARS that scenario's conversation timeline (fresh test, members/roles kept)
+    while leaving the other scenarios' conversations untouched. So you usually do
+    NOT need --fresh to "reset the chat" — just re-run the one scenario.
   - Contacts/workspace/conv are created; ZERO messages are seeded. The scenario's
     header docstring tells you which conversation to open and what to send.
 
@@ -108,6 +110,14 @@ def ensure_group_conv(
     existing = next((c for c in convs if c.get("title") == title), None)
     if existing:
         cid = existing["id"]
+        # Reuse → reset THIS conv to an empty timeline so each scenario run is a
+        # clean test (keeps members/roles; other scenarios' convs untouched).
+        # /clear broadcasts data-conv-cleared so an open frontend drops its
+        # message list live. This is why re-running a scenario "resets the chat".
+        try:
+            sd.post(f"/api/conversations/{cid}/clear", {})
+        except Exception:
+            pass
     else:
         cid = sd.post("/api/conversations", {
             "workspace_id": ws_id,
