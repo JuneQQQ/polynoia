@@ -1270,7 +1270,7 @@ class _AskUserTool(_ToolBase):
             return {"kind": "error", "error": "questions must be a non-empty array"}
         reg = await _callback_server(
             f"/api/conversations/{ctx.conv_id}/ask",
-            json={"agent_id": ctx.agent_id, "title": args.get("title", ""), "questions": questions},
+            json={"agent_id": ctx.turn_agent_id or ctx.agent_id, "title": args.get("title", ""), "questions": questions},
             label="ask_user",
         )
         ask_id = reg.get("ask_id")
@@ -1321,7 +1321,8 @@ class _RequestProjectAccessTool(_ToolBase):
         try:
             async with httpx.AsyncClient(base_url=base, timeout=70.0, trust_env=False) as client:
                 r = await client.post("/api/pending-access", json={
-                    "conv_id": ctx.conv_id, "agent_id": ctx.agent_id, "reason": reason,
+                    "conv_id": ctx.conv_id,
+                    "agent_id": ctx.turn_agent_id or ctx.agent_id, "reason": reason,
                 })
                 if r.status_code != 200:
                     return {"kind": "error", "error": f"create failed {r.status_code}"}
@@ -1396,7 +1397,10 @@ class _PresentTool(_ToolBase):
             ) as client:
                 r = await client.post("/api/present", json={
                     "conv_id": ctx.conv_id,
-                    "agent_id": ctx.agent_id,
+                    # turn_agent_id = the CONTACT's ULID (not the static adapter id
+                    # "claudeCode") so the file card attributes to 顾屿 etc., not a
+                    # generic "Agent / BOT".
+                    "agent_id": ctx.turn_agent_id or ctx.agent_id,
                     "ws": ws_id,
                     "path": rel,
                     "caption": args.get("caption"),

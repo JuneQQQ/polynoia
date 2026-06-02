@@ -11,7 +11,6 @@
  */
 import {
 	Download,
-	Eye,
 	FileCode2,
 	FileImage,
 	FileSpreadsheet,
@@ -156,17 +155,10 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 					</div>
 				</div>
 			</button>
+			{/* Only a download button — the explicit "打开预览" button was removed at
+			    the user's request (binary preview was buggy). Clicking the card
+			    itself still opens the centered preview for renderable types. */}
 			<div className="flex items-center gap-1 flex-shrink-0">
-				{wsFile && (
-					<button
-						type="button"
-						onClick={onPreview}
-						className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--color-accent-soft)] text-[var(--color-accent)] text-[11.5px] font-medium hover:bg-[var(--color-accent)] hover:text-white transition"
-					>
-						<Eye size={11} />
-						打开预览
-					</button>
-				)}
 				<button
 					type="button"
 					onClick={onDownload}
