@@ -20,6 +20,7 @@ import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
 import { MessageView } from "./MessageView";
 import { ConvScopeProvider } from "./parts/_context";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
+import { ToolCallGroup } from "./parts/ToolCallGroup";
 
 type Props = {
 	convId: string;
@@ -510,6 +511,49 @@ export function ChatPane({ convId, members, title }: Props) {
 		return computeBursts(ids, msgByIdLive);
 	}, [burstSig, convId]);
 
+	// Consecutive-tool-call folding (#9): runs of ≥2 adjacent kind:"tool-call"
+	// messages from the same sender (and NOT claimed into a burst lane) collapse
+	// into one ToolCallGroup. groupFirstId → the run's ids; groupedSkip → the
+	// non-first members (skipped in the linear map). Memoized on the same
+	// structural signature as bursts (no re-run on streaming deltas).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: see burstSig note above.
+	const { groupFirstIds, groupedSkip } = useMemo(() => {
+		const firsts = new Map<string, string[]>();
+		const skip = new Set<string>();
+		const byId =
+			useStore.getState().convs.get(convId)?.msgById ??
+			new Map<string, Message>();
+		let run: string[] = [];
+		let runSender: string | null = null;
+		const flush = () => {
+			if (run.length >= 2) {
+				firsts.set(run[0], [...run]);
+				for (let j = 1; j < run.length; j++) skip.add(run[j]);
+			}
+			run = [];
+			runSender = null;
+		};
+		for (const m of messages) {
+			const isTool =
+				!claimedSet.has(m.id) &&
+				!burstByAnchorId.has(m.id) &&
+				(byId.get(m.id)?.payload as { kind?: string } | undefined)?.kind ===
+					"tool-call";
+			if (isTool && (runSender === null || runSender === m.sender_id)) {
+				run.push(m.id);
+				runSender = m.sender_id;
+			} else {
+				flush();
+				if (isTool) {
+					run.push(m.id);
+					runSender = m.sender_id;
+				}
+			}
+		}
+		flush();
+		return { groupFirstIds: firsts, groupedSkip: skip };
+	}, [burstSig, convId, claimedSet, burstByAnchorId]);
+
 	return (
 		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)]">
 			{/* Chat header — editorial masthead: serif title + gradient hair-line */}
@@ -704,6 +748,13 @@ export function ChatPane({ convId, members, title }: Props) {
             memoized burstByAnchorId/claimedSet above (delta-invariant). */}
 						{messages.map((m, i) => {
 							if (claimedSet.has(m.id)) return null; // rendered in a lane
+							if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
+							const group = groupFirstIds.get(m.id);
+							if (group) {
+								return (
+									<ToolCallGroup key={m.id} convId={convId} msgIds={group} />
+								);
+							}
 							const burst = burstByAnchorId.get(m.id);
 							if (burst) {
 								return (
