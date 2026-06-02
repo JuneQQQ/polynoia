@@ -188,6 +188,23 @@ def _live_resume_frames(conv_id: str) -> list[str]:
     return frames
 
 
+async def _workspace_head_for_conv(conv_id: str) -> str | None:
+    """Workspace main HEAD sha for a conv's checkpoint stamp, or None for DMs /
+    no-workspace / not-yet-materialized. One git rev-parse on the (low-frequency)
+    user-message path — never on the per-token delta path."""
+    try:
+        async with SessionLocal() as db:
+            conv = await storage_repo.get_conversation(db, conv_id)
+        if conv is None or not conv.workspace_id:
+            return None
+        sb = Sandbox.open_workspace_if_exists(conv.workspace_id)
+        if sb is None:
+            return None
+        return await sb.main_head_sha()
+    except Exception:
+        return None
+
+
 def _maybe_prune_conv(conv_id: str) -> None:
     """Free a conv's module-level execution state once it is fully idle AND has
     no attached clients. Called from every turn/dispatcher task's done-callback
@@ -2059,6 +2076,57 @@ async def reset_workspace_sandbox(ws_id: str):
     return {"ok": True, "workspace_id": ws_id}
 
 
+def _conv_has_running_agent(conv_id: str) -> bool:
+    """True if any agent turn / burst / dispatcher is live in this conv."""
+    if _conv_inflight.get(conv_id) or _conv_dispatchers.get(conv_id):
+        return True
+    tasks = _conv_agent_tasks.get(conv_id) or {}
+    return any(not t.done() for t in tasks.values())
+
+
+@router.get("/api/workspaces/{ws_id}/restore-preview")
+async def restore_preview(ws_id: str, sha: str, conv_id: str | None = None):
+    """「回到这个对话」dry-run: what reverting workspace main to ``sha`` would undo
+    (commits / files / agents). If ``conv_id`` is given and an agent is running
+    there, returns ``blocked=True`` so the UI tells the user to wait/cancel."""
+    sb = Sandbox.open_workspace_if_exists(ws_id)
+    if sb is None:
+        raise HTTPException(404, f"unknown / unmaterialized workspace: {ws_id}")
+    preview = await sb.preview_restore_main(sha)
+    blocked = bool(conv_id and _conv_has_running_agent(conv_id))
+    return {**preview, "blocked": blocked}
+
+
+@router.post("/api/workspaces/{ws_id}/restore")
+async def restore_workspace(ws_id: str, body: dict):
+    """「回到这个对话」: hard-reset workspace main to ``sha`` (records an undo ref
+    first). Body ``{sha, conv_id?}``. Refuses while an agent is running in
+    ``conv_id`` (would race the worktree). Evicts pooled sessions so the next
+    turn branches off the restored main. Returns ``{ok, restored, undo_sha}``."""
+    sha = (body.get("sha") or "").strip()
+    if not sha:
+        raise HTTPException(400, "sha required")
+    conv_id = body.get("conv_id")
+    async with SessionLocal() as session:
+        if await session.get(WorkspaceRow, ws_id) is None:
+            raise HTTPException(404, f"unknown workspace: {ws_id}")
+    if conv_id and _conv_has_running_agent(conv_id):
+        raise HTTPException(409, "an agent is still running — finish or cancel it first")
+    await get_pool().close_all()
+    sb = Sandbox.open_workspace_if_exists(ws_id)
+    if sb is None:
+        raise HTTPException(404, "workspace not materialized")
+    result = await sb.restore_main_to(sha)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "restore failed"))
+    # Files changed → nudge the file tree / preview to refresh.
+    if conv_id:
+        await _broadcast_to_conv(
+            conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
+        )
+    return result
+
+
 @router.get("/api/workspaces/{ws_id}/files")
 async def list_workspace_files(ws_id: str, path: str = ""):
     """List one directory level inside a workspace.
@@ -3792,10 +3860,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # think the conv is empty.
         if text.strip():
             user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
+            # Stamp the code checkpoint: workspace main HEAD *before* this turn's
+            # work, so「回到这个对话」on this message restores to that point.
+            code_sha = await _workspace_head_for_conv(conv_id)
             async with SessionLocal() as db:
                 await storage_repo.append_message(
                     db, conv_id=conv_id, sender_id="you", payload=user_payload,
-                    in_reply_to=in_reply_to,
+                    in_reply_to=in_reply_to, code_sha=code_sha,
                 )
                 await db.commit()
 

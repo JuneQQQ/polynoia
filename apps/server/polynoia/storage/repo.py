@@ -550,15 +550,17 @@ async def append_message(
     payload: dict[str, Any],
     msg_id: str | None = None,
     in_reply_to: str | None = None,
+    code_sha: str | None = None,
 ) -> str:
     """Persist one message; updates conversation.last_message_at and bumps unread.
 
-    Returns the new message ID.
+    ``code_sha`` records the workspace main HEAD at creation (workspace convs
+    only) so「回到这个对话」can restore the code to this point. Returns the new ID.
     """
     mid = msg_id or new_ulid()
     session.add(MessageRow(
         id=mid, conv_id=conv_id, sender_id=sender_id, payload=payload,
-        in_reply_to=in_reply_to,
+        in_reply_to=in_reply_to, code_sha=code_sha,
     ))
     # Update conv timestamp + unread (skip user-side messages)
     from datetime import datetime
@@ -708,6 +710,7 @@ async def list_messages(
             "payload": r.payload,
             "pinned": bool(r.pinned),
             "in_reply_to": r.in_reply_to,
+            "code_sha": r.code_sha,
             "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         }
         for r in rows

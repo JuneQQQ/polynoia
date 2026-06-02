@@ -265,6 +265,8 @@ type Store = {
 			conv_id: string;
 			sender_id: string;
 			payload: Record<string, unknown>;
+			in_reply_to?: string | null;
+			code_sha?: string | null;
 			created_at: string;
 		}>,
 		options: { mode: "replace" | "prepend"; hasMore: boolean },
@@ -590,6 +592,8 @@ export const useStore = create<Store>((set, get) => ({
 				conv_id: m.conv_id,
 				sender_id: m.sender_id,
 				payload: m.payload as Message["payload"],
+				in_reply_to: m.in_reply_to ?? null,
+				code_sha: (m as { code_sha?: string | null }).code_sha ?? null,
 				created_at: m.created_at,
 			});
 			newOrder.push(m.id);

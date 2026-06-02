@@ -296,6 +296,70 @@ class Sandbox:
             await cls._bootstrap_workspace(ws_root, workspace_id)
         return ws_root
 
+    async def preview_restore_main(self, sha: str) -> dict:
+        """Dry-run for「回到这个对话」: what reverting main to ``sha`` would undo.
+        Returns ``{ok, commits, files:[path], authors:[name], head}``. ok=False
+        if sha is unknown / not an ancestor-reachable commit."""
+        if self.workspace_root is None:
+            return {"ok": False, "error": "not a workspace"}
+        rc, _o, _e = await self._workspace_run(
+            ["git", "rev-parse", "--verify", "-q", f"{sha}^{{commit}}"]
+        )
+        if rc != 0:
+            return {"ok": False, "error": f"unknown commit: {sha}"}
+        head = await self.main_head_sha() or ""
+        _rc, cnt, _ = await self._workspace_run(
+            ["git", "rev-list", "--count", f"{sha}..main"]
+        )
+        commits = int(cnt.strip() or "0") if _rc == 0 else 0
+        files = [p for _st, p in await self.files_in_range(sha, "main")]
+        _rc2, alog, _ = await self._workspace_run(
+            ["git", "log", "--format=%an", f"{sha}..main"]
+        )
+        authors = sorted({a.strip() for a in alog.splitlines() if a.strip()}) \
+            if _rc2 == 0 else []
+        return {
+            "ok": True, "commits": commits, "files": files,
+            "authors": authors, "head": head,
+        }
+
+    async def restore_main_to(self, sha: str) -> dict:
+        """「回到这个对话」: hard-reset workspace main to ``sha`` (Cursor-checkpoint
+        style). Records an undo ref at the pre-restore HEAD first (safety net), so
+        the caller can offer 撤销. Guarded by the workspace merge lock; aborts any
+        half-merge first so main is clean. Returns ``{ok, restored, undo_sha}``.
+        DESTRUCTIVE to main's history pointer (commits become unreachable but the
+        undo ref keeps the old tip alive)."""
+        if self.workspace_root is None or self.workspace_id is None:
+            return {"ok": False, "error": "not a workspace"}
+        async with workspace_merge_lock(self.workspace_id):
+            # Clean any in-progress merge so reset can't fail on a dirty index.
+            await self._workspace_run(["git", "merge", "--abort"])
+            rc, _o, _e = await self._workspace_run(
+                ["git", "rev-parse", "--verify", "-q", f"{sha}^{{commit}}"]
+            )
+            if rc != 0:
+                return {"ok": False, "error": f"unknown commit: {sha}"}
+            # Full pre-restore HEAD sha → undo ref (safety net).
+            _rc, undo_sha, _ = await self._workspace_run(
+                ["git", "rev-parse", "main"]
+            )
+            undo_sha = undo_sha.strip()
+            ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+            await self._workspace_run(
+                ["git", "update-ref", f"refs/polynoia/undo/{ts}", undo_sha]
+            )
+            rc2, _o2, err2 = await self._workspace_run(
+                ["git", "reset", "--hard", sha]
+            )
+            if rc2 != 0:
+                return {"ok": False, "error": err2 or "reset failed"}
+            return {
+                "ok": True,
+                "restored": await self.main_head_sha() or "",
+                "undo_sha": undo_sha,
+            }
+
     @classmethod
     def open_workspace_if_exists(cls, workspace_id: str) -> "Sandbox | None":
         """Read-only handle to a workspace's shared git (no worktree creation).

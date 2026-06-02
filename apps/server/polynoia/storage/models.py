@@ -217,6 +217,11 @@ class MessageRow(Base):
     # Reply-to threading: ULID of the message being replied to (no FK to keep
     # cascade-delete on the conv simple). Frontend renders a "回复 @X" header.
     in_reply_to: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # Code checkpoint: the workspace main HEAD sha at the moment this message was
+    # created (only stamped for workspace convs). Lets「回到这个对话」restore the
+    # code to the state at this point (Cursor-checkpoint style). Null = DM / no
+    # workspace / pre-feature message.
+    code_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False, index=True
     )

@@ -412,6 +412,27 @@ export const api = {
 		tools_whitelist?: string[];
 		max_context_tokens?: number | null;
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
+	/**「回到这个对话」dry-run: what reverting workspace main to `sha` would undo. */
+	restorePreview: (wsId: string, sha: string, convId?: string) =>
+		getJSON<{
+			ok: boolean;
+			commits: number;
+			files: string[];
+			authors: string[];
+			head: string;
+			blocked: boolean;
+			error?: string;
+		}>(
+			`/api/workspaces/${wsId}/restore-preview?sha=${encodeURIComponent(sha)}${
+				convId ? `&conv_id=${encodeURIComponent(convId)}` : ""
+			}`,
+		),
+	/**「回到这个对话」: hard-reset workspace main to `sha` (records undo ref). */
+	restoreWorkspace: (wsId: string, sha: string, convId?: string) =>
+		postJSON<{ ok: boolean; restored: string; undo_sha: string }>(
+			`/api/workspaces/${wsId}/restore`,
+			{ sha, conv_id: convId },
+		),
 	/** 对话式创建: infer a contact config from a free-text description (prefills
 	 * the create form; user reviews + edits). Deterministic heuristics server-side. */
 	suggestContact: (description: string) =>

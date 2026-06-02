@@ -281,6 +281,9 @@ export type Message = {
 	in_reply_to?: ULID | null;
 	/** User can pin individual messages (separate from workspace-level Pin). */
 	pinned?: boolean;
+	/** Workspace main HEAD sha at this message's creation (workspace convs only).
+	 * Drives「回到这个对话」code restore. Null = DM / no workspace. */
+	code_sha?: string | null;
 	created_at: string;
 	edited_at?: string | null;
 };
