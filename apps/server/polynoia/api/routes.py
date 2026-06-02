@@ -3194,6 +3194,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # "success" path and mark the burst lane DONE on a turn that actually
             # produced nothing. Track it so we mark the lane FAILED instead.
             turn_failed = False
+            # Did THIS turn actually start a burst (dispatched ≥1 worker)? A
+            # dispatcher turn that started a burst lets _merge_burst_to_main own
+            # the merge (skip the post-turn drain). But a dispatcher turn that
+            # dispatched NOTHING (orchestrator just replied / wrote files itself,
+            # or you @'d a sub-agent whose mention didn't resolve → fell back to
+            # the orchestrator) must STILL drain, else its writes never reach main.
+            _burst_started = False
             # Failure paths (exception / abort) re-raise or `return` BEFORE the
             # clean-path persist further down — so without this they'd drop the
             # work trace (tool calls + partial reply) the agent already produced,
@@ -3531,6 +3538,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     "tasks": _m_tasks,
                     "author_agent_id": _raw_batches[0].get("author_agent_id", ""),
                 }]
+                # A real burst is being built → its completion (_merge_burst_to_main)
+                # owns the merge; the post-turn drain below stands down for this turn.
+                _burst_started = True
             for batch in _merged_batches:
                 # (worker_id, note, task_id) — task_id pairs the spawned worker
                 # with its lane so completion can flip that lane's state.
@@ -3865,18 +3875,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         "failed" if turn_failed else "done",
                     )
 
-            # Post-turn auto-merge: when this turn is NOT part of a burst (no
-            # burst_card_id, not the dispatcher) and not a terminal failure,
-            # drain this conv's unmerged worktree commits into main. Without
-            # this, single-agent free-conv writes stay stuck on the agent's
-            # branch forever and never surface in the right rail. Burst flows
-            # already drain on completion via _merge_burst_to_main; skipping
-            # them here keeps the conflict-card `base_agents` order correct.
+            # Post-turn auto-merge: drain this conv's unmerged worktree commits
+            # into main UNLESS a burst will do it. A burst owns the merge only
+            # when one actually started (`_burst_started`) — a dispatcher turn
+            # that dispatched nothing (orchestrator replied / wrote files itself,
+            # or a sub-agent @mention that fell back to the orchestrator) must
+            # still drain, or its writes never reach main (the「@子Agent少文件」bug).
+            # Burst worker turns (burst_card_id set) skip here — _merge_burst_to_main
+            # drains them, preserving conflict-card `base_agents` order.
             #
-            # Wrapped in suppress(Exception) so a transient git/merge error
-            # never crashes the user-facing turn (worst case: file just
-            # doesn't surface; next turn picks it up).
-            if not burst_card_id and not is_dispatcher and not turn_failed:
+            # suppress(Exception): a transient git/merge error must never crash the
+            # user-facing turn (worst case: file surfaces on the next turn).
+            _skip_drain = bool(burst_card_id) or (is_dispatcher and _burst_started)
+            if not _skip_drain and not turn_failed:
                 _ws_id_for_merge: str | None = None
                 with suppress(Exception):
                     async with SessionLocal() as _db:
@@ -3884,7 +3895,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         _ws_id_for_merge = _conv.workspace_id if _conv else None
                 if _ws_id_for_merge:
                     with suppress(Exception):
-                        await _drain_unmerged_branches(_ws_id_for_merge, agent_id)
+                        n = await _drain_unmerged_branches(_ws_id_for_merge, agent_id)
+                        log.info(
+                            "post-turn drain: conv=%s agent=%s dispatcher=%s "
+                            "burst_started=%s → merged=%d",
+                            conv_id, agent_id, is_dispatcher, _burst_started, n,
+                        )
 
     async def dispatch_user_message(
         text: str, members: list[str], in_reply_to: str | None = None,
