@@ -32,6 +32,7 @@ from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import WorkspaceRow
 from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
+from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
 log = logging.getLogger("polynoia.routes")
 
@@ -1441,6 +1442,9 @@ async def apply_diff(body: dict):
     conv_id = body.get("conv_id")
     file_path = body.get("file")
     raw_hunks = body.get("hunks") or []
+    # reverse=True → `git apply --reverse`: undo an already-committed edit
+    # (commit-first revert for the proactive diff card's 撤销 action).
+    reverse = bool(body.get("reverse"))
     if not conv_id or not file_path or not raw_hunks:
         return {"ok": False, "error": "conv_id + file + hunks required"}
 
@@ -1454,16 +1458,23 @@ async def apply_diff(body: dict):
         return {"ok": False, "error": "conversation not found"}
 
     if conv.workspace_id and conv.group:
-        # Apply on the designated orchestrator member's worktree for this conv —
-        # that branch represents the user's review surface. If no orchestrator
-        # is designated, land on `you`'s worktree. (P1.2 manual is per-edit at
-        # the originating agent's branch; for now we land on this review branch.)
-        review_agent = conv.orchestrator_member_id or "you"
-        sandbox = await Sandbox.create_workspace_sandbox(
-            workspace_id=conv.workspace_id,
-            conv_id=conv_id,
-            agent_id=review_agent,
-        )
+        if reverse:
+            # 撤销 must land on workspace `main` (the root) — that's the tree the
+            # user sees in the file tree / preview. Reverting on an agent's
+            # worktree branch would NOT reflect in main (worker branches aren't
+            # synced back), so the user would see "nothing happened".
+            sandbox = Sandbox.open_workspace_if_exists(conv.workspace_id)
+            if sandbox is None:
+                return {"ok": False, "error": "workspace not bootstrapped"}
+        else:
+            # A proposed diff (forward apply) lands on the orchestrator's review
+            # worktree (or `you`) — the user's review surface.
+            review_agent = conv.orchestrator_member_id or "you"
+            sandbox = await Sandbox.create_workspace_sandbox(
+                workspace_id=conv.workspace_id,
+                conv_id=conv_id,
+                agent_id=review_agent,
+            )
     else:
         sandbox = await Sandbox.create(conv_id)
 
@@ -1506,18 +1517,24 @@ async def apply_diff(body: dict):
         if lock is not None:
             await lock.acquire()
             acquired = True
+        # NOTE: our reconstructed diff omits difflib's missing "\ No newline at
+        # end of file" marker, so a file with NO trailing newline fails loudly
+        # ("patch does not apply") rather than corrupting — acceptable (rare).
+        # We deliberately do NOT pass --inaccurate-eof: it would fix that case but
+        # STRIPS the trailing newline on normal files (verified) — a worse bug.
         rc, _out, err = await sandbox._run(
-            ["git", "apply", "--whitespace=fix", patch_path]
+            ["git", "apply", "--whitespace=fix", *(["--reverse"] if reverse else []), patch_path]
         )
         if rc != 0:
-            return {"ok": False, "error": f"git apply failed: {err.strip()[:300]}"}
+            verb = "git apply --reverse" if reverse else "git apply"
+            return {"ok": False, "error": f"{verb} failed: {err.strip()[:300]}"}
         # Stage + commit
         rc, _out, err = await sandbox._run(["git", "add", file_path])
         if rc != 0:
             return {"ok": False, "error": f"git add failed: {err.strip()[:200]}"}
         rc, _out, err = await sandbox._run([
             "git", "commit", "-q",
-            "-m", f"polynoia: apply diff {file_path}",
+            "-m", f"polynoia: {'revert' if reverse else 'apply'} diff {file_path}",
         ])
         if rc != 0:
             # Nothing to commit isn't an error — happens when the diff is a no-op.
@@ -1525,6 +1542,11 @@ async def apply_diff(body: dict):
                 return {"ok": True, "sha": "", "note": "no-op"}
             return {"ok": False, "error": f"git commit failed: {err.strip()[:200]}"}
         rc, sha, _err = await sandbox._run(["git", "rev-parse", "--short", "HEAD"])
+        # Nudge the code tab / file tree to refetch so the applied/reverted file
+        # content shows immediately (esp. a 撤销 landing on main).
+        await _broadcast_to_conv(
+            conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
+        )
         return {"ok": True, "sha": (sha.strip() if rc == 0 else "")}
     finally:
         if acquired:
@@ -1557,6 +1579,81 @@ async def create_message(body: dict):
         )
         await session.commit()
     return {"ok": True, "id": mid}
+
+
+_HUNK_HEADER_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _unified_diff_to_hunks(diff_text: str) -> list[dict]:
+    """Parse a unified-diff string into DiffPayload hunks.
+
+    Returns ``[{header, lines: [[kind, lineno, text], ...]}]``. File headers
+    (``diff --git`` / ``---`` / ``+++``) are skipped. Line numbers track the new
+    side for add/ctx and the old side for del, so the card's gutter reads right.
+    """
+    hunks: list[dict] = []
+    cur: dict | None = None
+    old_ln = new_ln = 0
+    for line in diff_text.splitlines():
+        if line.startswith("@@"):
+            cur = {"header": line, "lines": []}
+            hunks.append(cur)
+            m = _HUNK_HEADER_RE.search(line)
+            if m:
+                old_ln, new_ln = int(m.group(1)), int(m.group(2))
+            continue
+        if cur is None:
+            continue  # pre-hunk file headers
+        if line.startswith("+"):
+            cur["lines"].append(["add", new_ln, line[1:]])
+            new_ln += 1
+        elif line.startswith("-"):
+            cur["lines"].append(["del", old_ln, line[1:]])
+            old_ln += 1
+        elif line.startswith(" "):
+            cur["lines"].append(["ctx", new_ln, line[1:]])
+            old_ln += 1
+            new_ln += 1
+        # "\ No newline at end of file" and blanks: ignore
+    return hunks
+
+
+@router.post("/api/conversations/{conv_id}/diff-card")
+async def post_diff_card(conv_id: str, body: dict):
+    """Emit a proactive ``diff`` card into the conv after an agent commits an
+    edit (called by the MCP edit/write tools). Persists + broadcasts so it lands
+    in the editing agent's burst lane and survives refresh. UI-only — touches no
+    merge/branch state. Hunks are capped so a huge edit can't bloat the chat.
+    """
+    sender_id = body.get("sender_id") or "you"
+    file = body.get("file")
+    if not file:
+        return {"ok": False, "error": "file required"}
+    hunks = _unified_diff_to_hunks(body.get("diff") or "")
+    if not hunks:
+        return {"ok": False, "error": "empty diff"}
+    max_hunks = 40
+    truncated = len(hunks) > max_hunks
+    payload = {
+        "kind": "diff",
+        "file": file,
+        "additions": int(body.get("additions") or 0),
+        "deletions": int(body.get("deletions") or 0),
+        "hunks": hunks[:max_hunks],
+        "applied": True,
+        "commit_sha": body.get("commit_sha"),
+        "agent_id": body.get("agent_id") or sender_id,
+    }
+    async with SessionLocal() as session:
+        mid = await storage_repo.append_message(
+            session, conv_id=conv_id, sender_id=sender_id, payload=payload
+        )
+        await session.commit()
+    frame = encode_polynoia_card(
+        "diff", payload, mid, sender_id=sender_id, sender_label=sender_id
+    )
+    await _broadcast_to_conv(conv_id, frame)
+    return {"ok": True, "id": mid, "truncated": truncated}
 
 
 @router.post("/api/messages/{message_id}/pin")

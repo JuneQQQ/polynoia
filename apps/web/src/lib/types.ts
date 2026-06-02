@@ -56,6 +56,12 @@ export type DiffPayload = {
 	hunks: Hunk[];
 	applied?: boolean;
 	applied_at?: string | null;
+	/** Set when this card is an edit an agent ALREADY made + committed
+	 * (proactive card) rather than a not-yet-applied proposal. */
+	commit_sha?: string | null;
+	/** Editing agent (worker ULID) for a proactive card — used to target the
+	 * right worktree on 撤销 (the edit lives on this agent's branch). */
+	agent_id?: string | null;
 };
 
 export type WebPayload = {

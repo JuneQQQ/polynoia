@@ -109,6 +109,13 @@ class DiffPayload(BaseModel):
     hunks: list[Hunk]
     applied: bool = False
     applied_at: datetime | None = None
+    #: short sha of the commit this diff was recorded at — set when the card
+    #: represents an edit an agent ALREADY made + committed (proactive card),
+    #: vs a not-yet-applied proposal. Drives the "已改 / 撤销" UI vs "应用".
+    commit_sha: str | None = None
+    #: the editing agent (worker ULID) for a proactive card — folds the card
+    #: into that agent's burst lane AND targets the right worktree on 撤销.
+    agent_id: str | None = None
 
 
 class WebPayload(BaseModel):
