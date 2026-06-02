@@ -33,9 +33,10 @@ export function RightPreviewFile({
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	// "workbook" (.xlsx) is the only kind DocPreviewPane fetches bytes for itself
-	// — recognizable from the extension alone, so skip the text fetch (would 415).
-	const isBinary = docKind(path, "") === "workbook";
+	// Byte-based kinds — DocPreviewPane fetches their bytes itself (xlsx→Workbook,
+	// docx/pptx→Office). Recognizable by extension, so skip the text fetch (415).
+	const _k = docKind(path, "");
+	const isBinary = _k === "workbook" || _k === "word" || _k === "slides";
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is the reload trigger.
 	useEffect(() => {

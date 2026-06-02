@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { CrepeEditor } from "./CrepeEditor";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarpPreview } from "./MarpPreview";
+import { OfficePreview } from "./OfficePreview";
 import { WorkbookPreview } from "./WorkbookPreview";
 
 function isMarp(content: string): boolean {
@@ -22,11 +23,20 @@ function isMarp(content: string): boolean {
 	);
 }
 
-export type DocKind = "doc" | "marp" | "html" | "workbook" | "other";
+export type DocKind =
+	| "doc"
+	| "marp"
+	| "html"
+	| "workbook"
+	| "word"
+	| "slides"
+	| "other";
 
 export function docKind(path: string, content: string): DocKind {
 	if (/\.html?$/i.test(path)) return "html";
 	if (/\.xlsx$/i.test(path)) return "workbook";
+	if (/\.docx$/i.test(path)) return "word";
+	if (/\.pptx$/i.test(path)) return "slides";
 	if (/\.marp$/i.test(path)) return "marp";
 	if (/\.(md|markdown|mdx)$/i.test(path))
 		return isMarp(content) ? "marp" : "doc";
@@ -76,6 +86,13 @@ export function DocPreviewPane({
 			<Empty text="表格编辑需要在项目对话(workspace)里。" />
 		);
 	}
+	if (kind === "word" || kind === "slides") {
+		return workspaceId ? (
+			<OfficePreview workspaceId={workspaceId} path={path} kind={kind} />
+		) : (
+			<Empty text="Office 文档预览需要在项目对话(workspace)里。" />
+		);
+	}
 	if (kind === "marp") {
 		return <MarpPreview content={debounced} fileName={name} />;
 	}
@@ -84,7 +101,7 @@ export function DocPreviewPane({
 	}
 	return (
 		<Empty
-			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.xlsx(表格)、.html。`}
+			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.xlsx(表格)、.docx/.pptx(Office)、.html。`}
 		/>
 	);
 }
