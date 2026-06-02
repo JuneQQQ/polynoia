@@ -351,6 +351,11 @@ export type ChunkAction =
 	| { kind: "reasoning-delta"; partId: string; delta: string }
 	| { kind: "reasoning-end"; partId: string }
 	| {
+			kind: "stream-resume";
+			senderId: string;
+			parts: { id: string; kind: "text" | "reasoning"; text: string }[];
+	  }
+	| {
 			kind: "card";
 			cardKind: string;
 			payload: MessagePayload;
@@ -718,6 +723,48 @@ export const useStore = create<Store>((set, get) => ({
 			convs.set(convId, {
 				...cur,
 				messageOrder: [...cur.messageOrder, action.messageId],
+				msgById: nextById,
+				streamingTexts: newStreaming,
+				streamTick: cur.streamTick + 1,
+			});
+			set({ convs });
+			return;
+		}
+
+		if (action.kind === "stream-resume") {
+			// Refresh-safe resume: server handed us the accumulated content of an
+			// agent's IN-PROGRESS message. Rebuild each part's placeholder +
+			// streaming buffer by REPLACING (not appending) the text, so it's
+			// correct whether the store was empty (refresh) or held a partial
+			// (tab switch-back). Subsequent live deltas then append normally.
+			const senderId = action.senderId;
+			const nextById = new Map(cur.msgById);
+			const newStreaming = new Map(cur.streamingTexts);
+			const order = [...cur.messageOrder];
+			for (const part of action.parts) {
+				const partKind = part.kind === "reasoning" ? "reasoning" : "text";
+				const messageId =
+					partKind === "reasoning" ? `rsn-${part.id}` : `msg-${part.id}`;
+				const streamKey = `${senderId}::${part.id}`;
+				const msg: Message = {
+					id: messageId,
+					conv_id: convId,
+					sender_id: senderId,
+					payload: { kind: partKind, body: [{ t: "p", c: part.text }] },
+					created_at: new Date().toISOString(),
+				};
+				if (!nextById.has(messageId)) order.push(messageId);
+				nextById.set(messageId, msg);
+				newStreaming.set(streamKey, {
+					messageId,
+					senderId,
+					text: part.text,
+					kind: partKind,
+				});
+			}
+			convs.set(convId, {
+				...cur,
+				messageOrder: order,
 				msgById: nextById,
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,

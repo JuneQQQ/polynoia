@@ -114,6 +114,79 @@ _conv_inflight: dict[str, set[asyncio.Task]] = {}            # conv_id → {live
 # would orphan the agent_tasks dict the dispatcher then writes into.
 _conv_dispatchers: dict[str, set[asyncio.Task]] = {}         # conv_id → {dispatcher tasks}
 
+# Live-stream accumulator for refresh-safe resume. While an agent streams, we
+# keep its in-flight message_id + ordered text/reasoning parts here so a client
+# that connects/reconnects MID-STREAM can be handed the current accumulated
+# content (data-stream-resume) and then keep appending live deltas — instead of
+# only seeing deltas emitted after it attached (which left思考块 half-rendered on
+# refresh). Structure: conv_id → agent_id → {message_id, parts:[{id,kind,text}]}.
+# Cleared per-agent on terminal status (idle/aborted/error). Module-level so it
+# survives a disconnect, like the other conv execution state.
+_conv_live: dict[str, dict[str, dict]] = {}
+
+
+def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
+    """Cheap tap on the outbound chunk stream → accumulate text/reasoning parts
+    for stream-resume. Only parses the text/reasoning frames; everything else is
+    ignored (no JSON parse on the hot path for non-text frames)."""
+    if not (
+        frame.startswith('data: {"type":"text-')
+        or frame.startswith('data: {"type":"reasoning-')
+    ):
+        return
+    try:
+        obj = json.loads(frame[len("data: ") :])
+    except (ValueError, IndexError):
+        return
+    t = obj.get("type")
+    agents = _conv_live.setdefault(conv_id, {})
+    entry = agents.setdefault(agent_id, {"message_id": None, "parts": []})
+    if t in ("text-start", "reasoning-start"):
+        kind = "reasoning" if t == "reasoning-start" else "text"
+        pid = obj.get("id")
+        if pid and not any(p["id"] == pid for p in entry["parts"]):
+            entry["parts"].append({"id": pid, "kind": kind, "text": ""})
+    elif t in ("text-delta", "reasoning-delta"):
+        pid = obj.get("id")
+        for p in entry["parts"]:
+            if p["id"] == pid:
+                p["text"] += obj.get("delta", "")
+                break
+
+
+def _live_set_message_id(conv_id: str, agent_id: str, message_id: str) -> None:
+    entry = _conv_live.setdefault(conv_id, {}).setdefault(
+        agent_id, {"message_id": None, "parts": []}
+    )
+    entry["message_id"] = message_id
+
+
+def _live_clear_agent(conv_id: str, agent_id: str) -> None:
+    agents = _conv_live.get(conv_id)
+    if agents:
+        agents.pop(agent_id, None)
+        if not agents:
+            _conv_live.pop(conv_id, None)
+
+
+def _live_resume_frames(conv_id: str) -> list[str]:
+    """Build data-stream-resume frames for every agent currently streaming in
+    this conv — one per agent, carrying its message_id + accumulated parts."""
+    frames: list[str] = []
+    for agent_id, entry in (_conv_live.get(conv_id) or {}).items():
+        if not entry.get("parts"):
+            continue
+        payload = {
+            "type": "data-stream-resume",
+            "data": {
+                "agent_id": agent_id,
+                "message_id": entry.get("message_id"),
+                "parts": entry["parts"],
+            },
+        }
+        frames.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+    return frames
+
 
 def _maybe_prune_conv(conv_id: str) -> None:
     """Free a conv's module-level execution state once it is fully idle AND has
@@ -2609,6 +2682,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
     sender = asyncio.create_task(sender_loop())
 
+    # Refresh-safe stream resume: if an agent is streaming RIGHT NOW, hand this
+    # freshly-connected client the accumulated content so it can render the
+    # in-progress message immediately and then keep appending live deltas (the
+    #思考块 used to render half on refresh because only post-attach deltas arrived).
+    for _frame in _live_resume_frames(conv_id):
+        with suppress(Exception):
+            await send_queue.put(_frame)
+
     async def emit(chunk: str) -> None:
         # Broadcast to ALL current connections of this conv (not just this
         # socket's queue). So an agent task spawned by a now-closed connection
@@ -3109,8 +3190,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 await emit_agent_status(
                                     agent_id, "streaming", {"phase": ph[0], **ph[1]}
                                 )
+                            # Capture the turn's message_id (StartChunk) + accumulate
+                            # text/reasoning parts for refresh-safe stream-resume.
+                            if chunk.startswith('data: {"type":"start"'):
+                                with suppress(Exception):
+                                    _mid = json.loads(chunk[len("data: ") :]).get(
+                                        "message_id"
+                                    )
+                                    if _mid:
+                                        _live_set_message_id(conv_id, agent_id, _mid)
+                            _live_note_chunk(conv_id, agent_id, chunk)
                             await emit(chunk)
                         await emit_agent_status(agent_id, "idle")
+                        _live_clear_agent(conv_id, agent_id)
                         break  # success
                     except asyncio.CancelledError:
                         raise
@@ -3135,6 +3227,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 with suppress(Exception):
                     await pool.close_session(agent_id, conv_id)
                 await emit_agent_status(agent_id, "aborted")
+                _live_clear_agent(conv_id, agent_id)
                 # Persist whatever the agent produced before the user aborted +
                 # an "aborted" marker, so the interrupted turn 回显 on reload
                 # (neutral tone, not a red error — reason="aborted").
@@ -3164,6 +3257,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 raise
             except Exception as exc:
                 await emit_agent_status(agent_id, "error", {"message": str(exc)})
+                _live_clear_agent(conv_id, agent_id)
                 # Persist the partial work trace (files were really written) +
                 # the error itself BEFORE returning, so a mid-stream crash still
                 # 回显 on reload instead of looking like a silent stop.
