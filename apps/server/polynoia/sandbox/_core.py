@@ -202,6 +202,53 @@ class Sandbox:
         worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         branch = f"agent/{agent_id}/conv-{conv_id}"
 
+        # Guard against orphan worktree dirs: a previous scenario reset (rmtree
+        # with ignore_errors=True) or a half-failed worktree-add can leave the
+        # directory on disk WITHOUT registering it in `git worktree list`. Then
+        # `if not worktree_dir.exists()` skips creation, the agent gets a
+        # Sandbox handle that works for file I/O but is invisible to git — so
+        # commit_pending_worktrees / branch_ahead_of_main / merge_to_main all
+        # silently skip it and the agent's writes never reach main.
+        if worktree_dir.exists():
+            proc = await asyncio.create_subprocess_exec(
+                "git", "worktree", "list", "--porcelain",
+                cwd=str(ws_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_git_env(),
+            )
+            try:
+                wt_out, _ = await asyncio.wait_for(
+                    proc.communicate(), timeout=_GIT_TIMEOUT
+                )
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                raise RuntimeError(
+                    f"git worktree list timed out ({_GIT_TIMEOUT}s)"
+                ) from None
+            registered = (
+                f"worktree {worktree_dir}".encode() in wt_out
+                or f"worktree {worktree_dir.resolve()}".encode() in wt_out
+            )
+            if not registered:
+                # Orphan — sidestep it so the worktree-add path below can
+                # recreate cleanly. Files inside are usually leftovers from a
+                # half-failed reset, but COULD be real agent writes the user
+                # hasn't seen surface yet (the orphan-skip bug this guards
+                # against would have left them stranded). Renaming preserves
+                # them under `.recovered/<orig>-<ts>` instead of deleting,
+                # which is cheap and avoids destroying work on detection.
+                ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+                recovered_root = ws_root / "worktrees" / ".recovered"
+                recovered_root.mkdir(parents=True, exist_ok=True)
+                worktree_dir.rename(
+                    recovered_root / f"{worktree_dir.name}-{ts}"
+                )
+
         if not worktree_dir.exists():
             # Ensure parent exists for git
             worktree_dir.parent.mkdir(parents=True, exist_ok=True)

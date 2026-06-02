@@ -1,110 +1,151 @@
-# Polynoia(AgentHub)
+<p align="center">
+  <img src="assets/brand/logo.svg" alt="Polynoia" width="96" height="96" />
+</p>
 
-IM 形态的多 Agent 协作平台。详见 [`docs/superpowers/specs/2026-05-23-polynoia-design.md`](docs/superpowers/specs/2026-05-23-polynoia-design.md)。
+<h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
 
-## 快速开始
+<p align="center">
+  <strong>Chat with many AI coding agents like it's a team IM.</strong><br/>
+  One conversation, multiple agents — an orchestrator splits the work, they build in parallel,
+  and you preview / edit / merge the results inline.
+</p>
 
-### 前置(一次性)
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-| 工具 | 要求 | 装法 |
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-18-149ECA?logo=react&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white">
+  <img alt="uv" src="https://img.shields.io/badge/env-uv-DE5FE9">
+  <img alt="status" src="https://img.shields.io/badge/status-active%20dev-d97757">
+</p>
+
+---
+
+## What is Polynoia?
+
+Polynoia (internal codename **AgentHub**) is an **IM-style multi-agent collaboration
+platform**. You talk to AI coding agents — Claude Code, Codex, OpenCode — the same way
+you'd use Slack/Lark/WeChat: start a chat, send a message, get rich results back.
+
+- **1:1 chats** — pin a task to a single agent.
+- **Group chats** — @-mention several agents; a designated **Orchestrator** decomposes the
+  task, dispatches sub-tasks in parallel, then verifies + merges the outputs.
+- **Inline artifacts** — replies aren't just text: code diffs, web previews, docs, slides,
+  spreadsheets, commit history — all previewable and editable right in the chat.
+- **Unified adapter layer** — Claude Code / Codex / OpenCode behind one protocol; build your
+  own agents too (system prompt + tool set + capability tags), even **from a one-line
+  description**.
+
+> Each agent works in its own sandboxed git worktree; the Orchestrator merges branches into
+> the workspace `main` and surfaces conflicts as a guided resolve UI. Dependencies stay
+> **local to the working directory** (Python via `uv`, Node via local `node_modules`).
+
+## Highlights
+
+| Area | What you get |
+|---|---|
+| 💬 IM core | Conversation list (pin / archive / search), 1:1 + group, ⌘K search, reply / quote / copy / retry, **回到这个对话** code checkpoints |
+| 🧠 Orchestrator | Auto task decomposition, parallel dispatch, failure fallback, **multi-agent merge-conflict resolution** |
+| 🔌 Adapters | Claude Code + Codex + OpenCode via a unified protocol; per-adapter network proxy; credential auto-reuse |
+| 🤖 Custom agents | Role presets + granular tool toggles + derived capability tags; **conversational creation** ("a designer who can't run commands") |
+| 🖥️ Workspace IDE | File tree + CodeMirror editor, interactive PTY terminal, GitHub-style commit-history diff, resizable panels |
+| 📄 Artifact preview | `.md` (WYSIWYG), Marp slides, `.html`, editable `.xlsx`, `.docx` / `.pptx`, live web preview |
+| 🌊 Streaming | AI-SDK-6 chunk protocol over WebSocket; **refresh-safe** — reconnect mid-stream and the thinking/reply stream picks right back up |
+
+## Quick start
+
+### Prerequisites (one-time)
+
+| Tool | Requirement | Install |
 |---|---|---|
-| Python | 3.12+ | 系统包管理器 |
-| Node | 22+ | nvm / 系统包 |
-| uv | 最新 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| Claude Code CLI | 已登录 | `npm install -g @anthropic-ai/claude-code` + `claude` 登录 |
-| (可选)OpenCode CLI | — | `npm install -g opencode-ai` + `opencode auth login` |
-| pnpm | 9.x | **`make install` 会自动用 corepack 装,无需手动** |
+| Python | 3.12+ | system package manager |
+| Node | 22+ | nvm / system package |
+| uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Claude Code CLI | logged in | `npm i -g @anthropic-ai/claude-code` then `claude` login |
+| Codex CLI _(optional)_ | configured | `npm i -g @openai/codex`; backend via `~/.codex/config.toml` |
+| OpenCode CLI _(optional)_ | — | `npm i -g opencode-ai` then `opencode auth login` |
+| pnpm | 9.x | **`make install` pulls it via corepack automatically** |
 
-> 国内网络可设 npm 国内源:`npm config set registry https://registry.npmmirror.com`
-
-### 装依赖
-
-```bash
-make install
-```
-
-`make install` 会:
-1. `uv sync --extra dev`(后端 + pytest/ruff/mypy)
-2. 自动检测 pnpm,没有则用 `corepack` 拉一个,再 `pnpm install`
-3. 都不可用时退到 `npm install`(npm 7+ workspaces 也支持)
-
-### 跑起来
+### Install & run
 
 ```bash
-make dev
+make install      # uv sync (server) + pnpm install (web)
+make dev          # server :7780 + web :5173 (Ctrl-C stops both)
 ```
 
-打开 http://127.0.0.1:5173/。后端在 http://127.0.0.1:7780/。
+Open **http://127.0.0.1:5173/** (API at http://127.0.0.1:7780/).
 
-### 演示 seed(可选,推荐)
+### Seed a demo (recommended)
 
-第一次启动后 `make dev` 跑起来,**新开一个终端**跑:
+With `make dev` running, in a second terminal:
 
 ```bash
-python3 scripts/seed_demo.py
+python3 scripts/seed_demo.py          # 5 personas + 1 workspace + 1 group chat
 ```
 
-会自动创建:
-- 4 个联系人(虚拟开发组 林知夏 / 顾屿 / 沈昭 / 苏念,各自 persona)
-- workspace「Polynoia 工作室」
-- 群聊「v1.0 发布筹备」(merge_mode=auto, orchestrator=林知夏)
-
-刷新浏览器,点群聊就能直接 `@林知夏 xxx` 起一个完整 multi-agent 协作 turn。
-seed 详见 `scripts/seed_demo.py` 顶部 docstring。
-
-> 没有 seed 也能用 — 手动点「+ 新建联系人」走 UI 流程即可。
-
-### 调试
+Or load **scenario test cases** (office docs / web game / fullstack / data / conflict drill / manual review):
 
 ```bash
-make server     # 只起后端,看日志
-make web        # 只起前端
-make types      # P0 还没接,手动同步 packages/shared/
-
-curl http://127.0.0.1:7780/api/health
-curl http://127.0.0.1:7780/api/agents | jq
+python3 scripts/scenarios/seed_all.py # builds one workspace per scenario
 ```
 
-## 项目结构
+Each scenario script's header documents exactly what to send and what to expect.
+
+### Handy commands
+
+```bash
+make server   # backend only (logs)
+make web      # frontend only
+make test     # pytest + vitest
+make lint     # ruff + biome
+```
+
+## Architecture
 
 ```
 apps/
-├── web/          Vite + React + TypeScript (主前端)
-└── server/       Python FastAPI 后端
+├── web/          Vite + React + TypeScript (frontend shell)
+└── server/       Python 3.12 + FastAPI + asyncio (uv-managed)
 
 packages/
-├── shared/       跨语言 TS 类型(P0 手维护;P1 自动生成)
-├── core/         跨平台业务逻辑(无 DOM/RN,占位)
-├── ui-web/       React DOM 组件(P0 在 apps/web/src/components 内,待重组)
-└── design-tokens/ 跨平台 token(占位)
+├── shared/       cross-language TS types (Pydantic → TS)
+├── core/         cross-platform business logic (no DOM/RN)
+├── ui-web/       React DOM components
+└── design-tokens/ cross-platform tokens
 
 docs/
-├── research/     20 个库 + UI 设计稿调研(基线)
-├── superpowers/specs/   spec
-├── ADR/          决策记录
-└── architecture/ 图表
-
-research/         调研 clone 归档(1.3GB,只读)
-ui_design/        Claude Design handoff(只读)
+├── research/     deep-dive on 20 libraries + UI design (baseline)
+├── superpowers/specs/   full design spec
+├── ADR/          architecture decision records
+└── design/       conflict closed-loop charter + diagrams
 ```
 
-## 当前状态(2026-05-23)
+**Three protocol layers:** Adapter ↔ Server (PAP / NDJSON, Claude Agent SDK) · Server ↔ Client
+(AI SDK 6 `UIMessageChunk` over WS) · Client → Server (REST + WS commands). The frontend
+dispatches messages through a **MessagePart registry** — one message can carry text + diff +
+status parts together.
 
-✅ Phase 0:基础设施
-✅ Phase 1:单聊端到端(mock adapter)
-  - Sidebar 两层导航(L1 联系人 + 项目;L2 workspace 内对话)
-  - ChatPane(message stream + composer + 建议 chips)
-  - MessagePart 注册表:Text / Tasks / Diff / Web / Swatches / Copy 共 6 种
-  - WebSocket + AI SDK 6 UIMessageChunk 协议
-  - Mock Orchestrator demo 流
+See the [design spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) and the
+[context-system overview](docs/context-system.html) for the full model.
 
-⏳ Phase 2:接真实 Claude Code adapter + 群聊 + Orchestrator(真 LLM)
-⏳ Phase 3:富卡(metrics / sql / schema / logs / api / typing / ask-form)+ PreviewPane 右栏
-⏳ Phase 4:Marketplace + EnablePanel + 多 server
-⏳ Phase 5:Inbox / Mentions + 打磨
+## Tech stack
 
-详见 [spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) § 10。
+**Backend:** Python 3.12, uv, FastAPI, Pydantic v2, LiteLLM, SQLite (→ Postgres), Alembic.
+**Frontend:** React 18 + Vite, Radix + shadcn/ui, Tailwind 4, Motion, Lucide, CodeMirror 6,
+`@git-diff-view/react`, Vercel AI SDK 6, react-markdown.
 
-## 协作
+## Contributing & AI collaboration
 
-参见 [`CLAUDE.md`](CLAUDE.md)(项目级 AI 协作规范)和 [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)(20 个库调研综合)。
+This project is built **with** AI as a first-class collaborator. The conventions live in
+[`CLAUDE.md`](CLAUDE.md) (project-level AI collaboration spec), with decision records in
+[`docs/ADR/`](docs/ADR/) and research synthesis in
+[`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md). Commits follow
+[Conventional Commits](https://www.conventionalcommits.org/).
+
+---
+
+<p align="center"><sub>Polynoia — many minds, one conversation.</sub></p>
