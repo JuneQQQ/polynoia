@@ -168,7 +168,18 @@ class AdapterPool:
             # project's code into every DM. A DM now sees zero project files;
             # project access is opt-in via the approval flow (request_project_access).
             in_project = conv is not None and conv.workspace_id is not None
-            effective_role = agent.tool_role  # writable in its own sandbox either way
+            # Effective tool_role precedence:
+            #   1. designated conv orchestrator → forced "orchestrator" (ADR-017)
+            #   2. per-conv override (conv.member_tool_roles[agent_id]) — lets the
+            #      same contact have different tools in different conversations
+            #   3. the contact's own default tool_role
+            if is_conv_orch:
+                effective_role = "orchestrator"
+            else:
+                effective_role = (
+                    (conv.member_tool_roles.get(agent_id) if conv else None)
+                    or agent.tool_role
+                )
             system_prompt = agent.system_prompt
             read_only_ws_id: str | None = None
             if not in_project:

@@ -2255,6 +2255,32 @@ async def set_conv_member_roles(conv_id: str, body: dict):
         return conv.model_dump(mode="json") if conv else {"ok": True}
 
 
+@router.patch("/api/conversations/{conv_id}/member_tool_roles")
+async def set_conv_member_tool_roles(conv_id: str, body: dict):
+    """Replace per-member tool-capability OVERRIDES for a group conv.
+
+    Body: ``{ "tool_roles": { "<agent_id>": "coder"|"designer"|... } }``
+
+    Empty / invalid values clear that member's override (→ contact default).
+    The designated orchestrator is still forced to "orchestrator" at dispatch
+    (ADR-017) regardless of any override. No system event message — tool
+    capability is platform-enforced, not something agents need narrated.
+    """
+    raw = body.get("tool_roles") or {}
+    if not isinstance(raw, dict):
+        return {"error": "tool_roles must be an object"}, 400
+    tool_roles = {str(k): str(v) for k, v in raw.items()}
+    async with SessionLocal() as session:
+        ok, _before, _after = await storage_repo.set_member_tool_roles(
+            session, conv_id, tool_roles,
+        )
+        if not ok:
+            return {"error": "conversation not found"}, 404
+        await session.commit()
+        conv = await storage_repo.get_conversation(session, conv_id)
+        return conv.model_dump(mode="json") if conv else {"ok": True}
+
+
 @router.patch("/api/conversations/{conv_id}/members")
 async def set_conv_members(conv_id: str, body: dict):
     """Add/remove members of a group conv.

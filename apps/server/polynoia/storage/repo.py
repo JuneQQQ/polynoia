@@ -249,6 +249,7 @@ def _conv_from_row(r: ConversationRow) -> Conversation:
         group=r.group,
         orchestrator_profile=r.orchestrator_profile,  # type: ignore[arg-type]
         member_roles=r.member_roles or {},
+        member_tool_roles=r.member_tool_roles or {},
         orchestrator_member_id=r.orchestrator_member_id,
         pinned=r.pinned,
         archived=r.archived,
@@ -350,6 +351,7 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
         id=c.id, workspace_id=c.workspace_id, title=c.title, members=c.members,
         direct=c.direct, group=c.group, orchestrator_profile=c.orchestrator_profile,
         member_roles=c.member_roles or {},
+        member_tool_roles=c.member_tool_roles or {},
         orchestrator_member_id=c.orchestrator_member_id,
         pinned=c.pinned, archived=c.archived, unread=c.unread,
         last_message_at=c.last_message_at,
@@ -434,6 +436,41 @@ async def set_member_roles(
         if cleaned:
             after[k] = cleaned
     row.member_roles = after
+    await session.flush()
+    return True, before, after
+
+
+_VALID_OVERRIDE_ROLES = frozenset(
+    {"orchestrator", "coder", "designer", "writer", "generalist", "critic", "advisory"}
+)
+
+
+async def set_member_tool_roles(
+    session: AsyncSession,
+    conv_id: str,
+    tool_roles: dict[str, str],
+) -> tuple[bool, dict[str, str], dict[str, str]]:
+    """Replace a conv's per-member tool_role OVERRIDE map. Returns
+    ``(ok, before, after)``.
+
+    Empty / invalid values delete that member's override (→ contact default).
+    Keys not in ``conv.members`` are dropped. The designated orchestrator's
+    effective role is still forced to "orchestrator" at dispatch (ADR-017),
+    regardless of any override here.
+    """
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False, {}, {}
+    before = dict(row.member_tool_roles or {})
+    members = set(row.members or [])
+    after: dict[str, str] = {}
+    for k, v in tool_roles.items():
+        if k not in members:
+            continue
+        cleaned = (v or "").strip()
+        if cleaned in _VALID_OVERRIDE_ROLES:
+            after[k] = cleaned
+    row.member_tool_roles = after
     await session.flush()
     return True, before, after
 

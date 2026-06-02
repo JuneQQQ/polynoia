@@ -201,6 +201,9 @@ export type ConversationSummary = {
 	/** Per-member role assignment (agent_id → free-text role).
 	 * Empty/missing keys = no role assigned for that member. */
 	member_roles: Record<string, string>;
+	/** Per-member tool-capability OVERRIDE (agent_id → tool_role) for this conv.
+	 * Empty/missing = that member uses its contact default tool_role. */
+	member_tool_roles: Record<string, string>;
 	/** Designated orchestrator member (null = flat group). */
 	orchestrator_member_id: string | null;
 };
@@ -342,6 +345,13 @@ export const api = {
 		patchJSON<ConversationSummary>(
 			`/api/conversations/${convId}/member_roles`,
 			{ roles },
+		),
+	/** Replace per-member tool-capability OVERRIDES (agent_id → tool_role).
+	 * Empty/invalid value for a member clears it → contact default. */
+	setMemberToolRoles: (convId: string, toolRoles: Record<string, string>) =>
+		patchJSON<ConversationSummary>(
+			`/api/conversations/${convId}/member_tool_roles`,
+			{ tool_roles: toolRoles },
 		),
 	/** Replace a group conv's FULL member list (add/remove). The designated
 	 * orchestrator must stay in the list. Returns the updated conv summary. */

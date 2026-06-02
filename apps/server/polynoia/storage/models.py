@@ -144,6 +144,11 @@ class ConversationRow(Base):
     orchestrator_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Per-conv role assignment for each member (agent_id → free-text role).
     member_roles: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    # Per-conv tool-capability OVERRIDE (agent_id → tool_role). Empty = contact
+    # default. Lets the same contact have different tools per conversation.
+    member_tool_roles: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     # Which member is designated as orchestrator (None = flat group).
     orchestrator_member_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
