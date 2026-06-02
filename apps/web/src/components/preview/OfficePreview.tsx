@@ -147,23 +147,42 @@ function PptxView({
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const ref = useRef<HTMLDivElement | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-	// Width of the preview container minus side padding. Drives a 16:9 slide
-	// width passed to pptx-preview.init() — without this the lib hardcodes
-	// 960×540 which overflows narrow panes / leaves big gutters on wide ones.
-	const [width, setWidth] = useState<number | null>(null);
+	// Slide dimensions derived from the visible pane area. We pick the orientation
+	// that yields the BIGGER slide (more readable) and let the smaller dimension
+	// either fit OR overflow into a scroll. This matches PowerPoint's reading
+	// view: each slide gets as much screen real-estate as the viewport allows.
+	const [size, setSize] = useState<{ w: number; h: number } | null>(null);
 
-	// Track container width with ResizeObserver, debounced 250ms so each drag
+	// Track container size with ResizeObserver, debounced 250ms so each drag
 	// of the pane handle only re-renders once at the end (pptx-preview parses
 	// the whole deck on init — too expensive to do on every resize event).
 	useEffect(() => {
 		const el = containerRef.current;
 		if (!el) return;
-		const PAD = 24; // matches p-3 left + right padding budget
-		const MIN = 280; // below this the slides become unreadable; cap
+		const PAD = 24; // matches p-3 padding budget
+		const MIN = 280; // below this slides become unreadable; cap
 		let timer: number | null = null;
 		const measure = () => {
-			const w = Math.max(MIN, el.clientWidth - PAD);
-			setWidth(w);
+			const cw = Math.max(MIN, el.clientWidth - PAD);
+			const ch = Math.max(MIN, el.clientHeight - PAD);
+			// Fit each slide to fill the SHORTER pane dimension scaled by aspect:
+			//   - tall/narrow pane (ch/cw > 16/9): width-fit (no overflow either way)
+			//   - wide/short pane (cw/ch < 16/9): width-fit too (overflows height, vertical scroll)
+			//   - WIDE pane (cw/ch > 16/9): height-fit (slide takes full vertical, no horiz overflow)
+			// Net effect: in all panes, slides fill the visible area as much as
+			// possible while keeping 16:9, with scrollable overflow when needed.
+			let w: number;
+			let h: number;
+			if (cw / ch > 16 / 9) {
+				// pane is wider than 16:9 → height-bound
+				h = ch;
+				w = Math.round((h * 16) / 9);
+			} else {
+				// pane is taller than 16:9 → width-bound
+				w = cw;
+				h = Math.round((w * 9) / 16);
+			}
+			setSize({ w, h });
 		};
 		measure();
 		const ro = new ResizeObserver(() => {
@@ -178,14 +197,13 @@ function PptxView({
 	}, []);
 
 	useEffect(() => {
-		if (!width) return;
+		if (!size) return;
 		let alive = true;
 		setErr(null);
 		import("pptx-preview")
 			.then((mod) => {
 				if (!alive || !ref.current) return;
 				ref.current.innerHTML = "";
-				// pptx-preview API: init(container, opts).preview(bytes) → Promise
 				type PptxPreviewModule = {
 					init: (
 						container: HTMLElement,
@@ -194,11 +212,8 @@ function PptxView({
 				};
 				const m = mod as unknown as PptxPreviewModule;
 				const previewer = m.init(ref.current, {
-					width,
-					// 16:9 standard slide aspect (most modern .pptx). The lib
-					// uses this for layout sizing only — slide-internal
-					// positioning re-scales to whatever we set.
-					height: Math.round((width * 9) / 16),
+					width: size.w,
+					height: size.h,
 				});
 				return previewer.preview(buf);
 			})
@@ -208,15 +223,24 @@ function PptxView({
 		return () => {
 			alive = false;
 		};
-	}, [buf, width]);
+	}, [buf, size]);
 
 	if (err) return <Fallback name={name} reason={err} onDownload={onDownload} />;
 	return (
 		<div
 			ref={containerRef}
 			className="h-full overflow-auto bg-[var(--color-surface-2)] p-3"
+			// scroll-snap: each slide aligns to the top of the pane on scroll,
+			// matching "one slide per page" reading-view UX. Vertical scroll
+			// jumps slide-by-slide instead of pixel-by-pixel.
+			style={{
+				scrollSnapType: "y proximity",
+			}}
 		>
-			<div ref={ref} className="pptx-preview" />
+			<div
+				ref={ref}
+				className="pptx-preview [&>*]:scroll-snap-align-start [&>*]:mb-3 last:[&>*]:mb-0"
+			/>
 		</div>
 	);
 }

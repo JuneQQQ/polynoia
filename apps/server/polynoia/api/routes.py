@@ -190,6 +190,21 @@ def _live_resume_frames(conv_id: str) -> list[str]:
     return frames
 
 
+def _coerce_tool_state(payload: dict, terminal: str) -> dict:
+    """A tool-call card still at pending/running when the turn ENDS would render
+    『进行中』forever after a refresh — the persisted state is the last one seen,
+    and there's no live agent-status event on hydrate to flip it (the client-side
+    terminal sweep only runs live). Coerce to a terminal state at PERSIST time so
+    the reloaded trace is honest. ``terminal`` = 'completed' (clean turn end) or
+    'error' (aborted / failed turn)."""
+    if (
+        payload.get("kind") == "tool-call"
+        and payload.get("state") in ("pending", "running", "run")
+    ):
+        return {**payload, "state": terminal}
+    return payload
+
+
 async def _workspace_head_for_conv(conv_id: str) -> str | None:
     """Workspace main HEAD sha for a conv's checkpoint stamp, or None for DMs /
     no-workspace / not-yet-materialized. One git rev-parse on the (low-frequency)
@@ -3332,9 +3347,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 with suppress(Exception):
                     async with SessionLocal() as _pdb:
                         for _mid, _p in tool_parts.items():
+                            # Turn died (abort/error) → any still-running tool is
+                            # now error, never a frozen 进行中 on reload.
                             await storage_repo.upsert_message(
                                 _pdb, conv_id=conv_id, sender_id=agent_id,
-                                payload=_p, msg_id=_mid,
+                                payload=_coerce_tool_state(_p, "error"),
+                                msg_id=_mid,
                             )
                         if partial:
                             await storage_repo.append_message(
@@ -3593,9 +3611,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # Upsert by stable id: tool-call/diff were already written
                         # incrementally (durable mid-stream) → this updates them to
                         # final state; reasoning is inserted here. No dup rows.
+                        # Clean turn end → any tool left at running/pending is
+                        # completed (never a frozen 进行中 on reload).
                         await storage_repo.upsert_message(
                             _persist_db, conv_id=conv_id, sender_id=agent_id,
-                            payload=p, msg_id=_mid,
+                            payload=_coerce_tool_state(p, "completed"), msg_id=_mid,
                         )
                     if full_text:
                         await storage_repo.append_message(

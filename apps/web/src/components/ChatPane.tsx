@@ -214,11 +214,19 @@ export function ChatPane({ convId, members, title }: Props) {
 						const cardKind = chunk.type.slice("data-".length);
 						const anyChunk = chunk as any;
 						const payload = { kind: cardKind, ...anyChunk.data };
+						// Tool-call cards are persisted server-side under `tc-<part_id>`
+						// (durable mid-stream). Use the SAME id live so a conv-switch /
+						// reload during the turn updates ONE card, not a duplicate next
+						// to the hydrated one.
+						const cardId =
+							cardKind === "tool-call" && anyChunk.id
+								? `tc-${anyChunk.id}`
+								: (anyChunk.id ?? `card-${Date.now()}`);
 						applyChunkToConv(convId, {
 							kind: "card",
 							cardKind,
 							payload,
-							messageId: anyChunk.id ?? `card-${Date.now()}`,
+							messageId: cardId,
 							senderId: anyChunk.sender_id ?? null,
 						});
 					}
