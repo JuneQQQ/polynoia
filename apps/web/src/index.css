@@ -509,6 +509,27 @@ button:disabled,
   border-radius: inherit;
 }
 
+/* ── Burst lane "running" state: breathing glow + a slow heat-up whose bottom
+   edge deepens line → amber → red the longer the lane runs (a "still working,
+   may be stalling" cue). Two animations on DIFFERENT properties so they compose:
+   box-shadow breathes (~2.4s loop), border-bottom-color ramps once over ~40s. */
+@keyframes lane-breathe {
+  0%, 100% { box-shadow: inset 0 6px 14px -12px var(--color-accent); }
+  50%      { box-shadow: inset 0 8px 18px -8px var(--color-amber, #d9a441); }
+}
+@keyframes lane-heat {
+  0%   { border-bottom-color: var(--color-line); }
+  55%  { border-bottom-color: var(--color-amber, #d9a441); }
+  100% { border-bottom-color: var(--color-red); }
+}
+.lane-running {
+  animation: lane-breathe 2.4s ease-in-out infinite,
+             lane-heat 40s linear forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lane-running { animation: none; }
+}
+
 /* ── Badge entry — used when "已启用" badge first appears after probe.
    Slight scale-up from 0.85 + fade-in. Feels like the badge being "stamped on". */
 @keyframes badge-in {

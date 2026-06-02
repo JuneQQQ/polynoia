@@ -598,12 +598,11 @@ export function ChatPane({ convId, members, title }: Props) {
 			{/* Message stream — relative wrapper so the "running" status pill can
           float on top without displacing content. */}
 			<div className="flex-1 min-h-0 relative">
-				{/* Per-agent live status pill — floats over the top of the message
-            area when ≥1 agent is working. NOT in the normal flow so it doesn't
-            push the message list down when streaming starts / yank back up
-            when it ends. */}
+				{/* Per-agent live status pill — floats just ABOVE the composer (bottom
+            of the message area) when ≥1 agent is working. NOT in the normal flow
+            so it doesn't displace the message list when streaming starts/ends. */}
 				{activeAgents.length > 0 && (
-					<div className="anim-fade-up pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/90 backdrop-blur-sm border border-[var(--color-line)] shadow-sm text-[11.5px]">
+					<div className="anim-fade-up pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/95 backdrop-blur-sm border border-[var(--color-line)] shadow-md text-[11.5px] max-w-[calc(100%-3rem)]">
 						{activeAgents.map((a) => {
 							const agent = agents.find((x) => x.id === a.id);
 							const label =

@@ -180,7 +180,7 @@ function TasksBurstPartInner({
 						>
 							{/* Lane header — agent color as a top accent edge */}
 							<div
-								className={`relative flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50 ${isRun ? "is-checking" : ""}`}
+								className={`relative flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50 ${isRun ? "is-checking lane-running" : ""}`}
 							>
 								<span
 									aria-hidden
@@ -261,6 +261,11 @@ function TasksBurstPartInner({
 							    card (leaving sibling lanes with huge blank space). */}
 							<div
 								className={`flex flex-col py-2 min-h-[60px] max-h-[520px] overflow-y-auto ${isDone ? "anim-done-glow" : ""}`}
+								// scrollbar-gutter:stable reserves the vertical scrollbar's
+								// width always → the lane width never jumps when content
+								// streams in, so the parent grid's horizontal scrollbar
+								// stops flickering on/off (the「闪烁」bug).
+								style={{ scrollbarGutter: "stable" }}
 							>
 								{lane.length === 0 ? (
 									<div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
