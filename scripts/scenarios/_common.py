@@ -87,15 +87,20 @@ def ensure_contacts() -> dict[str, str]:
     return ids
 
 
-def ensure_workspace(name: str, desc: str, members: list[str], color: str) -> str:
+def ensure_workspace(
+    name: str, desc: str, members: list[str], color: str
+) -> tuple[str, bool]:
+    """Return (workspace_id, reused). reused=True when an existing workspace of
+    this name was found (caller resets its sandbox git so a re-run starts clean)."""
     existing = next(
         (w for w in sd.get("/api/workspaces") if w.get("name") == name), None
     )
     if existing:
-        return existing["id"]
-    return sd.post("/api/workspaces", {
+        return existing["id"], True
+    new_id = sd.post("/api/workspaces", {
         "name": name, "desc": desc, "members": members, "color": color,
     })["workspace"]["id"]
+    return new_id, False
 
 
 def ensure_group_conv(
@@ -144,10 +149,19 @@ def run(scenario: dict, *, wipe: bool = False) -> int:
     members = [ids[n] for n in scenario["members"]]
     roles = {ids[n]: r for n, r in scenario["roles"].items()}
     orch = ids[scenario["orch"]]
-    ws_id = ensure_workspace(
+    ws_id, reused = ensure_workspace(
         scenario["ws_name"], scenario["ws_desc"], members,
         scenario.get("color", "#7A5AE0"),
     )
+    # Reusing an existing workspace → reset its sandbox git so the re-run starts
+    # from an empty main (otherwise the agents re-create files main already has
+    # from the previous run → spurious add-add merge conflict). New workspaces
+    # start empty already. (Fresh wipe re-creates with a new id, also empty.)
+    if reused:
+        try:
+            sd.post(f"/api/workspaces/{ws_id}/reset-sandbox", {})
+        except Exception:
+            pass
     conv_id = ensure_group_conv(
         ws_id, scenario["conv_title"], members, roles, orch,
         scenario.get("merge_mode", "auto"),

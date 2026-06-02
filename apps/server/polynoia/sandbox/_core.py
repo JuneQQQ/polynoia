@@ -262,6 +262,23 @@ class Sandbox:
         return ws_root
 
     @classmethod
+    async def reset_workspace(cls, workspace_id: str) -> Path:
+        """TEST/dev: nuke a workspace's shared git (+ every agent worktree) and
+        re-create an EMPTY main. Used by scenario re-seed so a fresh run doesn't
+        add-add-conflict against files the previous run left in main. Guarded by
+        the workspace merge lock (won't run mid-merge). Caller should evict the
+        adapter pool first (cached sessions point at the about-to-be-deleted
+        worktrees). DESTRUCTIVE — wipes all committed work in this workspace.
+        """
+        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        async with workspace_merge_lock(workspace_id):
+            if ws_root.exists():
+                shutil.rmtree(ws_root, ignore_errors=True)
+            ws_root.mkdir(parents=True, exist_ok=True)
+            await cls._bootstrap_workspace(ws_root, workspace_id)
+        return ws_root
+
+    @classmethod
     def open_workspace_if_exists(cls, workspace_id: str) -> "Sandbox | None":
         """Read-only handle to a workspace's shared git (no worktree creation).
 

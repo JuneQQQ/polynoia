@@ -1828,6 +1828,24 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
 _REF_RE = re.compile(r"^\w[\w./-]{0,199}$")
 
 
+@router.post("/api/workspaces/{ws_id}/reset-sandbox")
+async def reset_workspace_sandbox(ws_id: str):
+    """TEST/dev: wipe a workspace's shared git (all committed work + every agent
+    worktree) back to an empty main. Used by scenario re-seed so a fresh run
+    doesn't add-add-conflict against files the previous run left in main. Evicts
+    pooled adapter sessions first (their cwd worktrees are about to be deleted).
+    DESTRUCTIVE — wipes committed work in this workspace only."""
+    async with SessionLocal() as session:
+        ws = await session.get(WorkspaceRow, ws_id)
+    if ws is None:
+        raise HTTPException(404, f"unknown workspace: {ws_id}")
+    # Cached sessions hold subprocesses whose cwd is a worktree we're deleting —
+    # evict so the next turn respawns against the fresh main.
+    await get_pool().close_all()
+    await Sandbox.reset_workspace(ws_id)
+    return {"ok": True, "workspace_id": ws_id}
+
+
 @router.get("/api/workspaces/{ws_id}/files")
 async def list_workspace_files(ws_id: str, path: str = ""):
     """List one directory level inside a workspace.
