@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
@@ -382,7 +383,7 @@ def _validate_tool_role(raw: object) -> str:
 _ALL_TOOL_NAMES = frozenset({
     "read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert",
     "dispatch", "discuss", "remember", "recall", "report", "ask_user",
-    "request_project_access",
+    "request_project_access", "present",
 })
 
 
@@ -1636,6 +1637,48 @@ async def create_pending_edit_endpoint(body: dict):
     return {"id": pid, "status": "pending"}
 
 
+@router.post("/api/present")
+async def present_file(body: dict):
+    """Agent proactively shows a produced file to the user as a clickable card.
+
+    Body ``{conv_id, agent_id, ws, path, caption?, name?}``. ``ws`` is the
+    workspace address the file lives in (a project workspace_id, or ``conv:<id>``
+    for a private DM). Appends a ``kind:file`` message + broadcasts ``data-file``
+    so it shows live; clicking 「打开预览」 opens it in the right rail (same as
+    clicking the file in the workspace tree). Persists so it survives a refresh."""
+    conv_id = (body.get("conv_id") or "").strip()
+    ws = (body.get("ws") or "").strip()
+    path = (body.get("path") or "").strip()
+    if not conv_id or not ws or not path:
+        return {"error": "conv_id + ws + path required"}, 400
+    agent_id = (body.get("agent_id") or "system").strip()
+    name = (body.get("name") or path.split("/")[-1]).strip()
+    src = (
+        f"/api/workspaces/{ws}/files/download?path="
+        + urllib.parse.quote(path, safe="")
+    )
+    payload = {
+        "kind": "file",
+        "src": src,
+        "name": name,
+        "caption": body.get("caption") or None,
+    }
+    mid = f"present-{uuid.uuid4().hex[:12]}"
+    async with SessionLocal() as session:
+        await storage_repo.append_message(
+            session, conv_id=conv_id, sender_id=agent_id,
+            payload=payload, msg_id=mid,
+        )
+        await session.commit()
+    frame = (
+        'data: {"type":"data-file","id":' + json.dumps(mid)
+        + ',"sender_id":' + json.dumps(agent_id)
+        + ',"data":' + json.dumps(payload, ensure_ascii=False) + "}\n\n"
+    )
+    await _broadcast_to_conv(conv_id, frame)
+    return {"ok": True, "message_id": mid}
+
+
 @router.get("/api/pending-edits/{pending_id}/wait")
 async def wait_for_pending_edit(pending_id: str, timeout: float = 60.0):
     """Long-poll until status flips from "pending" or timeout expires.
@@ -2014,14 +2057,21 @@ _SKIP_DIRS = {".git", ".polynoia", "worktrees", "node_modules", "__pycache__",
 
 
 def _workspace_root(ws_id: str) -> "Path":
-    """Resolve the workspace-shared sandbox root for ``ws_id``.
+    """Resolve the sandbox root for ``ws_id``.
 
-    Raises 404 if the workspace was never bootstrapped (no .git yet).
+    Two address forms:
+      - ``<ws_id>``        → project workspace: ``<sandbox>/workspaces/<ws_id>/``
+      - ``conv:<conv_id>`` → a contact's PRIVATE per-conv sandbox (ADR-020), i.e.
+        ``<sandbox>/<conv_id>/`` — what a DM's「工作区」browses (its own artifacts,
+        physically isolated from any project).
+
+    Raises 404 if not bootstrapped (no .git yet).
     """
-    from pathlib import Path
-
     from polynoia.settings import settings
-    root = (settings.sandbox_root / "workspaces" / ws_id).resolve()
+    if ws_id.startswith("conv:"):
+        root = (settings.sandbox_root / ws_id[len("conv:"):]).resolve()
+    else:
+        root = (settings.sandbox_root / "workspaces" / ws_id).resolve()
     if not (root / ".git").exists():
         raise HTTPException(404, f"workspace {ws_id} not bootstrapped")
     return root
@@ -2135,6 +2185,11 @@ async def list_workspace_files(ws_id: str, path: str = ""):
     Recursive listing is the client's responsibility — fetch per-dir on
     demand to avoid serializing thousands of files.
     """
+    # A contact's private workspace (conv:<conv_id>) is created lazily on the
+    # first agent turn. Bootstrap it on first BROWSE too, so opening a DM's 工作区
+    # before any artifact exists shows an empty tree, not "无工作区" / 404.
+    if ws_id.startswith("conv:"):
+        await Sandbox.create(ws_id[len("conv:"):])
     root = _workspace_root(ws_id)
     target = _resolve_safe_path(root, path)
     if not target.exists() or not target.is_dir():

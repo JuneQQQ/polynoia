@@ -413,32 +413,39 @@ export function ChatPane({ convId, members, title }: Props) {
 	useEffect(() => {
 		let alive = true;
 		setConvSummary(null);
-		// Clear any workspace carried over from the PREVIOUS conv immediately, BEFORE
-		// the async getConv resolves. A 1:1 contact opens a synthetic `dm-<id>` conv
-		// whose getConv 404s (no row) → the .catch below swallows it → without this
-		// reset the preview pane would keep the last project's workspaceId and show
-		// that project's files inside a private DM (the workspace-leak bug). Reset to
-		// null so a DM shows its own (private) space, never a project's.
+		// Every conv has a browsable workspace:
+		//   - project conv → its shared workspace (c.workspace_id)
+		//   - DM / no-project conv → the contact's PRIVATE per-conv sandbox,
+		//     addressed as `conv:<convId>` (ADR-020). This is what shows the agent's
+		//     artifacts for THIS person — never a project's files (the leak bug).
+		// Seed the private id immediately (BEFORE the async getConv), so a DM never
+		// flashes "无工作区" and never keeps the previous conv's workspace.
+		const privateWs = `conv:${convId}`;
 		useStore.setState((s) => ({
-			preview: { ...s.preview, data: { ...s.preview.data, workspaceId: null } },
+			preview: {
+				...s.preview,
+				data: { ...s.preview.data, workspaceId: privateWs },
+			},
 		}));
 		api
 			.getConv(convId)
 			.then((c) => {
 				if (!alive) return;
 				setConvSummary(c);
-				// Push workspaceId into the preview state so the code panel loads the
-				// right workspace's files WHEN the user opens it. The code area does NOT
-				// auto-open — it stays closed until the user clicks the panel button
-				// (header) and reflects whatever open/closed state they last chose.
+				// Project conv → its shared workspace; otherwise keep the private one.
 				useStore.setState((s) => ({
 					preview: {
 						...s.preview,
-						data: { ...s.preview.data, workspaceId: c.workspace_id ?? null },
+						data: {
+							...s.preview.data,
+							workspaceId: c.workspace_id ?? privateWs,
+						},
 					},
 				}));
 			})
-			.catch(() => {});
+			.catch(() => {
+				// getConv 404 = synthetic DM conv (no row yet) → private sandbox stands.
+			});
 		return () => {
 			alive = false;
 		};

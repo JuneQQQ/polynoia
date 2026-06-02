@@ -88,6 +88,7 @@ const INFRA_TOOLS = [
 	"report",
 	"ask_user",
 	"request_project_access",
+	"present",
 ];
 const TOOL_LABEL: Record<string, string> = {
 	read: "读文件",

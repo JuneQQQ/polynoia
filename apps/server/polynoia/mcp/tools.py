@@ -1286,13 +1286,63 @@ class _RequestProjectAccessTool(_ToolBase):
             return {"kind": "error", "error": f"transport failure: {e}"}
 
 
+class _PresentTool(_ToolBase):
+    name = "present"
+    description = (
+        "Show a file you produced to the user as a clickable card in the chat. "
+        "Use this to proactively surface a deliverable (a doc, image, page, data "
+        "file…) — the user clicks it to preview, same as opening it in the "
+        "workspace. Path is relative to your working dir. Prefer this over pasting "
+        "long file contents into your reply."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Workspace-relative file path"},
+            "caption": {"type": "string", "description": "Optional one-line note"},
+        },
+        "required": ["path"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        rel = (args.get("path") or "").strip().lstrip("/")
+        if not rel:
+            return {"error": "path required"}
+        # Verify the file actually exists in this agent's sandbox before showing.
+        target = ctx._resolve_read(rel)
+        if not target.exists() or target.is_dir():
+            return {"error": f"file not found: {rel}"}
+        # Workspace address: a project workspace_id when in one, else the contact's
+        # private per-conv sandbox (conv:<conv_id>) — matches the preview pane.
+        ws_id = os.environ.get("POLYNOIA_WORKSPACE_ID") or f"conv:{ctx.conv_id}"
+        base = os.environ.get("POLYNOIA_API_BASE")
+        if not base:
+            return {"presented": False, "note": "no API base (standalone run)"}
+        try:
+            async with httpx.AsyncClient(
+                base_url=base, timeout=30.0, trust_env=False
+            ) as client:
+                r = await client.post("/api/present", json={
+                    "conv_id": ctx.conv_id,
+                    "agent_id": ctx.agent_id,
+                    "ws": ws_id,
+                    "path": rel,
+                    "caption": args.get("caption"),
+                })
+                r.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPError) as e:
+            return {"presented": False, "error": str(e)}
+        ctx.append_audit("agent.present", {"path": rel, "ws": ws_id})
+        return {"presented": True, "path": rel}
+
+
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
         _ReadTool, _EditTool, _WriteTool, _ApplyPatchTool,
         _BashTool, _GrepTool, _GlobTool, _RevertTool, _CallAgentTool,
         _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
-        _AskUserTool, _RequestProjectAccessTool,
+        _AskUserTool, _RequestProjectAccessTool, _PresentTool,
     ]
 }
 
@@ -1318,13 +1368,13 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # `report` (closed-loop handoff verdict) is for WORKERS, not the orchestrator
 # (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
 ROLE_TOOLS: dict[str, set[str]] = {
-    "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user"},
-    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "critic":       {"read", "grep", "glob", "recall", "report"},
-    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access"},
+    "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user", "present"},
+    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "critic":       {"read", "grep", "glob", "recall", "report", "present"},
+    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access", "present"},
 }
 
 
