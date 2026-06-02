@@ -144,10 +144,41 @@ function PptxView({
 	name: string;
 	onDownload: () => void;
 }) {
+	const containerRef = useRef<HTMLDivElement | null>(null);
 	const ref = useRef<HTMLDivElement | null>(null);
 	const [err, setErr] = useState<string | null>(null);
+	// Width of the preview container minus side padding. Drives a 16:9 slide
+	// width passed to pptx-preview.init() — without this the lib hardcodes
+	// 960×540 which overflows narrow panes / leaves big gutters on wide ones.
+	const [width, setWidth] = useState<number | null>(null);
+
+	// Track container width with ResizeObserver, debounced 250ms so each drag
+	// of the pane handle only re-renders once at the end (pptx-preview parses
+	// the whole deck on init — too expensive to do on every resize event).
+	useEffect(() => {
+		const el = containerRef.current;
+		if (!el) return;
+		const PAD = 24; // matches p-3 left + right padding budget
+		const MIN = 280; // below this the slides become unreadable; cap
+		let timer: number | null = null;
+		const measure = () => {
+			const w = Math.max(MIN, el.clientWidth - PAD);
+			setWidth(w);
+		};
+		measure();
+		const ro = new ResizeObserver(() => {
+			if (timer !== null) window.clearTimeout(timer);
+			timer = window.setTimeout(measure, 250);
+		});
+		ro.observe(el);
+		return () => {
+			ro.disconnect();
+			if (timer !== null) window.clearTimeout(timer);
+		};
+	}, []);
 
 	useEffect(() => {
+		if (!width) return;
 		let alive = true;
 		setErr(null);
 		import("pptx-preview")
@@ -162,7 +193,13 @@ function PptxView({
 					) => { preview: (b: ArrayBuffer) => Promise<unknown> };
 				};
 				const m = mod as unknown as PptxPreviewModule;
-				const previewer = m.init(ref.current, { width: 960, height: 540 });
+				const previewer = m.init(ref.current, {
+					width,
+					// 16:9 standard slide aspect (most modern .pptx). The lib
+					// uses this for layout sizing only — slide-internal
+					// positioning re-scales to whatever we set.
+					height: Math.round((width * 9) / 16),
+				});
 				return previewer.preview(buf);
 			})
 			.catch((e) => {
@@ -171,12 +208,15 @@ function PptxView({
 		return () => {
 			alive = false;
 		};
-	}, [buf]);
+	}, [buf, width]);
 
 	if (err) return <Fallback name={name} reason={err} onDownload={onDownload} />;
 	return (
-		<div className="h-full overflow-auto bg-[var(--color-surface-2)] p-3">
-			<div ref={ref} className="pptx-preview mx-auto" />
+		<div
+			ref={containerRef}
+			className="h-full overflow-auto bg-[var(--color-surface-2)] p-3"
+		>
+			<div ref={ref} className="pptx-preview" />
 		</div>
 	);
 }

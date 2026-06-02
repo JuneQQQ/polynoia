@@ -268,9 +268,12 @@ def test_unknown_role_fails_closed_to_advisory():
 
 
 def test_designer_role_can_write():
-    """Sanity: a real persona role (designer) still carries write/edit — the
-    location gate, not the role, is what removes it in a homepage DM."""
+    """Sanity: a real persona role (designer) carries `write` — the sole
+    file-mutation tool. edit/apply_patch/revert are intentionally NOT exposed
+    (single audited write path); the location gate removes even write in a
+    homepage DM."""
     from polynoia.mcp.tools import tools_for_role
 
     names = set(tools_for_role("designer").keys())
-    assert {"write", "edit"} <= names
+    assert "write" in names
+    assert not ({"edit", "apply_patch", "revert"} & names)

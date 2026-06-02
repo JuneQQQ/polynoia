@@ -24,7 +24,7 @@ def build_group_members_layer(
     members = "、".join(f"@{n}" for n in roster)
     content = "\n".join([
         "# 你在本群的工作目录(铁律)",
-        "你有一个**只属于你自己的工作目录**,你所有的 read / write / edit / bash 都"
+        "你有一个**只属于你自己的工作目录**,你所有的 read / write / bash 都"
         "默认就在这里。**一律用相对路径**(如 `proposal.docx`、`src/app.py`)。",
         "- **绝不**用 `/home/...` 这类绝对路径,**绝不**往别人的目录或别的 "
         "`worktrees/ag-xxx/` 里写 —— 那会被拒绝,或更糟:写进别人的目录、永远合并不到成果里,"
@@ -34,8 +34,10 @@ def build_group_members_layer(
         "- **Python 一律用 `uv`**:`uv run xxx.py` / `uv pip install <包>`。**别用绝对解释器路径**"
         "(如 `/opt/miniconda3/bin/python`、`/usr/bin/pip`),即使协调者让你用——那会装到全局、"
         "且每次都要重装。依赖装在工作目录的 `.venv`(uv 默认就这样)。",
-        "- **生成大文件**(docx/pptx/xlsx/长脚本等)用 **bash 跑生成脚本**(`uv run gen.py`)或 heredoc 落盘,"
-        "**别把整段内容塞进 `write` 工具的入参**——大入参会流式生成很久甚至卡住、失败。",
+        "- **写文件一律用 `write` 工具**(给出完整文件内容),方便平台审计与逐文件审阅。"
+        "**不要用 bash 的 `echo`/`cat`/`>`/heredoc 去写文件** —— 那绕过审计、看不到 diff。",
+        "- 需要**程序化生成二进制产物**(docx/pptx/xlsx 等)时:先用 `write` 把生成脚本 `gen.py` "
+        "落盘,再用 `bash` 跑它(`uv run gen.py`)。即「脚本/源码用 write,运行用 bash」。",
         "",
         "# 群成员(你可以 @ 谁来讨论)",
         f"本群其他成员:{members}",

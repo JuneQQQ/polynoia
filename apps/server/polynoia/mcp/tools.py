@@ -1440,12 +1440,15 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # `report` (closed-loop handoff verdict) is for WORKERS, not the orchestrator
 # (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
 ROLE_TOOLS: dict[str, set[str]] = {
-    "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "edit", "write", "apply_patch", "remember", "recall", "ask_user", "present"},
-    "coder":        {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
-    "designer":     {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
-    "writer":       {"read", "edit", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    # `write` is the SOLE file-mutation tool (full-file content) → one audit
+    # entry point. edit / apply_patch / revert are deliberately NOT exposed, so
+    # every change is a complete, reviewable write (user's audit requirement).
+    "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "write", "remember", "recall", "ask_user", "present"},
+    "coder":        {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "designer":     {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "writer":       {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
     "critic":       {"read", "grep", "glob", "recall", "report", "present"},
-    "generalist":   {"read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
+    "generalist":   {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
     "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access", "present"},
 }
 
