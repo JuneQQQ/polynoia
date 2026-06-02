@@ -7,11 +7,12 @@
  * so its WebSocket, message history and scroll position survive tab switches.
  * Open file editors likewise stay mounted to preserve unsaved edits.
  */
-import { MessagesSquare, X } from "lucide-react";
+import { GitCommitHorizontal, MessagesSquare, X } from "lucide-react";
 import { useState } from "react";
-import { useStore } from "../store";
+import { COMMITS_TAB, useStore } from "../store";
 import { ChatPane } from "./ChatPane";
 import { CodeEditor } from "./preview/CodeEditor";
+import { CommitHistoryView } from "./preview/CommitHistoryView";
 
 const CHAT = "chat";
 
@@ -34,12 +35,14 @@ export function CenterTabs({
 	const closeFile = useStore((s) => s.closeCenterFile);
 	const reorderFile = useStore((s) => s.reorderCenterFile);
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
+	const commitsTabOpen = useStore((s) => s.commitsTabOpen);
+	const closeCommits = useStore((s) => s.closeCommitsTab);
 
 	// Native drag-to-reorder of file tabs (VS Code idiom).
 	const [dragPath, setDragPath] = useState<string | null>(null);
 	const [overPath, setOverPath] = useState<string | null>(null);
 
-	const hasTabs = fileTabs.length > 0;
+	const hasTabs = fileTabs.length > 0 || commitsTabOpen;
 
 	return (
 		<div className="flex-1 flex flex-col min-w-0">
@@ -59,6 +62,32 @@ export function CenterTabs({
 						<MessagesSquare size={12} />
 						聊天
 					</button>
+					{commitsTabOpen && (
+						<div
+							className={`group inline-flex items-center border-r border-[var(--color-line)] flex-shrink-0 ${
+								active === COMMITS_TAB
+									? "bg-[var(--color-surface)] text-[var(--color-fg)]"
+									: "text-[var(--color-fg-3)] hover:bg-[var(--color-surface)]/50"
+							}`}
+						>
+							<button
+								type="button"
+								onClick={() => setActive(COMMITS_TAB)}
+								className="inline-flex items-center gap-1.5 pl-3 pr-1 py-2 text-[11.5px]"
+							>
+								<GitCommitHorizontal size={12} />
+								提交历史
+							</button>
+							<button
+								type="button"
+								onClick={() => closeCommits()}
+								aria-label="关闭提交历史"
+								className="pr-2.5 py-2 opacity-0 group-hover:opacity-60 hover:opacity-100"
+							>
+								<X size={11} />
+							</button>
+						</div>
+					)}
 					{fileTabs.map((p) => (
 						<div
 							key={p}
@@ -72,9 +101,7 @@ export function CenterTabs({
 								e.preventDefault();
 								setOverPath(p);
 							}}
-							onDragLeave={() =>
-								setOverPath((cur) => (cur === p ? null : cur))
-							}
+							onDragLeave={() => setOverPath((cur) => (cur === p ? null : cur))}
 							onDrop={(e) => {
 								e.preventDefault();
 								if (dragPath) reorderFile(dragPath, p);
@@ -86,7 +113,9 @@ export function CenterTabs({
 								setOverPath(null);
 							}}
 							className={`group inline-flex items-center border-r border-[var(--color-line)] flex-shrink-0 ${
-								overPath === p ? "border-l-2 border-l-[var(--color-accent)]" : ""
+								overPath === p
+									? "border-l-2 border-l-[var(--color-accent)]"
+									: ""
 							} ${dragPath === p ? "opacity-40" : ""} ${
 								active === p
 									? "bg-[var(--color-surface)] text-[var(--color-fg)]"
@@ -121,6 +150,15 @@ export function CenterTabs({
 				>
 					<ChatPane convId={convId} members={members} title={title} />
 				</div>
+				{/* Commit-history browser — mounted while open (preserve selection). */}
+				{commitsTabOpen && (
+					<div
+						className="absolute inset-0"
+						style={active === COMMITS_TAB ? undefined : { display: "none" }}
+					>
+						{workspaceId && <CommitHistoryView workspaceId={workspaceId} />}
+					</div>
+				)}
 				{/* Open file editors — mounted while open (preserve unsaved edits),
             visibility toggled. */}
 				{fileTabs.map((p) => (

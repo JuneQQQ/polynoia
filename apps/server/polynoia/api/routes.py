@@ -1724,6 +1724,14 @@ def _resolve_safe_path(workspace_root: "Path", rel_path: str) -> "Path":
     return target
 
 
+# Commit SHAs and branch refs reach git as argv — constrain to safe charsets so
+# a crafted ``sha``/``ref`` can't smuggle a git option or arbitrary revspec.
+# ``ref`` must START with a word char (no leading dash) so it can never look like
+# an option; the helper additionally passes it after ``--end-of-options``.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
+_REF_RE = re.compile(r"^\w[\w./-]{0,199}$")
+
+
 @router.get("/api/workspaces/{ws_id}/files")
 async def list_workspace_files(ws_id: str, path: str = ""):
     """List one directory level inside a workspace.
@@ -1774,6 +1782,70 @@ async def read_workspace_file(ws_id: str, path: str):
     )
 
 
+@router.get("/api/workspaces/{ws_id}/files/blob")
+async def read_workspace_file_blob(ws_id: str, path: str):
+    """Return raw bytes for binary-capable previews such as .xlsx."""
+    if not path:
+        raise HTTPException(400, "path required")
+    root = _workspace_root(ws_id)
+    target = _resolve_safe_path(root, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "file not found")
+    raw = target.read_bytes()
+    if len(raw) > 25_000_000:
+        raise HTTPException(413, "file too large (> 25MB)")
+    return Response(
+        content=raw,
+        media_type="application/octet-stream",
+        headers={"X-Modified": str(target.stat().st_mtime)},
+    )
+
+
+@router.get("/api/workspaces/{ws_id}/commits")
+async def list_workspace_commits(
+    ws_id: str, ref: str = "main", limit: int = 80, skip: int = 0
+):
+    """List commits on ``ref`` (newest first) for the commit-history browser.
+
+    Read-only: takes NO ``workspace_merge_lock`` (pure object reads never touch
+    HEAD/index, so locking would needlessly serialize browsing behind merges).
+    """
+    _workspace_root(ws_id)  # 404 if the workspace was never bootstrapped
+    if not _REF_RE.match(ref):
+        raise HTTPException(400, "invalid ref")
+    sandbox = Sandbox.open_workspace_if_exists(ws_id)  # sync classmethod — no await
+    if sandbox is None:
+        return {"commits": []}
+    commits = await sandbox.workspace_commits(
+        ref=ref, limit=max(1, min(limit, 500)), skip=max(0, skip)
+    )
+    return {"commits": commits}
+
+
+@router.get("/api/workspaces/{ws_id}/commits/{sha}/diff")
+async def get_workspace_commit_diff(ws_id: str, sha: str, path: str | None = None):
+    """Structured per-file diff of a commit vs its parent. Read-only, no lock."""
+    root = _workspace_root(ws_id)
+    if not _SHA_RE.match(sha):
+        raise HTTPException(400, "invalid commit sha")
+    if path:
+        _resolve_safe_path(root, path)  # traversal guard (raises 400)
+    sandbox = Sandbox.open_workspace_if_exists(ws_id)
+    if sandbox is None:
+        raise HTTPException(404, "workspace not found")
+    return await sandbox.commit_diff(sha, path=path)
+
+
+@router.get("/api/workspaces/{ws_id}/working-diff")
+async def get_workspace_working_diff(ws_id: str):
+    """Uncommitted working-tree changes vs HEAD on the workspace root. No lock."""
+    _workspace_root(ws_id)
+    sandbox = Sandbox.open_workspace_if_exists(ws_id)
+    if sandbox is None:
+        return {"sha": "__working__", "parent": "HEAD", "files": [], "truncated": False}
+    return await sandbox.working_tree_diff()
+
+
 @router.put("/api/workspaces/{ws_id}/files/raw")
 async def write_workspace_file(ws_id: str, path: str, request: Request):
     """Overwrite a workspace file + auto-commit on workspace's main branch.
@@ -1797,6 +1869,34 @@ async def write_workspace_file(ws_id: str, path: str, request: Request):
     # Same lock + key (workspace_id) as resolve/abandon/burst-merge.
     from polynoia.sandbox import Sandbox, workspace_merge_lock
 
+    ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
+    async with workspace_merge_lock(ws_id):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content_bytes)
+        if ws_sandbox is None:
+            return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
+        rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
+        if rc != 0:
+            return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
+        rc, _o, _e = await ws_sandbox._workspace_run([
+            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
+        ])
+        sha = await ws_sandbox.main_head_sha() if rc == 0 else None
+    return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
+
+
+@router.put("/api/workspaces/{ws_id}/files/blob")
+async def write_workspace_file_blob(ws_id: str, path: str, request: Request):
+    """Overwrite a workspace file with raw bytes + auto-commit on main."""
+    if not path:
+        raise HTTPException(400, "path required")
+    root = _workspace_root(ws_id)
+    target = _resolve_safe_path(root, path)
+    content_bytes = await request.body()
+    if len(content_bytes) > 25_000_000:
+        raise HTTPException(413, "file too large (> 25MB)")
+
+    # Same lock/key as text writes: the workspace has one shared git HEAD/index.
     ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
     async with workspace_merge_lock(ws_id):
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -105,12 +105,12 @@ export function CodeEditor({
 	const cmViewRef = useRef<EditorView | null>(null);
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 
-	// Doc-type files (.md/.csv/.html/Marp) get a rendered-preview toggle —
-	// WYSIWYG doc (Crepe), Excel-style table, Marp slides, or HTML iframe, each
-	// with export (PDF/.docx/.xlsx/.pptx). Defaults to preview (you usually open
-	// a doc to read it). The CodeMirror source view is the "编辑" mode.
+	// Doc-type files (.md/.xlsx/.html/Marp) get a rendered-preview toggle —
+	// WYSIWYG doc (Crepe), embedded workbook, Marp slides, or HTML iframe. CSV is
+	// intentionally plain text; it should not masquerade as a native workbook.
 	const kind = docKind(path, content ?? "");
 	const isDoc = kind !== "other";
+	const isWorkbook = kind === "workbook";
 	const [preview, setPreview] = useState(() => docKind(path, "") !== "other");
 
 	const dirty = content !== null && content !== original;
@@ -119,6 +119,12 @@ export function CodeEditor({
 	// clobber unsaved edits — an agent wrote files to main).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is a reload trigger; content/original are read via functional setState, so listing them would re-fetch on every keystroke.
 	useEffect(() => {
+		if (docKind(path, "") === "workbook") {
+			setContent("");
+			setOriginal("");
+			setLoading(false);
+			return;
+		}
 		let alive = true;
 		setLoading(content === null);
 		api
@@ -186,7 +192,7 @@ export function CodeEditor({
 				<span className="text-[11px] mono text-[var(--color-fg-3)] truncate flex-1">
 					{path}
 				</span>
-				{isDoc && (
+				{isDoc && !isWorkbook && (
 					<button
 						type="button"
 						onClick={() => setPreview((v) => !v)}
@@ -233,26 +239,30 @@ export function CodeEditor({
 						</button>
 					</>
 				)}
-				<button
-					type="button"
-					onClick={save}
-					disabled={!dirty || saving}
-					className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
-					title="保存 (Ctrl+S)"
-				>
-					{saving ? (
-						<Loader2 size={11} className="animate-spin" />
-					) : (
-						<Save size={11} />
-					)}
-					{dirty ? "保存" : "已保存"}
-				</button>
+				{!isWorkbook && (
+					<button
+						type="button"
+						onClick={save}
+						disabled={!dirty || saving}
+						className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
+						title="保存 (Ctrl+S)"
+					>
+						{saving ? (
+							<Loader2 size={11} className="animate-spin" />
+						) : (
+							<Save size={11} />
+						)}
+						{dirty ? "保存" : "已保存"}
+					</button>
+				)}
 			</div>
 			<div className="flex-1 overflow-hidden">
 				{loading ? (
 					<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
 						<Loader2 size={14} className="animate-spin" />
 					</div>
+				) : isWorkbook ? (
+					<DocPreviewPane workspaceId={workspaceId} path={path} content="" />
 				) : isDoc && preview ? (
 					<DocPreviewPane
 						workspaceId={workspaceId}
@@ -280,8 +290,8 @@ export function CodeEditor({
 			<footer className="flex items-center gap-3 px-3 py-1 border-t border-[var(--color-line)] bg-[var(--color-surface-2)] text-[10.5px] text-[var(--color-fg-3)] mono">
 				<span className="truncate flex-1">{path}</span>
 				<span>{extOf(path).toUpperCase() || "TEXT"}</span>
-				<span>UTF-8</span>
-				<span>{(content ?? "").split("\n").length} 行</span>
+				<span>{isWorkbook ? "BINARY" : "UTF-8"}</span>
+				{!isWorkbook && <span>{(content ?? "").split("\n").length} 行</span>}
 			</footer>
 		</div>
 	);
