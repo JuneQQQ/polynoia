@@ -695,6 +695,294 @@ class Sandbox:
                 break
         return result
 
+    # ── commit-history browser (read-only; NO merge lock) ───────────
+    # These back the front-end "提交历史 + diff" view. They only read
+    # committed objects / the working tree — they never touch HEAD/index/
+    # checkout — so they deliberately do NOT take ``workspace_merge_lock``
+    # (locking would serialize history browsing behind merges). git 2.25.1
+    # safe: only ``log`` / ``diff`` / ``show`` / ``status`` / ``rev-parse``.
+
+    #: well-known empty-tree object — diff target for a root commit (no parent).
+    _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    @staticmethod
+    def _stat_int(raw: str) -> int:
+        """numstat column → int (``-`` means binary → 0)."""
+        if raw == "-":
+            return 0
+        try:
+            return int(raw)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _file_diff_entry(
+        path: str,
+        status: str,
+        adds: int,
+        dels: int,
+        *,
+        binary: bool = False,
+        too_large: bool = False,
+        old_text: str = "",
+        new_text: str = "",
+    ) -> dict:
+        """One per-file diff record for the commit/working-diff payloads.
+
+        Content is dropped for binary / oversized files (the front-end shows a
+        "binary / too large" placeholder + the +/- stat instead of a diff).
+        """
+        drop = binary or too_large
+        return {
+            "path": path,
+            "status": "binary" if binary else status,
+            "additions": adds,
+            "deletions": dels,
+            "binary": binary,
+            "too_large": too_large,
+            "old_text": "" if drop else old_text,
+            "new_text": "" if drop else new_text,
+        }
+
+    async def workspace_commits(
+        self, ref: str = "main", limit: int = 80, skip: int = 0
+    ) -> list[dict]:
+        """List commits on ``ref`` (newest first) with per-commit +/- stats.
+
+        Each: ``{sha, short, author, email, date, subject, files, additions,
+        deletions}``. Workspace mode only. ``ref`` is validated by the caller.
+        """
+        if self.workspace_root is None:
+            return []
+        # \x1e (record separator) prefixes each commit so the interleaved
+        # --numstat lines can be re-associated with their commit unambiguously.
+        sep = "\x1e"
+        fmt = f"{sep}%H%x09%h%x09%an%x09%ae%x09%aI%x09%s"
+        rc, out, _err = await self._workspace_run([
+            # core.quotepath=false → non-ASCII paths emitted verbatim (UTF-8),
+            # not C-quoted, so --numstat paths round-trip correctly.
+            "git", "-c", "core.quotepath=false", "log",
+            f"--skip={skip}", f"-{limit}",
+            "--numstat", f"--pretty=format:{fmt}",
+            # --end-of-options pins `ref` as a revision, never an option — a
+            # dash-prefixed ref (e.g. --all / --reflog) that slipped past the
+            # caller's _REF_RE can't smuggle a git option / disclose other
+            # agents' private branches.
+            "--end-of-options", ref,
+        ])
+        if rc != 0:
+            return []
+        commits: list[dict] = []
+        for chunk in out.split(sep):
+            chunk = chunk.strip("\n")
+            if not chunk:
+                continue
+            lines = chunk.split("\n")
+            head = lines[0].split("\t")
+            if len(head) != 6:
+                continue
+            adds = dels = files = 0
+            for stat_line in lines[1:]:
+                if not stat_line.strip():
+                    continue
+                cols = stat_line.split("\t")
+                if len(cols) < 3:
+                    continue
+                files += 1
+                adds += self._stat_int(cols[0])
+                dels += self._stat_int(cols[1])
+            commits.append({
+                "sha": head[0],
+                "short": head[1],
+                "author": head[2],
+                "email": head[3],
+                "date": head[4],
+                "subject": head[5],
+                "files": files,
+                "additions": adds,
+                "deletions": dels,
+            })
+        return commits
+
+    async def commit_diff(
+        self,
+        sha: str,
+        path: str | None = None,
+        max_files: int = 200,
+        max_blob: int = 512_000,
+    ) -> dict:
+        """Structured per-file diff of ``sha`` vs its first parent.
+
+        Root commit (no parent) diffs against the empty tree. Returns
+        ``{sha, parent, files: [_file_diff_entry...], truncated}``. The caller
+        must validate ``sha`` (hex) and ``path`` (traversal). Workspace mode.
+        """
+        empty = {"sha": sha, "parent": None, "files": [], "truncated": False}
+        if self.workspace_root is None:
+            return empty
+        rc_p, pout, _ = await self._workspace_run(
+            ["git", "rev-parse", "--verify", "-q", f"{sha}^"]
+        )
+        parent = pout.strip() if rc_p == 0 else self._EMPTY_TREE
+        # quotepath=false so non-ASCII paths come back verbatim (UTF-8); parent
+        # and sha are already-resolved hashes (caller-validated hex / empty-tree).
+        diff_cmd = ["git", "-c", "core.quotepath=false", "diff", "--numstat", parent, sha]
+        if path:
+            diff_cmd += ["--", path]
+        rc, out, _err = await self._workspace_run(diff_cmd)
+        if rc != 0:
+            return empty
+        rows = [ln for ln in out.splitlines() if ln.strip()]
+        truncated = len(rows) > max_files
+        files = await self._collect_diff_files(parent, sha, rows[:max_files], max_blob)
+        parent_short = None if parent == self._EMPTY_TREE else parent[:12]
+        return {"sha": sha, "parent": parent_short, "files": files, "truncated": truncated}
+
+    async def _blob_size(self, ref: str, fpath: str) -> int:
+        """Byte size of the blob at ``ref:fpath``, or -1 if it doesn't exist.
+
+        Reads only the object header (cheap), so an oversized blob is detected
+        and skipped BEFORE ``git show`` would pull its full contents into memory.
+        """
+        rc, out, _ = await self._workspace_run(
+            ["git", "cat-file", "-s", f"{ref}:{fpath}"]
+        )
+        if rc != 0:
+            return -1
+        try:
+            return int(out.strip())
+        except ValueError:
+            return -1
+
+    async def _collect_diff_files(
+        self, parent: str, sha: str, rows: list[str], max_blob: int
+    ) -> list[dict]:
+        """Turn ``git diff --numstat`` rows into per-file entries.
+
+        Blob sizes are checked first (``git cat-file -s``); content is fetched
+        (``git show``) only for text files under ``max_blob`` — an oversized
+        side is never materialized in memory.
+        """
+        files: list[dict] = []
+        for line in rows:
+            cols = line.split("\t")
+            if len(cols) < 3:
+                continue
+            a_raw, d_raw, fpath = cols[0], cols[1], "\t".join(cols[2:])
+            is_binary = a_raw == "-" and d_raw == "-"
+            adds, dels = self._stat_int(a_raw), self._stat_int(d_raw)
+            old_size = await self._blob_size(parent, fpath)
+            new_size = await self._blob_size(sha, fpath)
+            old_exists, new_exists = old_size >= 0, new_size >= 0
+            status = (
+                "added" if not old_exists
+                else "deleted" if not new_exists
+                else "modified"
+            )
+            too_large = old_size > max_blob or new_size > max_blob
+            if is_binary or too_large:
+                files.append(self._file_diff_entry(
+                    fpath, status, adds, dels, binary=is_binary, too_large=too_large
+                ))
+                continue
+            old_text = new_text = ""
+            if old_exists:
+                _rc, old_text, _ = await self._workspace_run(["git", "show", f"{parent}:{fpath}"])
+            if new_exists:
+                _rc, new_text, _ = await self._workspace_run(["git", "show", f"{sha}:{fpath}"])
+            files.append(self._file_diff_entry(
+                fpath, status, adds, dels, old_text=old_text, new_text=new_text
+            ))
+        return files
+
+    async def working_tree_diff(
+        self, max_files: int = 200, max_blob: int = 512_000
+    ) -> dict:
+        """Uncommitted changes on the workspace root vs ``HEAD`` (tracked diff +
+        untracked files). Usually empty since file writes auto-commit, but
+        surfaces native-tool / in-flight edits. Workspace mode.
+        """
+        result = {"sha": "__working__", "parent": "HEAD", "files": [], "truncated": False}
+        if self.workspace_root is None:
+            return result
+        # Snapshot HEAD once and read every committed side against that fixed sha,
+        # so a concurrent merge moving HEAD between the numstat and the per-file
+        # `git show` can't produce a torn (mismatched old/new) snapshot. We hold
+        # no merge lock here (read-only browsing); this keeps it self-consistent.
+        rc_h, head_out, _ = await self._workspace_run(
+            ["git", "rev-parse", "--verify", "-q", "HEAD"]
+        )
+        base = head_out.strip() if rc_h == 0 else "HEAD"
+        files: list[dict] = []
+        # Tracked modifications/deletions vs the snapshotted HEAD.
+        rc, out, _err = await self._workspace_run(
+            ["git", "-c", "core.quotepath=false", "diff", "--numstat", base]
+        )
+        tracked_rows = [ln for ln in out.splitlines() if ln.strip()] if rc == 0 else []
+        for line in tracked_rows[:max_files]:
+            cols = line.split("\t")
+            if len(cols) < 3:
+                continue
+            a_raw, d_raw, fpath = cols[0], cols[1], "\t".join(cols[2:])
+            is_binary = a_raw == "-" and d_raw == "-"
+            adds, dels = self._stat_int(a_raw), self._stat_int(d_raw)
+            old_size = await self._blob_size(base, fpath)
+            old_exists = old_size >= 0
+            wt = self.workspace_root / fpath
+            new_exists = wt.is_file()
+            new_size = wt.stat().st_size if new_exists else -1
+            status = (
+                "added" if not old_exists
+                else "deleted" if not new_exists
+                else "modified"
+            )
+            too_large = old_size > max_blob or new_size > max_blob
+            if is_binary or too_large:
+                files.append(self._file_diff_entry(
+                    fpath, status, adds, dels, binary=is_binary, too_large=too_large
+                ))
+                continue
+            old_text = ""
+            if old_exists:
+                _rc, old_text, _ = await self._workspace_run(["git", "show", f"{base}:{fpath}"])
+            new_text = ""
+            if new_exists:
+                try:
+                    new_text = wt.read_text("utf-8")
+                except (UnicodeDecodeError, OSError):
+                    files.append(self._file_diff_entry(fpath, status, adds, dels, binary=True))
+                    continue
+            files.append(self._file_diff_entry(
+                fpath, status, adds, dels, old_text=old_text, new_text=new_text
+            ))
+        # Untracked files (whole content is the addition).
+        rc_s, sout, _ = await self._workspace_run(
+            ["git", "-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"]
+        )
+        untracked = (
+            [ln[3:].strip() for ln in sout.splitlines() if ln.startswith("?? ")]
+            if rc_s == 0 else []
+        )
+        for fpath in untracked[: max(0, max_files - len(files))]:
+            wt = self.workspace_root / fpath
+            if not wt.is_file():
+                continue
+            if wt.stat().st_size > max_blob:
+                files.append(self._file_diff_entry(fpath, "added", 0, 0, too_large=True))
+                continue
+            try:
+                new_text = wt.read_text("utf-8")
+            except (UnicodeDecodeError, OSError):
+                files.append(self._file_diff_entry(fpath, "added", 0, 0, binary=True))
+                continue
+            adds = len(new_text.splitlines())
+            files.append(self._file_diff_entry(
+                fpath, "added", adds, 0, old_text="", new_text=new_text
+            ))
+        result["files"] = files
+        result["truncated"] = (len(tracked_rows) + len(untracked)) > max_files
+        return result
+
     async def merge_branch_into_main(
         self, branch: str, *, no_ff: bool = True
     ) -> tuple[bool, str, str]:

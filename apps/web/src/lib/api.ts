@@ -82,6 +82,37 @@ export type Conflict = {
 	decided_at?: string | null;
 };
 
+/** One row in the commit-history browser. */
+export type CommitMeta = {
+	sha: string;
+	short: string;
+	author: string;
+	email: string;
+	date: string;
+	subject: string;
+	files: number;
+	additions: number;
+	deletions: number;
+};
+/** One changed file inside a commit / working-tree diff. */
+export type CommitFileDiff = {
+	path: string;
+	status: "added" | "deleted" | "modified" | "binary";
+	additions: number;
+	deletions: number;
+	binary: boolean;
+	too_large: boolean;
+	old_text: string;
+	new_text: string;
+};
+export type CommitDiff = {
+	/** Commit sha, or "__working__" for the uncommitted working-tree diff. */
+	sha: string;
+	parent: string | null;
+	files: CommitFileDiff[];
+	truncated: boolean;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
 	const res = await fetch(BASE + path);
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -458,6 +489,38 @@ export const api = {
 			modified: number;
 		}>;
 	},
+	/** Read a workspace file as raw bytes. Used for binary previews such as .xlsx. */
+	workspaceFileBytesRead: async (wsId: string, path: string) => {
+		const r = await fetch(
+			`/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`,
+		);
+		if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+		return {
+			data: await r.arrayBuffer(),
+			modified: Number(r.headers.get("X-Modified") || "0"),
+		};
+	},
+	/** Write raw bytes + auto-commit on main. */
+	workspaceFileBytesWrite: async (
+		wsId: string,
+		path: string,
+		body: Blob | ArrayBuffer,
+	) => {
+		const r = await fetch(
+			`/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`,
+			{
+				method: "PUT",
+				headers: { "content-type": "application/octet-stream" },
+				body,
+			},
+		);
+		if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+		return r.json() as Promise<{
+			ok: boolean;
+			sha: string | null;
+			modified: number;
+		}>;
+	},
 	/** URL for embedding a workspace HTML file in an iframe. */
 	workspacePreviewUrl: (wsId: string, file: string) =>
 		`/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`,
@@ -473,6 +536,19 @@ export const api = {
 		if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
 		return r.arrayBuffer();
 	},
+	/** Commit history of a workspace branch (newest first). */
+	workspaceCommits: (wsId: string, ref = "main", limit = 80, skip = 0) =>
+		getJSON<{ commits: CommitMeta[] }>(
+			`/api/workspaces/${wsId}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}&skip=${skip}`,
+		),
+	/** Structured per-file diff of a commit vs its parent. */
+	workspaceCommitDiff: (wsId: string, sha: string, path?: string) =>
+		getJSON<CommitDiff>(
+			`/api/workspaces/${wsId}/commits/${sha}/diff${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+		),
+	/** Uncommitted working-tree changes vs HEAD on the workspace root. */
+	workspaceWorkingDiff: (wsId: string) =>
+		getJSON<CommitDiff>(`/api/workspaces/${wsId}/working-diff`),
 
 	/** Trigger a browser download of a single workspace file (any type/size). */
 	downloadWorkspaceFile: (wsId: string, path: string) => {

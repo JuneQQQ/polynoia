@@ -1,18 +1,18 @@
-/** RightPreviewFile — what the right rail renders when in "预览" mode.
+/** RightPreviewFile — what the right rail renders when previewing a file.
  *
- * Routes a workspace file path to the correct renderer:
- *   - .docx/.xlsx/.pptx → OfficePreview (binary, fetches bytes)
- *   - .md/.marp/.csv/.tsv/.html → DocPreviewPane (text, fetched as UTF-8)
- *   - anything else → fallback card with download button
+ * Thin wrapper over DocPreviewPane (which self-routes by docKind):
+ *   - .md / .marp / .html → fetch UTF-8 text here, pass as `content`
+ *   - .xlsx ("workbook")  → DocPreviewPane fetches its own bytes (WorkbookPreview),
+ *     so we skip the text fetch (it would 415) and pass content=""
+ *   - anything else       → DocPreviewPane shows an "no preview / download" card
  *
- * Both branches re-fetch when an agent rewrites the file (workspaceFilesTick).
+ * Re-fetches when an agent rewrites the file (workspaceFilesTick).
  */
 import { Download, FileX2, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
-import { DocPreviewPane, docKind, isBinaryDocKind } from "./DocPreviewPane";
-import { OfficePreview } from "./OfficePreview";
+import { DocPreviewPane, docKind } from "./DocPreviewPane";
 
 function basename(path: string): string {
 	return path.split("/").pop() ?? path;
@@ -25,19 +25,17 @@ export function RightPreviewFile({
 	workspaceId: string;
 	path: string;
 }) {
-	// Text-based previews need the file content as UTF-8 — fetch here once and
-	// pass to DocPreviewPane. Binary previews go straight to OfficePreview which
-	// owns its own ArrayBuffer fetch.
+	// Text previews (doc/marp/html) need UTF-8 content — fetch once here and pass
+	// to DocPreviewPane. The .xlsx "workbook" kind is byte-based: DocPreviewPane →
+	// WorkbookPreview fetches its own ArrayBuffer, so we skip the text fetch.
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 	const [content, setContent] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	// docKind needs content to disambiguate .md (marp or plain doc), but the
-	// binary trio is recognizable from the extension alone — short-circuit so
-	// we don't waste a text fetch that would 415 anyway.
-	const kindHint = docKind(path, "");
-	const isBinary = isBinaryDocKind(kindHint);
+	// "workbook" (.xlsx) is the only kind DocPreviewPane fetches bytes for itself
+	// — recognizable from the extension alone, so skip the text fetch (would 415).
+	const isBinary = docKind(path, "") === "workbook";
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is the reload trigger.
 	useEffect(() => {
@@ -63,17 +61,21 @@ export function RightPreviewFile({
 	}, [workspaceId, path, filesTick, isBinary]);
 
 	if (isBinary) {
-		return <OfficePreview workspaceId={workspaceId} path={path} kind={kindHint} />;
+		// DocPreviewPane → WorkbookPreview fetches the .xlsx bytes itself.
+		return <DocPreviewPane workspaceId={workspaceId} path={path} content="" />;
 	}
 	if (loading || content === null) {
-		if (error) return <ErrorCard path={path} workspaceId={workspaceId} reason={error} />;
+		if (error)
+			return <ErrorCard path={path} workspaceId={workspaceId} reason={error} />;
 		return (
 			<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)]">
 				<Loader2 size={14} className="animate-spin" />
 			</div>
 		);
 	}
-	return <DocPreviewPane workspaceId={workspaceId} path={path} content={content} />;
+	return (
+		<DocPreviewPane workspaceId={workspaceId} path={path} content={content} />
+	);
 }
 
 function ErrorCard({
@@ -107,9 +109,12 @@ export function RightPreviewEmpty() {
 	return (
 		<div className="h-full grid place-items-center bg-[var(--color-surface-2)] px-6">
 			<div className="text-center max-w-[280px]">
-				<div className="text-[13px] text-[var(--color-fg-2)] mb-1.5">暂无预览</div>
+				<div className="text-[13px] text-[var(--color-fg-2)] mb-1.5">
+					暂无预览
+				</div>
 				<div className="text-[11px] text-[var(--color-fg-3)] leading-relaxed">
-					Agent 生成文件后,会自动出现在聊天里;点击文件卡片的「打开预览」即可在此查看。
+					Agent
+					生成文件后,会自动出现在聊天里;点击文件卡片的「打开预览」即可在此查看。
 				</div>
 			</div>
 		</div>

@@ -1,18 +1,13 @@
-/** SheetPreview — render a CSV/TSV file as an Excel-style table + export.
+/** SheetPreview — render a CSV/TSV file as an Excel-style sheet + export.
  *
  * agent writes text (CSV); SheetJS parses it to a grid. Export to native .xlsx,
- * raw .csv, or PDF. (Binary .xlsx display would need a raw-bytes fetch — later;
- * the agent-writes-text path is CSV.)
+ * or PDF. (Binary .xlsx display would need a raw-bytes fetch — later; the
+ * agent-writes-text path is CSV.)
  */
 import { Download } from "lucide-react";
 import { useMemo } from "react";
 import * as XLSX from "xlsx";
-import {
-	csvToXlsxBlob,
-	downloadBlob,
-	downloadText,
-	printAsPdf,
-} from "./exportUtils";
+import { csvToXlsxBlob, downloadBlob, printAsPdf } from "./exportUtils";
 
 type Cell = string | number | boolean;
 
@@ -32,8 +27,7 @@ function parseRows(content: string): { rows: Cell[][]; error: string | null } {
 }
 
 const TABLE_CSS = `table{border-collapse:collapse;font:13px system-ui,sans-serif}
-th,td{border:1px solid #ccc;padding:4px 10px;text-align:left;vertical-align:top}
-thead th{background:#f3f3f3;font-weight:600}`;
+td{border:1px solid #ccc;padding:4px 10px;text-align:left;vertical-align:top}`;
 
 function esc(v: unknown): string {
 	return String(v ?? "").replace(
@@ -42,13 +36,21 @@ function esc(v: unknown): string {
 	);
 }
 
+function colLabel(index: number): string {
+	let n = index + 1;
+	let label = "";
+	while (n > 0) {
+		const rem = (n - 1) % 26;
+		label = String.fromCharCode(65 + rem) + label;
+		n = Math.floor((n - 1) / 26);
+	}
+	return label;
+}
+
 function rowsToHtml(rows: Cell[][]): string {
 	if (!rows.length) return "<p>(空表格)</p>";
-	const [head, ...body] = rows;
-	const ncol = head.length;
-	return `<table><thead><tr>${head
-		.map((c) => `<th>${esc(c)}</th>`)
-		.join("")}</tr></thead><tbody>${body
+	const ncol = Math.max(...rows.map((r) => r.length), 1);
+	return `<table><tbody>${rows
 		.map(
 			(r) =>
 				`<tr>${Array.from({ length: ncol }, (_, i) => `<td>${esc(r[i])}</td>`).join("")}</tr>`,
@@ -62,8 +64,8 @@ export function SheetPreview({
 }: { content: string; fileName: string }) {
 	const { rows, error } = useMemo(() => parseRows(content), [content]);
 	const base = fileName.replace(/\.[^.]+$/, "");
-	const head = rows[0] ?? [];
-	const body = rows.slice(1);
+	const colCount = Math.max(...rows.map((r) => r.length), 1);
+	const colIndexes = Array.from({ length: colCount }, (_, i) => i);
 
 	return (
 		<div className="h-full flex flex-col bg-white">
@@ -74,12 +76,6 @@ export function SheetPreview({
 				<ExportBtn
 					label=".xlsx"
 					onClick={() => downloadBlob(csvToXlsxBlob(content), `${base}.xlsx`)}
-				/>
-				<ExportBtn
-					label=".csv"
-					onClick={() =>
-						downloadText(content, `${base}.csv`, "text/csv;charset=utf-8")
-					}
 				/>
 				<ExportBtn
 					label="PDF"
@@ -96,37 +92,41 @@ export function SheetPreview({
 				) : rows.length === 0 ? (
 					<div className="text-[12px] text-[var(--color-fg-3)]">(空表格)</div>
 				) : (
-					<table className="border-collapse text-[12.5px]">
-						<thead>
-							<tr>
-								{head.map((c, i) => (
-									// biome-ignore lint/suspicious/noArrayIndexKey: columns are positional, never reordered
-									<th
-										key={i}
-										className="border border-[var(--color-line)] px-2 py-1 bg-[var(--color-surface-2)] text-left font-semibold whitespace-nowrap"
-									>
-										{String(c ?? "")}
-									</th>
-								))}
-							</tr>
-						</thead>
-						<tbody>
-							{body.map((r, ri) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: rows are positional table data, never reordered
-								<tr key={ri}>
-									{head.map((_, ci) => (
-										// biome-ignore lint/suspicious/noArrayIndexKey: cells are positional, never reordered
-										<td
-											key={ci}
-											className="border border-[var(--color-line)] px-2 py-1"
-										>
-											{String(r[ci] ?? "")}
-										</td>
-									))}
-								</tr>
+					<div className="inline-block min-w-full border border-[#d6dbe3] bg-white font-mono text-[12px] leading-normal text-[#111827] shadow-sm">
+						<div className="sticky top-0 z-20 flex bg-[#f3f6fb] text-[#4b5563]">
+							<div className="sticky left-0 z-30 h-7 w-12 flex-shrink-0 border-r border-b border-[#d6dbe3] bg-[#eef2f7]" />
+							{colIndexes.map((ci) => (
+								<div
+									key={ci}
+									className="h-7 w-28 flex-shrink-0 border-r border-b border-[#d6dbe3] px-2 py-1 text-center font-medium"
+								>
+									{colLabel(ci)}
+								</div>
 							))}
-						</tbody>
-					</table>
+						</div>
+						{rows.map((r, ri) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: rows are positional spreadsheet cells
+							<div key={ri} className="flex">
+								<div className="sticky left-0 z-10 h-8 w-12 flex-shrink-0 border-r border-b border-[#d6dbe3] bg-[#f3f6fb] px-2 py-1.5 text-right text-[#4b5563]">
+									{ri + 1}
+								</div>
+								{colIndexes.map((ci) => (
+									<div
+										key={ci}
+										className="h-8 w-28 flex-shrink-0 overflow-hidden text-ellipsis whitespace-nowrap border-r border-b border-[#e2e8f0] bg-white px-2 py-1.5"
+										title={String(r[ci] ?? "")}
+									>
+										{String(r[ci] ?? "")}
+									</div>
+								))}
+							</div>
+						))}
+						<div className="sticky bottom-0 z-20 flex h-8 items-center border-t border-[#d6dbe3] bg-[#f8fafc] px-3 text-[11px] text-[#4b5563]">
+							<div className="border-t-2 border-[#217346] bg-white px-4 py-1 font-ui text-[#217346]">
+								Sheet1
+							</div>
+						</div>
+					</div>
 				)}
 			</div>
 		</div>
