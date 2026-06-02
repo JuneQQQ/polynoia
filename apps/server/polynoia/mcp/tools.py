@@ -139,6 +139,9 @@ class ToolContext:
 
     conv_id: str
     agent_id: str
+    #: per-turn worker ULID (vs agent_id = static adapter id). Used to attribute
+    #: proactive diff cards to the right agent + lane. Falls back to agent_id.
+    turn_agent_id: str = ""
     _sandbox: Sandbox | None = field(default=None, init=False)
     _file_locks: dict[str, asyncio.Lock] = field(default_factory=dict, init=False)
 
@@ -455,6 +458,11 @@ class _EditTool(_ToolBase):
             message_suffix=f"edit {path.relative_to(ctx.sandbox.root)} (+{additions}/-{deletions})",
         )
 
+        await _emit_diff_card(
+            ctx, str(path.relative_to(ctx.sandbox.root)),
+            additions, deletions, "".join(diff_lines), sha,
+        )
+
         return {
             "kind": "edited",
             "path": str(path.relative_to(ctx.sandbox.root)),
@@ -491,11 +499,18 @@ class _WriteTool(_ToolBase):
         async with ctx.file_lock(args["path"]):
             path.parent.mkdir(parents=True, exist_ok=True)
             is_new = not path.exists()
+            try:
+                old = "" if is_new else path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                old = ""  # binary/unreadable → render as a full rewrite
             path.write_text(args["content"], encoding="utf-8")
             sha = await ctx.git_commit(
                 turn_id=args.get("turn_id"),
                 message_suffix=f"{'create' if is_new else 'overwrite'} {path.relative_to(ctx.sandbox.root)}",
             )
+            rel = str(path.relative_to(ctx.sandbox.root))
+            diff_text, adds, dels = _compute_unified_diff(old, args["content"], rel)
+            await _emit_diff_card(ctx, rel, adds, dels, diff_text, sha)
             return {
                 "kind": "wrote",
                 "path": str(path.relative_to(ctx.sandbox.root)),
@@ -870,6 +885,56 @@ async def _callback_server(
             return r.json()
     except (httpx.RequestError, httpx.HTTPError) as e:
         return {"kind": "error", "error": f"{label} transport failure: {e}"}
+
+
+def _compute_unified_diff(old: str, new: str, rel_path: str) -> tuple[str, int, int]:
+    """Unified-diff text + (additions, deletions) for ``old`` → ``new``."""
+    diff_lines = list(difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=f"a/{rel_path}",
+        tofile=f"b/{rel_path}",
+        n=3,
+    ))
+    additions = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
+    deletions = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
+    return "".join(diff_lines), additions, deletions
+
+
+async def _emit_diff_card(
+    ctx: ToolContext,
+    rel_path: str,
+    additions: int,
+    deletions: int,
+    diff_text: str,
+    commit_sha: str | None,
+) -> None:
+    """Best-effort: proactively push a ``diff`` card to the conv so the user SEES
+    the edit in chat immediately (lands in the editing agent's burst lane). Pure
+    UI — wrapped so a failed emit never breaks the edit (the tool result still
+    returns to the LLM).
+    """
+    if not diff_text.strip():
+        return
+    # Attribute to the WORKER ULID (turn_agent_id), not the static adapter id —
+    # so the card folds into this agent's burst lane and 撤销 targets its branch.
+    worker = ctx.turn_agent_id or ctx.agent_id
+    try:
+        await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/diff-card",
+            json={
+                "sender_id": worker,
+                "agent_id": worker,
+                "file": rel_path,
+                "additions": additions,
+                "deletions": deletions,
+                "diff": diff_text,
+                "commit_sha": commit_sha,
+            },
+            label="diff-card",
+        )
+    except Exception:
+        return
 
 
 class _DispatchTool(_ToolBase):

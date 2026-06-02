@@ -60,14 +60,21 @@ def _wrap_result(result: Any) -> list[TextContent] | CallToolResult:
     return [block]
 
 
-async def run_server(*, conv_id: str, agent_id: str) -> None:
+async def run_server(
+    *, conv_id: str, agent_id: str, turn_agent_id: str | None = None
+) -> None:
     """Run the stdio MCP server bound to (conv_id, agent_id).
 
     Role filtering: ``POLYNOIA_AGENT_ROLE`` env determines which tools
     are listed AND callable. Unknown role → generalist subset.
+
+    ``turn_agent_id`` is the per-turn worker ULID (vs ``agent_id`` which is the
+    static adapter id); it attributes proactive diff cards to the right agent.
     """
     app: Server = Server("polynoia")
-    ctx = ToolContext(conv_id=conv_id, agent_id=agent_id)
+    ctx = ToolContext(
+        conv_id=conv_id, agent_id=agent_id, turn_agent_id=turn_agent_id or agent_id
+    )
     await ctx.ensure_sandbox()
 
     role = os.environ.get("POLYNOIA_AGENT_ROLE", "generalist").strip() or "generalist"

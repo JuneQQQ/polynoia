@@ -754,6 +754,11 @@ class Sandbox:
                 files += 1
                 adds += self._stat_int(cols[0])
                 dels += self._stat_int(cols[1])
+            # Skip empty commits — `--no-ff` merge wrappers report 0 files under
+            # --numstat. They're plumbing (no content the user changed) and are
+            # the main source of the "duplicate / same-content" list clutter.
+            if files == 0:
+                continue
             commits.append({
                 "sha": head[0],
                 "short": head[1],

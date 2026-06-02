@@ -413,6 +413,10 @@ export const api = {
 		file: string;
 		hunks: Array<{ header: string; lines: Array<[string, number, string]> }>;
 		message_id?: string;
+		/** true → `git apply --reverse`: undo an already-committed edit. */
+		reverse?: boolean;
+		/** Editing agent (worker ULID) — revert targets THAT agent's worktree. */
+		agent_id?: string;
 	}) =>
 		postJSON<{ ok: boolean; sha?: string; error?: string; note?: string }>(
 			"/api/diff/apply",

@@ -186,6 +186,7 @@ class OpenCodeAdapter:
             system_prompt=system_prompt,
             env=env or {},
             agent_id=self.meta.agent_id,
+            turn_agent_id=agent_id,
             tool_role=tool_role,
         )
 
@@ -459,9 +460,11 @@ class OpenCodeSession:
         env: dict[str, str],
         agent_id: str,
         tool_role: str = "generalist",
+        turn_agent_id: str = "",
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
         self.agent_id = agent_id
+        self.turn_agent_id = turn_agent_id  # per-turn worker ULID (vs static adapter id)
         self._sandbox = sandbox
         self._conv_id = conv_id
         self._cwd = cwd
@@ -548,6 +551,7 @@ class OpenCodeSession:
             "env": [
                 {"name": "POLYNOIA_CONV_ID", "value": self._conv_id},
                 {"name": "POLYNOIA_AGENT_ID", "value": self.agent_id},
+                {"name": "POLYNOIA_TURN_AGENT_ID", "value": self.turn_agent_id or self.agent_id},
                 {"name": "POLYNOIA_AGENT_ROLE", "value": self._tool_role},
                 # Lets MCP tools call back into the server (pending-edit gate).
                 {"name": "POLYNOIA_API_BASE", "value": os.environ.get(

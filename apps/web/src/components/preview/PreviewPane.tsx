@@ -10,7 +10,7 @@
  * ConflictResolvePane (both block the tree until resolved).
  * Resize handle on the left edge (360–900px), persisted to localStorage.
  */
-import { Code2, GitMerge, GitPullRequestArrow, Play, X } from "lucide-react";
+import { Code2, GitMerge, GitPullRequestArrow, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../../store";
 import { ConflictResolvePane } from "./ConflictResolvePane";
@@ -28,16 +28,14 @@ export function PreviewPane() {
 	const openCenterFile = useStore((s) => s.openCenterFile);
 	const activeCenterTab = useStore((s) => s.activeCenterTab);
 	const terminalOpen = useStore((s) => s.terminalOpen);
-	// Header code/preview tab toggle. (The declaration was missing — the buttons
-	// + the `mode === "preview"` header branch referenced an undefined `mode`,
-	// which crashed the whole PreviewPane on open.) Default to the code view.
-	const [mode, setMode] = useState<"code" | "preview">("code");
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
 	const reviewing = useStore(
 		(s) =>
 			!!activeConvId &&
-			(s.pendingEditsByConv.get(activeConvId) ?? []).some((e) => e.status === "pending"),
+			(s.pendingEditsByConv.get(activeConvId) ?? []).some(
+				(e) => e.status === "pending",
+			),
 	);
 	// A live multi-agent merge conflict blocks everything else — the user must
 	// resolve it before reviewing/editing (ConflictResolvePane).
@@ -134,13 +132,20 @@ export function PreviewPane() {
 			{/* Header — workspace title + close */}
 			<header className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
 				{hasConflict ? (
-					<GitMerge size={14} className="text-[var(--color-red)] flex-shrink-0" />
+					<GitMerge
+						size={14}
+						className="text-[var(--color-red)] flex-shrink-0"
+					/>
 				) : reviewing ? (
-					<GitPullRequestArrow size={14} className="text-[var(--color-green)] flex-shrink-0" />
-				) : mode === "preview" ? (
-					<Play size={14} className="flex-shrink-0" style={{ color: "var(--color-green)" }} />
+					<GitPullRequestArrow
+						size={14}
+						className="text-[var(--color-green)] flex-shrink-0"
+					/>
 				) : (
-					<Code2 size={14} className="text-[var(--color-accent)] flex-shrink-0" />
+					<Code2
+						size={14}
+						className="text-[var(--color-accent)] flex-shrink-0"
+					/>
 				)}
 				<div className="flex-1 min-w-0">
 					<div className="text-[12px] font-semibold truncate text-[var(--color-fg)]">
@@ -156,24 +161,6 @@ export function PreviewPane() {
 						main · 工作目录
 					</div>
 				</div>
-				{!hasConflict && !reviewing && (
-					<div className="flex items-center rounded-md border border-[var(--color-line)] overflow-hidden text-[10.5px] flex-shrink-0">
-						<button
-							type="button"
-							onClick={() => setMode("code")}
-							className={`px-2 py-0.5 transition-colors ${mode === "code" ? "bg-[var(--color-accent)] text-white" : "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"}`}
-						>
-							代码
-						</button>
-						<button
-							type="button"
-							onClick={() => setMode("preview")}
-							className={`px-2 py-0.5 transition-colors ${mode === "preview" ? "bg-[var(--color-green)] text-white" : "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"}`}
-						>
-							预览
-						</button>
-					</div>
-				)}
 				<button
 					type="button"
 					onClick={closePreview}
@@ -187,7 +174,10 @@ export function PreviewPane() {
 
 			{/* Body — top: conflict resolve (blocks) → diff review → file tree.
 			    Bottom (when open): the interactive terminal, draggable divider. */}
-			<div ref={bodyRef} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+			<div
+				ref={bodyRef}
+				className="flex-1 min-h-0 flex flex-col overflow-hidden"
+			>
 				<div className="flex-1 min-h-0 overflow-hidden">
 					{hasConflict && activeConvId ? (
 						<ConflictResolvePane convId={activeConvId} />

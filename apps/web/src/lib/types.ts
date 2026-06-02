@@ -56,6 +56,12 @@ export type DiffPayload = {
 	hunks: Hunk[];
 	applied?: boolean;
 	applied_at?: string | null;
+	/** Set when this card is an edit an agent ALREADY made + committed
+	 * (proactive card) rather than a not-yet-applied proposal. */
+	commit_sha?: string | null;
+	/** Editing agent (worker ULID) for a proactive card — used to target the
+	 * right worktree on 撤销 (the edit lives on this agent's branch). */
+	agent_id?: string | null;
 };
 
 export type WebPayload = {
@@ -215,35 +221,40 @@ export type ErrorPayload = {
 	retryable?: boolean;
 };
 
-export type ConflictType = "content" | "add_add" | "modify_delete" | "rename" | "binary";
+export type ConflictType =
+	| "content"
+	| "add_add"
+	| "modify_delete"
+	| "rename"
+	| "binary";
 export type ConflictFile = {
-  path: string;
-  ctype: ConflictType;
-  markers?: string | null;
-  ours?: string | null;
-  theirs?: string | null;
-  base?: string | null;
-  is_binary?: boolean;
-  resolution?: string | null;
-  side?: "ours" | "theirs" | "delete" | null;
-  state?: "conflict" | "resolved";
+	path: string;
+	ctype: ConflictType;
+	markers?: string | null;
+	ours?: string | null;
+	theirs?: string | null;
+	base?: string | null;
+	is_binary?: boolean;
+	resolution?: string | null;
+	side?: "ours" | "theirs" | "delete" | null;
+	state?: "conflict" | "resolved";
 };
 export type ConflictPayload = {
-  kind: "conflict";
-  conflict_id: ULID;
-  conv_id: ULID;
-  branch: string;
-  agent_id: string;
-  /** agent(s) already merged into main on the conflicting side (the "main"
-   * side of the conflict). Lets the UI name it instead of abstract "main". */
-  base_agents?: string[];
-  into: string;
-  status: "open" | "resolving" | "resolved" | "abandoned";
-  files: ConflictFile[];
-  resolved_by?: string | null;
-  resolved_sha?: string | null;
-  created_at?: string;
-  decided_at?: string | null;
+	kind: "conflict";
+	conflict_id: ULID;
+	conv_id: ULID;
+	branch: string;
+	agent_id: string;
+	/** agent(s) already merged into main on the conflicting side (the "main"
+	 * side of the conflict). Lets the UI name it instead of abstract "main". */
+	base_agents?: string[];
+	into: string;
+	status: "open" | "resolving" | "resolved" | "abandoned";
+	files: ConflictFile[];
+	resolved_by?: string | null;
+	resolved_sha?: string | null;
+	created_at?: string;
+	decided_at?: string | null;
 };
 
 export type MessagePayload =

@@ -18,7 +18,12 @@ def main() -> None:
         )
         sys.exit(2)
     agent_id = os.environ.get("POLYNOIA_AGENT_ID", "unknown")
-    asyncio.run(run_server(conv_id=conv_id, agent_id=agent_id))
+    # The per-turn worker ULID (set by the spawning adapter). Falls back to the
+    # static adapter id so proactive diff cards still emit if it's unset.
+    turn_agent_id = os.environ.get("POLYNOIA_TURN_AGENT_ID") or agent_id
+    asyncio.run(
+        run_server(conv_id=conv_id, agent_id=agent_id, turn_agent_id=turn_agent_id)
+    )
 
 
 if __name__ == "__main__":

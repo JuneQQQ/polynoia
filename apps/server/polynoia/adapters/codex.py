@@ -108,7 +108,7 @@ _MCP_BLOCK_MARKER = "[mcp_servers.polynoia]"
 def _polynoia_mcp_block(
     *, conv_id: str, agent_id: str, pythonpath: str, sandbox_root: str,
     tool_role: str = "generalist", api_base: str = "",
-    worktree_root: str = "", workspace_root: str = "",
+    worktree_root: str = "", workspace_root: str = "", turn_agent_id: str = "",
 ) -> str:
     """Build the ``[mcp_servers.polynoia]`` TOML block.
 
@@ -131,6 +131,7 @@ args = ["-m", "polynoia.mcp"]
 [mcp_servers.polynoia.env]
 POLYNOIA_CONV_ID = "{conv_id}"
 POLYNOIA_AGENT_ID = "{agent_id}"
+POLYNOIA_TURN_AGENT_ID = "{turn_agent_id}"
 POLYNOIA_AGENT_ROLE = "{tool_role}"
 POLYNOIA_API_BASE = "{api_base}"
 POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
@@ -251,6 +252,7 @@ class CodexAdapter:
         mcp_block = _polynoia_mcp_block(
             conv_id=conv_id,
             agent_id=self.meta.agent_id,
+            turn_agent_id=(agent_id or self.meta.agent_id),
             pythonpath=server_pkg_root,
             sandbox_root=str(sandbox.root.parent),
             tool_role=tool_role,

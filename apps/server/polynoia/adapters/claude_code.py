@@ -164,6 +164,9 @@ class ClaudeCodeAdapter:
             env={
                 "POLYNOIA_CONV_ID": conv_id,
                 "POLYNOIA_AGENT_ID": self.meta.agent_id,
+                # The per-turn worker ULID (contact), not the static adapter id —
+                # so proactive diff cards attribute to this agent + its lane.
+                "POLYNOIA_TURN_AGENT_ID": agent_id or self.meta.agent_id,
                 "POLYNOIA_AGENT_ROLE": tool_role,
                 # IMPORTANT: MCP subprocess inherits Claude SDK's sandboxed
                 # HOME, so Path.home() resolves wrong. Pin sandbox_root via env.

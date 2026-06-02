@@ -7,6 +7,7 @@
  * so its WebSocket, message history and scroll position survive tab switches.
  * Open file editors likewise stay mounted to preserve unsaved edits.
  */
+import { motion, useReducedMotion } from "framer-motion";
 import { GitCommitHorizontal, MessagesSquare, X } from "lucide-react";
 import { useState } from "react";
 import { COMMITS_TAB, useStore } from "../store";
@@ -37,6 +38,8 @@ export function CenterTabs({
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
 	const commitsTabOpen = useStore((s) => s.commitsTabOpen);
 	const closeCommits = useStore((s) => s.closeCommitsTab);
+
+	const reduce = useReducedMotion();
 
 	// Native drag-to-reorder of file tabs (VS Code idiom).
 	const [dragPath, setDragPath] = useState<string | null>(null);
@@ -152,23 +155,32 @@ export function CenterTabs({
 				</div>
 				{/* Commit-history browser — mounted while open (preserve selection). */}
 				{commitsTabOpen && (
-					<div
+					<motion.div
 						className="absolute inset-0"
 						style={active === COMMITS_TAB ? undefined : { display: "none" }}
+						initial={reduce ? false : { opacity: 0, y: 8 }}
+						animate={{ opacity: 1, y: 0 }}
+						transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
 					>
 						{workspaceId && <CommitHistoryView workspaceId={workspaceId} />}
-					</div>
+					</motion.div>
 				)}
 				{/* Open file editors — mounted while open (preserve unsaved edits),
             visibility toggled. */}
 				{fileTabs.map((p) => (
-					<div
+					// Animate the editor in on open (right-rail file click → center)
+					// so it doesn't snap in. Only runs on mount; tab switches between
+					// already-open files stay instant.
+					<motion.div
 						key={p}
 						className="absolute inset-0"
 						style={active === p ? undefined : { display: "none" }}
+						initial={reduce ? false : { opacity: 0, y: 8 }}
+						animate={{ opacity: 1, y: 0 }}
+						transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
 					>
 						{workspaceId && <CodeEditor workspaceId={workspaceId} path={p} />}
-					</div>
+					</motion.div>
 				))}
 			</div>
 		</div>
