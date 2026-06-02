@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress as _suppress
 from typing import Any
 
 from mcp.server import Server
@@ -21,6 +22,45 @@ from polynoia.mcp.tools import ToolContext, tools_for_role
 
 # Audit-summary fields lifted from a tool's result dict into the `tool.end` trail.
 _SUMMARY_KEYS = ("kind", "commit_sha", "path", "error", "exit_code", "matches", "agent_id")
+
+
+def _repair_arguments(arguments: Any) -> dict[str, Any]:
+    """Recover the common malformed tool-arg shapes BEFORE dispatch, so a
+    slightly-off call repairs instead of dying on the SDK's opaque "Input
+    validation error: 'tasks' is a required property". Seen in the wild
+    (esp. for big `dispatch` payloads with lots of escaped \\n in notes):
+
+      - the whole args object arrives as a JSON STRING        → json.loads it
+      - args wrapped under one key (input/kwargs/arguments/…) → unwrap it
+      - a list value (e.g. `tasks`) arrives as a JSON string  → parse it
+
+    Always returns a dict (possibly empty); the tool's own execute then gives a
+    clear, actionable error if a required field is still missing.
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (ValueError, TypeError):
+            return {}
+    if not isinstance(arguments, dict):
+        return {}
+    # Unwrap a single-key envelope whose value is the real arg dict.
+    if len(arguments) == 1:
+        (only_v,) = arguments.values()
+        if isinstance(only_v, str):
+            with _suppress():
+                only_v = json.loads(only_v)
+        if isinstance(only_v, dict) and only_v:
+            arguments = only_v
+    # Coerce list-ish fields that arrived as JSON strings.
+    for k in ("tasks", "participants", "questions"):
+        v = arguments.get(k)
+        if isinstance(v, str):
+            with _suppress():
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    arguments[k] = parsed
+    return arguments
 
 
 def _arg_preview(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -81,8 +121,14 @@ async def run_server(*, conv_id: str, agent_id: str) -> None:
     async def _list() -> list[Tool]:
         return [tool.spec() for tool in role_tools.values()]
 
-    @app.call_tool()
+    # validate_input=False: skip the SDK's jsonschema pre-check (it raised the
+    # opaque "Input validation error: 'tasks' is a required property" even when
+    # the model DID send tasks but in a slightly-off envelope). We repair the
+    # args ourselves, then each tool's execute returns a clear, retryable error
+    # if something required is still missing.
+    @app.call_tool(validate_input=False)
     async def _call(name: str, arguments: dict[str, Any]) -> list[TextContent] | CallToolResult:
+        arguments = _repair_arguments(arguments)
         impl = role_tools.get(name)
         if impl is None:
             # Either unknown or not exposed to this role — same surface to the
