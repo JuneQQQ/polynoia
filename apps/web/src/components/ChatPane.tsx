@@ -544,7 +544,7 @@ export function ChatPane({ convId, members, title }: Props) {
 	// ReasoningPart fold). groupFirstId → the run's ids; groupedSkip → non-first
 	// members. Memoized on the burst signature (no re-run on streaming deltas).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see burstSig note above.
-	const { groupFirstIds, groupedSkip } = useMemo(() => {
+	const { groupFirstIds, groupedSkip, firstOfRun } = useMemo(() => {
 		const firsts = new Map<string, string[]>();
 		const skip = new Set<string>();
 		const byId =
@@ -583,11 +583,27 @@ export function ChatPane({ convId, members, title }: Props) {
 			}
 		}
 		flush();
-		return { groupFirstIds: firsts, groupedSkip: skip };
+		// Avatar grouping over the VISIBLE render sequence: a run = consecutive
+		// avatar-bearing elements (normal messages + fold groups) from the same
+		// sender; only the FIRST element shows the avatar. So text → fold → text
+		// from one agent shows ONE avatar, and a fold that STARTS a run carries it.
+		// Burst cards have no avatar and break a run.
+		const firstOfRun = new Set<string>();
+		let prevRunSender: string | null = null;
+		for (const m of messages) {
+			if (claimedSet.has(m.id) || skip.has(m.id)) continue; // lane / folded
+			if (burstByAnchorId.has(m.id)) {
+				prevRunSender = null;
+				continue;
+			}
+			if (m.sender_id !== prevRunSender) firstOfRun.add(m.id);
+			prevRunSender = m.sender_id;
+		}
+		return { groupFirstIds: firsts, groupedSkip: skip, firstOfRun };
 	}, [burstSig, convId, claimedSet, burstByAnchorId]);
 
 	return (
-		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)]">
+		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative">
 			{/* Chat header — editorial masthead: serif title + gradient hair-line */}
 			<header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
 				<span
@@ -686,7 +702,7 @@ export function ChatPane({ convId, members, title }: Props) {
             of the message area) when ≥1 agent is working. NOT in the normal flow
             so it doesn't displace the message list when streaming starts/ends. */}
 				{activeAgents.length > 0 && (
-					<div className="anim-fade-up pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/95 backdrop-blur-sm border border-[var(--color-line)] shadow-md text-[11.5px] max-w-[calc(100%-3rem)]">
+					<div className="anim-fade-up pointer-events-none absolute bottom-[104px] left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/95 backdrop-blur-sm border border-[var(--color-line)] shadow-md text-[11.5px] max-w-[calc(100%-3rem)]">
 						{activeAgents.map((a) => {
 							const agent = agents.find((x) => x.id === a.id);
 							const label =
@@ -744,7 +760,10 @@ export function ChatPane({ convId, members, title }: Props) {
 				)}
 
 				<ConvScopeProvider value={{ convId, inWorkspace }}>
-					<div ref={bodyRef} className="absolute inset-0 overflow-y-auto py-4">
+					<div
+						ref={bodyRef}
+						className="absolute inset-0 overflow-y-auto py-4 pb-28"
+					>
 						{/* Lazy-load top sentinel — visible spinner while older messages
             are being fetched. Shown only if we have more to fetch. */}
 						{loadingOlder && messages.length > 0 && (
@@ -784,7 +803,12 @@ export function ChatPane({ convId, members, title }: Props) {
 							const group = groupFirstIds.get(m.id);
 							if (group) {
 								return (
-									<ToolCallGroup key={m.id} convId={convId} msgIds={group} />
+									<ToolCallGroup
+										key={m.id}
+										convId={convId}
+										msgIds={group}
+										showAvatar={firstOfRun.has(m.id)}
+									/>
 								);
 							}
 							const burst = burstByAnchorId.get(m.id);
@@ -798,9 +822,11 @@ export function ChatPane({ convId, members, title }: Props) {
 									/>
 								);
 							}
-							// Normal linear MessageView
-							const prev = i > 0 ? messages[i - 1] : null;
-							const isGrouped = !!prev && prev.sender_id === m.sender_id;
+							// Normal linear MessageView. Avatar hidden (grouped) unless this
+							// is the FIRST avatar-bearing element of its sender's run — see
+							// firstOfRun, computed over the visible render sequence, so a fold
+							// between two same-sender messages doesn't re-show the avatar.
+							const isGrouped = !firstOfRun.has(m.id);
 							return (
 								<MessageView
 									key={m.id}
@@ -814,8 +840,13 @@ export function ChatPane({ convId, members, title }: Props) {
 				</ConvScopeProvider>
 			</div>
 
-			{/* Agent-initiated questions — floating panel above Composer */}
-			<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
+			{/* Floating composer — overlays the bottom of the message area so chat
+			    content scrolls BEHIND it (悬浮在内容之上). The scroll area's matching
+			    bottom padding (pb-28) keeps the last message clear; the gradient fades
+			    content into the bg as it approaches the composer. */}
+			<div className="absolute bottom-0 inset-x-0 z-10">
+				{/* Agent-initiated questions — floating panel above Composer */}
+				<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
 			{/* Composer */}
 			<Composer
@@ -883,6 +914,7 @@ export function ChatPane({ convId, members, title }: Props) {
 					wsRef.current?.sendUserMessage(text, members, inReplyTo);
 				}}
 			/>
+			</div>
 		</main>
 	);
 }

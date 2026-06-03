@@ -17,6 +17,37 @@ from polynoia.settings import settings
 _IS_WINDOWS = os.name == "nt"
 log = logging.getLogger(__name__)
 
+# The CodexAdapter appends this block onto the workspace-shared codex config.toml
+# so codex agents get Polynoia's role-gated MCP tools. It must SURVIVE credential
+# refreshes (see _copy_cred_file).
+_CODEX_MCP_MARKER = "[mcp_servers.polynoia]"
+
+
+def _copy_cred_file(src: Path, dst: Path) -> None:
+    """Copy a credential file, PRESERVING a codex ``[mcp_servers.polynoia]`` block
+    if the destination already has one.
+
+    The codex ``config.toml`` is shared by all agents in a workspace and gets
+    re-copied from the host config on every workspace-open. The host config has
+    no Polynoia MCP block, so a blind copy WIPES the block the CodexAdapter
+    injected — leaving codex with only its native tools (the bug where 苏念 used
+    FileChange/Bash instead of write/present/report). Re-append the block so it
+    survives a teammate's refresh.
+    """
+    if dst.name == "config.toml" and dst.parent.name == ".codex" and dst.exists():
+        with contextlib.suppress(Exception):
+            old = dst.read_text(encoding="utf-8")
+            mi = old.find(_CODEX_MCP_MARKER)
+            if mi != -1:
+                # Write the fresh host config + the existing block in one go (the
+                # host config never contains the block, so this is a plain append —
+                # no copy2+reread round-trip).
+                block = old[mi:].rstrip()
+                src_text = src.read_text(encoding="utf-8").rstrip()
+                dst.write_text(src_text + "\n\n" + block + "\n", encoding="utf-8")
+                return
+    shutil.copy2(src, dst)
+
 # Local-dependency dirs to keep OUT of git. Policy: each conv/workspace manages
 # deps INSIDE its own working dir — Python via uv (.venv), Node via node_modules,
 # etc. (steered by env_for_agent + the platform tool-rules). Committing these into
@@ -702,7 +733,7 @@ class Sandbox:
                     # (<1KB); copy2 overwrites. This is what made Pro logins
                     # "suddenly drop" mid-session — the snapshot aged out while the
                     # real login was still valid.
-                    shutil.copy2(src, dst)
+                    _copy_cred_file(src, dst)
 
     def _write_manifest(self) -> None:
         """Write ``.polynoia/manifest.json`` with conv metadata."""
