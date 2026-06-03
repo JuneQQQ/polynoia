@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from polynoia.settings import settings
 
 
 _IS_WINDOWS = os.name == "nt"
+log = logging.getLogger(__name__)
 
 # Local-dependency dirs to keep OUT of git. Policy: each conv/workspace manages
 # deps INSIDE its own working dir — Python via uv (.venv), Node via node_modules,
@@ -562,15 +564,48 @@ class Sandbox:
     # dir; downstream env_for_agent points HOME (or USERPROFILE+APPDATA on Win)
     # at that dir so agents find their config in the expected layout.
     @classmethod
+    def _cred_source_home(cls) -> Path:
+        """Home dir to read host credentials FROM.
+
+        Normally the running user's home. But the server is sometimes launched
+        as ROOT (sudo / a root shell / a root container). Then ``Path.home()``
+        is ``/root`` and we'd copy root's (often stale) credentials — e.g.
+        ``/root/.codex/config.toml`` pinned to a dead ``mimo`` provider, which
+        makes codex agents fail with ``Missing environment variable:
+        MIMO_API_KEY`` instead of using the dev user's working ``bytego`` login.
+        Resolve the INTENDED user's home regardless of who launched us:
+          1. ``POLYNOIA_CRED_HOME`` env override (explicit operator knob), else
+          2. when running as root via sudo, the invoking user's home (SUDO_USER),
+          3. else ``Path.home()`` (and warn if that's /root — likely wrong).
+        """
+        override = os.environ.get("POLYNOIA_CRED_HOME")
+        if override:
+            return Path(override)
+        if not _IS_WINDOWS and os.geteuid() == 0:
+            sudo_user = os.environ.get("SUDO_USER")
+            if sudo_user and sudo_user != "root":
+                with contextlib.suppress(Exception):
+                    import pwd
+
+                    return Path(pwd.getpwnam(sudo_user).pw_dir)
+            log.warning(
+                "running as root with no POLYNOIA_CRED_HOME/SUDO_USER — reading "
+                "credentials from /root (likely stale). Set POLYNOIA_CRED_HOME to "
+                "the dev user's home, or run the server as that user."
+            )
+        return Path.home()
+
+    @classmethod
     def _cred_allowlist(cls) -> dict[Path, tuple[str, list[str]]]:
         """Per-OS credential allowlist.
 
         Returns a dict mapping ``source_abs_path → (dest_subpath, [files])``.
         Sources that don't exist on this host are skipped at copy time.
         """
+        home = cls._cred_source_home()
         items: dict[Path, tuple[str, list[str]]] = {
             # Claude Code: ~/.claude on both POSIX and Windows.
-            Path.home() / ".claude": (
+            home / ".claude": (
                 ".claude",
                 [
                     ".credentials.json",
@@ -584,12 +619,12 @@ class Sandbox:
             # history, MCP server cache). Without it claude CLI starts in a
             # half-bootstrapped state — initialize() can hang or fail, which
             # surfaces upstream as "Not connected. Call connect() first."
-            Path.home(): (
+            home: (
                 "",
                 [".claude.json"],
             ),
             # Codex: ~/.codex on both.
-            Path.home() / ".codex": (
+            home / ".codex": (
                 ".codex",
                 [
                     "config.toml",
@@ -614,11 +649,11 @@ class Sandbox:
                 )
         else:
             # POSIX OpenCode (XDG).
-            items[Path.home() / ".local" / "share" / "opencode"] = (
+            items[home / ".local" / "share" / "opencode"] = (
                 ".local/share/opencode",
                 ["auth.json"],
             )
-            items[Path.home() / ".config" / "opencode"] = (
+            items[home / ".config" / "opencode"] = (
                 ".config/opencode",
                 ["auth.json", "config.json"],
             )
