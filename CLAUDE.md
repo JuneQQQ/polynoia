@@ -139,14 +139,16 @@ make build          # 前后端都 build
 - 网络白名单:LLM endpoint + npm.org + pypi.org
 - **P0 无 CPU/RAM 隔离**(P1 加 nsjail 或 Docker)
 
-### 6.3 跨平台架构
+### 6.3 跨平台架构(已定:壳复用 web,非 RN 重写)
 
-为 P1+ 桌面/移动端做架构准备:
+桌面端 + 移动端都**复用同一份 `apps/web` 构建**,装进原生壳里跑 —— 不重写 UI。
 
-- `packages/core` 内**不允许** import `react-dom` 或 RN
-- `apps/web/` 仅是渲染壳,所有业务逻辑应该来自 `packages/core` + `packages/ui-web`
-- (P1) `apps/desktop/` = Tauri 包 web build(零业务代码)
-- (P1) `apps/mobile/` = React Native,共享 `packages/core`,自己写 `packages/ui-rn`
+- `apps/desktop/` = **Tauri 2** 包 `apps/web/dist`(零业务代码;注入 `window.__POLYNOIA_PLATFORM__="desktop"`)
+- `apps/mobile/` = **Capacitor 6** 包 `apps/web/dist`(`webDir:"../web/dist"`);**不是 React Native**,**没有 `packages/ui-rn`**。移动布局靠 `apps/web/src/lib/platform.ts:isMobile()` 在同一套组件里自适应(`App.tsx` 已有「抽屉+单列」分支)
+- `packages/*` 目前**为空**:业务逻辑仍在 `apps/web/src/{store.ts,lib/*}`(~85% 纯 TS)。三端只靠 platform 检测 + 一层薄 shim(`runtime-config.ts` 服务器基址 / `storage.ts` 持久化 / `native.ts` Capacitor 插件)区分
+- 移动端范围(rule.md):**轻量 IM** —— 查看对话、发消息/@、审批(pending-edit/ask-form/冲突选边)、**只读**产物预览;**不做**文件树编辑/终端/提交历史/建项目
+- 完整方案见根目录 [`mobile-plan.html`](mobile-plan.html) + ADR「Capacitor over React Native」
+- (历史)早期设想是 RN + `packages/ui-rn`,已废弃 —— Capacitor 复用 web 更贴合「子集、不偏离」
 
 ## 7. Karpathy 协作原则(全局)
 

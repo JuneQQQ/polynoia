@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Polynoia · iOS / Android 实现规划</title>
+<style>
+  :root{
+    --bg:#f6f2ea; --surface:#ffffff; --surface2:#fbf7f0; --line:#ece5d8; --line2:#c9bfaa;
+    --fg:#1f1b16; --fg2:#4a4338; --fg3:#7a7060; --accent:#e07a3c; --accent-soft:#fbe6d6;
+    --green:#2e7f5b; --green-soft:#dceee5; --red:#b34536; --red-soft:#f0d4cd;
+    --teal:#4f9b87; --violet:#8470b8;
+    --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","IBM Plex Serif",serif;
+    --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    --mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--fg); font-family:var(--sans);
+    line-height:1.7; font-size:15px;
+    background-image:
+      radial-gradient(60% 50% at 8% 0%, rgba(224,122,60,.05) 0%, transparent 70%),
+      radial-gradient(55% 55% at 100% 100%, rgba(120,90,60,.04) 0%, transparent 70%);
+    background-attachment:fixed;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:48px 28px 96px}
+  header.hero{display:flex;align-items:center;gap:18px;margin-bottom:8px}
+  .logo{width:60px;height:60px;border-radius:16px;flex-shrink:0;
+    background:var(--surface2);border:1px solid var(--line2);position:relative;overflow:hidden}
+  .logo i{position:absolute;width:24px;height:24px;border-radius:50%;mix-blend-mode:multiply;opacity:.92}
+  .logo i.a{background:var(--accent);top:9px;left:18px}
+  .logo i.b{background:var(--teal);top:25px;left:10px}
+  .logo i.c{background:var(--violet);top:25px;left:26px}
+  h1{font-family:var(--serif);font-weight:600;font-size:30px;margin:0;letter-spacing:.5px}
+  .sub{color:var(--fg3);font-size:13.5px;margin-top:2px}
+  .tagline{font-size:16px;color:var(--fg2);margin:18px 0 30px;padding-left:14px;border-left:3px solid var(--accent)}
+  h2{font-family:var(--serif);font-size:21px;font-weight:600;margin:42px 0 12px;
+    padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;font-weight:600;margin:22px 0 6px;color:var(--fg)}
+  .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin-top:34px}
+  p{margin:8px 0}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(224,122,60,.09);color:#9c4f24;
+    padding:1px 5px;border-radius:4px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0;
+    box-shadow:0 1px 2px rgba(60,40,20,.04), inset 0 1px 0 rgba(255,255,255,.55)}
+  .badge{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+    padding:2px 8px;border-radius:5px;font-weight:600;text-transform:uppercase}
+  .b-cap{background:var(--accent-soft);color:#9c4f24}
+  .b-in{background:var(--green-soft);color:var(--green)}
+  .b-out{background:var(--red-soft);color:var(--red)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--surface);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--surface2);font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--fg3);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  .phase{display:flex;gap:14px;margin:14px 0;align-items:flex-start}
+  .pnum{flex-shrink:0;width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;
+    font-family:var(--mono);font-weight:700;font-size:13px;display:grid;place-items:center;margin-top:2px}
+  .phase .body{flex:1;min-width:0}
+  .phase h3{margin:2px 0 4px}
+  ul{margin:6px 0;padding-left:20px}
+  li{margin:3px 0}
+  .files{font-family:var(--mono);font-size:11.5px;color:var(--fg3);background:var(--surface2);
+    border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-top:6px;line-height:1.6}
+  .risk{border-left:3px solid var(--red);background:var(--red-soft);background-clip:padding-box}
+  .foot{margin-top:60px;text-align:center;color:var(--fg3);font-size:12px}
+  .pill{display:inline-block;background:var(--surface2);border:1px solid var(--line2);
+    border-radius:999px;padding:3px 12px;font-size:12px;margin:2px 4px 2px 0;color:var(--fg2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="logo"><i class="a"></i><i class="b"></i><i class="c"></i></div>
+    <div>
+      <h1>Polynoia · 移动端实现规划</h1>
+      <div class="sub">iOS / Android — web/桌面端的轻量子集 · 实现方案 v1</div>
+    </div>
+  </header>
+
+  <p class="tagline">把现有 web 应用装进原生壳里运行,适配移动布局,做成 rule.md 定义的「轻量 IM:查看对话、审批确认、产物预览」—— 不重写、不偏离。</p>
+
+  <div>
+    <span class="pill">架构:Capacitor 6 复用 web</span>
+    <span class="pill">范围:IM + 审批 + 只读预览</span>
+    <span class="pill">复用 ~85% 客户端逻辑</span>
+    <span class="pill">7 个阶段</span>
+  </div>
+
+  <div class="eyebrow">为什么这么做</div>
+  <h2>架构决策:Capacitor 复用 web,而非 React Native 重写</h2>
+  <div class="card">
+    <p><code>apps/mobile/</code> 已经是一个 <b>Capacitor 6</b> 脚手架(<code>webDir: "../web/dist"</code>,已配 keyboard / network / preferences / splash / status-bar 插件)。移动 App = <b>同一套 <code>apps/web</code> React 代码</b>跑在原生 WebView 里,通过 <code>apps/web/src/lib/platform.ts</code> 的 <code>isMobile()</code> 自适应成移动布局(<code>App.tsx</code> 已有「抽屉 + 单列」分支)。</p>
+    <p><b>为什么不选 React Native:</b> web 客户端约 85% 是纯 TS(<code>store.ts</code> / <code>lib/api.ts</code> / <code>lib/ws.ts</code> / <code>lib/types.ts</code>),已经运行时自适应。Capacitor 直接复用这套 UI 与流式/WS/store 逻辑 —— 最贴合「子集、不偏离」,远比 RN + <code>packages/ui-rn</code> 重写轻。<i>(注:CLAUDE.md §6.3 旧文写的是 RN,需更新为 Capacitor;附 ADR。)</i></p>
+  </div>
+
+  <div class="eyebrow">做什么 / 不做什么</div>
+  <h2>功能范围(rule.md:轻量 IM)</h2>
+  <table>
+    <tr><th>纳入(IN)</th><th>排除(OUT — web/桌面专属)</th></tr>
+    <tr>
+      <td>
+        <span class="badge b-in">查看对话</span> 会话列表 · 消息流<br>
+        <span class="badge b-in">发消息 / @</span> + 实时看流式输出(文本/思考/工具调用)<br>
+        <span class="badge b-in">审批</span> pending-edit 接受/拒绝 · 回答 ask-form · 冲突「选边」解决<br>
+        <span class="badge b-in">只读预览</span> diff / 网页 / 文档 / 图片
+      </td>
+      <td>
+        <span class="badge b-out">文件树编辑器</span><br>
+        <span class="badge b-out">交互式终端</span><br>
+        <span class="badge b-out">提交历史浏览</span><br>
+        <span class="badge b-out">项目/工作区创建 · 复杂编排管理</span><br>
+        <span class="badge b-out">代码编辑 · 下载</span>
+      </td>
+    </tr>
+  </table>
+
+  <div class="eyebrow">怎么落地</div>
+  <h2>实现阶段</h2>
+
+  <div class="phase"><div class="pnum">0</div><div class="body">
+    <h3>共享 shim 层</h3>
+    <ul>
+      <li><code>lib/runtime-config.ts</code> — 服务器基址单一来源:web 为相对路径 <code>""</code>;移动端为持久化的绝对 URL;<code>wsBase()</code> 推导 ws://。</li>
+      <li><code>lib/storage.ts</code> — 持久化抽象:web 用 <code>localStorage</code>,原生动态 import <code>@capacitor/preferences</code>;带同步缓存 + <code>prefetchStorage()</code>。</li>
+    </ul>
+  </div></div>
+
+  <div class="phase"><div class="pnum">1</div><div class="body">
+    <h3>服务器连接层(上设备的关键 —— WebView 不能用相对 URL / <code>window.location</code>)</h3>
+    <ul>
+      <li><code>api.ts</code> + <code>ws.ts</code> 全部走 <code>serverBase()</code> / <code>wsBase()</code>。</li>
+      <li>新增 <code>mobile/ConnectServerScreen.tsx</code>:输入局域网 IP → 测 <code>/api/health</code> → 持久化;移动端首屏 gate。Web 路径不变。</li>
+    </ul>
+  </div></div>
+
+  <div class="phase"><div class="pnum">2</div><div class="body">
+    <h3>持久化 / 消除启动闪烁</h3>
+    <ul>
+      <li>lang + sidebar + serverBase 改走 shim;<code>main.tsx</code> 异步引导,首屏渲染前 <code>await prefetchStorage([...])</code>(主题仍留 WebView localStorage,供预绘制脚本防 FOUC)。</li>
+    </ul>
+  </div></div>
+
+  <div class="phase"><div class="pnum">3</div><div class="body">
+    <h3>移动 UI / 导航(<code>isMobile()</code> 门控)</h3>
+    <ul>
+      <li>复用 Sidebar(关掉新建项目/联系人入口)、ChatPane + Composer、MessageView + parts(只读)。</li>
+      <li><b>门控关闭</b>:PreviewPane / FileTree / CenterTabs / Terminal / CommitHistory / CodeEditor。</li>
+      <li>审批 → 底部 sheet:<code>mobile/BottomSheet</code> + <code>PendingEditSheet</code>(复用 FloatingReviewBar 逻辑)、适配 AskFormsPanel、<code>ConflictSheet</code>(只「选边」)。</li>
+      <li>只读产物 → <code>mobile/ArtifactModal</code>(全屏,复用 RightPreviewFile / DocPreviewPane)。</li>
+      <li>Composer:移动端只按按钮发送(Enter = 换行),隐藏合并开关。</li>
+    </ul>
+  </div></div>
+
+  <div class="phase"><div class="pnum">4</div><div class="body">
+    <h3>Capacitor 原生集成</h3>
+    <ul>
+      <li><code>lib/native.ts</code> <code>initNative()</code>:状态栏配色、键盘避让、SplashScreen、网络离线条、安全区 <code>env(safe-area-inset-*)</code> + <code>viewport-fit=cover</code>。</li>
+      <li>新增 <code>@capacitor/app</code>:恢复(resume)→ WS 重连 + 状态重同步;Android 返回键(关 sheet → modal → 抽屉 → 列表 → 退出)。</li>
+    </ul>
+  </div></div>
+
+  <div class="phase"><div class="pnum">5</div><div class="body">
+    <h3>CORS + 构建/运行</h3>
+    <ul>
+      <li><code>settings.py</code> <code>cors_origins</code> 加 <code>https://localhost</code> + <code>capacitor://localhost</code>(+ 开发期局域网源用环境变量;<code>allow_credentials=True</code> 禁止 <code>*</code> 通配,保持显式列表)。</li>
+      <li>记录 <code>cap add ios/android</code> + <code>pnpm sync:mobile</code> + livereload 流程。</li>
+    </ul>
+  </div></div>
+
+  <div class="phase"><div class="pnum">6</div><div class="body">
+    <h3>文档</h3>
+    <ul>
+      <li>修正 CLAUDE.md §6.3(RN → Capacitor)+ 新增 ADR「Capacitor over React Native」。</li>
+    </ul>
+  </div></div>
+
+  <div class="eyebrow">关键文件</div>
+  <div class="files">
+    apps/web/src/lib/{api,ws,runtime-config,storage,native}.ts · App.tsx · components/ChatPane.tsx · components/Composer.tsx · components/parts/DiffPart.tsx<br>
+    新增 apps/web/src/components/mobile/{ConnectServerScreen,BottomSheet,PendingEditSheet,ConflictSheet,ArtifactModal,OfflineBanner}.tsx<br>
+    apps/server/polynoia/settings.py · apps/mobile/{package.json,capacitor.config.ts} · CLAUDE.md
+  </div>
+
+  <div class="eyebrow">注意</div>
+  <h2>风险登记</h2>
+  <div class="card risk"><b>WebView CORS Origin 不确定</b> —— <code>https://localhost</code> 还是 <code>capacitor://localhost</code> 取决于 Capacitor 版本与 scheme;上线前从服务端日志实测确认。<code>allow_credentials=True</code> 禁止通配,必须显式列表。</div>
+  <div class="card risk"><b>异步 Preferences 启动闪烁</b> —— 用 <code>prefetchStorage</code> 同步缓存 + SplashScreen 覆盖。主题留 WebView localStorage 供预绘制脚本。</div>
+  <div class="card risk"><b>WS 后台/前台重连</b> —— App 挂起时 socket 静默断;靠 <code>@capacitor/app</code> resume + Network online 触发 <code>reconnect()</code> + 状态重同步,否则状态 pill 会卡「运行中」。</div>
+  <div class="card risk"><b>混合内容(https WebView → http 局域网服务器)</b> —— 可能被拦;<code>allowNavigation</code> 放行 + 上线建议走 https/<code>*.polynoia.app</code>;连接页明确报错。</div>
+
+  <div class="foot">Polynoia — 众智,一席对话 · 移动端实现规划 v1</div>
+</div>
+</body>
+</html>
