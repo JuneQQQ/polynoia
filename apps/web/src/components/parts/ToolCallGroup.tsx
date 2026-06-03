@@ -20,18 +20,32 @@ export function ToolCallGroup({
 	msgIds: string[];
 }) {
 	const [open, setOpen] = useState(false);
-	// Tool display names for the collapsed summary (localized via toolDisplayName).
+	// Collapsed summary: count TOOL-CALL steps + their names (the run may also
+	// contain interleaved reasoning, which is rendered inside the fold but not
+	// counted as a "step"). Localized via toolDisplayName.
 	const lang = useStore((s) => s.lang);
-	const names = useStore(
+	const { names, toolCount, hasThinking } = useStore(
 		useShallow((s) => {
 			const cs = s.convs.get(convId);
-			return msgIds.map((id) => {
-				const p = cs?.msgById.get(id)?.payload as { name?: string } | undefined;
-				return toolDisplayName(p?.name ?? "", lang) || "工具";
-			});
+			const nm: string[] = [];
+			let thinking = false;
+			for (const id of msgIds) {
+				const p = cs?.msgById.get(id)?.payload as
+					| { kind?: string; name?: string }
+					| undefined;
+				if (p?.kind === "reasoning") {
+					thinking = true;
+				} else {
+					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
+				}
+			}
+			return { names: nm, toolCount: nm.length, hasThinking: thinking };
 		}),
 	);
-	const summary = names.slice(0, 5).join(" · ") + (names.length > 5 ? " …" : "");
+	const summary =
+		names.slice(0, 5).join(" · ") +
+		(names.length > 5 ? " …" : "") +
+		(hasThinking ? (lang === "en" ? " · thinking" : " · 含思考") : "");
 
 	return (
 		<div className="ml-[68px] mr-6 my-1">
@@ -42,7 +56,7 @@ export function ToolCallGroup({
 			>
 				<Wrench size={12} className="text-[var(--color-fg-3)] flex-shrink-0" />
 				<span className="font-medium flex-shrink-0">
-					{msgIds.length} 步工具调用
+					{toolCount} 步工具调用
 				</span>
 				<span className="text-[var(--color-fg-3)] truncate font-mono text-[10.5px]">
 					{summary}

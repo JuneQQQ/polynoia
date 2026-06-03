@@ -164,6 +164,16 @@ export function ChatPane({ convId, members, title }: Props) {
 					} else if (chunk.type === "data-chain-link") {
 						// Transient meta — actual B bubble appears right after A in the
 						// stream; this link is redundant UI noise. Silently drop.
+					} else if (chunk.type === "data-conv-rewound") {
+						// Another tab (or our own POST that beat the response) rewound
+						// the conv: drop the msg at from_msg_id + all later. Idempotent —
+						// if we already truncated locally this is a no-op.
+						const d = (chunk as any).data;
+						if (d?.from_msg_id) {
+							useStore
+								.getState()
+								.truncateMessagesFrom(convId, d.from_msg_id);
+						}
 					} else if (chunk.type === "data-conv-cleared") {
 						// Conv was wiped server-side (POST /clear). Drop the in-memory
 						// timeline AND the diff/conflict-loop cards (conflicts + pending
@@ -526,11 +536,13 @@ export function ChatPane({ convId, members, title }: Props) {
 		return computeBursts(ids, msgByIdLive);
 	}, [burstSig, convId]);
 
-	// Consecutive-tool-call folding (#9): runs of ≥2 adjacent kind:"tool-call"
-	// messages from the same sender (and NOT claimed into a burst lane) collapse
-	// into one ToolCallGroup. groupFirstId → the run's ids; groupedSkip → the
-	// non-first members (skipped in the linear map). Memoized on the same
-	// structural signature as bursts (no re-run on streaming deltas).
+	// Consecutive tool-call / reasoning folding (#9): a run of ≥2 adjacent
+	// tool-call OR reasoning messages from the same sender (not in a burst lane)
+	// collapses into one ToolCallGroup — IN STREAM ORDER, with interleaved 思考
+	// (reasoning) kept INSIDE the fold (not scattered outside it). Only fold when
+	// the run contains ≥1 tool-call (a pure-reasoning run keeps its own
+	// ReasoningPart fold). groupFirstId → the run's ids; groupedSkip → non-first
+	// members. Memoized on the burst signature (no re-run on streaming deltas).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see burstSig note above.
 	const { groupFirstIds, groupedSkip } = useMemo(() => {
 		const firsts = new Map<string, string[]>();
@@ -540,28 +552,33 @@ export function ChatPane({ convId, members, title }: Props) {
 			new Map<string, Message>();
 		let run: string[] = [];
 		let runSender: string | null = null;
+		let runHasTool = false;
 		const flush = () => {
-			if (run.length >= 2) {
+			// Fold only multi-item runs that actually contain a tool call.
+			if (run.length >= 2 && runHasTool) {
 				firsts.set(run[0], [...run]);
 				for (let j = 1; j < run.length; j++) skip.add(run[j]);
 			}
 			run = [];
 			runSender = null;
+			runHasTool = false;
 		};
 		for (const m of messages) {
-			const isTool =
-				!claimedSet.has(m.id) &&
-				!burstByAnchorId.has(m.id) &&
-				(byId.get(m.id)?.payload as { kind?: string } | undefined)?.kind ===
-					"tool-call";
-			if (isTool && (runSender === null || runSender === m.sender_id)) {
+			const kind =
+				claimedSet.has(m.id) || burstByAnchorId.has(m.id)
+					? undefined
+					: (byId.get(m.id)?.payload as { kind?: string } | undefined)?.kind;
+			const foldable = kind === "tool-call" || kind === "reasoning";
+			if (foldable && (runSender === null || runSender === m.sender_id)) {
 				run.push(m.id);
 				runSender = m.sender_id;
+				if (kind === "tool-call") runHasTool = true;
 			} else {
 				flush();
-				if (isTool) {
+				if (foldable) {
 					run.push(m.id);
 					runSender = m.sender_id;
+					if (kind === "tool-call") runHasTool = true;
 				}
 			}
 		}
