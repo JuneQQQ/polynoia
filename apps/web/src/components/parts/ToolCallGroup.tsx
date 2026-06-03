@@ -1,10 +1,13 @@
-/** ToolCallGroup — collapses a run of consecutive tool-call messages from the
- * same agent into one foldable block, so a long bash→write→bash→read sequence
- * doesn't flood the timeline. Collapsed by default: shows "🛠 N 步 · read · write
- * …"; click to expand into the individual ToolCallParts (compact MessageViews).
+/** ToolCallGroup — collapses a run of consecutive tool-call / reasoning messages
+ * from the same agent into one foldable block, so a long bash→write→bash→read
+ * sequence doesn't flood the timeline. Collapsed by default: shows "🛠 N 步 · read
+ * · write …"; click to expand into the individual parts (compact MessageViews).
  *
- * Membership is decided in ChatPane (runs of ≥2 consecutive kind:"tool-call"
- * messages, same sender, outside any burst lane). This component only renders.
+ * Membership is decided in ChatPane (runs of ≥2 consecutive tool-call/reasoning
+ * messages, same sender, outside any burst lane, containing ≥1 tool). This
+ * component only renders — but it REORDERS the run so reasoning shows before the
+ * tool calls (user's choice: thinking always precedes the tool, even reflective
+ * thinking that streamed after a tool).
  */
 import { Wrench } from "lucide-react";
 import { useState } from "react";
@@ -30,32 +33,47 @@ export function ToolCallGroup({
 	);
 	const expanded = open || anyStreaming;
 	// Collapsed summary: count TOOL-CALL steps + their names (the run may also
-	// contain interleaved reasoning, which is rendered inside the fold but not
-	// counted as a "step"). Return only PRIMITIVES from the selector — a fresh array
-	// would defeat useShallow and re-render this group on every store delta.
-	const { summary, toolCount } = useStore(
+	// contain reasoning, which is rendered inside the fold but not counted as a
+	// "step"). Also compute the render ORDER: per the user's choice, thinking
+	// always renders BEFORE the tool calls — reasoning ids first, then tool ids —
+	// even when the model actually thought AFTER a tool (a reflection). Return only
+	// PRIMITIVES (the order as a joined string) so a fresh array doesn't defeat
+	// useShallow and re-render this group on every store delta.
+	const { summary, toolCount, order } = useStore(
 		useShallow((s) => {
 			const cs = s.convs.get(convId);
 			const lang = s.lang;
 			const nm: string[] = [];
-			let thinking = false;
+			const reasoningIds: string[] = [];
+			const toolIds: string[] = [];
 			for (const id of msgIds) {
 				const p = cs?.msgById.get(id)?.payload as
 					| { kind?: string; name?: string }
 					| undefined;
 				if (p?.kind === "reasoning") {
-					thinking = true;
+					reasoningIds.push(id);
 				} else {
+					toolIds.push(id);
 					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
 				}
 			}
 			const joined =
 				nm.slice(0, 5).join(" · ") +
 				(nm.length > 5 ? " …" : "") +
-				(thinking ? (lang === "en" ? " · thinking" : " · 含思考") : "");
-			return { summary: joined, toolCount: nm.length };
+				(reasoningIds.length
+					? lang === "en"
+						? " · thinking"
+						: " · 含思考"
+					: "");
+			return {
+				summary: joined,
+				toolCount: nm.length,
+				order: [...reasoningIds, ...toolIds].join(","),
+			};
 		}),
 	);
+	// Reasoning-first render order (see selector). Falls back to msgIds if empty.
+	const ordered = order ? order.split(",") : msgIds;
 
 	return (
 		<div className="ml-[68px] mr-6 my-1">
@@ -77,7 +95,7 @@ export function ToolCallGroup({
 			</button>
 			{expanded && (
 				<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
-					{msgIds.map((id, i) => (
+					{ordered.map((id, i) => (
 						<MessageView
 							key={id}
 							convId={convId}
