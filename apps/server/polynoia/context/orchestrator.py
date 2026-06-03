@@ -1,4 +1,4 @@
-"""L1.5 — platform-injected orchestration protocol.
+"""L2 — platform-injected orchestration protocol.
 
 When an agent is the DESIGNATED orchestrator of a group conv, the platform
 injects a non-negotiable coordination directive — INDEPENDENT of the agent's

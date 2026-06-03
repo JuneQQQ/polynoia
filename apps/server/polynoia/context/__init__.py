@@ -12,7 +12,7 @@ Public entry:
         user_text="你好",
     )
 
-Returns the fully assembled L1-L5 layered prompt string ready to feed to
+Returns the fully assembled L1-L9 layered prompt string ready to feed to
 ``AdapterSession.send()``. Privacy enforced internally — caller passes
 agent_id and the assembler filters by membership.
 """

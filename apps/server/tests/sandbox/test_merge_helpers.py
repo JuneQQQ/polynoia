@@ -114,3 +114,75 @@ async def test_merge_conflict_aborts_cleanly(ws_sandbox_root: Path) -> None:
     assert "conflict" in msg_b.lower()
     # main HEAD must still be the post-A sha; conflict aborted cleanly.
     assert await a.main_head_sha() == sha_after_a
+
+
+@pytest.mark.asyncio
+async def test_commit_pending_worktrees_only_owner(ws_sandbox_root: Path) -> None:
+    """``only_agents`` scopes the pre-merge sweep: a teammate still mid-turn
+    (NOT in the owner set) must NOT get its uncommitted writes committed —
+    otherwise a drain triggered by agent A would capture agent B's half-work
+    and merge it into main (bug #1)."""
+    a = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-OWN", conv_id="c", agent_id="ag-A",
+    )
+    b = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-OWN", conv_id="c", agent_id="ag-B",
+    )
+    # Both have UNCOMMITTED native-tool writes in their worktrees.
+    (a.root / "wip.txt").write_text("A in-progress\n")
+    (b.root / "wip.txt").write_text("B in-progress\n")
+
+    # Drain owned by A only — B is mid-turn and must be left untouched.
+    committed = await a.commit_pending_worktrees("c", only_agents={"ag-A"})
+    assert committed == 1
+
+    # A's work was committed (branch advanced); B's was NOT (still 0 ahead,
+    # and the file is still uncommitted in B's worktree).
+    assert await a.branch_ahead_of_main("agent/ag-A/conv-c") == 1
+    assert await a.branch_ahead_of_main("agent/ag-B/conv-c") == 0
+    b_status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=b.root,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "wip.txt" in b_status  # B's in-flight work preserved, uncommitted
+
+
+@pytest.mark.asyncio
+async def test_reset_worktree_to_main_discards_divergence(ws_sandbox_root: Path) -> None:
+    """Turn-start sync: a reused worktree that diverged from main is HARD-RESET
+    to the latest main — its own (rejected) commits are discarded and main's
+    newer files appear. The disposable-branch model (sync redesign)."""
+    sb = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-RESET", conv_id="c", agent_id="ag-A",
+    )
+    # The agent branch diverges with its own commit…
+    _commit(sb.root, "rejected.txt", "agent's rejected work\n", "A: rejected")
+    assert await sb.branch_ahead_of_main(sb.branch) == 1
+    # …meanwhile a teammate's work lands in main (committed on the root = main).
+    _commit(sb.workspace_root, "teammate.txt", "merged work\n", "main: teammate")
+    main_sha = await sb.main_head_sha()
+
+    ok = await Sandbox.reset_worktree_to_main(
+        workspace_id="ws-RESET", conv_id="c", agent_id="ag-A",
+    )
+    assert ok
+    # Branch now == main: 0 ahead, divergent commit gone, main's file present,
+    # the rejected file gone.
+    assert await sb.branch_ahead_of_main(sb.branch) == 0
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=sb.root,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert head.startswith(main_sha)  # main_head_sha() returns the short sha
+    assert (sb.root / "teammate.txt").exists()
+    assert not (sb.root / "rejected.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_reset_worktree_to_main_noop_when_absent(ws_sandbox_root: Path) -> None:
+    """No worktree yet (fresh agent / never spawned) → reset is a safe no-op
+    (returns False), never raises."""
+    ok = await Sandbox.reset_worktree_to_main(
+        workspace_id="ws-NOPE", conv_id="c", agent_id="ag-ghost",
+    )
+    assert ok is False

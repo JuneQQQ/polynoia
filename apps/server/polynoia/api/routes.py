@@ -13,7 +13,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
-from typing import cast
+from typing import NamedTuple, cast
 
 from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -97,6 +97,18 @@ _pending_asks: dict[str, str | None] = {}
 _conv_agent_tasks: dict[str, dict[str, asyncio.Task]] = {}   # conv_id → agent_id → task (abort/status handle)
 _conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = {}   # conv_id → agent_id → lock
 _conv_bursts: dict[str, dict[str, dict]] = {}                # conv_id → tp_id → burst reg
+
+
+class _DrainResult(NamedTuple):
+    """What a merge/drain produced — the two signals that decide whether the
+    orchestrator should be handed off to (present deliverables / address a
+    conflict). `merged` = count of clean branch merges; `deliverables` =
+    (author, path) of previewable files that landed in main; `conflicted` =
+    at least one branch came back with a merge conflict."""
+
+    merged: int
+    deliverables: list[tuple[str, str]]
+    conflicted: bool
 # conv_id → ONE active discussion reg (free-form @mention discussion session).
 # reg = {budget:int, inflight:int, participants:set[str], seeder:str,
 #        synthesized:bool}. One discussion per conv at a time (a conv has one
@@ -1575,8 +1587,11 @@ async def create_message(body: dict):
     """Persist an arbitrary user-side message — used by image/file attachments
     + reply messages that need to survive page refresh.
 
-    Body: ``{ conv_id, sender_id?, payload, in_reply_to? }``
-    Defaults sender_id to "you" if missing. Returns the assigned msg id.
+    Body: ``{ conv_id, sender_id?, payload, in_reply_to?, msg_id? }``
+    Defaults sender_id to "you" if missing. When ``msg_id`` is supplied (the
+    optimistic UI's pre-allocated id), it's used as the row id so client store
+    and DB share one identity — otherwise rewind/pin/reply on a freshly-sent
+    attachment 404s until a page refresh. Returns the assigned msg id.
     """
     conv_id = body.get("conv_id")
     payload = body.get("payload")
@@ -1584,6 +1599,7 @@ async def create_message(body: dict):
         return {"error": "conv_id + payload(with kind) required"}, 400
     sender_id = body.get("sender_id") or "you"
     in_reply_to = body.get("in_reply_to") or None
+    msg_id = (body.get("msg_id") or "").strip() or None
     async with SessionLocal() as session:
         mid = await storage_repo.append_message(
             session,
@@ -1591,6 +1607,7 @@ async def create_message(body: dict):
             sender_id=sender_id,
             payload=payload,
             in_reply_to=in_reply_to,
+            msg_id=msg_id,
         )
         await session.commit()
     return {"ok": True, "id": mid}
@@ -3150,29 +3167,37 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             + "}\n\n"
         )
         if is_last:
-            log.info("burst %s: last task landed → merge + summary", tp_id)
-            # Merge must never block the wrap-up: if folding branches into main
-            # throws, we still want the orchestrator's summary turn to fire.
+            log.info("burst %s: last task landed → merge", tp_id)
+            # Merge first + capture what landed, so we can decide whether the
+            # orchestrator's wrap-up is even needed (merge must not block it).
+            drain = _DrainResult(0, [], False)
+            merge_failed = False
             try:
-                await _merge_burst_to_main(reg)
+                drain = await _merge_burst_to_main(reg)
             except Exception:
-                log.exception("burst %s: merge_to_main failed (continuing to summary)", tp_id)
+                log.exception("burst %s: merge_to_main failed", tp_id)
+                merge_failed = True
             orch_id = reg["orch"]
-            # The orchestrator's POOLED session still holds the worktree it had on
-            # the dispatch turn — from BEFORE the workers' files were merged into
-            # main just above. A pooled reuse skips create_workspace_sandbox, so it
-            # never runs _sync_branch_with_main → the summary turn would 验收 a STALE
-            # worktree and report deliverables as "未交付" even though they ARE in
-            # main. Evict it so the summary turn spawns a FRESH session that
-            # re-syncs the worktree with main. (Touches the is_last block — see
-            # docs/design/conflict-closed-loop-CHARTER.md; merge timing unchanged.)
-            with suppress(Exception):
-                await get_pool().close_session(orch_id, conv_id)
-            # Default wrap-up: the orchestrator summarizes the finished burst
-            # (otherwise it ends abruptly). A fresh, history-aware turn —
-            # nudged to summarize only, NOT to dispatch again. Fire-and-forget.
             done_n = sum(1 for t in payload["tasks"] if t["state"] == "done")
             failed_n = sum(1 for t in payload["tasks"] if t["state"] == "failed")
+            # Unified gating (user's rule): summon the orchestrator's wrap-up ONLY
+            # when there's something to do — a presentable deliverable, a merge
+            # conflict, a failed sub-task, or a merge error. A clean burst that
+            # produced nothing to SHOW ends silently (no summary turn).
+            if not (
+                drain.deliverables or drain.conflicted or failed_n or merge_failed
+            ):
+                log.info(
+                    "burst %s: clean, nothing to present/resolve → no summary", tp_id
+                )
+                return
+            # No need to evict the orchestrator's pooled session here anymore:
+            # its summary turn runs through run_adapter_turn, whose TURN-START
+            # sync hard-resets the orchestrator's worktree to the just-merged
+            # main (pooled or not). The subprocess reads files on demand, so it
+            # 验收s the fresh tree without a costly respawn. (Touches is_last —
+            # see docs/design/conflict-closed-loop-CHARTER.md; merge timing
+            # unchanged.)
             _contract = (reg.get("contract") or "").strip()
             _contract_clause = (
                 f"\n\n# 本批接口契约(逐条核对各产物是否符合,不符就明确指出)\n{_contract}"
@@ -3362,9 +3387,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         `kind:file` card attributed to ``author`` (the contact's ULID, so the
         UI shows their real avatar + name — not "Agent BOT").
 
-        Dedup: if the SAME author already has a file card with the SAME basename
-        in the recent message window, skip — the agent already presented it
-        explicitly via the `present` MCP tool, and we don't want a duplicate.
+        Dedup: if the SAME author already surfaced the SAME basename in the
+        recent message window — either as a standalone `kind:file` card OR
+        inside a `present`ed `kind:files` panel — skip, so we don't double up.
+        (The two payload kinds are distinct: `present` bundles many files into
+        one `kind:files` panel; this safety-net emits one `kind:file` each.
+        Dedup MUST cover both or a present()'d file would re-appear here.)
 
         Skips deletions (`D` status). New (`A`), modified (`M`), renamed-dest
         (`R`/`C`) all qualify.
@@ -3384,12 +3412,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             recent, _ = await storage_repo.list_messages(_db, conv_id, limit=40)
         for m in recent:
             p = m.get("payload") if isinstance(m.get("payload"), dict) else None
-            if not p or p.get("kind") != "file":
+            if not p:
                 continue
-            name = p.get("name")
             sid = m.get("sender_id")
-            if name and sid:
-                seen.add((str(sid), str(name)))
+            if not sid:
+                continue
+            kind = p.get("kind")
+            if kind == "file":
+                name = p.get("name")
+                if name:
+                    seen.add((str(sid), str(name)))
+            elif kind == "files":
+                # A `present`ed panel — every file in its bundle counts as seen.
+                for f in p.get("files") or []:
+                    fn = f.get("name") if isinstance(f, dict) else None
+                    if fn:
+                        seen.add((str(sid), str(fn)))
 
         ws_root = (settings.sandbox_root / "workspaces" / ws_id).resolve()
         for status, path in changed:
@@ -3441,8 +3479,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             )
 
     async def _drain_unmerged_branches(
-        ws_id: str, orch_id: str = "orchestrator"
-    ) -> int:
+        ws_id: str,
+        orch_id: str = "orchestrator",
+        *,
+        owner_agents: set[str] | None = None,
+    ) -> _DrainResult:
         """Single merge code path — used by BOTH burst completion AND post-turn
         auto-merge so the conflict closed-loop stays in one place.
 
@@ -3459,7 +3500,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
         ``orch_id`` is the sender attributed to any conflict card produced —
         the orchestrator that owned the burst, or the speaking agent itself
-        for free single-agent turns. Returns count of clean merges.
+        for free single-agent turns. ``owner_agents`` (the agents whose turn
+        just ended) scopes the pre-merge worktree commit so a concurrently
+        running agent's half-finished writes are never committed. Returns a
+        `_DrainResult` (clean-merge
+        count + the previewable deliverables that landed + a conflict flag) so
+        the caller can decide whether to hand off to the orchestrator.
 
         Auto file-cards (the per-author safety net) fire ONLY in solo/direct
         convs. In a GROUP the orchestrator presents the deliverable bundle (a
@@ -3470,10 +3516,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         """
         ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
         if ws_sandbox is None:
-            return 0
+            return _DrainResult(0, [], False)
         async with workspace_merge_lock(ws_id):
-            # Capture native-tool writes (OpenCode) as commits before merging.
-            await ws_sandbox.commit_pending_worktrees(conv_id)
+            # Capture native-tool writes (OpenCode) as commits before merging —
+            # but ONLY for the agents whose turn just ended (owner_agents), so a
+            # teammate still mid-turn doesn't get its half-baked work committed.
+            await ws_sandbox.commit_pending_worktrees(conv_id, only_agents=owner_agents)
             async with SessionLocal() as _db:
                 _conv = await storage_repo.get_conversation(_db, conv_id)
                 already = {
@@ -3485,58 +3533,142 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # orchestrator's panel (see docstring).
             auto_cards = not (_conv and _conv.group)
             merged_authors: list[str] = []
+            deliverables: list[tuple[str, str]] = []
+            conflicted = False
             # Track main HEAD between branch merges so we can attribute each
             # merge's file changes to the branch author for the chat file cards.
             pre_main = await ws_sandbox.main_head_sha()
             for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
                 if b in already:
                     continue
-                if await ws_sandbox.branch_ahead_of_main(b) <= 0:
+                # Each branch is independent: a failure probing/bookkeeping ONE
+                # must not abort the loop and strand the others' merges +
+                # deliverable/conflict signals. probe_merge is atomic per branch
+                # (clean→committed, conflict/error→main untouched via --abort), so
+                # skipping the rest of this iteration is always safe.
+                try:
+                    if await ws_sandbox.branch_ahead_of_main(b) <= 0:
+                        continue
+                    status, detail = await ws_sandbox.probe_merge(b)
+                    author = b.split("/")[1] if "/" in b else b
+                    if status == "clean":
+                        merged_authors.append(author)
+                        post_main = detail.get("sha") or await ws_sandbox.main_head_sha()
+                        # Advance pre_main IMMEDIATELY (before the throwable
+                        # bookkeeping below) so the next branch's range can never
+                        # mis-attribute this branch's files even if we bail here.
+                        prev_main, pre_main = pre_main, post_main
+                        if prev_main and post_main and prev_main != post_main:
+                            changed = await ws_sandbox.files_in_range(prev_main, post_main)
+                            # Collect previewable files as DELIVERABLES — the
+                            # signal that drives the orchestrator-presents handoff,
+                            # computed regardless of conv type.
+                            for st, path in changed:
+                                if (
+                                    path
+                                    and not st.startswith("D")
+                                    and path.lower().endswith(tuple(_PREVIEWABLE_EXTS))
+                                ):
+                                    deliverables.append((author, path))
+                            # Auto file-cards: solo/direct convs only — in a GROUP
+                            # the orchestrator presents the bundle (see docstring).
+                            if auto_cards:
+                                with suppress(Exception):
+                                    await _emit_agent_file_cards(ws_id, author, changed)
+                    elif status == "conflict":
+                        conflicted = True
+                        await _surface_conflict(
+                            ws_id, b, author, detail.get("files", []), orch_id,
+                            base_agents=list(merged_authors),
+                        )
+                    elif status == "error":
+                        log.warning(
+                            "merge: %s → error: %s", b, detail.get("message", "")
+                        )
+                except Exception:
+                    log.exception("drain: branch %s failed; skipping", b)
                     continue
-                status, detail = await ws_sandbox.probe_merge(b)
-                author = b.split("/")[1] if "/" in b else b
-                if status == "clean":
-                    merged_authors.append(author)
-                    # Diff this branch's range to figure out what previewable
-                    # files it brought in, emit a `kind:file` card per file
-                    # attributed to the branch author. Dedup against any card
-                    # the agent already emitted via the `present` MCP tool.
-                    post_main = detail.get("sha") or await ws_sandbox.main_head_sha()
-                    if auto_cards and pre_main and post_main and pre_main != post_main:
-                        changed = await ws_sandbox.files_in_range(pre_main, post_main)
-                        with suppress(Exception):
-                            await _emit_agent_file_cards(ws_id, author, changed)
-                    pre_main = post_main
-                elif status == "conflict":
-                    await _surface_conflict(
-                        ws_id, b, author, detail.get("files", []), orch_id,
-                        base_agents=list(merged_authors),
-                    )
-                elif status == "error":
-                    log.warning(
-                        "merge: %s → error: %s", b, detail.get("message", "")
-                    )
             if merged_authors:
                 # Files just landed in main → nudge the code tab to auto-refresh.
                 await emit('data: {"type":"data-workspace-files","data":{}}\n\n')
-            return len(merged_authors)
+            return _DrainResult(len(merged_authors), deliverables, conflicted)
 
-    async def _merge_burst_to_main(reg: dict) -> None:
+    async def _merge_burst_to_main(reg: dict) -> _DrainResult:
         """All burst workers done → drain their branches into main.
 
         Thin wrapper over `_drain_unmerged_branches` — conflict closed-loop +
         ledger semantics live there. Kept as a separate function because
         `_mark_burst_task` / `is_last` call it by name on burst completion
-        (load-bearing per docs/design/conflict-closed-loop-CHARTER.md).
+        (load-bearing per docs/design/conflict-closed-loop-CHARTER.md). Returns
+        the drain result so `is_last` can gate the orchestrator handoff on
+        (deliverable | conflict).
         """
         ws_id = reg.get("workspace_id")
         if not ws_id:
-            return
+            return _DrainResult(0, [], False)
         orch_id = reg.get("orch") or "orchestrator"
+        # The owners of this drain are exactly the burst's workers — all done by
+        # is_last. Scope the pre-merge worktree commit to them so an unrelated
+        # agent running a concurrent (non-burst) turn isn't swept in mid-write.
+        owners = {
+            t["agent"]
+            for t in (reg.get("payload") or {}).get("tasks", [])
+            if t.get("agent")
+        }
         # _drain_unmerged_branches auto-suppresses file-cards for group convs
         # (orchestrator-presents) — a burst is always a group, so the merged
         # worker files are surfaced by the orchestrator's summary panel, not here.
-        await _drain_unmerged_branches(ws_id, orch_id)
+        return await _drain_unmerged_branches(ws_id, orch_id, owner_agents=owners or None)
+
+    async def _maybe_handoff_to_orchestrator(
+        drain: _DrainResult, *, source_agent: str | None = None, failed: int = 0
+    ) -> bool:
+        """After a sub-agent's work merges, hand the conversation to its
+        orchestrator ONLY when there's something for it to do — a presentable
+        deliverable, a merge conflict, or a failed sub-task. Otherwise the
+        sub-agent's turn just ends (no orchestrator turn).
+
+        The orchestrator is the ONLY role that can `present`, so a deliverable
+        from a directly-@mentioned worker (which bypasses the orchestrator)
+        would otherwise never reach the user — this is the hook that fixes it.
+        Returns True if an orchestrator turn was spawned."""
+        if not (drain.deliverables or drain.conflicted or failed):
+            return False
+        async with SessionLocal() as _db:
+            _conv = await storage_repo.get_conversation(_db, conv_id)
+        orch_id = _conv.orchestrator_member_id if _conv else None
+        # No orchestrator (DM), or the actor IS the orchestrator (it had its own
+        # chance to present) → nothing to hand off to.
+        if not orch_id or orch_id == source_agent:
+            return False
+        parts: list[str] = []
+        if drain.deliverables:
+            paths = list(dict.fromkeys(p for _a, p in drain.deliverables))
+            parts.append(
+                "刚有交付物合并进 main:" + "、".join(paths)
+                + "。用**一次** `present(paths=[...])` 从 main 把它们作为一个面板展示给用户,"
+                "配一句一行说明(谁交付了什么)。"
+            )
+        if drain.conflicted:
+            parts.append(
+                "本批合并出现**冲突**(对话里已出冲突卡)。用 1-2 句向用户说明哪些文件冲突、"
+                "需要 ta 选边,不要再 dispatch 派活。"
+            )
+        if failed and not drain.deliverables and not drain.conflicted:
+            parts.append(f"有 {failed} 个子任务失败。用 1-2 句如实说明哪条没成、影响什么。")
+        nudge = "（系统提示)子任务已结束。" + " ".join(parts)
+        log.info(
+            "handoff → orchestrator %s (deliverables=%d conflict=%s failed=%d)",
+            orch_id, len(drain.deliverables), drain.conflicted, failed,
+        )
+        _spawn_turn(
+            conv_id, orch_id,
+            run_adapter_turn(
+                orch_id, nudge, depth=1, parent_agent_id=None,
+                inject_history=True, suppress_dispatch=True,
+            ),
+        )
+        return True
 
     async def run_adapter_turn(
         agent_id: str,
@@ -3570,6 +3702,33 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             agent_id, depth, suppress_dispatch, burst_card_id, lock.locked(),
         )
         async with lock:
+            # ── Turn-start worktree sync (disposable-branch model) ──────────
+            # Hard-reset this agent's worktree to the latest workspace `main` so
+            # the turn sees teammates' already-merged work — on EVERY turn,
+            # including POOLED adapter-session reuse (which skips
+            # create_workspace_sandbox and so the old in-spawn sync). The agent
+            # branch is disposable: last turn's output was merged or rejected, so
+            # reset (not merge) is correct — it never replays a resolved conflict.
+            # GUARD: if this branch has an OPEN/RESOLVING conflict, its pending
+            # side lives ONLY on the branch; resetting would destroy the version
+            # the user hasn't chosen yet, so we skip the sync until it resolves.
+            with suppress(Exception):
+                async with SessionLocal() as _sdb:
+                    _sconv = await storage_repo.get_conversation(_sdb, conv_id)
+                    _sws = (
+                        _sconv.workspace_id
+                        if (_sconv and _sconv.group and _sconv.workspace_id)
+                        else None
+                    )
+                    _has_open_conflict = bool(_sws) and any(
+                        r.branch == f"agent/{agent_id}/conv-{conv_id}"
+                        and r.status in ("open", "resolving")
+                        for r in await storage_repo.list_conflicts(_sdb, conv_id)
+                    )
+                if _sws and not _has_open_conflict:
+                    await Sandbox.reset_worktree_to_main(
+                        workspace_id=_sws, conv_id=conv_id, agent_id=agent_id
+                    )
             sandbox = await Sandbox.create(conv_id)
             # Build the actual prompt using the L1-L5 context assembler.
             # This gives the agent cross-conv awareness:
@@ -4369,15 +4528,35 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         _ws_id_for_merge = _conv.workspace_id if _conv else None
                 if _ws_id_for_merge:
                     with suppress(Exception):
-                        n = await _drain_unmerged_branches(_ws_id_for_merge, agent_id)
+                        drain = await _drain_unmerged_branches(
+                            _ws_id_for_merge, agent_id, owner_agents={agent_id}
+                        )
                         log.info(
                             "post-turn drain: conv=%s agent=%s dispatcher=%s "
                             "burst_started=%s → merged=%d",
-                            conv_id, agent_id, is_dispatcher, _burst_started, n,
+                            conv_id, agent_id, is_dispatcher, _burst_started,
+                            drain.merged,
                         )
+                        # Hand a single non-burst sub-agent's deliverable/conflict
+                        # to the orchestrator (present is orchestrator-only, so a
+                        # directly-@mentioned worker's file would otherwise never
+                        # show). Skip when: a burst worker / a burst is mid-flight
+                        # (is_last owns that) / a discussion is settling / this IS
+                        # a follow-up turn — avoids double or looped handoffs.
+                        if (
+                            burst_task_id is None
+                            and not suppress_dispatch
+                            and not _conv_bursts.get(conv_id)
+                            and not _conv_discussions.get(conv_id)
+                        ):
+                            with suppress(Exception):
+                                await _maybe_handoff_to_orchestrator(
+                                    drain, source_agent=agent_id
+                                )
 
     async def dispatch_user_message(
         text: str, members: list[str], in_reply_to: str | None = None,
+        msg_id: str | None = None,
     ) -> None:
         """Fan-out a user message to all relevant agents based on members.
 
@@ -4410,10 +4589,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # Stamp the code checkpoint: workspace main HEAD *before* this turn's
             # work, so「回到这个对话」on this message restores to that point.
             code_sha = await _workspace_head_for_conv(conv_id)
+            # `msg_id` (when provided by the client over WS) lets the optimistic
+            # store and the persisted row share one identity — required so that
+            # 「从此处重来」/ reply / pin on this freshly-sent message resolves
+            # the row instead of 404'ing on the client's `u-<uuid>` placeholder.
             async with SessionLocal() as db:
                 await storage_repo.append_message(
                     db, conv_id=conv_id, sender_id="you", payload=user_payload,
-                    in_reply_to=in_reply_to, code_sha=code_sha,
+                    in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
                 )
                 await db.commit()
 
@@ -4614,6 +4797,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 text: str = msg.get("text", "")
                 members: list[str] = msg.get("members", [])
                 in_reply_to: str | None = msg.get("in_reply_to") or None
+                # Optional client-pre-allocated id — keeps the optimistic store
+                # entry and the DB row sharing one identity; without it rewind /
+                # reply / pin on freshly-sent messages 404 until next refresh.
+                client_msg_id: str | None = (msg.get("msg_id") or None)
                 # Don't await — dispatch returns when fan-out is queued, the
                 # actual streams continue in the background. Tracked conv-scoped
                 # (not just locally) so it isn't GC'd AND so the disconnect-prune
@@ -4621,7 +4808,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # its pre-registration await window (else it'd orphan the
                 # agent_tasks dict the dispatcher then writes into).
                 _spawn_dispatcher(
-                    conv_id, dispatch_user_message(text, members, in_reply_to)
+                    conv_id,
+                    dispatch_user_message(
+                        text, members, in_reply_to, msg_id=client_msg_id,
+                    ),
                 )
                 continue
 

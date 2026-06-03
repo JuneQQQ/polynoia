@@ -7,11 +7,11 @@ from typing import Literal
 
 LayerKind = Literal[
     "identity",       # L1
-    "project_brief",  # L2
-    "shared_memory",  # L2.5 — conv-scoped shared contract/decisions (ADR-014)
-    "activity",       # L3 (one entry per ledger event)
-    "history",        # L4
-    "user_turn",      # L5
+    "project_brief",  # L4
+    "shared_memory",  # L5 — conv-scoped shared contract/decisions (ADR-014)
+    "activity",       # L6 (one entry per ledger event)
+    "history",        # L7
+    "user_turn",      # L9
 ]
 
 
@@ -23,11 +23,11 @@ class ContextLayer:
     content: str
     # Token estimate (CJK-aware). See `estimate_tokens()` in window.py.
     estimated_tokens: int = 0
-    # Higher priority = keep when budget is tight. L1 (identity) > L5
-    # (user turn) > L2 (briefs) > L4 (history) > L3 (activity).
+    # Higher priority = keep when budget is tight. L1 (identity) > L9
+    # (user turn) > L4 (briefs) > L7 (history) > L6 (activity).
     priority: int = 0
     # When True the windowing pass MUST NOT truncate this layer. Used for
-    # L1 (identity — agent must know who it is) and L5 (user turn —
+    # L1 (identity — agent must know who it is) and L9 (user turn —
     # truncating user's actual question = wrong answer guaranteed). When
     # overall budget can't fit the hard layers, soft layers get evicted
     # in priority order before any hard layer is touched.

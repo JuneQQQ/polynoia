@@ -234,8 +234,6 @@ class Sandbox:
         conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
         worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         branch = f"agent/{agent_id}/conv-{conv_id}"
-        reused = False  # True when an existing, git-registered worktree is reused
-
         # Guard against orphan worktree dirs: a previous scenario reset (rmtree
         # with ignore_errors=True) or a half-failed worktree-add can leave the
         # directory on disk WITHOUT registering it in `git worktree list`. Then
@@ -268,7 +266,6 @@ class Sandbox:
                 f"worktree {worktree_dir}".encode() in wt_out
                 or f"worktree {worktree_dir.resolve()}".encode() in wt_out
             )
-            reused = registered
             if not registered:
                 # Orphan — sidestep it so the worktree-add path below can
                 # recreate cleanly. Files inside are usually leftovers from a
@@ -344,24 +341,61 @@ class Sandbox:
             agent_id=agent_id,
             branch=branch,
         )
-        # A FRESH branch was just cut from main → already current. A REUSED one
-        # (2nd/3rd turn) is still on the base it branched from + its own commits;
-        # pull the latest main in so this turn sees teammates' already-merged work
-        # instead of stale code.
-        if reused:
-            await sandbox._sync_branch_with_main()
+        # Branch sync no longer happens here. A FRESH branch is cut from main
+        # (already current); a REUSED one is synced at TURN START by the caller
+        # (`Sandbox.reset_worktree_to_main`), which — unlike this path — also
+        # runs for POOLED adapter sessions that skip create_workspace_sandbox
+        # entirely. See routes.run_adapter_turn + docs/diagrams/merge-edge-cases.html.
         return sandbox
 
-    async def _sync_branch_with_main(self) -> None:
-        """Best-effort, non-destructive: bring the agent's worktree branch up to
-        the latest workspace ``main`` at the start of a reused turn.
+    @classmethod
+    async def reset_worktree_to_main(
+        cls, *, workspace_id: str, conv_id: str, agent_id: str
+    ) -> bool:
+        """Turn-start sync: hard-reset an agent's EXISTING worktree branch to the
+        latest workspace ``main``.
 
-        - dirty worktree (uncommitted writes) → skip (don't disturb in-flight work)
-        - already current / behind → ``git merge --no-edit main`` fast-forwards or
-          makes a merge commit
-        - conflict → ``git merge --abort``; the turn proceeds on the un-synced
-          branch and the conflict surfaces later at the normal merge-to-main
-        Runs in the worktree (its own HEAD/index); never touches the shared root.
+        Disposable-branch model: between turns an agent branch has no independent
+        value — its last turn's output was either MERGED into main or REJECTED
+        (conflict resolution picked the other side, or the user rewound). So we
+        ``git reset --hard main`` rather than ``git merge main``: merge would
+        replay an already-resolved conflict and drift the branch; reset always
+        succeeds and starts the agent from exactly what teammates see in main.
+
+        No-op (returns False) when the worktree doesn't exist yet (a fresh agent
+        — its branch is cut from main on first spawn) or git fails.
+
+        ⚠️ The CALLER MUST ensure no OPEN/RESOLVING conflict references this
+        branch: an unresolved conflict's pending side lives ONLY on the branch,
+        so resetting it would destroy the version the user hasn't chosen yet
+        (breaks the conflict closed-loop). See routes.run_adapter_turn.
+        """
+        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
+        conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
+        worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
+        if not worktree_dir.exists() or not (ws_root / ".git").exists():
+            return False
+        sandbox = cls(
+            root=worktree_dir,
+            conv_id=conv_id,
+            workspace_root=ws_root,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            branch=f"agent/{agent_id}/conv-{conv_id}",
+        )
+        return await sandbox._sync_branch_with_main()
+
+    async def _sync_branch_with_main(self) -> bool:
+        """Hard-reset this worktree's branch to the latest workspace ``main``.
+
+        ``git reset --hard main`` moves THIS branch's ref to main's commit and
+        discards any working-tree / uncommitted divergence — the disposable-
+        branch contract (see `reset_worktree_to_main`). It does NOT check out
+        main (the root keeps main checked out; a linked worktree just repoints
+        its own branch), so it's safe alongside the root's main. Runs in the
+        worktree; never touches the shared root's HEAD/index. Best-effort;
+        returns True on a clean reset.
         """
         wt = str(self.root)
 
@@ -384,15 +418,9 @@ class Sandbox:
             return proc.returncode or 0, out.decode("utf-8", "replace")
 
         with contextlib.suppress(Exception):
-            rc, status = await _run(["git", "status", "--porcelain"])
-            if rc != 0 or status.strip():
-                return  # dirty or status failed → leave it alone
-            rc, _out = await _run(["git", "merge", "--no-edit", "main"])
-            if rc != 0:
-                # Conflict / other failure → abort so the worktree stays clean;
-                # the turn proceeds, and merge-to-main surfaces any real conflict.
-                with contextlib.suppress(Exception):
-                    await _run(["git", "merge", "--abort"])
+            rc, _out = await _run(["git", "reset", "--hard", "main"])
+            return rc == 0
+        return False
 
     @classmethod
     async def ensure_workspace(cls, workspace_id: str) -> Path:
@@ -816,13 +844,22 @@ class Sandbox:
             branches.append(b)
         return sorted(branches)
 
-    async def commit_pending_worktrees(self, conv_id: str) -> int:
+    async def commit_pending_worktrees(
+        self, conv_id: str, only_agents: set[str] | None = None
+    ) -> int:
         """Commit any uncommitted changes in this conv's agent worktrees.
 
         Some adapters (OpenCode) write files via their NATIVE tools, which
         land in the worktree but are never git-committed — so merge-to-main
         (which works on commits) would skip them. We sweep each worktree and
         commit pending work to its branch before merging. Adapter-agnostic.
+
+        ``only_agents`` restricts the sweep to the worktrees of those agent ids
+        (the agents whose turn just ENDED — i.e. the owners of this drain). This
+        is critical: a drain triggered by agent B must NOT ``git add -A`` agent
+        A's worktree while A is still mid-turn writing files, or A's half-baked
+        work gets committed + merged into main. ``None`` sweeps every worktree
+        (legacy / no concurrent turns).
 
         Returns the number of worktrees where a commit was made.
         """
@@ -840,8 +877,11 @@ class Sandbox:
             elif line.startswith("branch ") and cur_path:
                 branch = line[len("branch "):].strip().removeprefix("refs/heads/")
                 if branch.startswith("agent/") and branch.endswith(f"/conv-{conv_id}"):
-                    if await self._commit_worktree_pending(cur_path, branch):
-                        committed += 1
+                    # branch = agent/<agent_id>/conv-<conv_id>
+                    agent_of = branch.split("/")[1] if "/" in branch else ""
+                    if only_agents is None or agent_of in only_agents:
+                        if await self._commit_worktree_pending(cur_path, branch):
+                            committed += 1
                 cur_path = None
         return committed
 

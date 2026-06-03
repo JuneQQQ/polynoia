@@ -55,6 +55,8 @@ coverage/
 *.sqlite3
 *.db
 *.db-backup
+*.db-shm
+*.db-wal
 data/
 
 # Logs

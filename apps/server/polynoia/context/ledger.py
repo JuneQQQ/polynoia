@@ -1,4 +1,4 @@
-"""L3 — cross-conv activity ledger.
+"""L6 — cross-conv activity ledger.
 
 What this agent has been part of recently, across all conversations.
 Privacy filter: only conversations where ``agent_id in conv.members``.
@@ -58,15 +58,10 @@ async def _pull_git_log_for_conv(
 # Display strings derived from the raw payload. Handles 12-card union via
 # `kind` field — text/tool-call rendered in detail, others get type-aware
 # placeholders so the agent at least sees that something happened.
-def _format_message_body(payload: dict) -> str:
+def _format_message_body(payload: dict, *, include_reasoning: bool = False) -> str:
     kind = payload.get("kind", "")
-    if kind == "reasoning":
-        # Reasoning (model thinking) is persisted for the UI (folded-on-refresh)
-        # but deliberately EXCLUDED from context: re-feeding one agent's raw
-        # chain-of-thought into later prompts is noise + token bloat, and leaks
-        # private thinking across agents. Empty body → history/ledger skip it.
-        return ""
-    if kind == "text":
+
+    def _join_text_body() -> str:
         body = payload.get("body") or []
         parts: list[str] = []
         for blk in body:
@@ -79,6 +74,19 @@ def _format_message_body(payload: dict) -> str:
                     if txt:
                         parts.append(txt)
         return " ".join(parts).strip()
+
+    if kind == "reasoning":
+        # Reasoning (model thinking) shares the text body shape. The CROSS-CONV
+        # ledger still excludes it (default off): re-feeding one agent's raw
+        # chain-of-thought into UNRELATED convs is noise + a privacy leak. The
+        # CURRENT-conv history layer opts IN (include_reasoning=True) so an agent
+        # — and the orchestrator at summary — sees the in-conv thinking trace.
+        if not include_reasoning:
+            return ""
+        thought = _join_text_body()
+        return f"[思考] {thought}" if thought else ""
+    if kind == "text":
+        return _join_text_body()
     if kind == "tool-call":
         name = payload.get("name", "?")
         state = payload.get("state", "?")
@@ -177,13 +185,13 @@ async def build_activity_ledger_layer(
     limit: int = 30,
     per_conv_limit: int = 8,
 ) -> ContextLayer | None:
-    """Build L3 ledger of cross-conv events the agent has visibility into.
+    """Build L6 ledger of cross-conv events the agent has visibility into.
 
     Visibility:
         - any conv where `agent_id in members`
         - PLUS any conv in a workspace this agent is also a member of
           (because code commits in sibling convs are workspace-shared)
-    Excludes the *current* conv (passed explicitly) since L4 covers that.
+    Excludes the *current* conv (passed explicitly) since L7 covers that.
     """
     # 1. Collect convs visible to this agent
     convs_q = await db.execute(select(ConversationRow))
@@ -214,7 +222,6 @@ async def build_activity_ledger_layer(
         return None
 
     visible_ws_by_id = {w.id: w for w in all_workspaces}
-    conv_by_id = {c.id: c for c in visible_convs}
 
     # 2. Pull recent messages across visible convs
     msg_q = await db.execute(

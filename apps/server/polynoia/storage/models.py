@@ -252,8 +252,11 @@ class ConvMemoryRow(Base):
         nullable=False,
         index=True,
     )
-    # Who recorded it ("you" / an agent ULID). Informational.
-    author_agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Who recorded it ("you" / an agent ULID). Indexed: shared.py's agent-level
+    # memory read (list_agent_memory) filters by this across all convs.
+    author_agent_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
     # contract | decision | artifact — drives rendering/grouping in the layer.
     kind: Mapped[str] = mapped_column(String(32), nullable=False, default="decision")
     content: Mapped[str] = mapped_column(Text, nullable=False)

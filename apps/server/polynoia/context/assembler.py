@@ -1,4 +1,4 @@
-"""Assembler — composes L1-L5 layers into the final prompt string.
+"""Assembler — composes L1-L9 layers into the final prompt string.
 
 Single public function `build_context_for_turn`. Used by the WS handler in
 ``polynoia.api.routes`` just before calling ``adapter.session.send()``.
@@ -74,11 +74,11 @@ async def build_context_for_turn(
     layers: list[ContextLayer] = []
     layers.append(build_identity_layer(agent, member_role=member_role))
 
-    # L1.5 — platform orchestration protocol for the conv's DESIGNATED
+    # L2 — platform orchestration protocol for the conv's DESIGNATED
     # orchestrator. Injected regardless of the agent's persona, so dispatch-based
     # delegation is guaranteed even when a user wrote a custom persona that never
     # mentions dispatching. ADR-017.
-    conv = await get_conversation(db, conv_id)
+    conv = cur_conv  # reuse the fetch above — was a redundant 2nd query/turn
     if conv is not None and conv.group:
         # Teammate display names (every group member sees the roster now — the
         # orchestrator as a dispatch target list, everyone else as people they
@@ -108,7 +108,7 @@ async def build_context_for_turn(
     if ledger is not None:
         layers.append(ledger)
 
-    # L2.5 — shared memory. Group/project conv: the conv-scoped locked board
+    # L5 — shared memory. Group/project conv: the conv-scoped locked board
     # (ADR-014). Project-external DM: agent-level work memory (ADR-019).
     shared = await build_shared_memory_layer(db, conv_id, agent_id=agent_id)
     if shared is not None:

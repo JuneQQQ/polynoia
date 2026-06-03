@@ -236,7 +236,7 @@ class ClaudeCodeAdapter:
         #
         # IMPORTANT: built-in Edit / Write / MultiEdit / NotebookEdit are
         # NOT in this list. Every file mutation flows through Polynoia MCP
-        # (mcp__polynoia__edit/write/apply_patch), which lets us:
+        # (mcp__polynoia__write — the sole mutation tool), which lets us:
         #   · audit every write (.polynoia/audit.jsonl)
         #   · enforce sandbox boundary
         #   · GATE on user approval in manual merge_mode (ADR-005)

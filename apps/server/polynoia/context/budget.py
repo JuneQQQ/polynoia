@@ -1,4 +1,4 @@
-"""Token budget calculator for the L1-L5 context system.
+"""Token budget calculator for the L1-L9 context system.
 
 When agent emit prompts go to Claude Code (or any CLI backend), the model's
 true `max_context_tokens` is the ceiling. But the agent CLI eats a big slice
@@ -14,7 +14,7 @@ of that ceiling before Polynoia even gets to inject its 5-layer prompt:
   ~8k typical
 
 That sums to ~35k of overhead. The remaining `max - 35k` is what Polynoia
-can actually use for L1-L5.
+can actually use for L1-L9.
 
 This module:
 1. `CLAUDE_CODE_OVERHEAD` constant (35k)
@@ -51,7 +51,7 @@ def compute_budget(
 
     Strategy:
     1. Determine ``max_total = override or known_default(model)``
-    2. Subtract ``overhead`` → ``available`` for L1-L5
+    2. Subtract ``overhead`` → ``available`` for L1-L9
     3. Scale the 5 layers with these proportions(tuned for editorial
        editor-style multi-agent UX where history matters most):
 

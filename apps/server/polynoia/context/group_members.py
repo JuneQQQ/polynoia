@@ -1,4 +1,4 @@
-"""L1.6 — group-members roster + free-form discussion hint.
+"""L3 — group-members roster + free-form discussion hint.
 
 For any member of a GROUP conv that is NOT the designated orchestrator, the
 platform injects a light teammate roster plus a nudge that the agent MAY

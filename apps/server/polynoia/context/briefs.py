@@ -1,4 +1,4 @@
-"""L2 — workspace project briefs.
+"""L4 — workspace project briefs.
 
 Lists every workspace this agent is a member of. The CURRENT conv's workspace
 (if any) gets a detail entry; the rest get a one-line summary. Privacy: we
@@ -21,7 +21,7 @@ async def build_project_briefs_layer(
     conv_id: str,
     max_other_workspaces: int = 10,
 ) -> ContextLayer | None:
-    """Build L2 briefs for `agent_id`. Returns None if no workspaces in scope."""
+    """Build L4 briefs for `agent_id`. Returns None if no workspaces in scope."""
     cur_conv = await get_conversation(db, conv_id)
     # R1: out-of-project chat (no workspace) → do NOT proactively enumerate the
     # agent's projects at all. The agent can still answer about a project if the

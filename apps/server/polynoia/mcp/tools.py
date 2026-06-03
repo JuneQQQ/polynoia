@@ -1,11 +1,14 @@
-"""Polynoia MCP tools: read / edit / write / apply_patch / bash / grep / glob / revert / call_agent.
+"""Polynoia MCP tools: read / write / bash / grep / glob + dispatch / discuss /
+remember / recall / report / ask_user / request_project_access / present.
 
-Edit-class tools (edit/write/apply_patch/revert) auto-commit to the sandbox's
-git repo with the calling agent's identity in the commit message.
+`write` is the SOLE file-mutation tool (full-file content → one audit entry,
+every change a complete reviewable write). It auto-commits to the sandbox's git
+repo with the calling agent's identity in the commit message.
 
 Read-class tools (read/grep/glob) and bash are read-mostly and don't commit.
 
-call_agent is a stub that will integrate with the Orchestrator in P1+.
+Multi-agent delegation is `dispatch` (parallel burst) / `discuss` (round-table),
+NOT a synchronous call.
 """
 from __future__ import annotations
 
@@ -119,12 +122,12 @@ async def _gate_via_pending_edit(
 async def _require_edit_approval(
     ctx: ToolContext, *, kind: str, file_path: str, args: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Manual-mode approval gate (ADR-005) shared by the write-class tools.
+    """Manual-mode approval gate (ADR-005) for the file-mutation path (`write`).
 
     Returns a ``{"kind":"rejected"}`` envelope if the user declined (the tool
     should return it verbatim), or ``None`` to proceed. Centralizes the
-    gate-then-reject pattern; each tool keeps its own locking/commit since those
-    differ (edit/write lock one path, apply_patch gates a multi-file patch)."""
+    gate-then-reject pattern; the tool keeps its own locking/commit. ``kind`` is
+    kept generic so the gate stays reusable if other mutation tools return."""
     approved = await _gate_via_pending_edit(ctx, kind=kind, file_path=file_path, args=args)
     if not approved:
         return {"error": "rejected by user", "kind": "rejected"}
@@ -369,111 +372,6 @@ class _ReadTool(_ToolBase):
         }
 
 
-class _EditTool(_ToolBase):
-    name = "edit"
-    description = (
-        "Edit a file via exact text replacement. `old_string` MUST match exactly "
-        "(including whitespace and indentation). If `replace_all=false` (default) "
-        "and `old_string` appears multiple times, error. On success: file is "
-        "modified AND auto-committed to sandbox git. Returns unified diff."
-    )
-    input_schema: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "old_string": {
-                "type": "string",
-                "description": "Text to find (must match exactly, including whitespace)",
-            },
-            "new_string": {"type": "string", "description": "Replacement text"},
-            "replace_all": {"type": "boolean", "default": False},
-            "turn_id": {"type": "string", "description": "Optional turn id for commit message"},
-        },
-        "required": ["path", "old_string", "new_string"],
-    }
-
-    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        path = ctx._resolve(args["path"])
-        # Manual merge mode gate (ADR-005): in manual mode this blocks until the
-        # user decides; auto mode returns immediately.
-        if rejected := await _require_edit_approval(
-            ctx, kind="edit", file_path=args["path"], args=args
-        ):
-            return rejected
-        async with ctx.file_lock(args["path"]):
-            return await self._do_edit(ctx, path, args)
-
-    async def _do_edit(
-        self, ctx: ToolContext, path: Path, args: dict[str, Any]
-    ) -> dict[str, Any]:
-        old = args["old_string"]
-        new = args["new_string"]
-        replace_all = args.get("replace_all", False)
-
-        if not path.exists():
-            return {"error": f"file not found: {args['path']}"}
-
-        original = path.read_text(encoding="utf-8")
-        count = original.count(old)
-        if count == 0:
-            # P0 minimal fuzzy fallback: try ignoring trailing whitespace differences
-            candidate_lines_old = old.rstrip("\n")
-            if candidate_lines_old in original:
-                count = original.count(candidate_lines_old)
-                old = candidate_lines_old
-            else:
-                return {
-                    "error": (
-                        f"old_string not found in {args['path']}. "
-                        f"The file may have been modified by another agent. "
-                        f"Re-read the file and try again with the current content."
-                    ),
-                    "kind": "not_found",
-                }
-        if count > 1 and not replace_all:
-            return {
-                "error": (
-                    f"old_string appears {count} times in {args['path']}. "
-                    f"Provide a more specific match or set replace_all=true."
-                ),
-                "kind": "ambiguous",
-                "matches": count,
-            }
-        modified = original.replace(old, new) if replace_all else original.replace(old, new, 1)
-        path.write_text(modified, encoding="utf-8")
-
-        # Generate unified diff
-        diff_lines = list(difflib.unified_diff(
-            original.splitlines(keepends=True),
-            modified.splitlines(keepends=True),
-            fromfile=f"a/{path.relative_to(ctx.sandbox.root)}",
-            tofile=f"b/{path.relative_to(ctx.sandbox.root)}",
-            n=3,
-        ))
-        additions = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
-        deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
-
-        sha = await ctx.git_commit(
-            turn_id=args.get("turn_id"),
-            message_suffix=f"edit {path.relative_to(ctx.sandbox.root)} (+{additions}/-{deletions})",
-        )
-
-        await _emit_diff_card(
-            ctx, str(path.relative_to(ctx.sandbox.root)),
-            additions, deletions, "".join(diff_lines), sha,
-        )
-
-        return {
-            "kind": "edited",
-            "path": str(path.relative_to(ctx.sandbox.root)),
-            "additions": additions,
-            "deletions": deletions,
-            "diff": "".join(diff_lines),
-            "commit_sha": sha,
-            "replaced": count if replace_all else 1,
-        }
-
-
 class _WriteTool(_ToolBase):
     name = "write"
     description = (
@@ -518,46 +416,6 @@ class _WriteTool(_ToolBase):
                 "bytes": len(args["content"].encode("utf-8")),
                 "commit_sha": sha,
             }
-
-
-class _ApplyPatchTool(_ToolBase):
-    name = "apply_patch"
-    description = (
-        "Apply a unified-diff patch to the sandbox via `git apply`. Patch must be "
-        "in standard `diff --git` / unified format. Auto-commits on success."
-    )
-    input_schema: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {
-            "patch_text": {"type": "string"},
-            "turn_id": {"type": "string"},
-        },
-        "required": ["patch_text"],
-    }
-
-    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        # Gate the whole patch as one approval — manual mode user sees a
-        # single ✓/✗ for the patch (not per-hunk). Reject = LLM gets error.
-        if rejected := await _require_edit_approval(
-            ctx, kind="apply_patch", file_path="(multi-file patch)",
-            args={"patch_text": args.get("patch_text", "")[:2000]},
-        ):
-            return rejected
-        # Write the patch to a temp file inside sandbox, then `git apply`
-        tmp = ctx.sandbox.root / ".polynoia" / "tmp_patch.diff"
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(args["patch_text"], encoding="utf-8")
-        try:
-            rc, _, err = await ctx._run_in_sandbox(["git", "apply", str(tmp)])
-            if rc != 0:
-                return {"error": f"git apply failed: {err}", "kind": "apply_failed"}
-            sha = await ctx.git_commit(
-                turn_id=args.get("turn_id"),
-                message_suffix="apply_patch",
-            )
-            return {"kind": "applied", "commit_sha": sha}
-        finally:
-            tmp.unlink(missing_ok=True)
 
 
 class _BashTool(_ToolBase):
@@ -657,202 +515,6 @@ class _GlobTool(_ToolBase):
             if ".git" not in p.parts and ".polynoia" not in p.parts
         )
         return {"kind": "results", "paths": matches[:500], "total": len(matches)}
-
-
-class _RevertTool(_ToolBase):
-    name = "revert"
-    description = (
-        "Revert sandbox state to a specific commit (by SHA). Creates a new "
-        "revert-commit on top (does NOT rewrite history). Returns the new SHA."
-    )
-    input_schema: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {
-            "commit_sha": {"type": "string", "description": "SHA to revert"},
-            "turn_id": {"type": "string"},
-        },
-        "required": ["commit_sha"],
-    }
-
-    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        target = args["commit_sha"]
-        rc, _, err = await ctx._run_in_sandbox([
-            "git", "revert", "--no-edit", target,
-        ])
-        if rc != 0:
-            return {"error": f"git revert failed: {err}", "kind": "revert_failed"}
-        rc2, sha, _ = await ctx._run_in_sandbox(["git", "rev-parse", "HEAD"])
-        return {
-            "kind": "reverted",
-            "target_sha": target,
-            "new_sha": sha.strip() if rc2 == 0 else None,
-        }
-
-
-_AGENT_REGISTRY_CACHE: dict[str, Any] = {}
-
-
-def _agent_registry() -> dict[str, Any]:
-    """Lazily import adapter classes (avoid heavy imports until needed)."""
-    if not _AGENT_REGISTRY_CACHE:
-        from polynoia.adapters.claude_code import ClaudeCodeAdapter
-        from polynoia.adapters.codex import CodexAdapter
-        from polynoia.adapters.opencode import OpenCodeAdapter
-
-        _AGENT_REGISTRY_CACHE.update({
-            "claudeCode": ClaudeCodeAdapter,
-            "designer":   ClaudeCodeAdapter,   # alias — designer runs on Claude
-            "opencoder":  OpenCodeAdapter,
-            "codex":      CodexAdapter,
-        })
-    return _AGENT_REGISTRY_CACHE
-
-
-class _CallAgentTool(_ToolBase):
-    name = "call_agent"
-    description = (
-        "Dispatch a sub-task to another Polynoia agent and wait for the result. "
-        "Use this to delegate work to a specialist (e.g. 'codex' for OpenAI-flavored "
-        "reasoning, 'opencoder' for code-heavy iteration, 'claudeCode' for design + writing). "
-        "The sub-agent runs in the SAME sandbox you're in — it sees your files. "
-        "Returns the sub-agent's final text response plus a list of tool calls it made."
-    )
-    input_schema: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {
-                "type": "string",
-                "description": (
-                    "Target agent id. Available: claudeCode, opencoder, codex, designer."
-                ),
-            },
-            "prompt": {
-                "type": "string",
-                "description": (
-                    "Self-contained task description for the sub-agent. Include any "
-                    "context the sub-agent needs (file paths, prior decisions, "
-                    "constraints). Sub-agent does NOT see your conversation history."
-                ),
-            },
-            "context": {
-                "type": "string",
-                "description": "Optional extra context.",
-            },
-            "max_seconds": {
-                "type": "integer",
-                "description": "Hard timeout in seconds (default 300).",
-                "default": 300,
-            },
-        },
-        "required": ["agent_id", "prompt"],
-    }
-
-    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        target_agent = args["agent_id"]
-        prompt = args["prompt"]
-        extra_ctx = args.get("context") or ""
-        max_seconds = int(args.get("max_seconds") or 300)
-
-        registry = _agent_registry()
-        adapter_cls = registry.get(target_agent)
-        if adapter_cls is None:
-            return {
-                "kind": "error",
-                "error": f"unknown agent_id: {target_agent}",
-                "available": sorted(registry.keys()),
-            }
-
-        # Audit: dispatch
-        ctx.append_audit("agent.dispatch", {
-            "caller": ctx.agent_id,
-            "callee": target_agent,
-            "prompt_preview": (prompt[:300] + "..." if len(prompt) > 300 else prompt),
-            "max_seconds": max_seconds,
-        })
-
-        full_prompt = (
-            f"{extra_ctx}\n\n---\n\n{prompt}" if extra_ctx.strip() else prompt
-        )
-
-        adapter = adapter_cls()
-        session = await adapter.start_session(conv_id=ctx.conv_id)
-
-        text_parts: list[str] = []
-        tool_calls: list[dict[str, Any]] = []
-        commits: list[str] = []
-        turn_status = "unknown"
-        try:
-            async def _run() -> None:
-                nonlocal turn_status
-                async for ev in session.send(task_id=f"call-{_short_id()}", text=full_prompt):
-                    t = ev.type
-                    if t == "part.completed":
-                        part = ev.part
-                        kind = getattr(part, "kind", None)
-                        if kind == "text":
-                            body = getattr(part, "body", None)
-                            if body:
-                                text_parts.append(body[0].c)
-                        elif kind == "tool-call":
-                            tool_calls.append({
-                                "name": getattr(part, "name", "?"),
-                                "state": getattr(part, "state", "?"),
-                                "summary": (getattr(part, "summary", "") or "")[:120],
-                            })
-                    elif t == "turn.completed":
-                        turn_status = "completed"
-                    elif t == "turn.failed":
-                        turn_status = "failed"
-
-            await asyncio.wait_for(_run(), timeout=max_seconds)
-        except TimeoutError:
-            turn_status = "timeout"
-        except Exception as exc:
-            ctx.append_audit("agent.error", {
-                "callee": target_agent,
-                "error": str(exc),
-                "type": type(exc).__name__,
-            })
-            return {
-                "kind": "error",
-                "agent_id": target_agent,
-                "error": str(exc),
-                "type": type(exc).__name__,
-            }
-        finally:
-            import contextlib as _ctxlib
-            with _ctxlib.suppress(Exception):
-                await session.close()
-
-        # Collect commit SHAs the sub-agent left in our shared sandbox
-        try:
-            rc, log, _ = await ctx._run_in_sandbox([
-                "git", "log",
-                f"--author={target_agent}",
-                "-5",
-                "--format=%h %s",
-            ])
-            if rc == 0:
-                commits = [ln for ln in log.strip().splitlines() if ln]
-        except Exception:
-            commits = []
-
-        result = {
-            "kind": "agent_response",
-            "agent_id": target_agent,
-            "status": turn_status,
-            "text": "\n".join(text_parts)[:8000],
-            "tool_calls": tool_calls[:50],
-            "recent_commits_by_agent": commits,
-        }
-        ctx.append_audit("agent.return", {
-            "callee": target_agent,
-            "status": turn_status,
-            "text_preview": (result["text"][:300] + "..." if len(result["text"]) > 300 else result["text"]),
-            "tool_call_count": len(tool_calls),
-            "commit_count": len(commits),
-        })
-        return result
 
 
 async def _callback_server(
@@ -1444,8 +1106,8 @@ class _PresentTool(_ToolBase):
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
-        _ReadTool, _EditTool, _WriteTool, _ApplyPatchTool,
-        _BashTool, _GrepTool, _GlobTool, _RevertTool, _CallAgentTool,
+        _ReadTool, _WriteTool,
+        _BashTool, _GrepTool, _GlobTool,
         _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
         _AskUserTool, _RequestProjectAccessTool, _PresentTool,
     ]
@@ -1462,8 +1124,8 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # writer:       docs work — same constraints as designer
 # critic:       read-only auditor — verifies others' work against the contract
 #               (read/grep/glob/recall) and records a verdict (report); no write.
-# generalist:   everything except call_agent (default for back-compat)
-# advisory:     read-only CONSULT mode — no write/edit/patch/bash. This is NOT a
+# generalist:   full build toolset (default for back-compat)
+# advisory:     read-only CONSULT mode — no write/bash. This is NOT a
 #               persona role; the adapter pool downgrades ANY contact to this when
 #               the conversation does not belong to a project/workspace (a
 #               free-floating homepage DM is for asking, not building — there's no
@@ -1474,8 +1136,10 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
 ROLE_TOOLS: dict[str, set[str]] = {
     # `write` is the SOLE file-mutation tool (full-file content) → one audit
-    # entry point. edit / apply_patch / revert are deliberately NOT exposed, so
-    # every change is a complete, reviewable write (user's audit requirement).
+    # entry point, so every change is a complete, reviewable write (user's audit
+    # requirement). Partial-edit tools (edit/apply_patch) + revert + the
+    # synchronous call_agent were removed — unexposed dead code, and delegation
+    # is dispatch/discuss, not a blocking call.
     # `present` is ORCHESTRATOR-ONLY: it surfaces the deliverable bundle (a panel
     # of files + a hand-off note) AT SUMMARY, from main. Workers don't present —
     # they `report`; the orchestrator bundles + presents. Solo agents' files are

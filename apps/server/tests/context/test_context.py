@@ -273,12 +273,13 @@ async def test_two_contacts_on_same_adapter_have_independent_ledgers(
 
 @pytest.mark.asyncio
 async def test_l4_history_pulls_rolling_window(clean_db) -> None:
-    """L4 takes last N messages from current conv."""
+    """L4 takes the last N messages from the current conv (window=100)."""
     alice = await _seed_agent("Alice")
     conv = await _seed_conv("Alice DM", members=["you", alice.id], direct=True)
-    for i in range(40):
+    # Seed past the window so truncation is actually exercised.
+    for i in range(110):
         await _post_message(
-            conv.id, "you", f"消息 #{i}", minutes_ago=40 - i
+            conv.id, "you", f"消息 #{i}", minutes_ago=110 - i
         )
 
     async with db_module.SessionLocal() as db:
@@ -286,10 +287,10 @@ async def test_l4_history_pulls_rolling_window(clean_db) -> None:
             db, agent_id=alice.id, conv_id=conv.id, user_text="总结"
         )
 
-    # Last 30 should appear (window default)
-    assert "消息 #39" in prompt
+    # Last 100 should appear (window default)
+    assert "消息 #109" in prompt
     assert "消息 #15" in prompt
-    # Older messages outside window should NOT appear
+    # Messages older than the 100-window should NOT appear (#0–#9 dropped)
     assert "消息 #0" not in prompt
 
 

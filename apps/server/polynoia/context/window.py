@@ -1,13 +1,13 @@
 """Token budget enforcement — 2-pass with hard-layer protection.
 
 Strategy:
-    Pass 1 — reserve hard layers (L1 identity, L5 user turn). They are never
+    Pass 1 — reserve hard layers (L1 identity, L9 user turn). They are never
              truncated. If their combined size already exceeds the global
              budget, raise warning (we still emit; this is rare and the
              upstream model has a chance of handling it).
     Pass 2 — distribute the remaining budget to soft layers in priority
-             order. Higher-priority soft layers (L2 briefs, L4 history) get
-             their full requested cap first; lower-priority (L3 activity)
+             order. Higher-priority soft layers (L4 briefs, L7 history) get
+             their full requested cap first; lower-priority (L6 activity)
              takes the residual. If a soft layer overflows its allocation,
              truncate from oldest end keeping the section heading.
 
@@ -120,9 +120,9 @@ def enforce_budgets(
 ) -> list[ContextLayer]:
     """Return layers fitted to per-kind caps with hard-layer protection.
 
-    Hard layers (L1 / L5) NEVER get truncated. If the global token budget
+    Hard layers (L1 / L9) NEVER get truncated. If the global token budget
     would be exceeded, soft layers are evicted in *priority-ascending* order
-    (lowest priority first → L3 activity goes before L4 history).
+    (lowest priority first → L6 activity goes before L7 history).
     """
     b = budget or LayerBudget()
     caps: dict[str, int] = {
@@ -191,7 +191,7 @@ def enforce_budgets(
 
     # ── Pass 3: restore original layer order for the final output ────
     # (we sorted soft by priority above for budget allocation; output
-    # should follow caller's logical order: L1 → L2 → L3 → L4 → L5)
+    # should follow caller's logical order: L1 → L4 → L6 → L7 → L9)
     enforced_remaining = list(enforced_soft)
     out: list[ContextLayer] = []
     for orig in layers:

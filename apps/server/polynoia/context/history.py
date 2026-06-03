@@ -1,4 +1,4 @@
-"""L4 — current conv history.
+"""L7 — current conv history.
 
 Rolling window. P0 simply takes the latest N messages; P1 will summarize
 older portions via a cheap LLM call.
@@ -20,9 +20,14 @@ async def build_conv_history_layer(
     agent_id: str,
     conv_id: str,
     *,
-    window: int = 30,
+    window: int = 100,
 ) -> ContextLayer | None:
-    """Build L4 — current conv last `window` messages, oldest→newest order."""
+    """Build L7 — current conv last `window` messages, oldest→newest order.
+
+    Includes the in-conv reasoning (思考) trace — current-conv only, never the
+    cross-conv ledger. Per-message body is still capped + the whole layer is
+    trimmed to the token budget downstream, so a large window degrades
+    gracefully rather than blowing the prompt."""
     q = await db.execute(
         select(MessageRow)
         .where(MessageRow.conv_id == conv_id)
@@ -51,12 +56,12 @@ async def build_conv_history_layer(
 
     lines: list[str] = ["# 本对话历史(最近 N 条)"]
     for m in msgs:
-        body = _format_message_body(m.payload).strip()
+        body = _format_message_body(m.payload, include_reasoning=True).strip()
         if not body:
             continue
         # Per-message hard cap — same 8k token limit as the audit doc spec.
         # Above this, body is sandwiched head+tail with a fold marker so the
-        # agent still gets context shape without one paste blowing out L4.
+        # agent still gets context shape without one paste blowing out L7.
         body = cap_message_body(body, max_tokens=8_000)
         lines.append(f"{_sender_label(m.sender_id)}: {body}")
 

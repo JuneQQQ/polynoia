@@ -1,7 +1,6 @@
 """Unit tests for Polynoia MCP tools."""
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -31,78 +30,6 @@ async def test_write_then_read(ctx):
     read_res = await TOOL_REGISTRY["read"].execute(ctx, {"path": "hello.txt"})
     assert read_res["kind"] == "file"
     assert "world" in read_res["content"]
-
-
-@pytest.mark.asyncio
-async def test_edit_search_replace(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "foo.py", "content": "x = 1\ny = 2\n"
-    })
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "foo.py", "old_string": "x = 1", "new_string": "x = 42",
-    })
-    assert res["kind"] == "edited"
-    assert res["additions"] == 1
-    assert res["deletions"] == 1
-    assert res["commit_sha"]
-
-    content = (ctx.sandbox.root / "foo.py").read_text()
-    assert "x = 42" in content
-
-
-@pytest.mark.asyncio
-async def test_edit_old_string_not_found(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "foo.py", "content": "x = 1\n"
-    })
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "foo.py", "old_string": "MISSING", "new_string": "REPLACED",
-    })
-    assert res.get("kind") == "not_found"
-    assert "modified by another agent" in res["error"]
-
-
-@pytest.mark.asyncio
-async def test_edit_ambiguous_match(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "foo.py", "content": "x = 1\nx = 1\n"
-    })
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "foo.py", "old_string": "x = 1", "new_string": "x = 2",
-    })
-    assert res["kind"] == "ambiguous"
-    assert res["matches"] == 2
-
-
-@pytest.mark.asyncio
-async def test_edit_replace_all(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "foo.py", "content": "x = 1\nx = 1\n"
-    })
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "foo.py", "old_string": "x = 1", "new_string": "x = 2",
-        "replace_all": True,
-    })
-    assert res["kind"] == "edited"
-    assert res["replaced"] == 2
-
-
-@pytest.mark.asyncio
-async def test_apply_patch(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "foo.py", "content": "x = 1\n"
-    })
-    patch = (
-        "diff --git a/foo.py b/foo.py\n"
-        "--- a/foo.py\n"
-        "+++ b/foo.py\n"
-        "@@ -1 +1 @@\n"
-        "-x = 1\n"
-        "+x = 99\n"
-    )
-    res = await TOOL_REGISTRY["apply_patch"].execute(ctx, {"patch_text": patch})
-    assert res["kind"] == "applied"
-    assert (ctx.sandbox.root / "foo.py").read_text().strip() == "x = 99"
 
 
 @pytest.mark.asyncio
@@ -142,35 +69,6 @@ async def test_glob(ctx):
 
 
 @pytest.mark.asyncio
-async def test_revert(ctx):
-    # commit 1: create
-    r1 = await TOOL_REGISTRY["write"].execute(ctx, {"path": "x.txt", "content": "v1"})
-    assert r1["commit_sha"]
-    # commit 2: modify
-    await TOOL_REGISTRY["write"].execute(ctx, {"path": "x.txt", "content": "v2"})
-    assert (ctx.sandbox.root / "x.txt").read_text() == "v2"
-    # revert commit 2
-    _rc, head, _ = await ctx._run_in_sandbox(["git", "rev-parse", "HEAD"])
-    sha2 = head.strip()
-    rev = await TOOL_REGISTRY["revert"].execute(ctx, {"commit_sha": sha2})
-    assert rev["kind"] == "reverted"
-    assert (ctx.sandbox.root / "x.txt").read_text() == "v1"
-
-
-@pytest.mark.asyncio
-async def test_call_agent_unknown_id_returns_error(ctx):
-    """Unknown agent_id returns kind=error with the registry listed."""
-    res = await TOOL_REGISTRY["call_agent"].execute(ctx, {
-        "agent_id": "no-such-agent", "prompt": "anything",
-    })
-    assert res["kind"] == "error"
-    assert "unknown agent_id" in res["error"]
-    assert "claudeCode" in res["available"]
-    assert "opencoder" in res["available"]
-    assert "codex" in res["available"]
-
-
-@pytest.mark.asyncio
 async def test_audit_log_records_tool_calls(ctx):
     """Every tool call appends to .polynoia/audit.jsonl."""
     import json as _json
@@ -203,26 +101,6 @@ async def test_commit_carries_agent_identity(ctx):
     # Most recent commit should be by test-agent
     assert commits[0]["author"] == "test-agent <test-agent@polynoia.local>"
     assert "agent:test-agent" in commits[0]["subject"]
-
-
-@pytest.mark.asyncio
-async def test_concurrent_edits_serialized(ctx):
-    """Two concurrent edits to the same file should serialize via lock."""
-    await TOOL_REGISTRY["write"].execute(ctx, {"path": "shared.txt", "content": "v0\n"})
-
-    async def edit(old, new):
-        return await TOOL_REGISTRY["edit"].execute(ctx, {
-            "path": "shared.txt", "old_string": old, "new_string": new,
-        })
-
-    # Launch two edits; second should fail because first already changed v0 → v1
-    res_a, res_b = await asyncio.gather(
-        edit("v0", "v1"), edit("v0", "v2"), return_exceptions=True,
-    )
-    # One must succeed, the other must fail with not_found
-    statuses = [r.get("kind") if isinstance(r, dict) else "error" for r in (res_a, res_b)]
-    assert "edited" in statuses
-    assert "not_found" in statuses
 
 
 def test_dispatch_tool_schema_accepts_contract():

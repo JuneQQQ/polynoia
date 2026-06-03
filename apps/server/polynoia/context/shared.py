@@ -1,4 +1,4 @@
-"""L2.5 — shared / agent-level memory (ADR-014, revised by ADR-019).
+"""L5 — shared / agent-level memory (ADR-014, revised by ADR-019).
 
 Two scenarios, one layer:
 
