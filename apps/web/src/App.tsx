@@ -1,5 +1,5 @@
 import { Menu } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
@@ -26,7 +26,15 @@ export function App() {
 		id: string;
 		members: string[];
 		title: string;
-	} | null>(null);
+	} | null>(() => {
+		// Restore the conv you were in so a refresh lands back here, not on home.
+		try {
+			const raw = window.localStorage.getItem("polynoia:active-conv");
+			return raw ? JSON.parse(raw) : null;
+		} catch {
+			return null;
+		}
+	});
 	// Mobile: sidebar is a drawer, hidden by default. Desktop/browser: sidebar
 	// is a permanent left column.
 	const mobile = isMobile();
@@ -58,10 +66,27 @@ export function App() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, [mobile, toggleSidebar]);
 
-	// Entering a project no longer fabricates a "主对话" — conversations are
-	// strictly user-created. Clear any stale selection; the workspace sidebar
-	// lists real convs to pick (or create) from.
+	// Persist the active conv so a refresh restores it (paired with the useState
+	// initializer above + the persisted activeWorkspaceId in the store).
 	useEffect(() => {
+		try {
+			if (activeConv)
+				window.localStorage.setItem(
+					"polynoia:active-conv",
+					JSON.stringify(activeConv),
+				);
+			else window.localStorage.removeItem("polynoia:active-conv");
+		} catch {}
+	}, [activeConv]);
+
+	// Entering a project no longer fabricates a "主对话" — conversations are
+	// strictly user-created. Clear any stale selection on a workspace SWITCH; the
+	// workspace sidebar lists real convs to pick. Guard the first run so the
+	// boot-restored (workspace, conv) pair — a matched set — isn't wiped.
+	const prevWsIdRef = useRef(activeWorkspaceId);
+	useEffect(() => {
+		if (activeWorkspaceId === prevWsIdRef.current) return;
+		prevWsIdRef.current = activeWorkspaceId;
 		if (activeWorkspaceId) {
 			setActiveConv(null);
 			setView("chat");

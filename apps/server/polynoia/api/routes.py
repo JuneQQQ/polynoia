@@ -30,7 +30,7 @@ from polynoia.sandbox import Sandbox, workspace_merge_lock
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
-from polynoia.storage.models import WorkspaceRow
+from polynoia.storage.models import MessageRow, WorkspaceRow
 from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
@@ -1751,29 +1751,60 @@ async def create_pending_edit_endpoint(body: dict):
 
 @router.post("/api/present")
 async def present_file(body: dict):
-    """Agent proactively shows a produced file to the user as a clickable card.
+    """Agent proactively shows produced files to the user as ONE deliverable panel.
 
-    Body ``{conv_id, agent_id, ws, path, caption?, name?}``. ``ws`` is the
-    workspace address the file lives in (a project workspace_id, or ``conv:<id>``
-    for a private DM). Appends a ``kind:file`` message + broadcasts ``data-file``
-    so it shows live; clicking 「打开预览」 opens it in the right rail (same as
-    clicking the file in the workspace tree). Persists so it survives a refresh."""
+    Body ``{conv_id, agent_id, ws, paths|path, message?}``. ``ws`` is the workspace
+    address the files live in (a project workspace_id, or ``conv:<id>`` for a
+    private DM). Appends ONE ``kind:files`` panel (a one-line ``message`` + the
+    file list) + broadcasts ``data-files`` so it shows live; each file is clickable
+    to preview in the right rail / download. Persists so it survives a refresh."""
     conv_id = (body.get("conv_id") or "").strip()
     ws = (body.get("ws") or "").strip()
-    path = (body.get("path") or "").strip()
-    if not conv_id or not ws or not path:
-        return {"error": "conv_id + ws + path required"}, 400
+    # Accept a single `path` or a list `paths` — present one or many files at once.
+    _raw = body.get("paths")
+    if isinstance(_raw, list):
+        paths = [str(p).strip().lstrip("/") for p in _raw if str(p).strip()]
+    else:
+        _single = (body.get("path") or "").strip().lstrip("/")
+        paths = [_single] if _single else []
+    if not conv_id or not ws or not paths:
+        return {"error": "conv_id + ws + path(s) required"}, 400
     agent_id = (body.get("agent_id") or "system").strip()
-    name = (body.get("name") or path.split("/")[-1]).strip()
-    src = (
-        f"/api/workspaces/{ws}/files/download?path="
-        + urllib.parse.quote(path, safe="")
-    )
+    # Orchestrator-presents (user's choice): a worker mid-burst must NOT surface
+    # its own file — the card would stream from its unmerged branch, and the user
+    # asked that deliverables be shown by the COORDINATOR after merge, from main.
+    # Defer iff the sender is a member of a burst that hasn't finished yet (its
+    # agent id is in that burst's task list AND tasks are still pending). We check
+    # actual membership — not just "!= orchestrator" — so an agent on a non-burst
+    # turn (e.g. a discussion @mention) during an unrelated active burst isn't
+    # wrongly gated. The orchestrator isn't in the task list, so it always passes.
+    # The present tool already committed the file to the worker's branch before
+    # POSTing here, so it still rides _merge_burst_to_main into main, where the
+    # orchestrator's post-merge summary turn presents it. Solo agents pass through.
+    for _reg in _conv_bursts.get(conv_id, {}).values():
+        if not _reg.get("pending"):
+            continue
+        _tasks = _reg.get("payload", {}).get("tasks", [])
+        if any(t.get("agent") == agent_id for t in _tasks):
+            return {"ok": True, "deferred": True,
+                    "note": "已记录;交付物会由协调者在汇总时从 main 统一展示。"
+                            "你现在只需用 report 报告产出的文件,不要自己 present。"}
+    # ONE panel for the whole bundle (not a card per file): a one-line hand-off
+    # message + the file list. `message` is the agent's note to the user.
+    message = body.get("message") or body.get("caption") or None
     payload = {
-        "kind": "file",
-        "src": src,
-        "name": name,
-        "caption": body.get("caption") or None,
+        "kind": "files",
+        "message": message,
+        "files": [
+            {
+                "src": (
+                    f"/api/workspaces/{ws}/files/download?path="
+                    + urllib.parse.quote(path, safe="")
+                ),
+                "name": path.split("/")[-1],
+            }
+            for path in paths
+        ],
     }
     mid = f"present-{uuid.uuid4().hex[:12]}"
     async with SessionLocal() as session:
@@ -1783,7 +1814,7 @@ async def present_file(body: dict):
         )
         await session.commit()
     frame = (
-        'data: {"type":"data-file","id":' + json.dumps(mid)
+        'data: {"type":"data-files","id":' + json.dumps(mid)
         + ',"sender_id":' + json.dumps(agent_id)
         + ',"data":' + json.dumps(payload, ensure_ascii=False) + "}\n\n"
     )
@@ -2320,6 +2351,84 @@ async def restore_workspace(ws_id: str, body: dict):
     return result
 
 
+@router.post("/api/conversations/{conv_id}/rewind")
+async def rewind_conversation(conv_id: str, body: dict):
+    """「从此处重来」: delete ``from_msg_id`` + every later message in this conv,
+    AND (if the conv has a workspace) reset workspace main to that message's
+    ``code_sha``. Body ``{from_msg_id}``. Differs from
+    `/api/workspaces/{ws}/restore` which only touches code — rewind ALSO
+    drops the chat timeline forward so the user can re-send.
+
+    Refuses while an agent is running here (would race the worktree AND
+    delete its in-flight reply). Broadcasts ``data-conv-rewound`` so other
+    open tabs drop the deleted messages without a manual refresh.
+
+    Returns ``{ok, deleted, restored?, undo_sha?}``. ``restored`` /
+    ``undo_sha`` are only present when a workspace restore happened.
+    """
+    from_msg_id = (body.get("from_msg_id") or "").strip()
+    if not from_msg_id:
+        raise HTTPException(400, "from_msg_id required")
+    if _conv_has_running_agent(conv_id):
+        raise HTTPException(
+            409, "an agent is still running — finish or cancel it first"
+        )
+
+    async with SessionLocal() as session:
+        conv = await storage_repo.get_conversation(session, conv_id)
+        if conv is None:
+            raise HTTPException(404, "conversation not found")
+        target = await session.get(MessageRow, from_msg_id)
+        if target is None or target.conv_id != conv_id:
+            raise HTTPException(404, "message not in this conversation")
+        target_code_sha = target.code_sha
+
+    restored: str | None = None
+    undo_sha: str | None = None
+    # Workspace conv with a stamped checkpoint → restore main first. If this
+    # fails we abort BEFORE touching messages (no half-rewind: either both or
+    # neither). Non-workspace convs (DMs) just drop messages.
+    if conv.workspace_id and target_code_sha:
+        await get_pool().close_all()
+        sb = Sandbox.open_workspace_if_exists(conv.workspace_id)
+        if sb is None:
+            raise HTTPException(404, "workspace not materialized")
+        result = await sb.restore_main_to(target_code_sha)
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "restore failed"))
+        restored = result.get("restored") or None
+        undo_sha = result.get("undo_sha") or None
+
+    async with SessionLocal() as session:
+        deleted = await storage_repo.delete_messages_from(
+            session, conv_id=conv_id, from_msg_id=from_msg_id,
+        )
+        await session.commit()
+
+    # Tell every open tab: drop messages from from_msg_id forward. Other open
+    # clients re-render without a refresh. The initiator could already have
+    # dropped them client-side; this is the cross-tab safety net.
+    payload = {
+        "type": "data-conv-rewound",
+        "data": {"conv_id": conv_id, "from_msg_id": from_msg_id},
+    }
+    await _broadcast_to_conv(
+        conv_id, f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
+    if restored:
+        # Workspace files changed too — nudge the right-rail tree/preview.
+        await _broadcast_to_conv(
+            conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
+        )
+
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "restored": restored,
+        "undo_sha": undo_sha,
+    }
+
+
 @router.get("/api/workspaces/{ws_id}/files")
 async def list_workspace_files(ws_id: str, path: str = ""):
     """List one directory level inside a workspace.
@@ -2370,7 +2479,13 @@ async def read_workspace_file(ws_id: str, path: str):
         raise HTTPException(415, "binary file (not UTF-8)")
     return PlainTextResponse(
         text,
-        headers={"X-Modified": str(target.stat().st_mtime)},
+        # X-Modified for client-side staleness checks; Cache-Control=no-store
+        # to bypass browser heuristic cache (workspace files are mutable, the
+        # same URL routinely serves different content).
+        headers={
+            "X-Modified": str(target.stat().st_mtime),
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -2388,7 +2503,10 @@ async def read_workspace_file_blob(ws_id: str, path: str):
     return Response(
         content=raw,
         media_type="application/octet-stream",
-        headers={"X-Modified": str(target.stat().st_mtime)},
+        headers={
+            "X-Modified": str(target.stat().st_mtime),
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -2568,6 +2686,11 @@ async def download_workspace_file(ws_id: str, path: str):
         path=target,
         filename=target.name,
         media_type="application/octet-stream",
+        # Workspace files are live — an agent rewriting a same-name file
+        # (regenerate pptx, edit .md) must show fresh content on the next
+        # fetch. Browser heuristic cache would otherwise serve the previous
+        # bytes from memory cache because the URL is unchanged.
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -3073,12 +3196,25 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 if failed_n else
                 "谁交付了什么(文件名),以及任何风险/漏项。"
             )
+            # Orchestrator-presents (user's choice): the workers' files are now
+            # merged into main and this fresh summary turn's worktree is synced to
+            # main, so present() here reads the canonical merged bytes. The workers
+            # were blocked from presenting mid-burst (see /api/present gate), so the
+            # coordinator surfaces every shipped deliverable exactly once, from main.
+            _present_clause = (
+                "\n\n# 展示交付物(由你统一展示)\n"
+                "核对通过后,把所有**确认存在且符合契约**的最终交付物用**一次** "
+                "`present(paths=[...])` 调用一并展示给用户(传入相对路径列表)——这些文件已"
+                "合并进 main,present 会从 main 读取最终版本。一次性传全部、不要逐个分多次调用;"
+                "一个产物只展示一次;失败/未交付/未通过核对的**不要** present。"
+            )
             nudge = (
                 "上面这批并行子任务已全部结束"
                 f"({done_n} 成功" + (f"、{failed_n} 失败" if failed_n else "") + ")"
                 "。请用 1-3 句话向用户收尾汇总:" + _escalation
                 + "不要重复实现细节,**不要再调 dispatch 派活**,只汇报。"
                 + _verify_clause
+                + _present_clause
                 + _contract_clause
             )
             log.info("burst %s: spawning summary turn for orchestrator %s", tp_id, orch_id)
@@ -3101,12 +3237,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     # ALWAYS settles on completion (even on error). When the whole fan-out tree
     # drains, exactly ONE 讨论结论 synthesis turn fires. Caps: global turn budget
     # + per-message fan-out + per-branch depth (see _DISCUSSION_* + the chain loop).
-    async def _settle_discussion_turn(*, fallback_agent: str) -> None:
+    async def _settle_discussion_turn() -> None:
         """One discussion turn finished. Decrement in-flight; when the tree has
-        fully drained, fire EXACTLY ONE synthesis — orchestrator if the conv has
-        one, else the seeder / a participant. Idempotent (claim + pop before any
-        await, mirroring the burst is_last latch) so concurrent branches settling
-        never double-fire."""
+        fully drained, fire EXACTLY ONE synthesis by the conv's orchestrator (the
+        only synthesizer — leaderless groups are unsupported). Idempotent (claim +
+        pop before any await, mirroring the burst is_last latch) so concurrent
+        branches settling never double-fire."""
         reg = _conv_discussions.get(conv_id)
         if not reg:
             return
@@ -3117,18 +3253,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             return
         reg["synthesized"] = True
         participants = set(reg.get("participants") or ())
-        seeder = reg.get("seeder") or fallback_agent
         _conv_discussions.pop(conv_id, None)   # remove BEFORE await → no double-fire
         # A lone participant never warranted a discussion → no summary.
         if len(participants) < 2:
             return
         async with SessionLocal() as _db:
             _conv = await storage_repo.get_conversation(_db, conv_id)
-        synth_id = (
-            (_conv.orchestrator_member_id if _conv else None)
-            or (seeder if seeder != "you" else None)
-            or next((p for p in participants if p != "you"), None)
-        )
+        # Group discussions are always orchestrator-led now (leaderless groups are
+        # unsupported): the conv's designated orchestrator writes the 讨论结论. No
+        # seeder/participant election fallback — if there's somehow no orchestrator
+        # (shouldn't happen in a group), skip synthesis rather than electing one.
+        synth_id = _conv.orchestrator_member_id if _conv else None
         if not synth_id or synth_id == "you":
             return
         nudge = (
@@ -3161,7 +3296,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             )
         finally:
             with suppress(Exception):
-                await _settle_discussion_turn(fallback_agent=target)
+                await _settle_discussion_turn()
 
     async def _surface_conflict(
         ws_id: str, branch: str, author: str, files: list[dict], orch_id: str,
@@ -3205,6 +3340,106 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             + "}\n\n"
         )
 
+    # Previewable file extensions — when an agent's branch merges to main, any
+    # NEW or MODIFIED file with these extensions gets an auto-emitted `data-file`
+    # card attributed to the branch author. This covers the case where an agent
+    # produces a deliverable via bash/script (e.g. `python gen_ppt.py`) and
+    # forgets to call the `present` MCP tool — the user still sees a clickable
+    # card without depending on agent self-discipline.
+    _PREVIEWABLE_EXTS = {
+        ".pptx", ".docx", ".xlsx", ".pdf",
+        ".md", ".markdown", ".mdx",
+        ".html", ".htm",
+        ".csv", ".tsv",
+    }
+
+    async def _emit_agent_file_cards(
+        ws_id: str,
+        author: str,
+        changed: list[tuple[str, str]],
+    ) -> None:
+        """For each previewable file the agent brought into main, emit a chat
+        `kind:file` card attributed to ``author`` (the contact's ULID, so the
+        UI shows their real avatar + name — not "Agent BOT").
+
+        Dedup: if the SAME author already has a file card with the SAME basename
+        in the recent message window, skip — the agent already presented it
+        explicitly via the `present` MCP tool, and we don't want a duplicate.
+
+        Skips deletions (`D` status). New (`A`), modified (`M`), renamed-dest
+        (`R`/`C`) all qualify.
+        """
+        from pathlib import Path
+        from urllib.parse import quote
+
+        from polynoia.domain.entities import new_ulid
+        from polynoia.settings import settings
+
+        # Dedup window: last 40 messages. The `present` tool emits a file card
+        # AT THE TIME the agent calls it, well before the merge happens, so
+        # the dedup window only needs to span "this turn's history" which is
+        # well under 40 in practice.
+        seen: set[tuple[str, str]] = set()
+        async with SessionLocal() as _db:
+            recent, _ = await storage_repo.list_messages(_db, conv_id, limit=40)
+        for m in recent:
+            p = m.get("payload") if isinstance(m.get("payload"), dict) else None
+            if not p or p.get("kind") != "file":
+                continue
+            name = p.get("name")
+            sid = m.get("sender_id")
+            if name and sid:
+                seen.add((str(sid), str(name)))
+
+        ws_root = (settings.sandbox_root / "workspaces" / ws_id).resolve()
+        for status, path in changed:
+            if not path or status.startswith("D"):
+                continue
+            ext = Path(path).suffix.lower()
+            if ext not in _PREVIEWABLE_EXTS:
+                continue
+            name = Path(path).name
+            if (author, name) in seen:
+                continue  # agent already presented it via `present` tool
+            abs_path = (ws_root / path).resolve()
+            try:
+                abs_path.relative_to(ws_root)
+            except ValueError:
+                continue  # defensive — `path` escapes workspace root
+            try:
+                size = abs_path.stat().st_size if abs_path.is_file() else None
+            except OSError:
+                size = None
+            payload = {
+                "kind": "file",
+                "src": (
+                    f"/api/workspaces/{ws_id}/files/download"
+                    f"?path={quote(path)}"
+                ),
+                "name": name,
+                "media_type": None,
+                "size_bytes": size,
+                "caption": None,
+            }
+            mid = f"auto-{new_ulid()}"
+            async with SessionLocal() as _db:
+                await storage_repo.append_message(
+                    _db, conv_id=conv_id, sender_id=author,
+                    payload=payload, msg_id=mid,
+                )
+                await _db.commit()
+            # Mark as seen so a subsequent branch merging the same file
+            # (multi-agent edits) doesn't emit a duplicate from a different
+            # author — keeps the dedup invariant per-message-window.
+            seen.add((author, name))
+            await emit(
+                'data: {"type":"data-file","data":'
+                + json.dumps(payload, ensure_ascii=False)
+                + ',"id":' + json.dumps(mid)
+                + ',"sender_id":' + json.dumps(author)
+                + "}\n\n"
+            )
+
     async def _drain_unmerged_branches(
         ws_id: str, orch_id: str = "orchestrator"
     ) -> int:
@@ -3225,6 +3460,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         ``orch_id`` is the sender attributed to any conflict card produced —
         the orchestrator that owned the burst, or the speaking agent itself
         for free single-agent turns. Returns count of clean merges.
+
+        Auto file-cards (the per-author safety net) fire ONLY in solo/direct
+        convs. In a GROUP the orchestrator presents the deliverable bundle (a
+        `present` panel) from main at summary, so auto-surfacing each branch's
+        files — on the burst merge OR the per-turn drain of a worker — would
+        duplicate it and re-introduce worker-attributed cards. Groups always
+        have an orchestrator (leaderless mode removed), so this is unambiguous.
         """
         ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
         if ws_sandbox is None:
@@ -3233,12 +3475,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # Capture native-tool writes (OpenCode) as commits before merging.
             await ws_sandbox.commit_pending_worktrees(conv_id)
             async with SessionLocal() as _db:
+                _conv = await storage_repo.get_conversation(_db, conv_id)
                 already = {
                     r.branch
                     for r in await storage_repo.list_conflicts(_db, conv_id)
                     if r.status in ("open", "resolving", "abandoned")
                 }
+            # Only auto-surface in solo/direct convs — groups present via the
+            # orchestrator's panel (see docstring).
+            auto_cards = not (_conv and _conv.group)
             merged_authors: list[str] = []
+            # Track main HEAD between branch merges so we can attribute each
+            # merge's file changes to the branch author for the chat file cards.
+            pre_main = await ws_sandbox.main_head_sha()
             for b in await ws_sandbox.list_agent_branches(conv_id=conv_id):
                 if b in already:
                     continue
@@ -3248,6 +3497,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 author = b.split("/")[1] if "/" in b else b
                 if status == "clean":
                     merged_authors.append(author)
+                    # Diff this branch's range to figure out what previewable
+                    # files it brought in, emit a `kind:file` card per file
+                    # attributed to the branch author. Dedup against any card
+                    # the agent already emitted via the `present` MCP tool.
+                    post_main = detail.get("sha") or await ws_sandbox.main_head_sha()
+                    if auto_cards and pre_main and post_main and pre_main != post_main:
+                        changed = await ws_sandbox.files_in_range(pre_main, post_main)
+                        with suppress(Exception):
+                            await _emit_agent_file_cards(ws_id, author, changed)
+                    pre_main = post_main
                 elif status == "conflict":
                     await _surface_conflict(
                         ws_id, b, author, detail.get("files", []), orch_id,
@@ -3274,6 +3533,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         if not ws_id:
             return
         orch_id = reg.get("orch") or "orchestrator"
+        # _drain_unmerged_branches auto-suppresses file-cards for group convs
+        # (orchestrator-presents) — a burst is always a group, so the merged
+        # worker files are surfaced by the orchestrator's summary panel, not here.
         await _drain_unmerged_branches(ws_id, orch_id)
 
     async def run_adapter_turn(
@@ -4055,12 +4317,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # is what stops a stale-credential 401 from showing a green "done"
             # lane on an empty deliverable (the burst must not rubber-stamp it).
             if burst_card_id and burst_task_id:
-                # A turn that finished cleanly but emitted NOTHING (no text, no
-                # tool call, no reasoning — e.g. a stale session that survived the
-                # retry above) did NOT deliver. Don't rubber-stamp it "done": flip
-                # the lane to failed and surface a note, so it explains the empty
-                # result instead of a silent green badge on an undelivered task.
-                if not turn_failed and not emitted_any:
+                # A turn that finished cleanly but produced NO actual content
+                # (no text, no tool call, no reasoning — e.g. a stale session
+                # that survived the retry above, or a codex app-server turn that
+                # completed with zero output) did NOT deliver. Don't rubber-stamp
+                # it "done": flip the lane to failed and surface a note.
+                # NOTE: we check full_text + tool_parts, NOT emitted_any —
+                # emitted_any is True whenever any SSE chunk was emitted, and
+                # TurnStartedEvent always produces a StartChunk, so emitted_any
+                # is always True for a turn that started streaming even if it
+                # produced zero content. The old `not emitted_any` guard never
+                # fired for such turns, causing empty bursts to be marked "done".
+                _empty_deliverable = not full_text and not tool_parts
+                if not turn_failed and _empty_deliverable:
                     with suppress(Exception):
                         await _persist_and_emit_error(
                             emit, conv_id=conv_id, sender_id=agent_id,
@@ -4070,7 +4339,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 with suppress(Exception):
                     await _mark_burst_task(
                         burst_card_id, burst_task_id,
-                        "failed" if (turn_failed or not emitted_any) else "done",
+                        "failed" if (turn_failed or _empty_deliverable) else "done",
                     )
 
             # Post-turn auto-merge: drain this conv's unmerged worktree commits
@@ -4122,8 +4391,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             not just the legacy "claudeCode"/"opencoder"/"codex" template ids).
           - If no such member exists → emit an explanatory error chunk
 
-        There is no implicit orchestrator: orchestration happens *only* when a
-        member has been explicitly designated. No designation → flat group.
+        Every group conversation has exactly one designated orchestrator (required
+        at creation); all group work routes through it. Leaderless / decentralized
+        groups are not supported. Direct (1:1) convs have no orchestrator and use
+        the simple per-member fan-out path below.
         """
         async with SessionLocal() as session:
             conv = await storage_repo.get_conversation(session, conv_id)
@@ -4146,9 +4417,26 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 )
                 await db.commit()
 
-        # Parse @mentions + detect a discussion intent up-front (both the orch
-        # and flat branches use them). A user-initiated discussion forms when the
-        # user @mentions ≥2 teammates, OR says 讨论/discuss while ≥2 will respond.
+        # Groups MUST have an orchestrator (enforced at creation, ~912). Defense
+        # in depth: if a group ever reaches dispatch without a usable orchestrator
+        # (legacy data, or the orchestrator was removed from members), refuse —
+        # rather than silently falling back to leaderless flat fan-out, the
+        # decentralized mode we no longer support. Directs (not `group`) have no
+        # orchestrator by design and fall through to the 1:1 path below.
+        if conv and conv.group and not use_orch:
+            await _persist_and_emit_error(
+                emit, conv_id=conv_id, sender_id="system",
+                message=(
+                    "本群聊没有可用的协调者。群聊必须指定一位协调者来拆解、并行调度任务"
+                    "(去中心化群聊已不再支持)。请在群成员设置里指定一位协调者。"
+                ),
+                reason="no_orchestrator",
+            )
+            return
+
+        # Parse @mentions up-front (both branches use them). In an orchestrator
+        # group, the user @mentioning ≥2 teammates forms a discussion — they talk
+        # to each other and the orchestrator writes the 讨论结论 (use_orch branch).
         async with SessionLocal() as session:
             all_agents = await storage_repo.list_agents(session)
         agent_by_id = {a.id: a for a in all_agents}
@@ -4156,7 +4444,6 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         resolver = _build_mention_resolver(all_agents)
         mentioned_ids = set(_parse_mentions(text, exclude=set(), resolver=resolver))
         member_set = set(members)
-        _has_disc_kw = ("讨论" in text) or ("discuss" in text.lower())
 
         def _agent_ok(aid: str) -> bool:
             a = agent_by_id.get(aid)
@@ -4273,22 +4560,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             )
             return
 
-        # User-convened discussion (flat group, no orchestrator): the user named
-        # ≥2 teammates, OR said 讨论/discuss with ≥2 about to respond. Seed them as
-        # discussion turns so they @ each other and converge to one 讨论结论.
-        # Otherwise plain parallel fan-out (unchanged) — each answers on its own.
-        _mentioned_members = [m for m in mentioned_ids if m in member_set and m != "you"]
-        want_discussion = len(targets) >= 2 and (
-            len(_mentioned_members) >= 2 or _has_disc_kw
-        )
-        if want_discussion:
-            _seed_user_discussion(targets)
-        else:
-            # Spawn one concurrent task per target agent. A second message to the
-            # same agent while its first turn runs just blocks on the per-agent
-            # lock; the earlier task keeps its strong ref via _conv_inflight.
-            for agent_id in targets:
-                _spawn_turn(conv_id, agent_id, run_adapter_turn(agent_id, text))
+        # This path serves only DIRECT (1:1) convs now — every group routes
+        # through its orchestrator above (leaderless groups are unsupported).
+        # Spawn one concurrent task per target agent. A second message to the same
+        # agent while its first turn runs just blocks on the per-agent lock; the
+        # earlier task keeps its strong ref via _conv_inflight.
+        for agent_id in targets:
+            _spawn_turn(conv_id, agent_id, run_adapter_turn(agent_id, text))
 
     # ── Main receive loop ───────────────────────────────────────
     try:

@@ -12,6 +12,7 @@ import { CopyPart } from "./CopyPart";
 import { DiffPart } from "./DiffPart";
 import { ErrorPart } from "./ErrorPart";
 import { FilePart } from "./FilePart";
+import { FilesPanelPart } from "./FilesPanelPart";
 import { ImagePart } from "./ImagePart";
 import { LogsPart } from "./LogsPart";
 import { MetricsPart } from "./MetricsPart";
@@ -63,6 +64,7 @@ export const PARTS_REGISTRY: Partial<{
 	"ask-form": AskFormPart,
 	image: ImagePart,
 	file: FilePart,
+	files: FilesPanelPart,
 	error: ErrorPart,
 	conflict: ConflictPart,
 };

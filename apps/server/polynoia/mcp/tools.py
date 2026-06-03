@@ -1355,36 +1355,58 @@ class _RequestProjectAccessTool(_ToolBase):
 class _PresentTool(_ToolBase):
     name = "present"
     description = (
-        "Show a file you produced to the user as a clickable card in the chat. "
-        "Use this to proactively surface a deliverable (a doc, image, page, data "
-        "file…) — the user clicks it to preview, same as opening it in the "
-        "workspace. Path is relative to your working dir. Prefer this over pasting "
-        "long file contents into your reply."
+        "Show the files you produced to the user as ONE deliverable panel in the "
+        "chat — a one-line note plus the file list (each clickable to preview or "
+        "download). Pass `paths` (a list) to bundle several into a single panel, or "
+        "`path` for one; `message` is a one-line hand-off note shown above them. "
+        "Paths are relative to your working dir. Call this ONCE with ALL deliverables "
+        "— do NOT call it per file. Prefer this over pasting file contents into your reply."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Workspace-relative file path"},
-            "caption": {"type": "string", "description": "Optional one-line note"},
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Workspace-relative file paths to bundle into one panel",
+            },
+            "path": {"type": "string", "description": "A single workspace-relative file path"},
+            "message": {
+                "type": "string",
+                "description": "One-line note to the user shown above the files (what was delivered)",
+            },
         },
-        "required": ["path"],
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        rel = (args.get("path") or "").strip().lstrip("/")
-        if not rel:
-            return {"error": "path required"}
-        # Verify the file actually exists in this agent's sandbox before showing.
-        target = ctx._resolve_read(rel)
-        if not target.exists() or target.is_dir():
-            return {"error": f"file not found: {rel}"}
-        # Capture the file in git BEFORE emitting the card. Untracked side-
-        # products (e.g. a CSV produced by running a script via the bash tool)
-        # would otherwise stay in the worktree, never merge to main, and the
-        # card's src URL would 404 because the download endpoint reads from
-        # main. git_commit is a no-op if the worktree has no pending changes.
+        # Accept a single `path` or a list `paths` (or both) — present one or many.
+        raw: list[Any] = []
+        if isinstance(args.get("paths"), list):
+            raw.extend(args["paths"])
+        elif args.get("paths"):
+            raw.append(args["paths"])
+        if args.get("path"):
+            raw.append(args["path"])
+        rels: list[str] = []
+        for p in raw:
+            r = str(p or "").strip().lstrip("/")
+            if r and r not in rels:
+                rels.append(r)
+        if not rels:
+            return {"error": "path or paths required"}
+        # Verify each file exists in this agent's sandbox before showing.
+        missing = [
+            r for r in rels
+            if not (ctx._resolve_read(r).exists() and not ctx._resolve_read(r).is_dir())
+        ]
+        if missing:
+            return {"error": f"file not found: {', '.join(missing)}"}
+        # Capture in git BEFORE emitting cards. Untracked side-products (e.g. a CSV
+        # produced by running a script via the bash tool) would otherwise stay in
+        # the worktree, never merge to main, and the card's src URL would 404
+        # because the download endpoint reads from main. No-op if nothing pending.
         with contextlib.suppress(Exception):
-            await ctx.git_commit(turn_id=None, message_suffix=f"present {rel}")
+            await ctx.git_commit(turn_id=None, message_suffix=f"present {', '.join(rels)}")
         # Workspace address: a project workspace_id when in one, else the contact's
         # private per-conv sandbox (conv:<conv_id>) — matches the preview pane.
         ws_id = os.environ.get("POLYNOIA_WORKSPACE_ID") or f"conv:{ctx.conv_id}"
@@ -1402,14 +1424,21 @@ class _PresentTool(_ToolBase):
                     # generic "Agent / BOT".
                     "agent_id": ctx.turn_agent_id or ctx.agent_id,
                     "ws": ws_id,
-                    "path": rel,
-                    "caption": args.get("caption"),
+                    "paths": rels,
+                    "message": args.get("message") or args.get("caption"),
                 })
                 r.raise_for_status()
+                data = r.json()
         except (httpx.RequestError, httpx.HTTPError) as e:
             return {"presented": False, "error": str(e)}
-        ctx.append_audit("agent.present", {"path": rel, "ws": ws_id})
-        return {"presented": True, "path": rel}
+        # Mid-burst worker: the server deferred the card(s) to the coordinator's
+        # post-merge summary (orchestrator-presents). The files are already
+        # committed to this branch, so they merge to main and get shown there.
+        if data.get("deferred"):
+            return {"presented": False, "deferred": True,
+                    "note": data.get("note"), "paths": rels}
+        ctx.append_audit("agent.present", {"paths": rels, "ws": ws_id})
+        return {"presented": True, "paths": rels}
 
 
 TOOL_REGISTRY: dict[str, _ToolBase] = {
@@ -1447,13 +1476,17 @@ ROLE_TOOLS: dict[str, set[str]] = {
     # `write` is the SOLE file-mutation tool (full-file content) → one audit
     # entry point. edit / apply_patch / revert are deliberately NOT exposed, so
     # every change is a complete, reviewable write (user's audit requirement).
+    # `present` is ORCHESTRATOR-ONLY: it surfaces the deliverable bundle (a panel
+    # of files + a hand-off note) AT SUMMARY, from main. Workers don't present —
+    # they `report`; the orchestrator bundles + presents. Solo agents' files are
+    # auto-surfaced at merge (_emit_agent_file_cards), so they don't need it either.
     "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "write", "remember", "recall", "ask_user", "present"},
-    "coder":        {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
-    "designer":     {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
-    "writer":       {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
-    "critic":       {"read", "grep", "glob", "recall", "report", "present"},
-    "generalist":   {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access", "present"},
-    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access", "present"},
+    "coder":        {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "designer":     {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "writer":       {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "critic":       {"read", "grep", "glob", "recall", "report"},
+    "generalist":   {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
+    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access"},
 }
 
 

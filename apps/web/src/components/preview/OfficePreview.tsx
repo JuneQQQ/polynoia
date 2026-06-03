@@ -10,8 +10,14 @@
  * degrades to a clean "download to view" card instead of taking down the
  * whole pane. Preview-only — binary files have no meaningful UTF-8 source.
  */
-import { Download, FileWarning, Loader2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+	Download,
+	FileWarning,
+	LayoutGrid,
+	Loader2,
+	StretchHorizontal,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
 import type { DocKind } from "./DocPreviewPane";
@@ -174,24 +180,21 @@ function PptxView({
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const ref = useRef<HTMLDivElement | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-	// WIDTH-FIT — slide width fills the available pane width minus 12px
-	// padding on each side. Slide height = width × 9/16 (16:9 aspect). Never
-	// crops horizontally; slides stack vertically and the outer container
-	// gives a vertical scrollbar when total height exceeds the pane.
-	const [width, setWidth] = useState<number | null>(null);
+	// pptx-preview is a SINGLE-slide paginated viewer (renders only the current
+	// slide + a pager). To show the whole deck we drive its internal
+	// htmlRender.renderSlide(i) for every index into its one wrapper (they
+	// accumulate since we never removeCurrentSlide), then CSS them into one of two
+	// layouts. "scroll" = full-width slides stacked one per row (read each in
+	// detail); "grid" = small thumbnails many-per-row (overview at a glance).
+	const [mode, setMode] = useState<"scroll" | "grid">("scroll");
+	const [paneW, setPaneW] = useState<number | null>(null);
 
-	// ResizeObserver, debounced 200ms so dragging the pane handle only re-
-	// renders once at the end (pptx-preview re-parses the whole deck on init).
+	// ResizeObserver, debounced 200ms (a width change re-parses the whole deck).
 	useEffect(() => {
 		const el = containerRef.current;
 		if (!el) return;
-		const PAD = 12; // each side; 24px horizontal budget total
-		const MIN = 280; // below this slides become unreadable
 		let timer: number | null = null;
-		const measure = () => {
-			const w = Math.max(MIN, el.clientWidth - PAD * 2);
-			setWidth(w);
-		};
+		const measure = () => setPaneW(el.clientWidth);
 		measure();
 		const ro = new ResizeObserver(() => {
 			if (timer !== null) window.clearTimeout(timer);
@@ -204,26 +207,34 @@ function PptxView({
 		};
 	}, []);
 
+	// Slide render width by mode: large for scroll (readable), small for grid.
+	const width = useMemo(() => {
+		if (!paneW) return null;
+		const avail = Math.max(280, paneW - 24);
+		return mode === "grid" ? Math.min(avail, 300) : Math.min(avail, 1000);
+	}, [paneW, mode]);
+
 	useEffect(() => {
-		if (!width) return;
+		if (!width || !ref.current) return;
 		let alive = true;
 		setErr(null);
 		import("pptx-preview")
-			.then((mod) => {
+			.then(async (mod) => {
 				if (!alive || !ref.current) return;
 				ref.current.innerHTML = "";
-				type PptxPreviewModule = {
-					init: (
-						container: HTMLElement,
-						opts?: { width?: number; height?: number },
-					) => { preview: (b: ArrayBuffer) => Promise<unknown> };
-				};
-				const m = mod as unknown as PptxPreviewModule;
-				const previewer = m.init(ref.current, {
+				// biome-ignore lint/suspicious/noExplicitAny: pptx-preview ships no types; we reach its internal renderSlide to show ALL slides.
+				const pv: any = (mod as any).init(ref.current, {
 					width,
 					height: Math.round((width * 9) / 16),
 				});
-				return previewer.preview(buf);
+				await pv.preview(buf);
+				if (!alive) return;
+				// preview() renders only slide 0 + a pager. Render the rest into the
+				// same wrapper so every slide stacks. Guarded: if the lib internals
+				// change we degrade to the single-slide view rather than crashing.
+				const n: number = pv.slideCount ?? 0;
+				const render = pv.htmlRender?.renderSlide?.bind(pv.htmlRender);
+				if (render) for (let i = 1; i < n; i++) render(i);
 			})
 			.catch((e) => {
 				if (alive) setErr(String(e));
@@ -238,22 +249,69 @@ function PptxView({
 		<div
 			ref={containerRef}
 			className="h-full w-full overflow-y-auto overflow-x-hidden bg-[var(--color-surface-2)]"
-			style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 12, paddingBottom: 12 }}
+			style={{ padding: 12 }}
 		>
-			<div ref={ref} className="pptx-preview pptx-preview-fit" />
-			{/* Each slide = a distinct CARD. The slides share the deck's background
-			    color, so a plain gap was invisible (they bled into one continuous
-			    block). Add a gap + hairline ring + soft shadow so each slide reads as
-			    its own surface. The ring is a box-shadow (no layout impact → never
-			    distorts the slide's 16:9 box). */}
+			{/* Layout toggle: 逐页平铺 (continuous) vs 网格总览 (overview). */}
+			<div className="sticky top-0 z-10 mb-3 flex w-fit gap-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] p-0.5 shadow-sm">
+				{(
+					[
+						["scroll", StretchHorizontal, "逐页平铺"],
+						["grid", LayoutGrid, "网格总览"],
+					] as const
+				).map(([m, Icon, label]) => (
+					<button
+						key={m}
+						type="button"
+						onClick={() => setMode(m)}
+						aria-pressed={mode === m}
+						title={label}
+						className={`grid h-7 w-7 place-items-center rounded-md transition ${mode === m ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]" : "text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)]"}`}
+					>
+						<Icon size={15} />
+					</button>
+				))}
+			</div>
+			<div
+				ref={ref}
+				className={`pptx-all ${mode === "grid" ? "pptx-grid" : "pptx-scroll"}`}
+			/>
+			{/* Show EVERY slide (not the lib's 1-slide pager): force slide-wrappers
+			    relative, lay them out per mode, hide the pager/next chrome. A CSS
+			    counter stamps each slide's page number, slide-sorter style. */}
 			<style>{`
-				.pptx-preview-fit > * {
-					margin-bottom: 18px;
+				.pptx-all .pptx-preview-wrapper {
+					height: auto !important;
+					width: auto !important;
+					overflow: visible !important;
+					counter-reset: pptx-slide;
+					display: flex;
+					justify-content: center;
+				}
+				.pptx-all.pptx-scroll .pptx-preview-wrapper { flex-direction: column; align-items: center; gap: 22px; }
+				.pptx-all.pptx-grid .pptx-preview-wrapper { flex-wrap: wrap; align-content: flex-start; gap: 14px; }
+				.pptx-all .pptx-preview-wrapper-pagination,
+				.pptx-all .pptx-preview-wrapper-next { display: none !important; }
+				.pptx-all .pptx-preview-slide-wrapper {
+					position: relative !important;
+					top: auto !important;
+					left: auto !important;
+					margin: 0 !important;
 					border-radius: 6px;
 					box-shadow: 0 0 0 1px var(--color-line), var(--shadow-card);
 				}
-				.pptx-preview-fit > *:last-child {
-					margin-bottom: 0;
+				.pptx-all .pptx-preview-slide-wrapper::after {
+					counter-increment: pptx-slide;
+					content: counter(pptx-slide);
+					position: absolute;
+					bottom: 6px;
+					right: 8px;
+					font-size: 11px;
+					color: var(--color-fg-3);
+					background: var(--color-surface);
+					border: 1px solid var(--color-line);
+					border-radius: 4px;
+					padding: 0 6px;
+					pointer-events: none;
 				}
 			`}</style>
 		</div>

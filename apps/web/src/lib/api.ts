@@ -433,6 +433,19 @@ export const api = {
 			`/api/workspaces/${wsId}/restore`,
 			{ sha, conv_id: convId },
 		),
+	/**「从此处重来」: delete `fromMsgId` + every later msg in this conv, AND (if
+	 * the conv has a workspace) restore main to that msg's code_sha. Returns
+	 * `deleted` count; `restored` + `undo_sha` only set when a code restore
+	 * happened. Refused (409) while an agent is running in this conv. */
+	rewindConv: (convId: string, fromMsgId: string) =>
+		postJSON<{
+			ok: boolean;
+			deleted: number;
+			restored: string | null;
+			undo_sha: string | null;
+		}>(`/api/conversations/${convId}/rewind`, {
+			from_msg_id: fromMsgId,
+		}),
 	/** 对话式创建: infer a contact config from a free-text description (prefills
 	 * the create form; user reviews + edits). Deterministic heuristics server-side. */
 	suggestContact: (description: string) =>

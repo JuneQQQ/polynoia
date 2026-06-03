@@ -32,6 +32,9 @@ export function PreviewPane() {
 	// No 文件/预览 toggle anymore: clicking a file in the tree previews it
 	// directly (sets previewFile); a back arrow returns to the tree.
 	const openPreviewFile = useStore((s) => s.openPreviewFile);
+	// File-tree clicks open a CENTER TAB (not the right-rail preview). This is
+	// scenario 2 of the preview routing: tree → center, chat card → right rail.
+	const openCenterFile = useStore((s) => s.openCenterFile);
 	const previewFile = useStore((s) => s.preview.previewFile);
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
@@ -210,7 +213,7 @@ export function PreviewPane() {
 					) : (
 						<FileTree
 							workspaceId={workspaceId}
-							onOpen={openPreviewFile}
+							onOpen={openCenterFile}
 							activePath={previewFile}
 						/>
 					)}

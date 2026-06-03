@@ -47,8 +47,9 @@ function extOf(path: string): string {
 
 /** Map a file extension → a CodeMirror language extension (for highlighting).
  * Off-the-shelf @codemirror/lang-* packages; unknown extensions fall back to
- * no language (plain text, still editable). */
-function langExtForPath(path: string): Extension | undefined {
+ * no language (plain text, still editable). Exported so the right-rail
+ * SourcePreview reuses the same mapping. */
+export function langExtForPath(path: string): Extension | undefined {
 	switch (extOf(path)) {
 		case "ts":
 		case "tsx":
@@ -108,8 +109,10 @@ export function CodeEditor({
 	// Doc-type files (.md/.xlsx/.html/Marp) get a rendered-preview toggle —
 	// WYSIWYG doc (Crepe), embedded workbook, Marp slides, or HTML iframe. CSV is
 	// intentionally plain text; it should not masquerade as a native workbook.
+	// "code" kind (.py/.ts/...) deliberately stays in source-only mode: the
+	// "preview" of code IS the source, so showing the toggle would be a no-op.
 	const kind = docKind(path, content ?? "");
-	const isDoc = kind !== "other";
+	const isDoc = kind !== "other" && kind !== "code";
 	const isWorkbook = kind === "workbook";
 	// Binary office docs (docx/pptx/xlsx) have NO meaningful text source — opening
 	// them in CodeMirror shows garbled bytes + saving would corrupt the file. They

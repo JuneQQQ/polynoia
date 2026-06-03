@@ -333,7 +333,7 @@ const StringBlock = memo(function StringBlock({
 	if (!isStreaming) {
 		return (
 			<ReactMarkdown
-				remarkPlugins={[remarkGfm]}
+				remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
 				rehypePlugins={[
 					[rehypeHighlight, { detect: true, ignoreMissing: true }],
 				]}
@@ -356,7 +356,7 @@ const StringBlock = memo(function StringBlock({
 		() =>
 			prefix ? (
 				<ReactMarkdown
-					remarkPlugins={[remarkGfm]}
+					remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
 					rehypePlugins={[
 						[rehypeHighlight, { detect: true, ignoreMissing: true }],
 					]}

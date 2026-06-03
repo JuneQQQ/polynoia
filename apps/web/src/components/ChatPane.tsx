@@ -1,26 +1,26 @@
 import { Loader2, PanelRight, Square } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { api, type ConversationSummary } from "../lib/api";
+import { type ConversationSummary, api } from "../lib/api";
+import { computeBursts } from "../lib/burstClaim";
+import type { Message, TasksPayload } from "../lib/types";
 import { ConvWebSocket } from "../lib/ws";
 import {
+	type AgentPhase,
+	type AgentStatusValue,
 	phaseLabel,
 	selectAgentStatuses,
 	selectMessages,
 	useStore,
-	type AgentPhase,
-	type AgentStatusValue,
 } from "../store";
-import { computeBursts } from "../lib/burstClaim";
-import type { Message, TasksPayload } from "../lib/types";
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
-import { FloatingReviewBar } from "./FloatingReviewBar";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
+import { FloatingReviewBar } from "./FloatingReviewBar";
 import { MessageView } from "./MessageView";
-import { ConvScopeProvider } from "./parts/_context";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
+import { ConvScopeProvider } from "./parts/_context";
 
 type Props = {
 	convId: string;
@@ -170,9 +170,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						// if we already truncated locally this is a no-op.
 						const d = (chunk as any).data;
 						if (d?.from_msg_id) {
-							useStore
-								.getState()
-								.truncateMessagesFrom(convId, d.from_msg_id);
+							useStore.getState().truncateMessagesFrom(convId, d.from_msg_id);
 						}
 					} else if (chunk.type === "data-conv-cleared") {
 						// Conv was wiped server-side (POST /clear). Drop the in-memory
@@ -255,6 +253,27 @@ export function ChatPane({ convId, members, title }: Props) {
 							messageId: cardId,
 							senderId: anyChunk.sender_id ?? null,
 						});
+						// A fresh chat file card auto-opens the right-rail preview so
+						// the user sees what the agent just produced without clicking.
+						// Only for live cards (during streaming of an open conv) —
+						// the server's `data-file` src is always our workspace download
+						// URL, parse it to (wsId, path) and route through the store.
+						if (cardKind === "file" && typeof payload.src === "string") {
+							const m = (payload.src as string).match(
+								/^\/api\/workspaces\/([^/]+)\/files\/download\?path=(.+)$/,
+							);
+							if (m) {
+								try {
+									const wsId = m[1];
+									const path = decodeURIComponent(m[2]);
+									const st = useStore.getState();
+									st.openPreview("code", { workspaceId: wsId });
+									st.openPreviewFile(path);
+								} catch {
+									// malformed src — skip auto-open, card still renders.
+								}
+							}
+						}
 					}
 			}
 		});
@@ -369,6 +388,32 @@ export function ChatPane({ convId, members, title }: Props) {
 	// We still RESPECT user scroll-up: if they've scrolled away from the
 	// bottom we don't yank them back.
 	const wasAtBottomRef = useRef(true);
+	// Conv switch → fresh conversation, always start pinned to bottom. Without
+	// this reset, a user who scrolled up in conv A leaves wasAtBottomRef=false,
+	// and switching to conv B would NOT auto-jump to its latest message.
+	// Also do a multi-tick settle scroll: markdown/code-block/image children do
+	// their own layout after first paint (CodeMirror init, image decode), which
+	// inflates scrollHeight after our initial set. Re-pin at rAF + 80ms + 240ms
+	// to catch those late layouts. Skipping the settle would leave the chat a
+	// few hundred px above bottom for files with code blocks.
+	useLayoutEffect(() => {
+		wasAtBottomRef.current = true;
+		const el = bodyRef.current;
+		if (!el) return;
+		const pin = () => {
+			if (!wasAtBottomRef.current) return; // user scrolled meanwhile → don't yank
+			el.scrollTop = el.scrollHeight;
+		};
+		pin();
+		const r = requestAnimationFrame(pin);
+		const t1 = window.setTimeout(pin, 80);
+		const t2 = window.setTimeout(pin, 240);
+		return () => {
+			cancelAnimationFrame(r);
+			window.clearTimeout(t1);
+			window.clearTimeout(t2);
+		};
+	}, [convId]);
 	// Track user intent: when they scroll up manually, stop auto-following.
 	useEffect(() => {
 		const el = bodyRef.current;
@@ -564,10 +609,22 @@ export function ChatPane({ convId, members, title }: Props) {
 			runHasTool = false;
 		};
 		for (const m of messages) {
-			const kind =
+			const payload =
 				claimedSet.has(m.id) || burstByAnchorId.has(m.id)
 					? undefined
-					: (byId.get(m.id)?.payload as { kind?: string } | undefined)?.kind;
+					: (byId.get(m.id)?.payload as
+							| { kind?: string; name?: string }
+							| undefined);
+			const kind = payload?.kind;
+			// `present` is surfaced as its OWN file card (the data-file card emitted
+			// by /api/present, rendered by FilePart with click-preview + download).
+			// Hide the raw "present path=…" tool-call row AND break the fold run —
+			// a delivered file is a natural divider, not a mechanical tool step.
+			if (kind === "tool-call" && payload?.name === "present") {
+				skip.add(m.id);
+				flush();
+				continue;
+			}
 			const foldable = kind === "tool-call" || kind === "reasoning";
 			if (foldable && (runSender === null || runSender === m.sender_id)) {
 				run.push(m.id);
@@ -701,8 +758,97 @@ export function ChatPane({ convId, members, title }: Props) {
 				{/* Per-agent live status pill — floats just ABOVE the composer (bottom
             of the message area) when ≥1 agent is working. NOT in the normal flow
             so it doesn't displace the message list when streaming starts/ends. */}
+
+				<ConvScopeProvider value={{ convId, inWorkspace }}>
+					<div
+						ref={bodyRef}
+						className="absolute inset-0 overflow-y-auto py-4 pb-28"
+					>
+							{/* Lazy-load top sentinel — visible spinner while older messages
+            are being fetched. Shown only if we have more to fetch. */}
+							{loadingOlder && messages.length > 0 && (
+								<div className="flex items-center justify-center gap-2 py-3 text-[11px] text-[var(--color-fg-3)]">
+									<Loader2 size={11} className="animate-spin" />
+									加载更早的消息…
+								</div>
+							)}
+							{!hasMoreOlder && messages.length > 10 && (
+								<div className="flex items-center justify-center gap-2 py-2 text-[10.5px] text-[var(--color-fg-4)]">
+									<span className="h-px w-12 bg-[var(--color-line)]" />
+									<span>对话的开始</span>
+									<span className="h-px w-12 bg-[var(--color-line)]" />
+								</div>
+							)}
+							{!messages.length && (
+								<div className="text-center text-[var(--color-fg-3)] text-[12px] py-12">
+									还没有消息 · 试试发送一条
+									{isGroup && (
+										<div className="mt-3 text-[11px] text-[var(--color-fg-4)]">
+											输入{" "}
+											<span className="px-1 py-0.5 rounded bg-[var(--color-surface-2)]">
+												@
+											</span>{" "}
+											召唤群里的某位成员
+										</div>
+									)}
+								</div>
+							)}
+							{/* Burst-aware render: the orchestrator's tasks card anchors a burst;
+            sub-agent messages are claimed into lanes (rendered inside
+            TasksBurstPart), not the linear stream. Membership comes from the
+            memoized burstByAnchorId/claimedSet above (delta-invariant). */}
+							{messages.map((m, i) => {
+								if (claimedSet.has(m.id)) return null; // rendered in a lane
+								if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
+								const group = groupFirstIds.get(m.id);
+								if (group) {
+									return (
+										<ToolCallGroup
+											key={m.id}
+											convId={convId}
+											msgIds={group}
+											showAvatar={firstOfRun.has(m.id)}
+										/>
+									);
+								}
+								const burst = burstByAnchorId.get(m.id);
+								if (burst) {
+									return (
+										<TasksBurstPart
+											key={m.id}
+											payload={m.payload as TasksPayload}
+											burstInfo={burst}
+											convId={convId}
+										/>
+									);
+								}
+								// Normal linear MessageView. Avatar hidden (grouped) unless this
+								// is the FIRST avatar-bearing element of its sender's run — see
+								// firstOfRun, computed over the visible render sequence, so a fold
+								// between two same-sender messages doesn't re-show the avatar.
+								const isGrouped = !firstOfRun.has(m.id);
+								return (
+									<MessageView
+										key={m.id}
+										convId={convId}
+										msgId={m.id}
+										isGrouped={isGrouped}
+									/>
+								);
+							})}
+					</div>
+				</ConvScopeProvider>
+			</div>
+
+			{/* Floating composer — overlays the bottom of the message area so chat
+			    content scrolls BEHIND it (悬浮在内容之上). The scroll area's matching
+			    bottom padding (pb-28) keeps the last message clear; the gradient fades
+			    content into the bg as it approaches the composer. */}
+			<div className="absolute bottom-0 inset-x-0 z-10">
+				{/* Running-status pills — anchored just ABOVE the composer so
+				    they ride up with a tall textarea instead of overlapping its text. */}
 				{activeAgents.length > 0 && (
-					<div className="anim-fade-up pointer-events-none absolute bottom-[104px] left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/95 backdrop-blur-sm border border-[var(--color-line)] shadow-md text-[11.5px] max-w-[calc(100%-3rem)]">
+					<div className="anim-fade-up pointer-events-none absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/95 backdrop-blur-sm border border-[var(--color-line)] shadow-md text-[11.5px] max-w-[calc(100%-3rem)]">
 						{activeAgents.map((a) => {
 							const agent = agents.find((x) => x.id === a.id);
 							const label =
@@ -758,162 +904,75 @@ export function ChatPane({ convId, members, title }: Props) {
 						)}
 					</div>
 				)}
-
-				<ConvScopeProvider value={{ convId, inWorkspace }}>
-					<div
-						ref={bodyRef}
-						className="absolute inset-0 overflow-y-auto py-4 pb-28"
-					>
-						{/* Lazy-load top sentinel — visible spinner while older messages
-            are being fetched. Shown only if we have more to fetch. */}
-						{loadingOlder && messages.length > 0 && (
-							<div className="flex items-center justify-center gap-2 py-3 text-[11px] text-[var(--color-fg-3)]">
-								<Loader2 size={11} className="animate-spin" />
-								加载更早的消息…
-							</div>
-						)}
-						{!hasMoreOlder && messages.length > 10 && (
-							<div className="flex items-center justify-center gap-2 py-2 text-[10.5px] text-[var(--color-fg-4)]">
-								<span className="h-px w-12 bg-[var(--color-line)]" />
-								<span>对话的开始</span>
-								<span className="h-px w-12 bg-[var(--color-line)]" />
-							</div>
-						)}
-						{!messages.length && (
-							<div className="text-center text-[var(--color-fg-3)] text-[12px] py-12">
-								还没有消息 · 试试发送一条
-								{isGroup && (
-									<div className="mt-3 text-[11px] text-[var(--color-fg-4)]">
-										输入{" "}
-										<span className="px-1 py-0.5 rounded bg-[var(--color-surface-2)]">
-											@
-										</span>{" "}
-										召唤群里的某位成员
-									</div>
-								)}
-							</div>
-						)}
-						{/* Burst-aware render: the orchestrator's tasks card anchors a burst;
-            sub-agent messages are claimed into lanes (rendered inside
-            TasksBurstPart), not the linear stream. Membership comes from the
-            memoized burstByAnchorId/claimedSet above (delta-invariant). */}
-						{messages.map((m, i) => {
-							if (claimedSet.has(m.id)) return null; // rendered in a lane
-							if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
-							const group = groupFirstIds.get(m.id);
-							if (group) {
-								return (
-									<ToolCallGroup
-										key={m.id}
-										convId={convId}
-										msgIds={group}
-										showAvatar={firstOfRun.has(m.id)}
-									/>
-								);
-							}
-							const burst = burstByAnchorId.get(m.id);
-							if (burst) {
-								return (
-									<TasksBurstPart
-										key={m.id}
-										payload={m.payload as TasksPayload}
-										burstInfo={burst}
-										convId={convId}
-									/>
-								);
-							}
-							// Normal linear MessageView. Avatar hidden (grouped) unless this
-							// is the FIRST avatar-bearing element of its sender's run — see
-							// firstOfRun, computed over the visible render sequence, so a fold
-							// between two same-sender messages doesn't re-show the avatar.
-							const isGrouped = !firstOfRun.has(m.id);
-							return (
-								<MessageView
-									key={m.id}
-									convId={convId}
-									msgId={m.id}
-									isGrouped={isGrouped}
-								/>
-							);
-						})}
-					</div>
-				</ConvScopeProvider>
-			</div>
-
-			{/* Floating composer — overlays the bottom of the message area so chat
-			    content scrolls BEHIND it (悬浮在内容之上). The scroll area's matching
-			    bottom padding (pb-28) keeps the last message clear; the gradient fades
-			    content into the bg as it approaches the composer. */}
-			<div className="absolute bottom-0 inset-x-0 z-10">
 				{/* Agent-initiated questions — floating panel above Composer */}
 				<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
-			{/* Composer */}
-			<Composer
-				convId={convId}
-				members={members}
-				showMergeToggle={inWorkspace}
-				mergeMode={mergeMode}
-				onToggleMergeMode={toggleMergeMode}
-				onAttachImage={(img) => {
-					// Optimistic UI append + fire-and-forget persistence. `img.src` is a
-					// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
-					// the DB row stays small and the image re-renders after a refresh.
-					appendUserImage(convId, {
-						src: img.src,
-						name: img.name,
-						media_type: img.media_type,
-					});
-					api
-						.createMessage({
-							conv_id: convId,
-							payload: {
-								kind: "image",
-								src: img.src,
-								name: img.name ?? null,
-								media_type: img.media_type ?? null,
-							},
-						})
-						.catch(() => {
-							/* image survives session even if persist fails — acceptable */
+				{/* Composer */}
+				<Composer
+					convId={convId}
+					members={members}
+					showMergeToggle={inWorkspace}
+					mergeMode={mergeMode}
+					onToggleMergeMode={toggleMergeMode}
+					onAttachImage={(img) => {
+						// Optimistic UI append + fire-and-forget persistence. `img.src` is a
+						// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
+						// the DB row stays small and the image re-renders after a refresh.
+						appendUserImage(convId, {
+							src: img.src,
+							name: img.name,
+							media_type: img.media_type,
 						});
-				}}
-				onAttachFile={(file) => {
-					appendUserFile(convId, {
-						src: file.src,
-						name: file.name,
-						media_type: file.media_type,
-						size_bytes: file.size_bytes,
-					});
-					api
-						.createMessage({
-							conv_id: convId,
-							payload: {
-								kind: "file",
-								src: file.src,
-								name: file.name,
-								media_type: file.media_type ?? null,
-								size_bytes: file.size_bytes ?? null,
-							},
-						})
-						.catch(() => {
-							/* file survives session even if persist fails */
+						api
+							.createMessage({
+								conv_id: convId,
+								payload: {
+									kind: "image",
+									src: img.src,
+									name: img.name ?? null,
+									media_type: img.media_type ?? null,
+								},
+							})
+							.catch(() => {
+								/* image survives session even if persist fails — acceptable */
+							});
+					}}
+					onAttachFile={(file) => {
+						appendUserFile(convId, {
+							src: file.src,
+							name: file.name,
+							media_type: file.media_type,
+							size_bytes: file.size_bytes,
 						});
-				}}
-				onSend={(text, inReplyTo) => {
-					const now = Date.now();
-					const last = lastSentRef.current;
-					if (last && last.text === text && now - last.ts < 500) {
-						// Same text within 500ms — drop. Symptom: duplicate "你好" bubbles
-						// and agent counting phantom turns. Root cause TBD (Strict Mode
-						// / accidental double-input); this is the user-visible bandage.
-						return;
-					}
-					lastSentRef.current = { text, ts: now };
-					appendUserMessage(convId, text, inReplyTo);
-					wsRef.current?.sendUserMessage(text, members, inReplyTo);
-				}}
-			/>
+						api
+							.createMessage({
+								conv_id: convId,
+								payload: {
+									kind: "file",
+									src: file.src,
+									name: file.name,
+									media_type: file.media_type ?? null,
+									size_bytes: file.size_bytes ?? null,
+								},
+							})
+							.catch(() => {
+								/* file survives session even if persist fails */
+							});
+					}}
+					onSend={(text, inReplyTo) => {
+						const now = Date.now();
+						const last = lastSentRef.current;
+						if (last && last.text === text && now - last.ts < 500) {
+							// Same text within 500ms — drop. Symptom: duplicate "你好" bubbles
+							// and agent counting phantom turns. Root cause TBD (Strict Mode
+							// / accidental double-input); this is the user-visible bandage.
+							return;
+						}
+						lastSentRef.current = { text, ts: now };
+						appendUserMessage(convId, text, inReplyTo);
+						wsRef.current?.sendUserMessage(text, members, inReplyTo);
+					}}
+				/>
 			</div>
 		</main>
 	);

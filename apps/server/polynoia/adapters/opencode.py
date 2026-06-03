@@ -534,6 +534,13 @@ class OpenCodeSession:
         if self._model:
             env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"model": self._model})
         # NOTE: do NOT set OPENCODE_ACP_NEXT=1 — see module docstring.
+        # `limit` overrides asyncio's default 64KB StreamReader buffer. ACP
+        # emits one JSON-RPC message per line; large tool results (file reads,
+        # generated pptx/docx echoes, big glob outputs) routinely exceed 64KB
+        # and would otherwise blow up `readline()` with "Separator is found,
+        # but chunk is longer than limit" → the whole turn fails. 32MB covers
+        # any realistic single-message payload without unbounded memory risk
+        # (per-line, not per-stream).
         self._proc = await asyncio.create_subprocess_exec(
             "opencode",
             "acp",
@@ -543,6 +550,7 @@ class OpenCodeSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=32 * 1024 * 1024,
         )
         self._notification_queue = asyncio.Queue()
         self._reader_task = asyncio.create_task(self._stdout_reader())

@@ -248,6 +248,15 @@ type Store = {
 			senderLabel: string;
 		} | null,
 	) => void;
+	/** One-shot push from MessageView ("从此处重来") → Composer: restore the
+	 * text of the rewound user message so they can edit / re-send instead of
+	 * retyping. Scoped per-conv (convId) so it doesn't leak across conv
+	 * switches. Composer consumes it once on mount/change and clears it
+	 * (passes ``null``) to avoid re-applying on every re-render. */
+	composerDraft: { convId: string; text: string } | null;
+	setComposerDraft: (
+		value: { convId: string; text: string } | null,
+	) => void;
 	/** Upsert a pending edit (WS chunk handler) — also flips existing entries
 	 * when the server pushes a status change. */
 	upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
@@ -315,6 +324,9 @@ type Store = {
 		options: { mode: "replace" | "prepend"; hasMore: boolean },
 	) => void;
 	setLoadingOlder: (convId: string, loading: boolean) => void;
+	/** Drop a message + every later one in this conv. Used by 「从此处重来」
+	 * (rewind) and by the cross-tab `data-conv-rewound` broadcast. */
+	truncateMessagesFrom: (convId: string, fromMsgId: string) => void;
 
 	// Preview actions
 	openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
@@ -413,7 +425,12 @@ export const useStore = create<Store>((set, get) => ({
 	agents: [],
 	servers: [],
 	workspaces: [],
-	activeWorkspaceId: null,
+	// Restored on boot so a refresh keeps you on the same project + conversation
+	// (the active conv object itself is persisted by App.tsx).
+	activeWorkspaceId:
+		(typeof window !== "undefined" &&
+			window.localStorage.getItem("polynoia:active-ws")) ||
+		null,
 	activeConvId: null,
 	view: "chat",
 	lang:
@@ -423,6 +440,7 @@ export const useStore = create<Store>((set, get) => ({
 			: "zh",
 	convs: new Map(),
 	replyingTo: null,
+	composerDraft: null,
 	pendingEditsByConv: new Map(),
 	pendingAccessByConv: new Map(),
 	conflictsByConv: new Map(),
@@ -608,9 +626,16 @@ export const useStore = create<Store>((set, get) => ({
 		set((s) => ({ workspaceFilesTick: s.workspaceFilesTick + 1 })),
 
 	setSeed: (s) => set(s),
-	setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
+	setActiveWorkspace: (id) => {
+		try {
+			if (id) window.localStorage.setItem("polynoia:active-ws", id);
+			else window.localStorage.removeItem("polynoia:active-ws");
+		} catch {}
+		set({ activeWorkspaceId: id });
+	},
 	setActiveConv: (id) => set({ activeConvId: id, view: "chat" }),
 	setReplyingTo: (value) => set({ replyingTo: value }),
+	setComposerDraft: (value) => set({ composerDraft: value }),
 	setView: (v) => set({ view: v }),
 	setLang: (l) => {
 		if (typeof window !== "undefined") {
@@ -658,6 +683,35 @@ export const useStore = create<Store>((set, get) => ({
 		const convs = new Map(get().convs);
 		const cur = convs.get(convId) ?? _emptyConvState();
 		convs.set(convId, { ...cur, loadingOlder: loading });
+		set({ convs });
+	},
+
+	truncateMessagesFrom: (convId, fromMsgId) => {
+		// Drop the message AND every later one. Used by 「从此处重来」 (rewind):
+		// the initiating tab calls it after the server confirms; other tabs
+		// receive `data-conv-rewound` and call it too. Idempotent — re-applying
+		// with a stale fromMsgId is a no-op.
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId);
+		if (!cur) return;
+		const cutIdx = cur.messageOrder.indexOf(fromMsgId);
+		if (cutIdx < 0) return;
+		const kept = cur.messageOrder.slice(0, cutIdx);
+		const removed = new Set(cur.messageOrder.slice(cutIdx));
+		const nextById = new Map(cur.msgById);
+		for (const id of removed) nextById.delete(id);
+		// Drop any streamingTexts whose message went away too — otherwise the
+		// streamingTexts map keeps a ghost partial buffer.
+		const newStreaming = new Map(cur.streamingTexts);
+		for (const [key, val] of cur.streamingTexts) {
+			if (removed.has(val.messageId)) newStreaming.delete(key);
+		}
+		convs.set(convId, {
+			...cur,
+			messageOrder: kept,
+			msgById: nextById,
+			streamingTexts: newStreaming,
+		});
 		set({ convs });
 	},
 

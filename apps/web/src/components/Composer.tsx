@@ -7,7 +7,7 @@
  *   - 插入后光标位置正确;同一行可多次 @
  *   - picker 列表:本 conv 的 members + 所有 enabled adapter agents(全局可召唤)
  */
-import { ArrowUp, Paperclip, Reply, X } from "lucide-react";
+import { ArrowUp, FileText, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent } from "../lib/types";
@@ -102,9 +102,31 @@ export function Composer({
   onToggleMergeMode,
 }: Props) {
   const [text, setText] = useState("");
+  // Pending workspace-file refs (drag-dropped from FileTree). Each chip is
+  // rendered above the textarea with an × to remove. On send we fan them
+  // out via the existing onAttachFile callback (one file message per ref)
+  // BEFORE the text message, so the agent sees the attachments first.
+  const [pendingFileRefs, setPendingFileRefs] = useState<
+    Array<{ wsId: string; path: string; name: string; size?: number | null }>
+  >([]);
+  // Lights up the composer outline while a drag is hovering it.
+  const [isDragOver, setIsDragOver] = useState(false);
   const agents = useStore((s) => s.agents);
   const replyingToRaw = useStore((s) => s.replyingTo);
   const setReplyingTo = useStore((s) => s.setReplyingTo);
+  // One-shot draft push from「从此处重来」(MessageView.rewindHere). When the
+  // rewound message belonged to THIS conv, restore its text into the textarea
+  // + clear the store so a later re-render doesn't re-apply on top of the
+  // user's subsequent edits.
+  const composerDraft = useStore((s) => s.composerDraft);
+  const setComposerDraft = useStore((s) => s.setComposerDraft);
+  useEffect(() => {
+    if (!composerDraft || composerDraft.convId !== convId) return;
+    setText(composerDraft.text);
+    setComposerDraft(null);
+    // Defer focus to next tick so the textarea is rendered + sized.
+    window.setTimeout(() => taRef.current?.focus(), 0);
+  }, [composerDraft, convId, setComposerDraft]);
   // Only show reply chip when the global state targets THIS conv.
   const replyingTo = replyingToRaw && replyingToRaw.convId === convId ? replyingToRaw : null;
   const isGroup = members.length > 2;
@@ -158,11 +180,80 @@ export function Composer({
 
   const submit = () => {
     const t = text.trim();
-    if (!t) return;
-    onSend(t, replyingTo?.msgId);
+    // Empty submit allowed ONLY when there are pending file refs to ship —
+    // matches paperclip behavior (each attachment is its own message).
+    if (!t && pendingFileRefs.length === 0) return;
+    // Drag-dropped workspace files: emit each as its own file message FIRST,
+    // so it lands in the timeline ahead of the text the agent gets routed.
+    // Uses the same onAttachFile path the paperclip + paste flows already
+    // use — ChatPane handles append + persist. URL points at the workspace
+    // download endpoint, which FilePart already knows how to preview/download.
+    if (pendingFileRefs.length > 0 && onAttachFile) {
+      for (const ref of pendingFileRefs) {
+        const src =
+          `/api/workspaces/${encodeURIComponent(ref.wsId)}` +
+          `/files/download?path=${encodeURIComponent(ref.path)}`;
+        onAttachFile({
+          kind: "file",
+          src,
+          name: ref.name,
+          size_bytes: ref.size ?? undefined,
+        });
+      }
+      setPendingFileRefs([]);
+    }
+    if (t) {
+      onSend(t, replyingTo?.msgId);
+    }
     setText("");
     setMention(null);
     if (replyingTo) setReplyingTo(null);
+  };
+
+  // Drag-drop a workspace file from the right FileTree into the composer.
+  // Source side sets dataTransfer with `application/x-polynoia-file` carrying
+  // {wsId, path, name, size}; we read it in onDrop and append a chip. We do
+  // NOT auto-upload — the file is already in the workspace; we just reference
+  // it via the workspace download URL when the user hits send.
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.dataTransfer.types.includes("application/x-polynoia-file")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      if (!isDragOver) setIsDragOver(true);
+    }
+  };
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    // Only clear when the drag leaves the container itself, not when it
+    // crosses a child boundary (relatedTarget stays inside).
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsDragOver(false);
+    }
+  };
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    setIsDragOver(false);
+    const raw = e.dataTransfer.getData("application/x-polynoia-file");
+    if (!raw) return;
+    e.preventDefault();
+    try {
+      const parsed = JSON.parse(raw) as {
+        wsId: string;
+        path: string;
+        name?: string;
+        size?: number | null;
+      };
+      if (!parsed.wsId || !parsed.path) return;
+      const name = parsed.name || parsed.path.split("/").pop() || parsed.path;
+      setPendingFileRefs((prev) => {
+        // Dedupe by (wsId,path) so dragging the same file twice doesn't
+        // create two chips / two file messages.
+        if (prev.some((r) => r.wsId === parsed.wsId && r.path === parsed.path)) {
+          return prev;
+        }
+        return [...prev, { wsId: parsed.wsId, path: parsed.path, name, size: parsed.size ?? null }];
+      });
+    } catch {
+      // ignore bad JSON
+    }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -391,10 +482,60 @@ export function Composer({
           </div>
         )}
 
+        {/* Workspace-file attachment chips — drag-dropped from the right
+            FileTree. Each chip shows name + ×; on send each becomes its own
+            file message (BEFORE the user text). Distinct from paperclip/paste
+            which post immediately — drag-drop is "compose then send". */}
+        {pendingFileRefs.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {pendingFileRefs.map((ref) => (
+              <div
+                key={`${ref.wsId}/${ref.path}`}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[var(--color-surface-2)] border border-[var(--color-line)] text-[11.5px] anim-fade-up"
+                title={`workspace://${ref.wsId}/${ref.path}`}
+              >
+                <FileText
+                  size={11}
+                  className="text-[var(--color-fg-3)] flex-shrink-0"
+                />
+                <span className="font-mono text-[var(--color-fg-2)] truncate max-w-[200px]">
+                  {ref.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPendingFileRefs((prev) =>
+                      prev.filter(
+                        (r) =>
+                          !(r.wsId === ref.wsId && r.path === ref.path),
+                      ),
+                    )
+                  }
+                  className="flex-shrink-0 p-0.5 rounded-sm hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
+                  title="移除"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Unified composer — ChatGPT/Claude style: one rounded container with
             the textarea on top and all controls (attach · mode · send) docked
-            along its bottom edge. Focus lifts the whole box with an accent ring. */}
-        <div className="rounded-[22px] border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-card)] px-2.5 pt-2 pb-2 transition-colors duration-200 focus-within:border-[var(--color-accent)]/55">
+            along its bottom edge. Focus lifts the whole box with an accent ring.
+            onDragOver/onDrop here accept workspace-file drops from the right
+            FileTree (custom MIME `application/x-polynoia-file`). */}
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`rounded-[22px] border bg-[var(--color-surface)] shadow-[var(--shadow-card)] px-2.5 pt-2 pb-2 transition-colors duration-200 focus-within:border-[var(--color-accent)]/55 ${
+            isDragOver
+              ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]/40"
+              : "border-[var(--color-line-strong)]"
+          }`}
+        >
           <textarea
             ref={taRef}
             value={text}
@@ -459,13 +600,17 @@ export function Composer({
             )}
             {/* Recipient is already shown in the chat header — no redundant
                 "{name} · 1v1" chip in the composer bar (kept clean). */}
+            {/* Active when there's text OR at least one drag-dropped file ref —
+                matches submit()'s own gate (Composer.tsx:172) so Enter and click
+                behave the same; otherwise "drag a file, send empty" only worked
+                via Enter. */}
             <button
               type="button"
               onClick={submit}
-              disabled={!text.trim()}
+              disabled={!text.trim() && pendingFileRefs.length === 0}
               title="发送 (Enter)"
               className={`ml-auto w-8 h-8 grid place-items-center rounded-full transition-all duration-150 ${
-                text.trim()
+                text.trim() || pendingFileRefs.length > 0
                   ? "bg-[var(--color-accent)] text-white hover:brightness-110 press-down"
                   : "bg-[var(--color-surface-3)] text-[var(--color-fg-4)] cursor-not-allowed"
               }`}

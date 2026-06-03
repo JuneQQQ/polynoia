@@ -38,18 +38,18 @@ export function RightPreviewFile({
 
 	// Byte-based kinds — DocPreviewPane fetches their bytes itself (xlsx→Workbook,
 	// docx/pptx→Office). Recognizable by extension, so skip the text fetch (415).
+	// .pptx renders via the dedicated PptxRender below (width-fit, vertical scroll).
 	const _k = docKind(path, "");
-	// .pptx is rendered HERE (not via DocPreviewPane) — width-fit, no horizontal
-	// crop, vertical scroll. See PptxRender below. Early return so the rest of
-	// this component's routing stays untouched for other formats.
-	if (_k === "slides") {
-		return <PptxRender workspaceId={workspaceId} path={path} />;
-	}
+	const isSlides = _k === "slides";
 	const isBinary = _k === "workbook" || _k === "word";
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is the reload trigger.
 	useEffect(() => {
-		if (isBinary) return;
+		// Skip text fetch for byte-based kinds (their previewers fetch bytes
+		// themselves). MUST stay after all hook calls — early-returning before
+		// this effect when isSlides flipped (file switch from .py to .pptx)
+		// caused "rendered fewer hooks than expected".
+		if (isBinary || isSlides) return;
 		let alive = true;
 		setContent(null);
 		setError(null);
@@ -68,8 +68,14 @@ export function RightPreviewFile({
 		return () => {
 			alive = false;
 		};
-	}, [workspaceId, path, filesTick, isBinary]);
+	}, [workspaceId, path, filesTick, isBinary, isSlides]);
 
+	// Routing — order matters: pptx + binary docs render WITHOUT a text fetch
+	// (their previewers fetch bytes themselves), so route them before the
+	// loading/content checks below.
+	if (isSlides) {
+		return <PptxRender workspaceId={workspaceId} path={path} />;
+	}
 	if (isBinary) {
 		// DocPreviewPane → WorkbookPreview fetches the .xlsx bytes itself.
 		return <DocPreviewPane workspaceId={workspaceId} path={path} content="" />;

@@ -39,7 +39,9 @@ def build_orchestrator_protocol_layer(
         "你给的绝对路径会让他们写进别人的目录、成果合并不进来(白干)。验收时你可以用 bash 看绝对路径,"
         "但**别把绝对路径回传给成员**。",
         "- **别在 contract 里指定解释器 / 工具的绝对路径**(如 `/opt/miniconda3/bin/python`):"
-        "成员的 Python 一律走 `uv run` / `uv pip`,你只描述要做什么,别钉死他们用哪个 python。",
+        "成员的 Python 一律走 `uv run` / `uv pip`,你只描述要做什么,别钉死他们用哪个 python。"
+        "用户消息里如果出现 `pip install` / 绝对路径解释器,你 dispatch 时**必须**替换为 `uv` 等效写法,"
+        "不要原样照搬。",
         "- 更适合「几个人一起想清楚」(权衡 / 评审 / 共识)而不是拆独立产物时,改用 `discuss`。",
         "- **可派活的成员**:" + members,
         "- 派活后就停,不要轮询;成员完成后你在后续轮验收并向用户汇总。",

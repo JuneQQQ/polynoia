@@ -149,7 +149,9 @@ class ConversationRow(Base):
     member_tool_roles: Mapped[dict[str, str]] = mapped_column(
         JSON, default=dict, nullable=False
     )
-    # Which member is designated as orchestrator (None = flat group).
+    # Designated orchestrator. Required for every GROUP conv (enforced at
+    # creation); None only for direct (1:1) convs. Nullable here because directs
+    # legitimately have none — the group invariant is enforced in the API/dispatch.
     orchestrator_member_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

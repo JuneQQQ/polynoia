@@ -57,7 +57,7 @@ SCENARIO = {
         "(封面 / 痛点 / 方案 / 演示 / 数据 / 结尾),每页标题 + 要点。\n"
         "3) budget.xlsx —— 顾屿用 **openpyxl** 生成:列「项目/预估/实际/备注」,"
         "5~8 行 + 合计行。\n"
-        "缺库就 `pip install python-docx python-pptx openpyxl`。\n"
+        "缺库就 `uv pip install python-docx python-pptx openpyxl`。\n"
         "4) onepager.md —— 苏念写一页纸产品说明(定位/三个卖点/目标用户/CTA),"
         "给顾屿做 docx/pptx 的文案参考。\n"
         "做完告诉我各产了哪些文件(用 read 确认 .docx/.pptx/.xlsx 真落了盘)。"

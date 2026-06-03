@@ -72,6 +72,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -95,6 +96,8 @@ from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
+
+log = logging.getLogger(__name__)
 
 ToolCallState = Literal["pending", "running", "completed", "error"]
 
@@ -254,6 +257,26 @@ class CodexAdapter:
 
         existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
+        # Override the top-level `model =` line in the sandboxed config.toml
+        # when the contact specifies one. The host's ~/.codex/config.toml may
+        # have been copied with a stale model (e.g. "mimo-v2.5-pro" from a
+        # previous provider), and codex app-server reads config.toml at startup
+        # to determine model_provider routing — the thread/start `model` param
+        # only overrides the model name, NOT the provider. Without this, a
+        # contact configured with model="gpt-5.5" would still route through the
+        # stale provider (mimo) which doesn't have gpt-5.5 → empty turn.
+        if model and existing:
+            import re
+            existing = re.sub(
+                r'^model\s*=\s*"[^"]*"',
+                f'model = "{model}"',
+                existing,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        elif model and not existing:
+            existing = f'model = "{model}"\n'
+
         # Pass PYTHONPATH so the MCP subprocess can `import polynoia` (the
         # polynoia package is installed at the polynoia server's source root,
         # NOT inside the sandbox).
@@ -404,6 +427,10 @@ class CodexSession:
         # block during its (often long) reasoning gap — translated to a
         # ReasoningPayload part. Without this the reasoning item is empty → no
         # think block (the gpt-5.x default hides raw reasoning).
+        # `limit` overrides asyncio's default 64KB StreamReader buffer; codex
+        # app-server emits one JSON event per line and large tool results
+        # (file reads, big diffs) exceed 64KB → readline() raises "chunk is
+        # longer than limit". 32MB / line is generous but bounded.
         self._as_proc = await asyncio.create_subprocess_exec(
             "codex", "-c", "model_reasoning_summary=auto", "app-server",
             stdin=asyncio.subprocess.PIPE,
@@ -411,6 +438,7 @@ class CodexSession:
             stderr=asyncio.subprocess.PIPE,
             env=self._env(),
             cwd=str(self._sandbox.root),
+            limit=32 * 1024 * 1024,
         )
         self._client = _AppServerClient(self._as_proc)
         self._client.start()
@@ -436,6 +464,7 @@ class CodexSession:
             turn_id = _new_id()
             yield TurnStartedEvent(turn_id=turn_id, task_id=task_id)
             terminal_from_translator = False
+            _event_count = 0
             try:
                 await self._ensure_appserver()
                 assert self._client is not None
@@ -463,10 +492,22 @@ class CodexSession:
                     task_id=task_id,
                     on_codex_turn_id=_cap,
                 ):
+                    _event_count += 1
                     if ev.type in ("turn.completed", "turn.failed"):
                         terminal_from_translator = True
                     yield ev
+                if _event_count <= 1:
+                    log.warning(
+                        "codex app-server turn produced %d events (only TurnStarted) "
+                        "— model=%s agent=%s thread=%s turn=%s",
+                        _event_count, self._model, self.agent_id,
+                        self._as_thread_id, self._active_turn_id,
+                    )
             except Exception as e:  # surface any connect/RPC error as a turn failure
+                log.warning(
+                    "codex app-server turn exception: %s agent=%s model=%s",
+                    e, self.agent_id, self._model,
+                )
                 if not terminal_from_translator:
                     yield TurnFailedEvent(
                         turn_id=turn_id,
@@ -493,6 +534,8 @@ class CodexSession:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                # 32MB / line — see _AppServer.start() for rationale.
+                limit=32 * 1024 * 1024,
             )
 
             def capture_tid(tid: str) -> None:
@@ -951,11 +994,34 @@ async def _translate_appserver_turn(
                 }
             continue
 
-        if method == "turn/completed":
-            terminal = True
-            yield TurnCompletedEvent(
-                turn_id=turn_id, task_id=task_id, usage=usage, stop_reason="complete",
+        if method == "error":
+            # Codex emits `error` notifications during retries (e.g. 401
+            # Unauthorized with willRetry=true). Log them so upstream auth
+            # issues aren't silently swallowed — the turn may still succeed
+            # after reconnect, but if it doesn't, at least we have a trace.
+            err_info = params.get("error") or params.get("codexErrorInfo") or {}
+            msg = err_info.get("message", "") if isinstance(err_info, dict) else str(err_info)
+            will_retry = params.get("willRetry", True)
+            log.warning(
+                "codex error notification: %s willRetry=%s agent=%s",
+                msg, will_retry, turn_id,
             )
+            continue
+
+        if method == "turn/completed":
+            turn_obj = params.get("turn") or {}
+            turn_status = turn_obj.get("status")
+            terminal = True
+            if turn_status == "failed":
+                err = turn_obj.get("error") or {}
+                yield TurnFailedEvent(
+                    turn_id=turn_id, task_id=task_id,
+                    error={"subtype": "turn_failed", "message": (err or {}).get("message", str(err))},
+                )
+            else:
+                yield TurnCompletedEvent(
+                    turn_id=turn_id, task_id=task_id, usage=usage, stop_reason="complete",
+                )
             return
         if method == "turn/failed":
             err = (params.get("turn") or {}).get("error") or params.get("error") or {}

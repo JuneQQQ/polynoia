@@ -717,13 +717,26 @@ class Sandbox:
                     continue
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if src.is_dir():
-                    if dst.exists():
-                        continue  # dir already materialized — don't re-copytree
-                    shutil.copytree(
-                        src, dst,
-                        symlinks=False,
-                        ignore_dangling_symlinks=True,
-                    )
+                    if not dst.exists():
+                        # First time: copy the whole directory tree.
+                        shutil.copytree(
+                            src, dst,
+                            symlinks=False,
+                            ignore_dangling_symlinks=True,
+                        )
+                    else:
+                        # Directory already materialized — but individual files
+                        # within it may have changed on the host (e.g. the user
+                        # switched codex model_provider from mimo to bytego).
+                        # Re-copy each allowlisted file so host config changes
+                        # propagate to existing sandboxes. Sub-entries not in
+                        # the allowlist are left alone (e.g. codex sessions/).
+                        for sub in allowed_entries:
+                            sub_src = src_root / sub
+                            sub_dst = dst_root / sub
+                            if sub_src.is_file() and sub_src.exists():
+                                sub_dst.parent.mkdir(parents=True, exist_ok=True)
+                                _copy_cred_file(sub_src, sub_dst)
                 else:
                     # Credential FILES (OAuth tokens — ~/.claude/.credentials.json,
                     # ~/.codex/auth.json, opencode auth.json) EXPIRE. We MUST NOT

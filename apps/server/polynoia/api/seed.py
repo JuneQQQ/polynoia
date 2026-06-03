@@ -107,9 +107,9 @@ def seed_agents() -> list[Agent]:
 
     `you` is the local user. There is **no** built-in orchestrator agent:
     orchestration is a per-conversation role (see Conversation.orchestrator_member_id)
-    that the user explicitly assigns to one of the real member contacts —
-    that member gets ORCHESTRATOR_PROMPT prepended for its coordinating turns.
-    No designation → no orchestrator → flat group fan-out.
+    that the user assigns to one of the real member contacts — that member gets
+    ORCHESTRATOR_PROMPT prepended for its coordinating turns. Every GROUP conv
+    requires an orchestrator (enforced at creation); direct (1:1) convs have none.
 
     All adapter-backed contacts (Claude Code / Codex / OpenCode) are NOT
     seeded — the user enables them via the onboarding flow once we've

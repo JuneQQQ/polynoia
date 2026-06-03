@@ -13,6 +13,7 @@ import {
 	PinOff,
 	RefreshCw,
 	Reply,
+	RotateCcw,
 	Undo2,
 } from "lucide-react";
 import { memo, useState } from "react";
@@ -436,6 +437,105 @@ function MessageActions({
 		}
 	};
 
+	// 从此处重来 — user messages only. Different semantic from restoreHere:
+	// also DELETES this msg + every later one in the conv. Atomic on the
+	// server: workspace restores FIRST (must succeed) before messages drop,
+	// so a half-rewind can't happen. After success the user can re-send.
+	const rewindHere = async () => {
+		if (restoreBusy) return;
+		// Light preview when we have a workspace + checkpoint — surfaces the
+		// "you'll lose N commits" warning. For non-workspace convs (DMs)
+		// it's purely a timeline truncation; skip the preview.
+		let confirmMsg = "从此处重来:将删除这条消息以及它之后的所有消息。继续?";
+		if (workspaceId && codeSha) {
+			try {
+				const pv = await api.restorePreview(workspaceId, codeSha, convId);
+				if (!pv.ok) {
+					window.alert(`无法重来:${pv.error ?? "未知错误"}`);
+					return;
+				}
+				if (pv.blocked) {
+					window.alert(
+						"有 Agent 正在本对话里干活,先等它完成或取消再重来。",
+					);
+					return;
+				}
+				const who = pv.authors.length ? `(${pv.authors.join("、")})` : "";
+				const fileList =
+					pv.files.slice(0, 8).join("、") +
+					(pv.files.length > 8 ? " …" : "");
+				confirmMsg =
+					`从此处重来:将删除这条消息以及之后的所有对话,并把代码回退到此刻 ` +
+					`(撤销 ${pv.commits} 处改动${who}${pv.files.length ? `;涉及 ${fileList}` : ""})。\n\n` +
+					"代码会先存可撤销快照;消息删除不可撤销。继续?";
+			} catch (e) {
+				if (!window.confirm(`预览失败 (${e}),仍要继续吗?`)) return;
+			}
+		}
+		if (!window.confirm(confirmMsg)) return;
+		// Grab the rewound message's text BEFORE truncation drops it from the
+		// store — pushed into Composer after success so the user can edit /
+		// re-send instead of retyping. Mirrors the copy() text extraction
+		// (handles both flat string `c` and structured inline-segment arrays).
+		const rewoundText = (() => {
+			const cs = useStore.getState().convs.get(convId);
+			const m = cs?.msgById.get(msgId);
+			if (!m) return "";
+			const p = m.payload as {
+				kind?: string;
+				body?: Array<{ c: string | Array<{ type?: string; text?: string }> }>;
+			};
+			if (p.kind !== "text" || !Array.isArray(p.body)) return "";
+			return p.body
+				.map((b) => {
+					if (typeof b.c === "string") return b.c;
+					if (Array.isArray(b.c)) {
+						return b.c
+							.map((seg) =>
+								typeof seg === "object" && seg && "text" in seg
+									? (seg.text ?? "")
+									: "",
+							)
+							.join("");
+					}
+					return "";
+				})
+				.join("\n")
+				.trim();
+		})();
+		setRestoreBusy(true);
+		try {
+			const res = await api.rewindConv(convId, msgId);
+			if (!res.ok) {
+				window.alert("重来失败");
+				return;
+			}
+			// Local truncation in case the WS broadcast (data-conv-rewound)
+			// arrives later than the response — keeps the UI snappy. Idempotent.
+			useStore.getState().truncateMessagesFrom(convId, msgId);
+			if (res.restored) {
+				useStore.getState().bumpWorkspaceFiles();
+				if (res.undo_sha) {
+					setUndoSha(res.undo_sha);
+					window.setTimeout(() => setUndoSha(null), 12_000);
+				}
+			}
+			// One-shot push to Composer. Composer subscribes to composerDraft,
+			// fills textarea, then clears the store so a later re-render of
+			// MessageView (without another rewind) won't re-apply it.
+			if (rewoundText) {
+				useStore.getState().setComposerDraft({
+					convId,
+					text: rewoundText,
+				});
+			}
+		} catch (e) {
+			window.alert(`重来失败:${e}`);
+		} finally {
+			setRestoreBusy(false);
+		}
+	};
+
 	const undoRestore = async () => {
 		if (!workspaceId || !undoSha) return;
 		setRestoreBusy(true);
@@ -500,25 +600,55 @@ function MessageActions({
 			>
 				{pinned ? <PinOff size={11} /> : <Pin size={11} />}
 			</button>
-			{/* 从此处回滚 — ALWAYS visible at each (user) message that carries a code
-			    checkpoint, not hover-only: it's a primary affordance ("把代码回退到
-			    我发这条消息之前的状态"). codeSha is stamped on user messages in a
-			    workspace conv, so this naturally appears per user input. */}
-			{codeSha && workspaceId && (
+			{/* User msgs: 「从此处重来」(rewind = code restore + truncate timeline).
+			    Agent msgs: 「回滚至此」(code-only restore, timeline kept). Two
+			    different semantics — user wants to redo from this point vs.
+			    pin code state to an agent's snapshot. User-msg button is
+			    timeline-aware so it doesn't need a workspace; non-workspace
+			    DMs still get the truncate-only flavor. Agent-msg button needs
+			    a workspace + codeSha (code rollback is its only purpose). */}
+			{isYou ? (
 				<button
 					type="button"
-					onClick={restoreHere}
+					onClick={rewindHere}
 					disabled={restoreBusy}
-					title="回滚至此:把工作区代码恢复到你发这条消息时的状态"
-					className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+					title={
+						workspaceId && codeSha
+							? "从此处重来:删除这条及之后的对话,代码回退到此刻"
+							: "从此处重来:删除这条及之后的对话"
+					}
+					// Icon-only + hover-reveal, matching the sibling pin/regen buttons —
+					// inline with them, not a prominent always-on pill. Full label lives
+					// in the title tooltip.
+					className={`p-0.5 rounded-sm transition-opacity duration-200 ${
 						restoreBusy
-							? "text-[var(--color-accent)] bg-[var(--color-accent-soft)]"
-							: "text-[var(--color-fg-3)] bg-[var(--color-surface-2)] hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+							? "opacity-90 text-[var(--color-accent)]"
+							: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
 					}`}
 				>
-					<History size={10} />
-					回滚至此
+					<RotateCcw
+						size={11}
+						className={restoreBusy ? "animate-spin" : ""}
+					/>
 				</button>
+			) : (
+				codeSha &&
+				workspaceId && (
+					<button
+						type="button"
+						onClick={restoreHere}
+						disabled={restoreBusy}
+						title="回滚至此:把工作区代码恢复到你发这条消息时的状态"
+						className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+							restoreBusy
+								? "text-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+								: "text-[var(--color-fg-3)] bg-[var(--color-surface-2)] hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+						}`}
+					>
+						<History size={10} />
+						回滚至此
+					</button>
+				)
 			)}
 			{undoSha && (
 				<button

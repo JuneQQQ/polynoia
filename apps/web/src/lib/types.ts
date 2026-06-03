@@ -204,6 +204,22 @@ export type FilePayload = {
 	caption?: string | null;
 };
 
+export type FilesPanelItem = {
+	src: string;
+	name: string;
+	media_type?: string | null;
+	size_bytes?: number | null;
+};
+
+/** A panel bundling several files an agent presented in ONE `present` call (the
+ * orchestrator's deliverable bundle): a one-line `message` + a clickable file
+ * list (preview + download), instead of one card per file. */
+export type FilesPayload = {
+	kind: "files";
+	message?: string | null;
+	files: FilesPanelItem[];
+};
+
 /** A turn/conversation-level failure, persisted so it 回显 survives a refresh.
  * Distinct from a tool-call's own state:"error" — this is the WHOLE turn failing
  * (upstream 401/429/500, idle-timeout, adapter crash, abort, no-route). */
@@ -275,6 +291,7 @@ export type MessagePayload =
 	| AskFormPayload
 	| ImagePayload
 	| FilePayload
+	| FilesPayload
 	| ErrorPayload
 	| ConflictPayload;
 

@@ -24,7 +24,7 @@ import { api } from "../../lib/api";
 import type { FilePayload } from "../../lib/types";
 import { useStore } from "../../store";
 
-function formatBytes(n: number | null | undefined): string {
+export function formatBytes(n: number | null | undefined): string {
 	if (!n || n <= 0) return "";
 	const units = ["B", "KB", "MB", "GB"];
 	let i = 0;
@@ -38,7 +38,7 @@ function formatBytes(n: number | null | undefined): string {
 
 /** Parse `/api/workspaces/<ws>/files/download?path=<path>` → `{wsId, path}`.
  * Returns null for anything else (data URL, external URL, attachment upload). */
-function parseWorkspaceFileSrc(
+export function parseWorkspaceFileSrc(
 	src: string,
 ): { wsId: string; path: string } | null {
 	if (!src.startsWith("/api/workspaces/")) return null;
@@ -76,7 +76,7 @@ const TYPE_VARIANTS: Record<string, Variant> = {
 	jpeg: { Icon: FileImage, bg: "#E8E1F2", fg: "#5E3FBE", label: "JPG" },
 };
 
-function variantFor(name: string): Variant {
+export function variantFor(name: string): Variant {
 	const ext = name.toLowerCase().split(".").pop() ?? "";
 	return (
 		TYPE_VARIANTS[ext] ?? {
@@ -89,7 +89,7 @@ function variantFor(name: string): Variant {
 }
 
 export function FilePart({ payload }: { payload: FilePayload }) {
-	const openCenterFile = useStore((s) => s.openCenterFile);
+	const openPreviewFile = useStore((s) => s.openPreviewFile);
 
 	const wsFile = parseWorkspaceFileSrc(payload.src);
 	const size = formatBytes(payload.size_bytes);
@@ -97,16 +97,18 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 
 	const onPreview = () => {
 		if (!wsFile) return;
-		// Open the file CENTERED (a center editor/preview tab), same as the file
-		// tree — not the right rail. Align the center-tab workspace to this file's
-		// workspace first (CenterTabs reads preview.data.workspaceId), then open.
+		// Chat file cards open in the RIGHT rail preview (mutually exclusive with
+		// the file tree there). File-tree clicks go to center tabs instead — the
+		// two routing surfaces stay separate per the preview-routing rules in
+		// CLAUDE.md. Align preview.data.workspaceId first so RightPreviewFile
+		// fetches against the right workspace, then set the file.
 		useStore.setState((s) => ({
 			preview: {
 				...s.preview,
 				data: { ...s.preview.data, workspaceId: wsFile.wsId },
 			},
 		}));
-		openCenterFile(wsFile.path);
+		openPreviewFile(wsFile.path);
 	};
 
 	const onDownload = () => {

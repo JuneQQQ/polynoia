@@ -17,7 +17,14 @@ import { MarpPreview } from "./MarpPreview";
 import { OfficePreview } from "./OfficePreview";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { SheetPreview } from "./SheetPreview";
+import { SourcePreview } from "./SourcePreview";
 import { WorkbookPreview } from "./WorkbookPreview";
+
+/** Source-code extensions that the right rail can preview-edit via
+ * CodeMirror. Aligned with CodeEditor's langExtForPath: anything that has
+ * syntax highlighting is recognized as code (.py first per user ask, then the
+ * common companions). Excludes .md/.html — they have richer rendered kinds. */
+const CODE_EXT = /\.(py|pyi|ts|tsx|js|jsx|mjs|cjs|rs|go|java|kt|swift|c|h|cc|cpp|hpp|rb|php|sh|bash|zsh|json|yaml|yml|toml|css|scss|less|sql|xml|svg)$/i;
 
 /** Download URL for a workspace file (fallback when binary preview fails). */
 function downloadHref(workspaceId: string | null, path: string): string | undefined {
@@ -40,6 +47,7 @@ export type DocKind =
 	| "sheet"
 	| "word"
 	| "slides"
+	| "code"
 	| "other";
 
 export function docKind(path: string, content: string): DocKind {
@@ -51,6 +59,7 @@ export function docKind(path: string, content: string): DocKind {
 	if (/\.marp$/i.test(path)) return "marp";
 	if (/\.(md|markdown|mdx)$/i.test(path))
 		return isMarp(content) ? "marp" : "doc";
+	if (CODE_EXT.test(path)) return "code";
 	return "other";
 }
 
@@ -123,9 +132,21 @@ export function DocPreviewPane({
 	if (kind === "html") {
 		return <HtmlPreview content={debounced} fileName={name} />;
 	}
+	if (kind === "code") {
+		return workspaceId ? (
+			<SourcePreview
+				key={path}
+				workspaceId={workspaceId}
+				path={path}
+				content={content}
+			/>
+		) : (
+			<Empty text="源码预览需要在项目对话(workspace)里。" />
+		);
+	}
 	return (
 		<Empty
-			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.xlsx(可编辑表格)、.csv/.tsv(只读表格)、.docx/.pptx(Office)、.html。`}
+			text={`「${path}」无可视化预览。支持 .md(文档)、Marp(.md 带 marp:true 或 .marp)、.xlsx(可编辑表格)、.csv/.tsv(只读表格)、.docx/.pptx(Office)、.html、源码(.py/.ts/.js/...)。`}
 		/>
 	);
 }

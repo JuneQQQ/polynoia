@@ -368,6 +368,27 @@ class FilePayload(BaseModel):
     caption: str | None = None
 
 
+class FilesPanelItem(BaseModel):
+    """One file inside a FilesPayload panel."""
+
+    src: str
+    name: str
+    media_type: str | None = None
+    size_bytes: int | None = None
+
+
+class FilesPayload(BaseModel):
+    """A panel bundling several files an agent presented in ONE `present` call
+    (the orchestrator's deliverable bundle). Rendered as a single card: a
+    one-line `message` to the user + a list of clickable files (preview +
+    download), instead of one separate card per file."""
+
+    kind: Literal["files"] = "files"
+    # One-line feedback shown above the file list (the agent's hand-off note).
+    message: str | None = None
+    files: list[FilesPanelItem]
+
+
 class ImagePayload(BaseModel):
     """Image attachment in a message.
 
@@ -459,6 +480,7 @@ MessagePayload = Annotated[
         AskFormPayload,
         ImagePayload,
         FilePayload,
+        FilesPayload,
         ErrorPayload,
         ConflictPayload,
     ],

@@ -11,7 +11,8 @@ from polynoia.api.routes import router
 from polynoia.api.terminal import router as terminal_router
 from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
-from polynoia.storage.db import dispose_engine
+from polynoia.storage.db import SessionLocal, dispose_engine
+from polynoia.storage.repo import reap_orphan_tool_calls
 
 # App-level logging. uvicorn configures only its own loggers and leaves the
 # root handler-less, so our `logging.getLogger("polynoia.*")` calls would be
@@ -27,6 +28,15 @@ logging.basicConfig(
 async def lifespan(_app: FastAPI):
     # Startup: ensure DB schema + seed-if-empty
     await bootstrap_db()
+    # Reap any tool-call payloads left at running/pending from a previous
+    # process that died mid-turn (uvicorn --reload, kill, OOM …). Without
+    # this, the UI's 进行中 spinner sticks forever on those tool cards.
+    async with SessionLocal() as _s:
+        _reaped = await reap_orphan_tool_calls(_s)
+    if _reaped:
+        logging.getLogger("polynoia.main").info(
+            "reaped %d orphan tool-call(s) left at running/pending", _reaped,
+        )
     yield
     # Shutdown
     await dispose_engine()

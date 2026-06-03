@@ -594,6 +594,57 @@ async def append_message(
     return mid
 
 
+async def delete_messages_from(
+    session: AsyncSession, *, conv_id: str, from_msg_id: str
+) -> int:
+    """Delete ``from_msg_id`` and every later message in the same conv.
+
+    Ordering is the same as `list_messages` — by ``created_at``. Returns
+    count of deleted MESSAGE rows. Also drops conflict / pending-edit /
+    pending-access rows in this conv created at-or-after the cutoff, since
+    they were produced by the work we're rewinding past and would otherwise
+    dangle (point at branches the workspace restore no longer reaches).
+    Message-level pins live on the MessageRow itself (``pinned`` bool) so
+    they vanish with the row; PinRow is workspace-scope (docs/colors), not
+    chat pins, so it's left alone.
+
+    No-op (returns 0) if ``from_msg_id`` isn't in this conv.
+    """
+    from polynoia.storage.models import (
+        ConflictRow,
+        MessageRow,
+        PendingAccessRow,
+        PendingEditRow,
+    )
+    from sqlalchemy import func
+
+    target = await session.get(MessageRow, from_msg_id)
+    if target is None or target.conv_id != conv_id:
+        return 0
+    cutoff = target.created_at
+    count = (
+        await session.execute(
+            select(func.count())
+            .select_from(MessageRow)
+            .where(MessageRow.conv_id == conv_id)
+            .where(MessageRow.created_at >= cutoff)
+        )
+    ).scalar_one()
+    await session.execute(
+        MessageRow.__table__.delete()
+        .where(MessageRow.conv_id == conv_id)
+        .where(MessageRow.created_at >= cutoff)
+    )
+    for tbl in (ConflictRow, PendingEditRow, PendingAccessRow):
+        await session.execute(
+            tbl.__table__.delete()
+            .where(tbl.conv_id == conv_id)
+            .where(tbl.created_at >= cutoff)
+        )
+    await session.flush()
+    return int(count or 0)
+
+
 async def update_message_payload(
     session: AsyncSession, msg_id: str, payload: dict[str, Any]
 ) -> bool:
@@ -1064,3 +1115,44 @@ async def update_conflict_files(
     row.files_json = files
     await session.flush()
     return True
+
+
+# ── Startup cleanup ──────────────────────────────────────────────────────
+
+
+async def reap_orphan_tool_calls(session: AsyncSession) -> int:
+    """Coerce orphaned tool-call payloads (``state in {pending,running,run}``)
+    to ``"error"`` on startup.
+
+    The per-turn `_coerce_tool_state` in routes.py covers the happy paths
+    (success / abort / exception). Orphans land in the DB when the process
+    dies mid-turn (uvicorn --reload during dev, OOM, kill -9, …) — the
+    incremental `_persist_tool_part` already wrote the payload at
+    ``state="running"`` and nothing ever flipped it. On reload the UI shows
+    『进行中』 forever because the persisted state IS the truth.
+
+    This sweep runs once at app startup: any tool-call still marked running
+    after a server restart is, by definition, orphaned (no live turn could
+    have survived the restart). Returns the number of rows updated, for
+    telemetry/logging.
+    """
+    # Iterate rather than UPDATE…WHERE because the kind/state live in JSON
+    # payload — portable JSON paths differ between SQLite/Postgres and a
+    # one-time startup sweep doesn't need the speed. Filter aggressively to
+    # avoid loading non-tool payloads.
+    result = await session.execute(select(MessageRow))
+    n = 0
+    for row in result.scalars():
+        payload = row.payload if isinstance(row.payload, dict) else None
+        if not payload or payload.get("kind") != "tool-call":
+            continue
+        state = payload.get("state")
+        if state not in ("pending", "running", "run"):
+            continue
+        # ORM JSON columns need a NEW dict assigned to trigger UPDATE — mutating
+        # in place doesn't mark the attribute dirty.
+        row.payload = {**payload, "state": "error"}
+        n += 1
+    if n:
+        await session.commit()
+    return n
