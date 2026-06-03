@@ -179,9 +179,7 @@ function TasksBurstPartInner({
 							}}
 						>
 							{/* Lane header — agent color as a top accent edge */}
-							<div
-								className={`relative flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50 ${isRun ? "is-checking lane-running" : ""}`}
-							>
+							<div className="relative flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50">
 								<span
 									aria-hidden
 									className="absolute top-0 inset-x-0 h-[2px] opacity-70"
