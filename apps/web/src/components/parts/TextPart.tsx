@@ -278,17 +278,21 @@ export const MARKDOWN_COMPONENTS = {
  * Cheap pre-process beats pulling in `remark-cjk-friendly` (which conflicts
  * with this repo's workspace lockfile).
  */
-const CJK_RE = /[一-鿿　-〿＀-￯]/;
-function fixCjkMarkdown(s: string): string {
-	// NO-OP. The previous ZWSP normalization BROKE CJK-leading bold: inserting a
-	// zero-width space between an opening `**` and the following CJK char
-	// (`**顾屿` → `**​顾屿`) made `**` be followed by whitespace, so CommonMark no
-	// longer treats it as an emphasis opener → it rendered LITERALLY (the user's
-	// `**顾屿 ✓**` bug). react-markdown + remark-gfm handle `**中文**` correctly on
-	// their own, so we pass the text through untouched.
-	return s;
+// CLOSING-side normalization ONLY: a CJK ideograph or fullwidth char (including a
+// fullwidth `）`) sitting immediately before a closing `**`/`__`. Insert a U+200B
+// so the delimiter satisfies CommonMark's right-flanking rule and the bold closes
+// — otherwise `**说明（重要）**结论` leaks literal asterisks.
+//
+// We deliberately do NOT touch the OPENING side (`**` followed by CJK): the old
+// opening-side ZWSP made `**顾屿 ✓**` render literally (the user's bug), so it stays
+// removed. This regex only matches a char *before* `**`, so it can never insert a
+// ZWSP *after* an opening `**` → structurally cannot reintroduce that bug. Both
+// directions are pinned in TextPart.cjkMarkdown.test.tsx against the real
+// react-markdown + remark-gfm render path.
+const CJK_CLOSE_RE = /([一-鿿　-〿＀-￯])(\*\*|__)/g;
+export function fixCjkMarkdown(s: string): string {
+	return s.replace(CJK_CLOSE_RE, "$1​$2");
 }
-void CJK_RE; // exported pattern reserved for future detectors
 
 function findSafeSplitPoint(text: string): number {
 	let pos = text.length;
