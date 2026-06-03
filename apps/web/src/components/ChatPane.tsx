@@ -445,6 +445,26 @@ export function ChatPane({ convId, members, title }: Props) {
 		},
 		[],
 	);
+	// Settle re-pin for DISCRETE new messages only (keyed on messages.length, not
+	// streamTick) — a freshly-appended message with a code block / image / doc
+	// card lays out AFTER the rAF above, leaving the view a few px above bottom.
+	// New messages are infrequent, so a short timeout settle here can't cause the
+	// streaming vibration the rAF-only path was designed to avoid. Still guarded
+	// by wasAtBottom so a user who scrolled up is never yanked down.
+	useEffect(() => {
+		const el = bodyRef.current;
+		if (!el || !wasAtBottomRef.current) return;
+		const pin = () => {
+			if (wasAtBottomRef.current && bodyRef.current)
+				bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+		};
+		const t1 = window.setTimeout(pin, 120);
+		const t2 = window.setTimeout(pin, 320);
+		return () => {
+			window.clearTimeout(t1);
+			window.clearTimeout(t2);
+		};
+	}, [messages.length]);
 
 	// Listen for "regenerate" events fired by MessageView's action button.
 	// The event carries (convId, text) — we filter on convId and resend
@@ -840,65 +860,8 @@ export function ChatPane({ convId, members, title }: Props) {
 			    bottom padding (pb-28) keeps the last message clear; the gradient fades
 			    content into the bg as it approaches the composer. */}
 			<div className="absolute bottom-0 inset-x-0 z-10">
-				{/* Running-status pills — anchored just ABOVE the composer so
-				    they ride up with a tall textarea instead of overlapping its text. */}
-				{activeAgents.length > 0 && (
-					<div className="anim-fade-up pointer-events-none absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-surface)]/95 backdrop-blur-sm border border-[var(--color-line)] shadow-md text-[11.5px] max-w-[calc(100%-3rem)]">
-						{activeAgents.map((a) => {
-							const agent = agents.find((x) => x.id === a.id);
-							const label =
-								a.status === "starting"
-									? lang === "en"
-										? "Starting"
-										: "准备中"
-									: phaseLabel(a.phase, a.tool, lang);
-							return (
-								<button
-									type="button"
-									key={a.id}
-									onClick={() => wsRef.current?.abort(a.id)}
-									className="group pointer-events-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
-									title={`点击中断 ${agent?.name ?? a.id}`}
-									style={{ background: agent?.bg ?? "var(--color-line)" }}
-								>
-									<Loader2
-										size={10}
-										className="animate-spin"
-										style={{ color: agent?.color ?? "#666" }}
-									/>
-									<span style={{ color: agent?.color ?? "var(--color-fg-2)" }}>
-										{agent?.name ?? a.id}
-									</span>
-									{/* Hover swaps the label → a stop icon. Overlay the icon
-                      (absolute) and fade, instead of hide/show, so the button's
-                      width never changes — otherwise this centered flex-wrap row
-                      re-centers + jitters every sibling pill on hover. */}
-									<span className="relative inline-flex items-center">
-										<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
-											· {label}
-										</span>
-										<Square
-											size={10}
-											aria-hidden
-											className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
-											style={{ color: "var(--color-red)" }}
-										/>
-									</span>
-								</button>
-							);
-						})}
-						{activeAgents.length > 1 && (
-							<button
-								type="button"
-								onClick={() => wsRef.current?.abort()}
-								className="pointer-events-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
-								title="全部中断"
-							>
-								<Square size={10} /> 全部停止
-							</button>
-						)}
-					</div>
-				)}
+				{/* Running-status strip now lives INSIDE the Composer (statusSlot
+				    below) so it never floats over / hides message content. */}
 				{/* Agent-initiated questions — floating panel above Composer */}
 				<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
@@ -909,6 +872,63 @@ export function ChatPane({ convId, members, title }: Props) {
 					showMergeToggle={inWorkspace}
 					mergeMode={mergeMode}
 					onToggleMergeMode={toggleMergeMode}
+					statusSlot={
+						activeAgents.length > 0 ? (
+							<div className="anim-fade-up mb-2 flex flex-wrap items-center gap-1.5 px-1 text-[11.5px]">
+								{activeAgents.map((a) => {
+									const agent = agents.find((x) => x.id === a.id);
+									const label =
+										a.status === "starting"
+											? lang === "en"
+												? "Starting"
+												: "准备中"
+											: phaseLabel(a.phase, a.tool, lang);
+									return (
+										<button
+											type="button"
+											key={a.id}
+											onClick={() => wsRef.current?.abort(a.id)}
+											className="group inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
+											title={`点击中断 ${agent?.name ?? a.id}`}
+											style={{ background: agent?.bg ?? "var(--color-line)" }}
+										>
+											<Loader2
+												size={10}
+												className="animate-spin"
+												style={{ color: agent?.color ?? "#666" }}
+											/>
+											<span style={{ color: agent?.color ?? "var(--color-fg-2)" }}>
+												{agent?.name ?? a.id}
+											</span>
+											{/* Hover swaps the label → a stop icon; overlay + fade
+                          so the button width never changes (no row jitter). */}
+											<span className="relative inline-flex items-center">
+												<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
+													· {label}
+												</span>
+												<Square
+													size={10}
+													aria-hidden
+													className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
+													style={{ color: "var(--color-red)" }}
+												/>
+											</span>
+										</button>
+									);
+								})}
+								{activeAgents.length > 1 && (
+									<button
+										type="button"
+										onClick={() => wsRef.current?.abort()}
+										className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
+										title="全部中断"
+									>
+										<Square size={10} /> 全部停止
+									</button>
+								)}
+							</div>
+						) : null
+					}
 					onAttachImage={(img) => {
 						// Optimistic UI append + fire-and-forget persistence. `img.src` is a
 						// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so

@@ -40,6 +40,10 @@ type Props = {
   showMergeToggle?: boolean;
   mergeMode?: "auto" | "manual";
   onToggleMergeMode?: () => void;
+  /** Live agent-running status, rendered as a strip docked just above the
+   * input box (inside the composer chrome) so it never floats over / occludes
+   * message content. Built by ChatPane (it owns the agent-status state). */
+  statusSlot?: React.ReactNode;
 };
 
 /**
@@ -100,6 +104,7 @@ export function Composer({
   showMergeToggle = false,
   mergeMode = "auto",
   onToggleMergeMode,
+  statusSlot,
 }: Props) {
   const [text, setText] = useState("");
   // Pending workspace-file refs (drag-dropped from FileTree). Each chip is
@@ -520,6 +525,11 @@ export function Composer({
             ))}
           </div>
         )}
+
+        {/* Live agent-running status — docked just above the input box (inside
+            the composer chrome), so it rides with the composer instead of
+            floating over / hiding message content. */}
+        {statusSlot}
 
         {/* Unified composer — ChatGPT/Claude style: one rounded container with
             the textarea on top and all controls (attach · mode · send) docked
