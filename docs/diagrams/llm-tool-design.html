@@ -167,8 +167,26 @@
     多 agent 协作统一走 <code>dispatch</code>(并行派活)+ <code>discuss</code>(自由讨论),不是阻塞式调用。
   </div>
 
-  <h2>② 谁能用什么:角色门控(ROLE_TOOLS)</h2>
-  <p>子进程拿到的工具列表 = 按 <code>POLYNOIA_AGENT_ROLE</code> 过滤。同一个工具集随角色裁剪:</p>
+  <h2>② 谁能用什么:角色不发明工具差异,只映射到几个「层」</h2>
+  <p>
+    关键设计:<b>角色的工具不是逐个手列的,而是从几条能力轴<u>组合</u>出来的</b>,角色名只是<b>映射到几个功能层</b>。
+    persona 的差异(码农 vs 设计 vs 文案)活在 <b>System Prompt</b> 里(它擅长什么),<b>不</b>在工具集里(它能碰什么)。
+    真正分化的轴只有 4 条:<code>能否改文件(write)</code> · <code>能否开 shell(bash)</code> ·
+    <code>编排者(dispatch/present)</code> · <code>worker(report)</code>。
+  </p>
+
+  <div class="callout" style="margin:10px 0 18px">
+    <strong>7 个角色名 → 5 个工具层</strong>(<code>coder≡generalist</code>、<code>designer≡writer</code> 逐字相同,差异全在 prompt):
+    <ul style="margin:6px 0 0;padding-left:22px;">
+      <li><b>orchestrator</b> —— 建造 + <code>dispatch/discuss/present</code>,<b>无</b> report(它读别人的 verdict,不自评)</li>
+      <li><b>builder</b>(coder · generalist)—— 全套建造:retrieve + 记忆 + ask + <code>write</code> + <code>bash</code> + worker(report/req_access)</li>
+      <li><b>builder−shell</b>(designer · writer)—— 同 builder 但<b>无 bash</b>(逼显式 <code>write</code> 落产物)</li>
+      <li><b>consult</b>(advisory)—— 只读 + 记忆 + ask + report;<b>无 write/bash</b>(主页 DM 降级态)</li>
+      <li><b>auditor</b>(critic)—— 最小只读:retrieve + recall + report 一个 verdict,连 remember 都没有</li>
+    </ul>
+  </div>
+
+  <p style="margin-bottom:6px">下表是这 5 个层展开到工具的<b>真值</b>(子进程按 <code>POLYNOIA_AGENT_ROLE</code> 过滤)。注意 <b>coder 与 generalist 两列逐字相同</b>,<b>designer 与 writer 两列逐字相同</b> —— 它们是同一个层:</p>
 
   <table>
     <thead>
@@ -206,11 +224,11 @@
   </table>
 
   <div class="callout">
-    几条非显然的门控:
+    为什么这样分(而不是「7 个角色 7 套工具」):
     <ul style="margin:6px 0 0;padding-left:22px;">
-      <li><strong>designer / writer 没有 bash</strong> —— 逼它们用显式 <code>write</code> 落 HTML/CSS/文案,产物每次都是完整可审阅的文件。</li>
-      <li><strong>critic 全只读</strong>(read/grep/glob/recall + report)—— 它只验收别人的活、对照 contract 记一个 verdict,绝不写。</li>
-      <li><strong>present 仅编排者、report 仅 worker</strong> —— worker 干完只 <code>report</code>,编排者读 verdict 验收后 <code>present</code> 统一交付。</li>
+      <li><strong>建造型角色本就该<u>同一套宽工具</u></strong> —— coder/designer/writer/generalist 的差别全在 prompt(人设/技能),工具上只剩 <code>bash</code> 这一条轴(designer/writer 没有,逼显式 <code>write</code> 落产物)。所以它们塌缩成 2 个层,不是 4 套。</li>
+      <li><strong>工具该分化的只有「安全」和「结构」</strong> —— 安全 = 能不能写(只读的 critic/advisory vs 可写);结构 = 编排者(<code>dispatch/present</code>、无 report)vs worker(<code>report</code>、无 present)。这两条是承重的,其余都不该按角色硬分。</li>
+      <li><strong>per-agent 覆盖才是细粒度入口</strong> —— 用户在「高级」里勾的 <code>tools_whitelist</code> 会在角色层上<b>再收窄</b>(<code>role ∩ allow</code>,只减不增)。所以层是默认值,真正的「每 agent 工具集」(rule.md §自建 Agent)靠这层 whitelist。</li>
       <li><strong>advisory</strong> 不是 persona,是<b>降级态</b>:对话不属于任何项目时(主页 DM),适配器池把任何联系人降到只读咨询 —— 没有共享沙箱可写。</li>
     </ul>
   </div>
@@ -234,7 +252,7 @@
   </div>
 
   <p style="color:#9CA3AF;font-size:12px;margin-top:36px;">
-    渲染于 2026-06-03 · 配套阅读:<code>context-builder-current.html</code>(Agent 说话前看到的 9 层 context)
+    配套阅读:<code>context-system.html</code>(Agent 说话前看到的多层 context)
   </p>
 
 </div>

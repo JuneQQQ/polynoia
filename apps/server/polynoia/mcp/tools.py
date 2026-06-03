@@ -1118,39 +1118,52 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # agent is allowed to list/call. Filter applied in `mcp/server.py` based
 # on POLYNOIA_AGENT_ROLE env (set by the spawning adapter from Agent.tool_role).
 #
-# orchestrator: delegate + small edits (dispatch/verify; can also write in a project)
-# coder:        full toolset for backend / scripting work
-# designer:     HTML/CSS work — no shell, no patch (forces explicit Write/Edit)
-# writer:       docs work — same constraints as designer
-# critic:       read-only auditor — verifies others' work against the contract
-#               (read/grep/glob/recall) and records a verdict (report); no write.
-# generalist:   full build toolset (default for back-compat)
-# advisory:     read-only CONSULT mode — no write/bash. This is NOT a
-#               persona role; the adapter pool downgrades ANY contact to this when
-#               the conversation does not belong to a project/workspace (a
-#               free-floating homepage DM is for asking, not building — there's no
-#               shared sandbox the user can even see). See ADR-013 §location-gate.
-# `remember` + `recall` (shared memory R/W, ADR-014) are available to every role
-# — anyone can record AND read the group's decisions/artifacts/contracts.
-# `report` (closed-loop handoff verdict) is for WORKERS, not the orchestrator
-# (the orchestrator consumes verdicts; it doesn't report on its own dispatch).
+# DESIGN: a role's tools are NOT hand-listed — they're COMPOSED from a handful
+# of capability AXES below, and role names map onto a few FUNCTIONAL TIERS. This
+# is deliberate: the persona difference (coder vs designer vs writer vs
+# generalist) lives in the SYSTEM PROMPT — what the agent is good at — NOT in the
+# toolset. Builders share one broad toolset; the only tool axes that actually
+# matter are:
+#   · can-mutate    → `write` (the SOLE file-mutation tool; absent = read-only)
+#   · can-shell     → `bash`
+#   · orchestrator? → dispatch/discuss/present  (delegate + present; NO report)
+#   · worker?       → report + request_project_access  (verdict; NO orchestrate)
+# So coder == generalist and designer == writer by construction (same tier) —
+# they differ only by what their system prompt says, not what they can touch.
+#
+# ── Capability axes (atomic tool groups) ────────────────────────
+_RETRIEVE = {"read", "grep", "glob"}              # look at the sandbox — everyone
+_RECALL   = {"recall"}                            # READ shared memory — everyone
+_REMEMBER = {"remember"}                          # WRITE shared memory (ADR-014)
+_ASK      = {"ask_user"}                           # block + ask the user a question
+_MUTATE   = {"write"}                              # the SOLE file-mutation tool → one audit entry
+_SHELL    = {"bash"}                               # run a shell command
+_WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
+_ORCHESTRATE = {"dispatch", "discuss", "present"}  # delegate + present — orchestrator ONLY
+# Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
+# self-report); `present` is orchestrator-only (workers `report`, the
+# orchestrator bundles + presents from main at summary). The removed
+# edit/apply_patch/revert/call_agent tools are gone for good — `write` is the
+# single audited write path, and delegation is dispatch/discuss not a blocking call.
+
+# ── Functional tiers (role names map onto these) ────────────────
+_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER
+_TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
+_TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
+_TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write
+
 ROLE_TOOLS: dict[str, set[str]] = {
-    # `write` is the SOLE file-mutation tool (full-file content) → one audit
-    # entry point, so every change is a complete, reviewable write (user's audit
-    # requirement). Partial-edit tools (edit/apply_patch) + revert + the
-    # synchronous call_agent were removed — unexposed dead code, and delegation
-    # is dispatch/discuss, not a blocking call.
-    # `present` is ORCHESTRATOR-ONLY: it surfaces the deliverable bundle (a panel
-    # of files + a hand-off note) AT SUMMARY, from main. Workers don't present —
-    # they `report`; the orchestrator bundles + presents. Solo agents' files are
-    # auto-surfaced at merge (_emit_agent_file_cards), so they don't need it either.
-    "orchestrator": {"read", "grep", "glob", "dispatch", "discuss", "bash", "write", "remember", "recall", "ask_user", "present"},
-    "coder":        {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "designer":     {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "writer":       {"read", "write", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "critic":       {"read", "grep", "glob", "recall", "report"},
-    "generalist":   {"read", "write", "bash", "grep", "glob", "remember", "recall", "report", "ask_user", "request_project_access"},
-    "advisory":     {"read", "grep", "glob", "remember", "recall", "ask_user", "report", "request_project_access"},
+    "orchestrator": _TIER_ORCHESTRATOR,
+    "coder":        _TIER_BUILDER,
+    "generalist":   _TIER_BUILDER,          # == coder (default for back-compat)
+    "designer":     _TIER_BUILDER_NOSHELL,
+    "writer":       _TIER_BUILDER_NOSHELL,  # == designer (docs vs HTML/CSS — prompt-only diff)
+    "critic":       _TIER_AUDITOR,
+    # advisory: NOT a persona — the adapter pool downgrades ANY contact to this
+    # when the conv isn't a project/workspace (a homepage DM is for asking, not
+    # building; no shared sandbox exists). See ADR-013 §location-gate.
+    "advisory":     _TIER_CONSULT,
 }
 
 
