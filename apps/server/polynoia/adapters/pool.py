@@ -214,9 +214,12 @@ class AdapterPool:
                 agent_id=agent_id,
                 merge_mode=merge_mode,
                 tool_role=effective_role,
-                # Per-contact tool override (narrows the role set). Contact-level
-                # only — the conv override above picks a role, not a tool set.
-                tools_whitelist=agent.tools_whitelist,
+                # Tool governance is a PROJECT concern now (tool_policy.py): the
+                # effective_role above is the whole story. The contact's own
+                # Agent.tools_whitelist no longer narrows — it was the last
+                # contact-level gate and is intentionally NOT passed, so the role
+                # set is used wholesale. Restriction is opt-in per project/conv.
+                tools_whitelist=None,
                 read_only_workspace_id=read_only_ws_id,
                 proxy=proxy,
                 proxy_kind=proxy_kind,
@@ -239,6 +242,22 @@ class AdapterPool:
         """
         async with self._lock:
             to_close = [(k, v) for k, v in self._sessions.items() if k[0] == agent_id]
+            for k, _ in to_close:
+                self._sessions.pop(k, None)
+        for _, s in to_close:
+            try:
+                await s.close()
+            except Exception:
+                pass
+
+    async def close_sessions_for_conv(self, conv_id: str) -> None:
+        """Drop all cached sessions (across all agents) for a conversation.
+
+        Used when a conv — or its whole project — is deleted, so the spawned
+        adapter subprocesses don't linger pointing at a sandbox that's gone.
+        """
+        async with self._lock:
+            to_close = [(k, v) for k, v in self._sessions.items() if k[1] == conv_id]
             for k, _ in to_close:
                 self._sessions.pop(k, None)
         for _, s in to_close:

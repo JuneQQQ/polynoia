@@ -7,10 +7,10 @@
  *   - 全局 store 增量更新 workspaces 列表
  *   - 切到该 workspace + 自动跳进 main conv
  */
-import { FolderPlus, Users, X } from "lucide-react";
+import { FolderPlus, Pencil, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import type { Agent } from "../lib/types";
+import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
 
 const COLOR_OPTIONS = [
@@ -29,15 +29,26 @@ type Props = {
   /** Called after successful create — controller switches to the new workspace + opens main conv */
   /** mainConvId is null now — workspaces ship empty; user creates first conv. */
   onCreated: (workspaceId: string, mainConvId: string | null, members: string[], title: string) => void;
+  /** When set, the modal is in EDIT mode for that project: only persona fields
+   * (name / desc / color) move — members + repo are creation-time concerns and
+   * stay hidden. Submit calls updateWorkspace + onSaved instead of createWorkspace. */
+  editing?: Workspace | null;
+  /** Called after a successful edit (sidebar ⋮「编辑项目」). */
+  onSaved?: () => void | Promise<void>;
 };
 
-export function NewProjectModal({ onClose, onCreated }: Props) {
+export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }: Props) {
+  const isEdit = editing !== null;
   const agents = useStore((s) => s.agents);
-  const [name, setName] = useState("");
-  const [desc, setDesc] = useState("");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [desc, setDesc] = useState(editing?.desc ?? "");
   const [repo, setRepo] = useState("");
-  const [color, setColor] = useState(COLOR_OPTIONS[0]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
+  // Pre-select the project's current members (minus the implicit "you") so
+  // edit mode shows the real roster and lets the user add/remove members.
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set((editing?.members ?? []).filter((m) => m !== "you")),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -69,6 +80,17 @@ export function NewProjectModal({ onClose, onCreated }: Props) {
     setSubmitting(true);
     setErr(null);
     try {
+      if (isEdit && editing) {
+        await api.updateWorkspace(editing.id, {
+          name: name.trim(),
+          desc: desc.trim() || null,
+          color,
+          members: Array.from(selected),
+        });
+        await onSaved?.();
+        onClose();
+        return;
+      }
       const result = await api.createWorkspace({
         name: name.trim(),
         desc: desc.trim() || undefined,
@@ -103,8 +125,14 @@ export function NewProjectModal({ onClose, onCreated }: Props) {
       >
         <header className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-line)]">
           <div className="flex items-center gap-2.5">
-            <FolderPlus size={15} className="text-[var(--color-accent)]" />
-            <span className="font-display text-[18px] font-medium text-[var(--color-fg)] tracking-wide">新建项目</span>
+            {isEdit ? (
+              <Pencil size={15} className="text-[var(--color-accent)]" />
+            ) : (
+              <FolderPlus size={15} className="text-[var(--color-accent)]" />
+            )}
+            <span className="font-display text-[18px] font-medium text-[var(--color-fg)] tracking-wide">
+              {isEdit ? "编辑项目" : "新建项目"}
+            </span>
           </div>
           <button
             type="button"
@@ -135,15 +163,18 @@ export function NewProjectModal({ onClose, onCreated }: Props) {
               className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
             />
           </Field>
-          <Field label="仓库路径(可选)">
-            <input
-              type="text"
-              value={repo}
-              onChange={(e) => setRepo(e.target.value)}
-              placeholder="git@github.com:org/repo.git 或本地绝对路径"
-              className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
-            />
-          </Field>
+          {/* 仓库路径 is a creation-time sandbox concern — not editable later. */}
+          {!isEdit && (
+            <Field label="仓库路径(可选)">
+              <input
+                type="text"
+                value={repo}
+                onChange={(e) => setRepo(e.target.value)}
+                placeholder="git@github.com:org/repo.git 或本地绝对路径"
+                className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
+              />
+            </Field>
+          )}
           <Field label="项目颜色">
             <div className="flex gap-1.5">
               {COLOR_OPTIONS.map((c) => (
@@ -223,7 +254,13 @@ export function NewProjectModal({ onClose, onCreated }: Props) {
             disabled={!canSubmit}
             className="btn-primary"
           >
-            {submitting ? "创建中…" : "创建项目"}
+            {submitting
+              ? isEdit
+                ? "保存中…"
+                : "创建中…"
+              : isEdit
+                ? "保存"
+                : "创建项目"}
           </button>
         </div>
       </div>

@@ -248,6 +248,28 @@ export const api = {
 			"/api/workspaces",
 			body,
 		),
+	/** Edit a project's persona-level fields (name / desc / color). Sidebar ⋮
+	 * 「编辑项目」. Mirrors updateContact. */
+	updateWorkspace: (
+		id: string,
+		body: Partial<{
+			name: string;
+			desc: string | null;
+			color: string;
+			members: string[];
+		}>,
+	) =>
+		fetch(`/api/workspaces/${id}`, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		}).then((r) => {
+			if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+			return r.json() as Promise<{ workspace: Workspace }>;
+		}),
+	/** Delete a project + its conversations. Sidebar ⋮「删除项目」. */
+	deleteWorkspace: (id: string) =>
+		deleteJSON<{ ok: boolean; error?: string }>(`/api/workspaces/${id}`),
 	createConversation: (body: {
 		workspace_id?: string | null;
 		title: string;

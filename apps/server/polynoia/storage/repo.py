@@ -239,6 +239,25 @@ async def upsert_workspace(session: AsyncSession, w: Workspace) -> Workspace:
     return w
 
 
+async def delete_workspace(session: AsyncSession, ws_id: str) -> bool:
+    """Delete a project (workspace) and everything scoped to it: its
+    conversations and, transitively, those convs' messages + pins. Returns
+    False if the workspace doesn't exist. Sandbox worktree cleanup (the
+    on-disk ``<sandbox_root>/workspaces/<ws_id>/``) is the caller's job —
+    this is DB-only."""
+    row = await session.get(WorkspaceRow, ws_id)
+    if row is None:
+        return False
+    result = await session.execute(
+        select(ConversationRow.id).where(ConversationRow.workspace_id == ws_id)
+    )
+    for conv_id in result.scalars().all():
+        await delete_conversation(session, conv_id)
+    await session.delete(row)
+    await session.flush()
+    return True
+
+
 # ── Conversation ─────────────────────────────────────────────────────
 
 
@@ -518,6 +537,10 @@ async def set_members(
     row.members = after
     if row.member_roles:
         row.member_roles = {k: v for k, v in row.member_roles.items() if k in seen}
+    if row.member_tool_roles:
+        row.member_tool_roles = {
+            k: v for k, v in row.member_tool_roles.items() if k in seen
+        }
     if row.orchestrator_member_id and row.orchestrator_member_id not in seen:
         row.orchestrator_member_id = None
     await session.flush()

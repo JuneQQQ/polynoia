@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type ConversationSummary } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useStore } from "../store";
-import type { Agent } from "../lib/types";
+import type { Agent, Workspace } from "../lib/types";
 import { NewContactModal } from "./NewContactModal";
 import { BrandIcon } from "./BrandIcon";
 
@@ -55,8 +55,50 @@ export function Sidebar({
 
   // "+ 新建对话" modal — workspace 内才显示
   const [newConvOpen, setNewConvOpen] = useState(false);
-  // "+ 新建项目" modal — 全局 sidebar 模式才显示
+  // "+ 新建项目" modal — 全局 sidebar 模式才显示。编辑既有项目时复用同一个
+  // modal:editingWorkspace = null → 创建,有值 → 编辑(镜像 editingContact)。
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(
+    null,
+  );
+  // Which project row's ⋮ overflow menu is open (by workspace id; null = none).
+  const [projectMenuOpen, setProjectMenuOpen] = useState<string | null>(null);
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const close = () => setProjectMenuOpen(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [projectMenuOpen]);
+  // Delete a project (+ its conversations) after confirmation, then refresh the
+  // workspace list and leave it if it was the active one.
+  const deleteProject = useCallback(
+    async (ws: Workspace) => {
+      if (
+        !window.confirm(
+          `删除项目「${ws.name}」?其下所有对话会一并删除,该操作不可撤销。`,
+        )
+      )
+        return;
+      const r = await api.deleteWorkspace(ws.id);
+      if (r?.error) {
+        window.alert(r.error);
+        return;
+      }
+      // If the deleted project was active, leave it AND drop any open conv from
+      // it (its conversations are gone) so the center pane doesn't dangle.
+      if (activeWorkspaceId === ws.id) {
+        setActiveWorkspace(null);
+        useStore.setState({ activeConvId: null, view: "inbox" });
+      }
+      try {
+        const list = await api.workspaces();
+        useStore.setState({ workspaces: list });
+      } catch {
+        // ignore
+      }
+    },
+    [activeWorkspaceId, setActiveWorkspace],
+  );
   // "+ 新建联系人" modal — 顶部主操作。编辑既有联系人时复用同一个 modal,
   // 通过 editingContact 区分:null = 创建,有值 = 编辑。
   const [newContactOpen, setNewContactOpen] = useState(false);
@@ -892,7 +934,7 @@ export function Sidebar({
                           className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
                         >
                           <MoreHorizontal
-                            size={13}
+                            size={16}
                             className="text-[var(--color-sidebar-muted)]"
                           />
                         </span>
@@ -1017,7 +1059,9 @@ export function Sidebar({
                     style={{
                       animationDelay: `${idx * 30}ms`,
                     }}
-                    className="anim-stagger group w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px] transition-all duration-200"
+                    className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px] transition-all duration-200 ${
+                      projectMenuOpen === ws.id ? "z-30" : ""
+                    }`}
                   >
                     {/* 项目色块 sits in the SAME 32-px column as contact
                         circles, so contacts and projects align vertically as
@@ -1038,6 +1082,88 @@ export function Sidebar({
                         {ws.role} · {srv?.name ?? ws.server_id}
                       </div>
                     </div>
+                    {/* ⋮ overflow menu — mirrors the contact row: 编辑项目 /
+                        删除项目. role="button" spans because the row itself is a
+                        <button> (no nested buttons). */}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      title={t("editProject", lang)}
+                      aria-label={t("editProject", lang)}
+                      aria-haspopup="menu"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProjectMenuOpen((cur) => (cur === ws.id ? null : ws.id));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setProjectMenuOpen((cur) =>
+                            cur === ws.id ? null : ws.id,
+                          );
+                        }
+                      }}
+                      className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
+                    >
+                      <MoreHorizontal
+                        size={16}
+                        className="text-[var(--color-sidebar-muted)]"
+                      />
+                    </span>
+                    {projectMenuOpen === ws.id && (
+                      <div
+                        role="menu"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        className="absolute right-2 top-full -mt-1 z-50 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
+                      >
+                        <span
+                          role="menuitem"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setProjectMenuOpen(null);
+                            setEditingWorkspace(ws);
+                            setNewProjectOpen(true);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setProjectMenuOpen(null);
+                              setEditingWorkspace(ws);
+                              setNewProjectOpen(true);
+                            }
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left cursor-pointer"
+                        >
+                          <Pencil size={12} />
+                          {t("editProject", lang)}
+                        </span>
+                        <span
+                          role="menuitem"
+                          tabIndex={0}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setProjectMenuOpen(null);
+                            await deleteProject(ws);
+                          }}
+                          onKeyDown={async (e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setProjectMenuOpen(null);
+                              await deleteProject(ws);
+                            }
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 text-left cursor-pointer"
+                        >
+                          <Trash2 size={12} />
+                          {t("deleteProject", lang)}
+                        </span>
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -1049,7 +1175,20 @@ export function Sidebar({
       <Footer onOpenAdapters={() => setOnboardingOpen(true)} adapterStatus={adapterStatus} />
       {newProjectOpen && (
         <NewProjectModal
-          onClose={() => setNewProjectOpen(false)}
+          editing={editingWorkspace}
+          onClose={() => {
+            setNewProjectOpen(false);
+            setEditingWorkspace(null);
+          }}
+          onSaved={async () => {
+            try {
+              const list = await api.workspaces();
+              useStore.setState({ workspaces: list });
+            } catch {
+              // ignore
+            }
+            setEditingWorkspace(null);
+          }}
           onCreated={async (wsId, convId, members, title) => {
             setNewProjectOpen(false);
             try {

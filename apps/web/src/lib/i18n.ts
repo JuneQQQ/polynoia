@@ -15,6 +15,8 @@ const STR = {
   newContact: { zh: "新建联系人", en: "New Contact" },
   customContact: { zh: "自定义联系人", en: "Custom contact" },
   editContact: { zh: "编辑联系人", en: "Edit contact" },
+  editProject: { zh: "编辑项目", en: "Edit project" },
+  deleteProject: { zh: "删除项目", en: "Delete project" },
   noProjectsHint: {
     zh: "还没有项目 · + 新建第一个",
     en: "No projects yet · + Create first",

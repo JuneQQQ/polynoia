@@ -774,7 +774,7 @@ export function ChatPane({ convId, members, title }: Props) {
             of the message area) when ≥1 agent is working. NOT in the normal flow
             so it doesn't displace the message list when streaming starts/ends. */}
 
-				<ConvScopeProvider value={{ convId, inWorkspace }}>
+				<ConvScopeProvider value={{ convId, inWorkspace, members }}>
 					<div
 						ref={bodyRef}
 						className="absolute inset-0 overflow-y-auto py-4 pb-28"

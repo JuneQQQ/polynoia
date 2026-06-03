@@ -6,7 +6,7 @@
  *
  * 项目外不能建群聊 — 入口在 Sidebar 顶级"新建" view 只能 1v1。
  */
-import { ChevronRight, Hash, MessageCircle, Users, X } from "lucide-react";
+import { ChevronRight, Crown, Hash, MessageCircle, Users, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent, Workspace } from "../lib/types";
@@ -373,16 +373,24 @@ function GroupTab({
                       placeholder="角色描述,如:后端实现 / 前端样式 / 评审"
                       className="flex-1 text-[11.5px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
                     />
-                    <label className="inline-flex items-center gap-1 text-[10.5px] text-[var(--color-fg-2)] cursor-pointer">
-                      <input
-                        type="radio"
-                        name="orchestrator-pick"
-                        checked={isOrch}
-                        onChange={() => setOrchestratorId(id)}
-                        className="accent-[var(--color-accent)]"
-                      />
-                      协调器
-                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setOrchestratorId(isOrch ? null : id)}
+                      aria-pressed={isOrch}
+                      title={
+                        isOrch
+                          ? "ta 是本群协调器 —— 点一下取消"
+                          : "指定 ta 为协调器 —— 由 ta 拆解任务并并行调度"
+                      }
+                      className={`inline-flex items-center gap-1 text-[10.5px] px-2 py-1 rounded-md flex-shrink-0 transition-all ${
+                        isOrch
+                          ? "bg-[var(--color-accent)] text-white font-medium shadow-sm"
+                          : "border border-[var(--color-line)] text-[var(--color-fg-3)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                      }`}
+                    >
+                      <Crown size={11} />
+                      {isOrch ? "协调器" : "设为协调器"}
+                    </button>
                   </div>
                 );
               })}

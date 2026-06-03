@@ -406,10 +406,12 @@ def _validate_tool_role(raw: object) -> str:
     return raw
 
 
-# Tools a contact's per-tool override (Agent.tools_whitelist) may contain —
-# mirror of mcp.tools.TOOL_REGISTRY. Unknown names are dropped (fail-safe).
+# Real tool names — a mirror of mcp.tools.TOOL_REGISTRY. Unknown names are
+# dropped (fail-safe). `write` is the SOLE file-mutation tool; the old
+# edit/apply_patch/revert/call_agent tools are gone for good (see mcp/tools.py),
+# so they are intentionally NOT listed here.
 _ALL_TOOL_NAMES = frozenset({
-    "read", "edit", "write", "apply_patch", "bash", "grep", "glob", "revert",
+    "read", "write", "bash", "grep", "glob",
     "dispatch", "discuss", "remember", "recall", "report", "ask_user",
     "request_project_access", "present",
 })
@@ -885,6 +887,138 @@ async def create_workspace(body: dict):
             "workspace": ws.model_dump(),
             "main_conv_id": None,
         }
+
+
+@router.patch("/api/workspaces/{ws_id}")
+async def update_workspace(ws_id: str, body: dict):
+    """Edit a project's name / desc / color / members — the「编辑项目」path from
+    the sidebar ⋮ menu, mirroring PATCH /api/contacts. `members` replaces the
+    roster wholesale ("you" is always kept).
+
+    Removing a member CASCADES: the agent is logically dropped from every GROUP
+    chat in the project (roster + role maps; a removed orchestrator is cleared),
+    each affected group gets a `system` notice naming who left — so the other
+    agents pick it up in their next-turn context and the live roster they can
+    dispatch to (assembler reads conv.members) — and the removed agent's cached
+    adapter sessions in those convs are evicted. DMs are private 1:1 threads, so
+    they are left untouched. Past messages are kept (the UI tombstones them)."""
+    # Frames to broadcast AFTER the DB commit: (conv_id, notice_id, payload).
+    notices: list[tuple[str, str, dict, list[str]]] = []
+    async with SessionLocal() as session:
+        rows = await storage_repo.list_workspaces(session)
+        ws = next((w for w in rows if w.id == ws_id), None)
+        if ws is None:
+            raise HTTPException(status_code=404, detail=f"workspace not found: {ws_id}")
+        if "name" in body:
+            name = (body.get("name") or "").strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="name cannot be empty")
+            ws.name = name
+        if "desc" in body:
+            ws.desc = body.get("desc") or None
+        if "color" in body and body.get("color"):
+            ws.color = body["color"]
+        removed_ids: list[str] = []
+        if "members" in body:
+            raw = body.get("members") or []
+            members = [m for m in raw if isinstance(m, str) and m]
+            # "you" is always a member; de-dupe while preserving order.
+            if "you" not in members:
+                members = ["you", *members]
+            new_members = list(dict.fromkeys(members))
+            old_members = list(ws.members or [])
+            removed_ids = [
+                m for m in old_members if m not in new_members and m != "you"
+            ]
+            ws.members = new_members
+        await storage_repo.upsert_workspace(session, ws)
+
+        # Cascade member removal into the project's GROUP chats.
+        if removed_ids:
+            removed_set = set(removed_ids)
+            agents_lookup = {a.id: a for a in await storage_repo.list_agents(session)}
+
+            def _disp(aid: str) -> str:
+                a = agents_lookup.get(aid)
+                return a.name if a else aid
+
+            convs = await storage_repo.list_conversations(
+                session, workspace_id=ws_id
+            )
+            for conv in convs:
+                if not conv.group:  # DMs are private 1:1 — leave them alone
+                    continue
+                present = [m for m in (conv.members or []) if m in removed_set]
+                if not present:
+                    continue
+                orch_cleared = conv.orchestrator_member_id in removed_set
+                keep = [m for m in (conv.members or []) if m not in removed_set]
+                await storage_repo.set_members(session, conv.id, keep)
+                names = "、".join(f"@{_disp(m)}" for m in present)
+                text = (
+                    f"👥 {names} 已被移出本项目,不再参与本群对话;"
+                    "其此前的发言保留但已标记为「已退出」。"
+                )
+                if orch_cleared:
+                    text += " 本群协调者已空缺,请重新指定一位。"
+                payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
+                nid = await storage_repo.append_message(
+                    session, conv_id=conv.id, sender_id="system",
+                    payload=payload,
+                )
+                notices.append((conv.id, nid, payload, present))
+        await session.commit()
+        result = ws.model_dump()
+
+    # Post-commit side effects: evict the removed agents' cached sessions in the
+    # affected convs, then push the notice + a conv-updated hint to open tabs.
+    if notices:
+        from polynoia.adapters.pool import get_pool
+        pool = get_pool()
+        for conv_id, nid, payload, present in notices:
+            for aid in present:
+                with contextlib.suppress(Exception):
+                    await pool.close_session(aid, conv_id)
+            with contextlib.suppress(Exception):
+                frame = (
+                    'data: {"type":"data-text","id":' + json.dumps(nid)
+                    + ',"sender_id":"system","data":'
+                    + json.dumps(payload, ensure_ascii=False) + "}\n\n"
+                )
+                await _broadcast_to_conv(conv_id, frame)
+                await _broadcast_to_conv(
+                    conv_id,
+                    'data: {"type":"data-conv-updated","data":'
+                    + json.dumps({"conv_id": conv_id}) + "}\n\n",
+                )
+    return {"workspace": result}
+
+
+@router.delete("/api/workspaces/{ws_id}")
+async def delete_workspace(ws_id: str):
+    """Delete a project: its conversations (+ their messages/pins) and the
+    workspace row, then evict cached adapter sessions and best-effort remove
+    the on-disk sandbox worktree. The「删除项目」path from the sidebar ⋮ menu."""
+    async with SessionLocal() as session:
+        # Snapshot the conv ids before deletion so we can evict their sessions.
+        convs = await storage_repo.list_conversations(session, workspace_id=ws_id)
+        conv_ids = [c.id for c in convs]
+        ok = await storage_repo.delete_workspace(session, ws_id)
+        await session.commit()
+    if not ok:
+        return {"ok": False, "error": f"workspace not found: {ws_id}"}
+    from polynoia.adapters.pool import get_pool
+    pool = get_pool()
+    for conv_id in conv_ids:
+        await pool.close_sessions_for_conv(conv_id)
+    # Best-effort sandbox worktree cleanup — DB delete already succeeded, so a
+    # leftover dir is non-fatal (the next same-id workspace would reuse it).
+    with contextlib.suppress(Exception):
+        import shutil
+        ws_dir = (settings.sandbox_root / "workspaces" / ws_id).resolve()
+        if ws_dir.is_dir():
+            shutil.rmtree(ws_dir)
+    return {"ok": True}
 
 
 @router.post("/api/conversations")

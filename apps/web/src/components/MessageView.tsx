@@ -24,6 +24,7 @@ import {
 	useStore,
 } from "../store";
 import { MessagePart } from "./parts";
+import { useConvScope } from "./parts/_context";
 
 type Props = {
 	convId: string;
@@ -46,10 +47,20 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 		selectIsMessageStreaming(s, convId, msgId),
 	);
 	const agents = useStore((s) => s.agents);
+	const convScope = useConvScope();
 
 	if (!msg) return null;
 	const isYou = msg.sender_id === "you";
 	const isSystem = msg.sender_id === "system";
+	// Tombstone: a real sender who is no longer a member of this conv (e.g.
+	// removed from the project) — their past messages stay as history but get a
+	// muted「已退出项目」marker so the thread reads honestly. Only applies when the
+	// roster is known (group convs); DM senders are always members.
+	const isRemovedSender =
+		!isYou &&
+		!isSystem &&
+		!!convScope?.members &&
+		!convScope.members.includes(msg.sender_id);
 	const agent = isSystem
 		? undefined
 		: agents.find((a) => a.id === msg.sender_id);
@@ -177,6 +188,14 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 							>
 								{agent?.name ?? "Agent"}
 							</button>
+						)}
+						{isRemovedSender && (
+							<span
+								title="该成员已被移出本项目,不再参与后续对话"
+								className="text-[9px] font-mono uppercase tracking-[0.14em] px-1.5 py-[1px] rounded-sm font-medium bg-[var(--color-surface-2)] text-[var(--color-fg-4)] line-through decoration-1"
+							>
+								已退出项目
+							</span>
 						)}
 						{!isYou && !isSystem && agent?.id === "orchestrator" && (
 							<span
