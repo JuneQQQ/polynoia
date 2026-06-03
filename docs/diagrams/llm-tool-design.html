@@ -49,7 +49,6 @@
   .tool .td { font-size:12.5px; color:var(--text-muted); line-height:1.45; }
   .tool .badge { font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:999px;
                  margin-left:6px; vertical-align:middle; letter-spacing:.03em; }
-  .b-hidden { background:#F1F5F9; color:#64748B; }
   .b-orch   { background:#FEF3C7; color:#92400E; }
   .b-worker { background:#DCFCE7; color:#166534; }
 
@@ -109,10 +108,10 @@
   <h1>Agent 手里有哪些工具</h1>
   <div class="sub">
     Polynoia · MCP 工具设计 · 数据来自 <code>apps/server/polynoia/mcp/tools.py</code>
-    · 注册 17 个,按角色暴露 13 个
+    · 13 个工具,按角色裁剪暴露
   </div>
 
-  <h2>① 17 个工具,按用途分 6 组</h2>
+  <h2>① 13 个工具,按用途分 6 组</h2>
   <div class="legend">
     <span><i class="dot" style="background:var(--read)"></i>只读检索</span>
     <span><i class="dot" style="background:var(--mut)"></i>改文件</span>
@@ -120,7 +119,6 @@
     <span><i class="dot" style="background:var(--collab)"></i>多 Agent 协作</span>
     <span><i class="dot" style="background:var(--mem)"></i>共享记忆</span>
     <span><i class="dot" style="background:var(--loop)"></i>闭环 &amp; 用户</span>
-    <span><b class="badge b-hidden" style="margin:0">未暴露</b> 注册了但任何角色都拿不到</span>
   </div>
 
   <div class="groups">
@@ -132,11 +130,8 @@
     </div>
 
     <div class="grp g-mut">
-      <div class="grp-h"><span>改文件</span><span class="n">1 暴露 / 4 实现</span></div>
-      <div class="tool"><div class="tn">write</div><div class="td">写/覆盖整个文件,自动 commit 到沙箱 git。<b>唯一对外暴露的写工具</b></div></div>
-      <div class="tool"><div class="tn">edit <span class="badge b-hidden">未暴露</span></div><div class="td">精确字符串替换(<code>old_string</code> 须完全匹配)</div></div>
-      <div class="tool"><div class="tn">apply_patch <span class="badge b-hidden">未暴露</span></div><div class="td"><code>git apply</code> 一个 unified diff</div></div>
-      <div class="tool"><div class="tn">revert <span class="badge b-hidden">未暴露</span></div><div class="td">回滚到某 commit(新建 revert-commit,不改写历史)</div></div>
+      <div class="grp-h"><span>改文件</span><span class="n">1 个</span></div>
+      <div class="tool"><div class="tn">write</div><div class="td">写/覆盖整个文件,自动 commit 到沙箱 git。<b>唯一的文件写工具</b> —— 每次改动都是完整可审阅的内容,单一审计入口</div></div>
     </div>
 
     <div class="grp g-exec">
@@ -145,10 +140,9 @@
     </div>
 
     <div class="grp g-collab">
-      <div class="grp-h"><span>多 Agent 协作</span><span class="n">2 暴露 / 3 实现</span></div>
+      <div class="grp-h"><span>多 Agent 协作</span><span class="n">2 个</span></div>
       <div class="tool"><div class="tn">dispatch <span class="badge b-orch">编排者</span></div><div class="td">把并行子任务派给队友 + 下发共享 <code>contract</code>;fire-and-forget,后续轮验收</div></div>
       <div class="tool"><div class="tn">discuss</div><div class="td">@ 队友开<b>自由讨论</b>(非并行派活),编排者最后给「讨论结论」</div></div>
-      <div class="tool"><div class="tn">call_agent <span class="badge b-hidden">未暴露</span></div><div class="td">同步调另一个 agent 等结果 —— 已被 dispatch/discuss 取代</div></div>
     </div>
 
     <div class="grp g-mem">
@@ -167,9 +161,10 @@
   </div>
 
   <div class="callout">
-    <strong>为什么 17 个里只暴露 13 个?</strong> <code>edit / apply_patch / revert</code> 全藏起来 ——
-    <code>write</code> 作为<b>唯一</b>文件写工具,每次改动都是一份完整、可逐文件审阅的内容,<b>单一审计入口</b>(用户的审计要求)。
-    <code>call_agent</code> 被 <code>dispatch</code>(并行派活)+ <code>discuss</code>(自由讨论)取代。
+    <strong>删掉了 4 个工具 —— 为什么?</strong> <code>edit / apply_patch / revert</code> 曾注册但从不暴露,已删除:
+    <code>write</code> 作为<b>唯一</b>文件写工具,每次改动都是一份完整、可逐文件审阅的内容,<b>单一审计入口</b>(用户的审计要求),
+    部分编辑 / 打补丁 / revert 都会绕开这条审计线。<code>call_agent</code>(同步阻塞调另一个 agent)也已删除 ——
+    多 agent 协作统一走 <code>dispatch</code>(并行派活)+ <code>discuss</code>(自由讨论),不是阻塞式调用。
   </div>
 
   <h2>② 谁能用什么:角色门控(ROLE_TOOLS)</h2>
