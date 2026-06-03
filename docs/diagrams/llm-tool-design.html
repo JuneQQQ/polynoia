@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Polynoia · Agent 手里有哪些工具</title>
+<style>
+  :root {
+    --bg: #F8F7F4;
+    --card: #FFFFFF;
+    --border: #E8E5DD;
+    --border-light: #F0EDE5;
+    --text: #1C1917;
+    --text-muted: #78716C;
+    --text-dim: #A8A29E;
+    --read: #4B7FE5;   /* 只读检索 */
+    --mut:  #E08530;   /* 改文件 */
+    --exec: #8B47B0;   /* 跑命令 */
+    --collab:#1D9E54;  /* 多 agent 协作 */
+    --mem:  #7C6340;   /* 共享记忆 */
+    --loop: #C2410C;   /* 闭环 & 用户 */
+    --shadow-sm: 0 1px 2px rgba(28,25,23,0.06);
+    --shadow-md: 0 4px 12px rgba(28,25,23,0.08);
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height:1.65; font-size:15px; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1080px; margin:0 auto; padding:48px 32px 120px; }
+  h1 { font-size:30px; margin:0 0 6px; font-weight:700; letter-spacing:-0.02em; animation:fadeUp .5s ease-out; }
+  .sub { color:var(--text-muted); margin-bottom:36px; font-size:14px; animation:fadeUp .5s ease-out .05s both; }
+  h2 { font-size:20px; margin:52px 0 20px; border-bottom:1px solid var(--border); padding-bottom:10px;
+       font-weight:650; letter-spacing:-0.01em; animation:fadeUp .4s ease-out; }
+  code { font-family: ui-monospace, Menlo, "JetBrains Mono", monospace; font-size:12.5px;
+         background:var(--border-light); padding:2px 6px; border-radius:4px; color:var(--text); }
+
+  /* tool groups */
+  .groups { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .grp { background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
+         padding:0; overflow:hidden; box-shadow:var(--shadow-sm); animation:fadeUp .4s ease-out both; }
+  .grp-h { padding:11px 16px; color:#fff; font-weight:650; font-size:13.5px; letter-spacing:.01em;
+           display:flex; align-items:center; justify-content:space-between; }
+  .grp-h .n { font-family:ui-monospace,monospace; font-size:11.5px; opacity:.8; font-weight:600; }
+  .tool { display:grid; grid-template-columns:148px 1fr; gap:10px; padding:9px 16px;
+          border-top:1px solid var(--border-light); align-items:baseline; }
+  .tool .tn { font-family:ui-monospace,monospace; font-size:13px; font-weight:600; color:var(--text); }
+  .tool .td { font-size:12.5px; color:var(--text-muted); line-height:1.45; }
+  .tool .badge { font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:999px;
+                 margin-left:6px; vertical-align:middle; letter-spacing:.03em; }
+  .b-hidden { background:#F1F5F9; color:#64748B; }
+  .b-orch   { background:#FEF3C7; color:#92400E; }
+  .b-worker { background:#DCFCE7; color:#166534; }
+
+  .g-read .grp-h{background:linear-gradient(135deg,var(--read),#6B9AF9)}
+  .g-mut  .grp-h{background:linear-gradient(135deg,var(--mut),#F5AD5C)}
+  .g-exec .grp-h{background:linear-gradient(135deg,var(--exec),#B06FD0)}
+  .g-collab .grp-h{background:linear-gradient(135deg,var(--collab),#3DBF72)}
+  .g-mem  .grp-h{background:linear-gradient(135deg,var(--mem),#9A7E58)}
+  .g-loop .grp-h{background:linear-gradient(135deg,var(--loop),#EA6A2E)}
+
+  /* matrix */
+  table { width:100%; border-collapse:collapse; background:var(--card);
+          border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;
+          font-size:13px; box-shadow:var(--shadow-sm); }
+  th,td { padding:9px 8px; text-align:center; border-bottom:1px solid var(--border-light); }
+  thead th { background:#F5F3EC; font-size:11px; color:var(--text-muted); font-weight:650;
+             text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; }
+  th.tool-col, td.tool-col { text-align:left; font-family:ui-monospace,monospace; font-weight:600;
+             background:#FAF9F5; width:150px; white-space:nowrap; }
+  tbody tr:hover { background:#FAFAF7; }
+  .yes { color:#16A34A; font-weight:700; }
+  .no  { color:#E5E0D6; }
+  td.dim { color:var(--text-dim); }
+  .grp-row td { background:#F0EDE5; font-weight:700; font-size:11px; color:var(--text-muted);
+                text-align:left; letter-spacing:.06em; text-transform:uppercase; }
+
+  /* gate flow */
+  .flow { display:flex; flex-direction:column; gap:8px; max-width:760px; }
+  .step { display:grid; grid-template-columns:40px 1fr; gap:14px; align-items:start;
+          background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
+          padding:13px 16px; box-shadow:var(--shadow-sm); }
+  .step .num { width:28px; height:28px; border-radius:999px; background:var(--text); color:#fff;
+               display:grid; place-items:center; font-weight:700; font-size:13px;
+               font-family:ui-monospace,monospace; }
+  .step .st { font-size:13.5px; }
+  .step .st b { font-weight:650; }
+  .step .src { font-family:ui-monospace,monospace; font-size:11px; color:var(--text-dim); }
+  .branch { display:grid; grid-template-columns:1fr 1fr; gap:8px; max-width:760px; margin-top:2px; }
+  .br { border-radius:var(--radius-sm); padding:10px 14px; font-size:12.5px; }
+  .br.ok { background:#F0FDF4; border:1px solid #BBF7D0; }
+  .br.no { background:#FEF2F2; border:1px solid #FECACA; }
+
+  .callout { background:linear-gradient(135deg,#FFF8E7,#FFF3D6); border-left:4px solid var(--mut);
+    padding:14px 18px; border-radius:0 var(--radius-sm) var(--radius-sm) 0; font-size:14px; margin:16px 0;
+    box-shadow:var(--shadow-sm); }
+  .callout strong { color:#A16207; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--text-muted); margin:10px 0 18px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; }
+
+  @media (max-width:760px){ .wrap{padding:28px 16px 80px} .groups{grid-template-columns:1fr} .branch{grid-template-columns:1fr} table{font-size:11px} th,td{padding:7px 4px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Agent 手里有哪些工具</h1>
+  <div class="sub">
+    Polynoia · MCP 工具设计 · 数据来自 <code>apps/server/polynoia/mcp/tools.py</code>
+    · 注册 17 个,按角色暴露 13 个
+  </div>
+
+  <h2>① 17 个工具,按用途分 6 组</h2>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--read)"></i>只读检索</span>
+    <span><i class="dot" style="background:var(--mut)"></i>改文件</span>
+    <span><i class="dot" style="background:var(--exec)"></i>跑命令</span>
+    <span><i class="dot" style="background:var(--collab)"></i>多 Agent 协作</span>
+    <span><i class="dot" style="background:var(--mem)"></i>共享记忆</span>
+    <span><i class="dot" style="background:var(--loop)"></i>闭环 &amp; 用户</span>
+    <span><b class="badge b-hidden" style="margin:0">未暴露</b> 注册了但任何角色都拿不到</span>
+  </div>
+
+  <div class="groups">
+    <div class="grp g-read">
+      <div class="grp-h"><span>只读检索</span><span class="n">3 暴露</span></div>
+      <div class="tool"><div class="tn">read</div><div class="td">读沙箱里的 UTF-8 文本文件,带行号,<code>offset/limit</code> 分页</div></div>
+      <div class="tool"><div class="tn">grep</div><div class="td">ripgrep 递归搜索,返回 <code>file:line</code></div></div>
+      <div class="tool"><div class="tn">glob</div><div class="td">按 glob 模式找文件</div></div>
+    </div>
+
+    <div class="grp g-mut">
+      <div class="grp-h"><span>改文件</span><span class="n">1 暴露 / 4 实现</span></div>
+      <div class="tool"><div class="tn">write</div><div class="td">写/覆盖整个文件,自动 commit 到沙箱 git。<b>唯一对外暴露的写工具</b></div></div>
+      <div class="tool"><div class="tn">edit <span class="badge b-hidden">未暴露</span></div><div class="td">精确字符串替换(<code>old_string</code> 须完全匹配)</div></div>
+      <div class="tool"><div class="tn">apply_patch <span class="badge b-hidden">未暴露</span></div><div class="td"><code>git apply</code> 一个 unified diff</div></div>
+      <div class="tool"><div class="tn">revert <span class="badge b-hidden">未暴露</span></div><div class="td">回滚到某 commit(新建 revert-commit,不改写历史)</div></div>
+    </div>
+
+    <div class="grp g-exec">
+      <div class="grp-h"><span>跑命令</span><span class="n">1 暴露</span></div>
+      <div class="tool"><div class="tn">bash</div><div class="td">在沙箱工作目录跑 shell,返回 stdout/stderr/exit,默认 30s 超时,<b>不</b> commit</div></div>
+    </div>
+
+    <div class="grp g-collab">
+      <div class="grp-h"><span>多 Agent 协作</span><span class="n">2 暴露 / 3 实现</span></div>
+      <div class="tool"><div class="tn">dispatch <span class="badge b-orch">编排者</span></div><div class="td">把并行子任务派给队友 + 下发共享 <code>contract</code>;fire-and-forget,后续轮验收</div></div>
+      <div class="tool"><div class="tn">discuss</div><div class="td">@ 队友开<b>自由讨论</b>(非并行派活),编排者最后给「讨论结论」</div></div>
+      <div class="tool"><div class="tn">call_agent <span class="badge b-hidden">未暴露</span></div><div class="td">同步调另一个 agent 等结果 —— 已被 dispatch/discuss 取代</div></div>
+    </div>
+
+    <div class="grp g-mem">
+      <div class="grp-h"><span>共享记忆</span><span class="n">2 暴露 · 人人可用</span></div>
+      <div class="tool"><div class="tn">remember</div><div class="td">往本会话<b>共享记忆</b>写一条:<code>contract / decision / artifact</code></div></div>
+      <div class="tool"><div class="tn">recall</div><div class="td">读共享记忆(按 kind 取 contracts/decisions/artifacts),核对锁定的契约</div></div>
+    </div>
+
+    <div class="grp g-loop">
+      <div class="grp-h"><span>闭环 &amp; 用户</span><span class="n">4 暴露</span></div>
+      <div class="tool"><div class="tn">report <span class="badge b-worker">worker</span></div><div class="td">闭环交付回执:<code>status + deliverables + contract_ok</code>;编排者读它来验收</div></div>
+      <div class="tool"><div class="tn">present <span class="badge b-orch">编排者</span></div><div class="td">把交付物文件作为<b>一个面板</b>展示给用户(合并后从 main 读)</div></div>
+      <div class="tool"><div class="tn">ask_user</div><div class="td">问用户并<b>阻塞</b>等回答(渲染成 ask-form 卡)</div></div>
+      <div class="tool"><div class="tn">request_project_access</div><div class="td">请求用户批准加入某个<b>项目</b>(工作区)</div></div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>为什么 17 个里只暴露 13 个?</strong> <code>edit / apply_patch / revert</code> 全藏起来 ——
+    <code>write</code> 作为<b>唯一</b>文件写工具,每次改动都是一份完整、可逐文件审阅的内容,<b>单一审计入口</b>(用户的审计要求)。
+    <code>call_agent</code> 被 <code>dispatch</code>(并行派活)+ <code>discuss</code>(自由讨论)取代。
+  </div>
+
+  <h2>② 谁能用什么:角色门控(ROLE_TOOLS)</h2>
+  <p>子进程拿到的工具列表 = 按 <code>POLYNOIA_AGENT_ROLE</code> 过滤。同一个工具集随角色裁剪:</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="tool-col">工具 \ 角色</th>
+        <th>orchestrator<br/>编排者</th>
+        <th>coder<br/>码农</th>
+        <th>designer<br/>设计</th>
+        <th>writer<br/>文案</th>
+        <th>critic<br/>审计</th>
+        <th>generalist<br/>通用</th>
+        <th>advisory<br/>只读咨询</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="grp-row"><td colspan="8">只读检索</td></tr>
+      <tr><td class="tool-col">read</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr><td class="tool-col">grep</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr><td class="tool-col">glob</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr class="grp-row"><td colspan="8">改文件 / 跑命令</td></tr>
+      <tr><td class="tool-col">write</td> <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="no">·</td></tr>
+      <tr><td class="tool-col">bash</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="yes">✓</td><td class="no">·</td></tr>
+      <tr class="grp-row"><td colspan="8">多 Agent 协作</td></tr>
+      <tr><td class="tool-col">dispatch</td><td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td></tr>
+      <tr><td class="tool-col">discuss</td> <td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td></tr>
+      <tr class="grp-row"><td colspan="8">共享记忆</td></tr>
+      <tr><td class="tool-col">remember</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr><td class="tool-col">recall</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr class="grp-row"><td colspan="8">闭环 &amp; 用户</td></tr>
+      <tr><td class="tool-col">report</td>  <td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr><td class="tool-col">present</td> <td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td></tr>
+      <tr><td class="tool-col">ask_user</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      <tr><td class="tool-col">request_project_access</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    几条非显然的门控:
+    <ul style="margin:6px 0 0;padding-left:22px;">
+      <li><strong>designer / writer 没有 bash</strong> —— 逼它们用显式 <code>write</code> 落 HTML/CSS/文案,产物每次都是完整可审阅的文件。</li>
+      <li><strong>critic 全只读</strong>(read/grep/glob/recall + report)—— 它只验收别人的活、对照 contract 记一个 verdict,绝不写。</li>
+      <li><strong>present 仅编排者、report 仅 worker</strong> —— worker 干完只 <code>report</code>,编排者读 verdict 验收后 <code>present</code> 统一交付。</li>
+      <li><strong>advisory</strong> 不是 persona,是<b>降级态</b>:对话不属于任何项目时(主页 DM),适配器池把任何联系人降到只读咨询 —— 没有共享沙箱可写。</li>
+    </ul>
+  </div>
+
+  <h2>③ write 的「人在回路」门控(manual 模式)</h2>
+  <p>开了 <code>manual</code> 合并模式时,每次 <code>write</code> 不直接落盘,先挂一张 pending-edit 卡等用户点 ✓ / ✗:</p>
+
+  <div class="flow">
+    <div class="step"><div class="num">1</div><div><div class="st"><b>agent 调 write</b> → MCP 工具进程先查 <code>conv.merge_mode</code></div><div class="src">tools.py · _gate_via_pending_edit</div></div></div>
+    <div class="step"><div class="num">2</div><div><div class="st"><b>auto 模式</b> → 直接放行落盘(无门控)。<b>manual 模式</b> → POST <code>/api/pending-edits</code> 建一张待审卡 + WS 广播给前端</div></div></div>
+    <div class="step"><div class="num">3</div><div><div class="st"><b>阻塞轮询</b> <code>/pending-edits/{id}/wait</code>,直到用户在 UI 上拍板</div></div></div>
+  </div>
+  <div class="branch">
+    <div class="br ok"><b>✓ 接受</b> → write 真正落盘 + commit,工具返回成功,agent 继续</div>
+    <div class="br no"><b>✗ 拒绝</b> → 不落盘,工具返回「被拒」,agent 据此调整</div>
+  </div>
+
+  <div class="callout">
+    <strong>关键:</strong>门控在 <b>MCP 工具进程</b>里做(不是 adapter 层)—— 对模型透明,它只看到「write 成功 / 被拒」。
+    冲突闭环(<code>feature/diff_dev</code>)正逐一镜像这条 pending-edit 轨道做「合并冲突选边」。
+  </div>
+
+  <p style="color:#9CA3AF;font-size:12px;margin-top:36px;">
+    渲染于 2026-06-03 · 配套阅读:<code>context-builder-current.html</code>(Agent 说话前看到的 9 层 context)
+  </p>
+
+</div>
+</body>
+</html>

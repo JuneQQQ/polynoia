@@ -20,7 +20,7 @@
 **把"协调器"做成 conv 级、自带电(self-enabling)的角色**——被指为某群聊 `orchestrator_member_id` 的成员,平台自动两件事:
 
 1. **工具通道**(`pool.get_session`):该成员的**有效 `tool_role` 强制 = `"orchestrator"`**(覆盖联系人级 tool_role),从而拿到 `dispatch`、去掉 write。仅对 `conv.group and agent_id == conv.orchestrator_member_id` 生效;其它对话保持联系人自身 tool_role。
-2. **提示通道**(新 L1.5 层 `context/orchestrator.py`,由 `assembler` 注入):为该成员注入一段**不可移除**(`hard=True`)的"协调协议":必须用 `dispatch` 工具派活、**严禁用 @提及/bash 模拟派活**、不写文件、并附本群成员名单。**独立于用户 persona**。
+2. **提示通道**(新 L2 层 `context/orchestrator.py`,由 `assembler` 注入):为该成员注入一段**不可移除**(`hard=True`)的"协调协议":必须用 `dispatch` 工具派活、**严禁用 @提及/bash 模拟派活**、不写文件、并附本群成员名单。**独立于用户 persona**。
 
 类比 ADR-006(Claude Code system_prompt 的 preset+append):平台拥有**机制**(用 dispatch 这条路),用户 persona 只负责**风格 / 领域路由**。
 

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>合并 / 同步边界情况 — Polynoia</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --surface: #ffffff; --line: #e7e3da; --ink: #1f2937;
+    --ink2: #545b66; --ink3: #8a8f98;
+    --blue: #5B8FF9; --blue-soft: #eaf1fe;
+    --orange: #F2994A; --orange-soft: #fdf1e6;
+    --green: #27AE60; --green-soft: #e7f6ed;
+    --red: #E2574C; --red-soft: #fdecea;
+    --slate: #475569; --slate-soft: #eef2f6;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+    padding: 0 0 96px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 28px; }
+  header.top {
+    background: linear-gradient(180deg, #fff, #fbfaf7);
+    border-bottom: 1px solid var(--line); padding: 40px 0 30px; margin-bottom: 8px;
+  }
+  header.top h1 { margin: 0 0 6px; font-size: 27px; letter-spacing: -.02em; }
+  header.top .sub { color: var(--ink2); font-size: 14.5px; max-width: 760px; }
+  header.top .meta { margin-top: 14px; font: 12px/1.5 var(--mono); color: var(--ink3); }
+  h2 {
+    font-size: 19px; letter-spacing: -.01em; margin: 44px 0 4px;
+    padding-top: 18px; border-top: 1px dashed var(--line);
+  }
+  h2 .tag {
+    font: 11px/1 var(--mono); vertical-align: middle; padding: 4px 7px;
+    border-radius: 5px; margin-right: 9px;
+  }
+  h2 .tag.bug { background: var(--red-soft); color: var(--red); }
+  h2 .tag.ok  { background: var(--green-soft); color: var(--green); }
+  h2 .tag.warn{ background: var(--orange-soft); color: #c9772e; }
+  h2 .tag.new { background: var(--blue-soft); color: #2f6fe0; }
+  .lede { color: var(--ink2); margin: 8px 0 14px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px; margin: 14px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  .panel { border-radius: 10px; padding: 14px 16px; border: 1px solid var(--line); }
+  .panel.bad  { background: var(--red-soft);  border-color: #f3cfca; }
+  .panel.good { background: var(--green-soft); border-color: #c4e6d2; }
+  .panel h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .panel.bad h4  { color: var(--red); }
+  .panel.good h4 { color: var(--green); }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; }
+  code.inline { background: var(--slate-soft); padding: 1.5px 5px; border-radius: 4px; color: #334155; }
+  pre {
+    margin: 10px 0 0; background: #1f2430; color: #d6dde9; border-radius: 9px;
+    padding: 13px 15px; overflow-x: auto; font: 12.3px/1.65 var(--mono);
+  }
+  pre .c { color: #7c8699; } pre .g { color: #7ee2a8; } pre .r { color: #f3938a; }
+  pre .o { color: #f3b765; } pre .b { color: #88b4f6; } pre .k { color: #c9a6f5; }
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; margin: 6px 0; }
+  .step {
+    flex: 1 1 0; min-width: 120px; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 10px; padding: 11px 12px; position: relative; margin-right: 26px;
+  }
+  .step:last-child { margin-right: 0; }
+  .step::after {
+    content: "→"; position: absolute; right: -20px; top: 50%; transform: translateY(-50%);
+    color: var(--ink3); font-size: 16px;
+  }
+  .step:last-child::after { content: ""; }
+  .step .n { font: 11px/1 var(--mono); color: var(--ink3); }
+  .step .t { font-weight: 600; font-size: 13px; margin: 4px 0 3px; }
+  .step .d { font-size: 11.5px; color: var(--ink2); line-height: 1.45; }
+  .step.hot { border-color: var(--orange); background: var(--orange-soft); }
+  ul.tight { margin: 8px 0 0; padding-left: 20px; }
+  ul.tight li { margin: 4px 0; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink3); }
+  td .mono { font-size: 12px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font: 11.5px/1.5 var(--mono); }
+  .pill.green { background: var(--green-soft); color: var(--green); }
+  .pill.red { background: var(--red-soft); color: var(--red); }
+  .pill.orange { background: var(--orange-soft); color: #c9772e; }
+  .pill.blue { background: var(--blue-soft); color: #2f6fe0; }
+  .note { font-size: 12.5px; color: var(--ink3); margin-top: 8px; }
+  .kbd { font: 11.5px/1 var(--mono); border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; padding:3px 6px; background:#fff; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--ink2); margin-top:12px; }
+  .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  .legend .l-bug::before { background: var(--red); }
+  .legend .l-ok::before { background: var(--green); }
+  .legend .l-warn::before { background: var(--orange); }
+  .legend .l-new::before { background: var(--blue); }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <h1>合并 / 同步管线 —— 边界情况与处理</h1>
+  <div class="sub">
+    Polynoia 的每个 agent 在 workspace 的独立 git worktree 里干活,产出经「单一合并咽喉」<code class="inline">_drain_unmerged_branches</code> 汇入 <code class="inline">main</code>。
+    这份文档梳理了这条管线上 5 个被点名的潜在 bug —— 哪些是真的、怎么修的、哪个是虚惊 —— 外加分支同步从 <code class="inline">merge</code> 改 <code class="inline">reset --hard</code> 的重做。
+  </div>
+  <div class="meta">scope: apps/server/polynoia/{sandbox/_core.py, api/routes.py} · 冲突闭环承重区 (CHARTER) · tests: tests/sandbox/test_merge_helpers.py</div>
+  <div class="legend">
+    <span class="l-ok">已修 / 安全</span>
+    <span class="l-bug">真 bug(数据丢失 / 错乱)</span>
+    <span class="l-warn">设计取舍 / 边界守卫</span>
+    <span class="l-new">重做(同步模型)</span>
+  </div>
+</div></header>
+
+<div class="wrap">
+
+  <!-- ===================== PIPELINE OVERVIEW ===================== -->
+  <h2>合并咽喉:一次 drain 的五步</h2>
+  <p class="lede">burst 全部完成 / 单个 turn 结束时各触发一次,全程持 <code class="inline">workspace_merge_lock(ws_id)</code>(per-workspace,非 per-conv)。</p>
+  <div class="flow">
+    <div class="step hot">
+      <div class="n">step 1</div>
+      <div class="t">commit_pending_worktrees</div>
+      <div class="d">把 agent 用原生工具写、还没 git commit 的改动收成 commit。<b>仅扫 owner_agents</b>。</div>
+    </div>
+    <div class="step">
+      <div class="n">step 2</div>
+      <div class="t">list / ahead 过滤</div>
+      <div class="d">遍历 <code>agent/*/conv-X</code> 分支,跳过 0-ahead 和已有冲突卡的。</div>
+    </div>
+    <div class="step hot">
+      <div class="n">step 3</div>
+      <div class="t">probe_merge(b)</div>
+      <div class="d">试合并:clean→直接 commit;conflict/error→<code>--abort</code>,main 不动。</div>
+    </div>
+    <div class="step">
+      <div class="n">step 4</div>
+      <div class="t">files_in_range</div>
+      <div class="d"><code>pre_main..post_main</code> 算出本分支落地的文件,挑出可预览的当 deliverable。</div>
+    </div>
+    <div class="step">
+      <div class="n">step 5</div>
+      <div class="t">handoff / cards</div>
+      <div class="d">有 deliverable 或冲突 → 交给 orchestrator 展示;solo 会话直接发 file 卡。</div>
+    </div>
+  </div>
+  <p class="note">下面每个边界情况都标注它落在哪一步。橙色步骤(1、3)是这次改动的重点。</p>
+
+  <!-- ===================== BUG #1 ===================== -->
+  <h2><span class="tag bug">#1 真 bug</span>半成品被别人的 drain 提交进 main <span style="font-weight:400;font-size:13px;color:var(--ink3)">· step 1</span></h2>
+  <p class="lede">
+    旧的 <code class="inline">commit_pending_worktrees(conv_id)</code> 对本会话<b>所有</b> worktree 无脑 <code class="inline">git add -A &amp;&amp; commit</code>。
+    但 drain 可能由 <b>另一个</b> agent 触发 —— 此时第三个 agent 还在写文件。
+  </p>
+  <div class="grid2">
+    <div class="panel bad">
+      <h4>之前 · 会污染 main</h4>
+      <pre><span class="c"># 苏念 还在写 onepager.md(未 commit)</span>
+<span class="c"># 顾屿 turn 结束 → 触发 drain</span>
+commit_pending_worktrees(<span class="o">conv</span>)
+  → sweep <span class="r">苏念</span> worktree 也被 add -A
+  → 苏念 半成品 commit 到它的分支
+  → 一起 merge 进 <span class="r">main</span>  ❌</pre>
+    </div>
+    <div class="panel good">
+      <h4>之后 · owner 作用域</h4>
+      <pre>commit_pending_worktrees(conv, <span class="g">only_agents</span>)
+  <span class="c"># 单 turn drain → owner = {当前 agent}</span>
+  <span class="c"># burst drain  → owner = {本批 workers}</span>
+  → 只扫 owner 的 worktree
+  → <span class="g">苏念 (mid-turn) 被跳过,半成品保留</span> ✅</pre>
+    </div>
+  </div>
+  <div class="card">
+    <b>关键点:</b> 跳过非 owner 不会漏合并任何<i>已完成</i>的工作 —— 别人已 commit 的分支照样在 step 2 被 ahead 检测捞到合并;被跳过的只是<i>未 commit</i>的进行中改动,等那个 agent 自己 turn 结束再收。
+    <div class="note">owner 来源:单 turn = <code class="inline">{agent_id}</code>;burst = <code class="inline">{t["agent"] for t in reg["payload"]["tasks"]}</code>。<code class="inline">None</code> = 扫全部(无并发时的兜底)。测试:<code class="inline">test_commit_pending_worktrees_only_owner</code>。</div>
+  </div>
+
+  <!-- ===================== BUG #2 ===================== -->
+  <h2><span class="tag warn">#2 取舍</span>probe_merge 是「探测即落地」 <span style="font-weight:400;font-size:13px;color:var(--ink3)">· step 3</span></h2>
+  <p class="lede">
+    名字叫 probe,但 clean 时它<b>真的 commit 到 main</b>(冲突闭环靠它做唯一合并)。这是<b>有意</b>设计,不是 bug —— 它对单个分支是原子的:
+  </p>
+  <div class="card">
+    <table>
+      <tr><th>分支结果</th><th>对 main 的影响</th><th>恢复</th></tr>
+      <tr><td><span class="pill green">clean</span></td><td>merge commit 落地(<code class="inline">--no-ff</code>)</td><td>不需要</td></tr>
+      <tr><td><span class="pill red">conflict</span></td><td><b>不动</b>(<code class="inline">git merge --abort</code>)</td><td>出冲突卡,分支保留待解</td></tr>
+      <tr><td><span class="pill orange">error</span></td><td><b>不动</b>(<code class="inline">_abort_stray_merge</code>)</td><td>分支留在 ahead,下次 drain 再试</td></tr>
+    </table>
+    <p style="margin:14px 0 0">
+      真正的隐患在<b>调用方</b>:若一个分支 clean 落地后、记账(<code class="inline">files_in_range</code> / 发卡)抛异常,会把整个循环带崩,后面分支的 deliverable / 冲突信号全丢。
+    </p>
+  </div>
+  <div class="panel good">
+    <h4>加固 · 每分支隔离 + 提前推进 pre_main</h4>
+    <pre><span class="k">for</span> b <span class="k">in</span> branches:
+    <span class="k">try</span>:
+        status, detail = probe_merge(b)
+        <span class="k">if</span> status == <span class="g">"clean"</span>:
+            <span class="b">prev_main, pre_main = pre_main, post_main</span>   <span class="c"># 先推进,再记账</span>
+            changed = files_in_range(prev_main, post_main)
+            ...                                  <span class="c"># 抛了也不会错配下个分支</span>
+    <span class="k">except</span> Exception:
+        log.exception(...); <span class="k">continue</span>            <span class="c"># 一个分支崩 ≠ 整批崩</span></pre>
+  </div>
+
+  <!-- ===================== BUG #3 ===================== -->
+  <h2><span class="tag ok">#3 虚惊</span>跨冲突分支的 pre_main 追踪 —— 其实是对的 <span style="font-weight:400;font-size:13px;color:var(--ink3)">· step 4</span></h2>
+  <p class="lede">
+    担心:A 合了(pre_main 推进)、B 冲突了(pre_main 没推进)、C 再合时把 A 的文件混进 C 的 deliverable。<b>核实后:不会。</b>
+  </p>
+  <div class="card">
+    <pre><span class="c"># 关键事实:冲突会 --abort,main 不前进</span>
+pre_main = M0
+A clean  → main = M1   range(<span class="b">M0</span>,M1)=A 的文件   pre_main = M1
+B <span class="r">conflict</span> → main = M1 (<span class="r">aborted,没动</span>)            pre_main = <span class="g">M1 不变</span>  ✓
+C clean  → main = M2   range(<span class="b">M1</span>,M2)=<span class="g">只有 C 的文件</span>  ✓</pre>
+    <p style="margin:14px 0 0">
+      正因为冲突不推进 main,<b>「冲突后不更新 pre_main」恰恰是正确的</b> —— C 的 range 起点仍是上一次真实的 main 状态(M1),B 没贡献任何 main 变更可混入。无需改动,这里把不变量记录下来防回归。
+    </p>
+  </div>
+
+  <!-- ===================== BUG #4 ===================== -->
+  <h2><span class="tag warn">#4 潜伏</span>去重漏了 present 的 <code style="font-size:15px">kind:files</code> 面板 <span style="font-weight:400;font-size:13px;color:var(--ink3)">· step 5</span></h2>
+  <p class="lede">
+    自动 file 卡发 <code class="inline">kind:"file"</code>(单数);orchestrator 的 <code class="inline">present</code> 发 <code class="inline">kind:"files"</code>(复数,一个面板含多文件)。
+    旧去重只扫单数 → 同名文件可能既进 present 面板又被自动补一张卡。
+  </p>
+  <div class="grid2">
+    <div class="panel" style="background:var(--slate-soft);border-color:#d8dee6">
+      <h4 style="color:var(--slate)">当前现状</h4>
+      <p style="margin:0;font-size:13px;color:var(--ink2)">
+        自动卡只在 <b>solo/direct</b> 会话发(<code class="inline">auto_cards = not group</code>);<code class="inline">present</code> 只在<b>群聊</b>由 orchestrator 用。两者按会话类型互斥,所以现在<b>不会</b>真撞上。
+      </p>
+    </div>
+    <div class="panel good">
+      <h4>加固 · 去重覆盖两种 kind</h4>
+      <pre><span class="k">if</span> kind == <span class="g">"file"</span>:  seen.add((sid, name))
+<span class="k">elif</span> kind == <span class="g">"files"</span>:                <span class="c"># present 面板</span>
+    <span class="k">for</span> f <span class="k">in</span> payload[<span class="g">"files"</span>]:
+        seen.add((sid, f[<span class="g">"name"</span>]))</pre>
+    </div>
+  </div>
+  <p class="note">为什么还是修:那条「已被 present 去重」的注释本来就是<b>错的</b>;且一旦门控变化(比如 solo 会话也允许 present)立刻变真 bug。修在去重层(对所有历史曝光去重)是更对的高度,而非依赖门控巧合。</p>
+
+  <!-- ===================== BUG #5 ===================== -->
+  <h2><span class="tag warn">#5 边界</span><code style="font-size:15px">git checkout main</code> 在 worktree 环境</h2>
+  <p class="lede">
+    <code class="inline">merge_branch_into_main</code> / <code class="inline">probe_merge</code> 都在 workspace <b>root</b> 上 <code class="inline">git checkout main</code>。
+    git 禁止两个 worktree 同时 checkout 同一分支 —— 若某个 agent worktree 异常 checkout 了 main,root 的 checkout 会被拒。
+  </p>
+  <div class="card">
+    正常态下每个 agent worktree 永远在自己的 <code class="inline">agent/*/conv-*</code> 分支,只有 root 持有 main,所以不会触发。
+    现有保护已足够:checkout 失败会返回 <code class="inline">("error", …)</code> 而非崩溃,且 <code class="inline">_abort_stray_merge</code> 先清理半合并残留。<b>判定:真实但极罕见,记录为已知边界,不额外加码</b>(加码反而增加承重区复杂度)。
+  </div>
+
+  <!-- ===================== SYNC REDESIGN ===================== -->
+  <h2><span class="tag new">重做</span>分支同步:<code style="font-size:15px">merge main</code> → <code style="font-size:15px">reset --hard main</code></h2>
+  <p class="lede">
+    一次任务后 main 是「解过冲突」的代码。下次对话 agent 分支若用 <code class="inline">git merge main</code> 同步,会重放已解决的冲突、并保留被拒的旧版本 → 偏差累积。
+    <b>洞察:agent 分支是一次性工作副本</b> —— 上一轮产出要么已 merge 进 main、要么已被拒,没有独立价值。
+  </p>
+  <div class="grid2">
+    <div class="panel bad">
+      <h4>之前 · merge,且漏 pooled</h4>
+      <ul class="tight" style="font-size:13px">
+        <li>同步藏在 <code class="inline">create_workspace_sandbox</code> 里,只在 <b>reused</b> 时跑</li>
+        <li><b>pooled session 复用根本不进这条路</b> → 不同步(靠 burst 末尾 evict orchestrator 这种打补丁)</li>
+        <li>dirty 就 skip;merge 冲突就 abort → <span class="pill red">同步经常没生效</span></li>
+      </ul>
+    </div>
+    <div class="panel good">
+      <h4>之后 · reset,每 turn,全覆盖</h4>
+      <ul class="tight" style="font-size:13px">
+        <li><code class="inline">git reset --hard main</code> —— 永不失败,丢弃偏差,从 main 起步</li>
+        <li>提到 <code class="inline">run_adapter_turn</code> 入口,<b>每个 turn 开始</b>都跑(含 pooled 复用)</li>
+        <li>在 worktree 里重定位自己的分支 ref,<b>不 checkout main</b>,与 root 安全共存</li>
+        <li>退役了 burst 末尾那条 evict orchestrator 的补丁</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 style="margin:22px 0 2px;font-size:15px">⚠️ 唯一的守卫:未解决的冲突分支不能 reset</h3>
+  <p class="lede">
+    一个分支若有<b>未解决</b>的冲突卡,它那一版只活在分支上,等用户选边。此时 <code class="inline">reset --hard main</code> 会把用户还没选的那一版销毁 → 冲突闭环断裂。所以加门控:
+  </p>
+  <div class="card">
+    <table>
+      <tr><th>turn 开始时,分支状态</th><th>动作</th><th>理由</th></tr>
+      <tr><td>干净 / 已合并 / 有被拒残留</td><td><span class="pill green">reset --hard main</span></td><td>无独立价值,从 main 重新开始</td></tr>
+      <tr><td>有 <span class="mono">open / resolving</span> 冲突卡</td><td><span class="pill orange">跳过同步</span></td><td>待解的那一版只在分支上,不能丢</td></tr>
+      <tr><td>worktree 还不存在(全新 agent)</td><td><span class="pill blue">no-op</span></td><td>首次 spawn 时从 main 切出,本就最新</td></tr>
+      <tr><td>未 commit 残留(上轮崩了没 drain)</td><td><span class="pill green">reset 丢弃</span></td><td>没进 main 的就是要丢的(用户已认可)</td></tr>
+    </table>
+    <pre style="margin-top:14px"><span class="c"># run_adapter_turn 入口(持 agent 锁,与本 agent 其它 turn 串行)</span>
+has_open_conflict = <span class="k">any</span>(r.branch == <span class="g">f"agent/{agent_id}/conv-{conv_id}"</span>
+                       <span class="k">and</span> r.status <span class="k">in</span> (<span class="g">"open"</span>, <span class="g">"resolving"</span>)
+                       <span class="k">for</span> r <span class="k">in</span> list_conflicts(conv_id))
+<span class="k">if</span> ws_id <span class="k">and</span> <span class="k">not</span> has_open_conflict:
+    <span class="k">await</span> Sandbox.<span class="b">reset_worktree_to_main</span>(ws_id, conv_id, agent_id)</pre>
+    <div class="note">守卫放在 routes 层(能查 DB 冲突表);git 动作放在 _core 层。reset 是唯一调用点,所有破坏性 reset 都在门控之后。测试:<code class="inline">test_reset_worktree_to_main_discards_divergence</code> / <code class="inline">_noop_when_absent</code>。</div>
+  </div>
+
+  <!-- ===================== TURN-START TIMELINE ===================== -->
+  <h2>同步时机:为什么在「下次 turn 开始」而不是「orchestrator 总结后」</h2>
+  <div class="flow">
+    <div class="step">
+      <div class="n">t0</div><div class="t">任务结束</div>
+      <div class="d">main = 解过冲突的代码。各 agent 分支已 merge 或被拒。</div>
+    </div>
+    <div class="step">
+      <div class="n">t1</div><div class="t">(此期间)</div>
+      <div class="d">用户继续聊;<b>main 可能又被改</b>;某 agent 可能根本不被再调用。</div>
+    </div>
+    <div class="step hot">
+      <div class="n">t2</div><div class="t">下次 turn 开始</div>
+      <div class="d">才 reset —— 拿到的是<b>此刻最新</b>的 main,且只对真要干活的 agent 做。</div>
+    </div>
+  </div>
+  <p class="note">「总结后立刻同步所有人」会同步到一个可能过期的 main,还会浪费给那些再也不被调用的 agent。turn 开始前同步是惰性的、永远最新的。</p>
+
+  <!-- ===================== SUMMARY ===================== -->
+  <h2>改动一览</h2>
+  <div class="card">
+    <table>
+      <tr><th>项</th><th>判定</th><th>改了什么</th></tr>
+      <tr><td>#1 半成品被提交</td><td><span class="pill red">真 bug</span></td><td><code class="inline">commit_pending_worktrees(only_agents)</code> + drain 传 owner</td></tr>
+      <tr><td>#2 probe 即落地</td><td><span class="pill orange">取舍</span></td><td>每分支 try/except 隔离 + 提前推进 pre_main</td></tr>
+      <tr><td>#3 pre_main 跨冲突</td><td><span class="pill green">虚惊</span></td><td>无需改;记录不变量</td></tr>
+      <tr><td>#4 去重漏 present</td><td><span class="pill orange">潜伏</span></td><td>去重覆盖 <code class="inline">kind:file</code> + <code class="inline">kind:files</code></td></tr>
+      <tr><td>#5 checkout main</td><td><span class="pill orange">罕见边界</span></td><td>记录;现有错误处理已足够</td></tr>
+      <tr><td>分支同步</td><td><span class="pill blue">重做</span></td><td>reset --hard + 每 turn + pooled 覆盖 + 冲突守卫</td></tr>
+    </table>
+    <div class="note">测试:<code class="inline">tests/sandbox/test_merge_helpers.py</code>(+3 例,7/7 通过);全套 176 passed / 5 skipped。承重区改动遵 CHARTER §5,合并触发时机未变。</div>
+  </div>
+
+</div>
+</body>
+</html>

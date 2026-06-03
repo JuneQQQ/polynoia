@@ -10,7 +10,7 @@
 
 1. **Handoff 契约**:并行子任务要互通(共享接口 / 字段名 / 路径 / 端口)时,我们的 `dispatch` 任务只有 `{agent, label, note}`,接口约定只能塞进 `note` 散文,靠 orchestrator 口头锁、靠人眼比对。实测场景:用户要求"沈昭的 fetch 路径和字段名必须和顾屿的接口完全一致",对不上就返工。
 
-2. **共享记忆**:`context/assembler.py` 给每个 worker 的上下文是 L1 身份 + L2 项目简报 + L3 跨会话 ledger + L4 本会话历史 —— **没有一层"全群已锁定的事实"**。关键决策散落在长聊天里,worker 各自重新推导,容易互相矛盾。
+2. **共享记忆**:`context/assembler.py` 给每个 worker 的上下文是 L1 身份 + L4 项目简报 + L6 跨会话 ledger + L7 本会话历史 —— **没有一层"全群已锁定的事实"**。关键决策散落在长聊天里,worker 各自重新推导,容易互相矛盾。
 
 ## 决策
 
@@ -25,7 +25,7 @@
 
 - 新表 `conv_memory`(`conv_id / author_agent_id / kind∈{contract,decision,artifact} / content / created_at`)。
 - MCP 工具 `remember`(全角色可用)写入一条决策/产物;dispatch 的 contract **自动入库**为 `kind=contract`。
-- 上下文装配器新增 **L2.5 `<shared_memory>` 层**(`context/shared.py`,priority 高于历史、低于用户当前消息),把这些已锁定事实注入**每个**后续 turn。
+- 上下文装配器新增 **L5 `<shared_memory>` 层**(`context/shared.py`,priority 高于历史、低于用户当前消息),把这些已锁定事实注入**每个**后续 turn。
 
 ## 不做(未来可选)
 
