@@ -3465,6 +3465,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             await emit(chunk)
                         await emit_agent_status(agent_id, "idle")
                         _live_clear_agent(conv_id, agent_id)
+                        # A stream that ended cleanly but produced ZERO chunks is
+                        # almost always a stale pooled session (the SDK subprocess
+                        # died between uses) that yields an empty turn instead of
+                        # raising — the SAME failure the except-branch retries, just
+                        # surfacing as an empty iterator rather than an exception.
+                        # Evict + respawn once. Safe: nothing streamed, so no
+                        # double-emit on the retry.
+                        if not emitted_any and attempt == 0:
+                            with suppress(Exception):
+                                await pool.close_session(agent_id, conv_id)
+                            continue
                         break  # success
                     except asyncio.CancelledError:
                         raise
@@ -4006,10 +4017,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # is what stops a stale-credential 401 from showing a green "done"
             # lane on an empty deliverable (the burst must not rubber-stamp it).
             if burst_card_id and burst_task_id:
+                # A turn that finished cleanly but emitted NOTHING (no text, no
+                # tool call, no reasoning — e.g. a stale session that survived the
+                # retry above) did NOT deliver. Don't rubber-stamp it "done": flip
+                # the lane to failed and surface a note, so it explains the empty
+                # result instead of a silent green badge on an undelivered task.
+                if not turn_failed and not emitted_any:
+                    with suppress(Exception):
+                        await _persist_and_emit_error(
+                            emit, conv_id=conv_id, sender_id=agent_id,
+                            message="本轮没有产生任何输出,任务未交付(可重试)",
+                            reason="empty_turn", retryable=True,
+                        )
                 with suppress(Exception):
                     await _mark_burst_task(
                         burst_card_id, burst_task_id,
-                        "failed" if turn_failed else "done",
+                        "failed" if (turn_failed or not emitted_any) else "done",
                     )
 
             # Post-turn auto-merge: drain this conv's unmerged worktree commits
@@ -4461,10 +4484,15 @@ async def _tap_text_into(
                         pid = f"anon{_anon}"
                     mid = f"tc-{pid}"
                     parts[mid] = dump
-                    # Durable mid-stream: persist tool-call / diff the moment they
-                    # complete, so a refresh during the turn keeps the trace.
-                    # (reasoning is left to turn-end — covered live by resume.)
-                    if on_tool_part is not None and kind in ("tool-call", "diff"):
+                    # Durable mid-stream: persist EACH part (tool-call / diff /
+                    # reasoning) the moment it completes, so a refresh keeps the
+                    # trace. Crucially this also fixes ORDER on reload: reasoning
+                    # now gets a stream-position rowid INTERLEAVED with the tools
+                    # (think→tool→think→tool), instead of being deferred to turn-end
+                    # where it clustered AFTER every tool (the "consecutive 思考
+                    # blocks" bug). Turn-end upserts the same stable id → no dup,
+                    # the live rowid is kept.
+                    if on_tool_part is not None:
                         with suppress(Exception):
                             await on_tool_part(mid, dump)
         yield ev
