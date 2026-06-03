@@ -9,11 +9,28 @@
  */
 import { motion, useReducedMotion } from "framer-motion";
 import { GitCommitHorizontal, MessagesSquare, X } from "lucide-react";
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import { COMMITS_TAB, useStore } from "../store";
 import { ChatPane } from "./ChatPane";
-import { CodeEditor } from "./preview/CodeEditor";
-import { CommitHistoryView } from "./preview/CommitHistoryView";
+
+// Lazy-loaded: CodeEditor pulls in CodeMirror + 12 language modules + minimap +
+// vscode-keymap (~100KB); CommitHistoryView pulls in @git-diff-view. Neither is
+// on the boot path — they mount only when a file / 提交历史 tab is opened — so
+// split them into async chunks instead of the initial bundle.
+const CodeEditor = lazy(() =>
+	import("./preview/CodeEditor").then((m) => ({ default: m.CodeEditor })),
+);
+const CommitHistoryView = lazy(() =>
+	import("./preview/CommitHistoryView").then((m) => ({
+		default: m.CommitHistoryView,
+	})),
+);
+
+const _PaneFallback = (
+	<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
+		加载中…
+	</div>
+);
 
 const CHAT = "chat";
 
@@ -98,6 +115,10 @@ export function CenterTabs({
 							onDragStart={(e) => {
 								setDragPath(p);
 								e.dataTransfer.effectAllowed = "move";
+								// REQUIRED for the drag to actually start in Firefox (and some
+								// Chromium builds) — without setData the dragstart is aborted,
+								// which is why the tabs "couldn't be dragged".
+								e.dataTransfer.setData("text/plain", p);
 							}}
 							onDragOver={(e) => {
 								if (!dragPath || dragPath === p) return;
@@ -162,7 +183,11 @@ export function CenterTabs({
 						animate={{ opacity: 1, y: 0 }}
 						transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
 					>
-						{workspaceId && <CommitHistoryView workspaceId={workspaceId} />}
+						{workspaceId && (
+							<Suspense fallback={_PaneFallback}>
+								<CommitHistoryView workspaceId={workspaceId} />
+							</Suspense>
+						)}
 					</motion.div>
 				)}
 				{/* Open file editors — mounted while open (preserve unsaved edits),
@@ -179,7 +204,11 @@ export function CenterTabs({
 						animate={{ opacity: 1, y: 0 }}
 						transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
 					>
-						{workspaceId && <CodeEditor workspaceId={workspaceId} path={p} />}
+						{workspaceId && (
+							<Suspense fallback={_PaneFallback}>
+								<CodeEditor workspaceId={workspaceId} path={p} />
+							</Suspense>
+						)}
 					</motion.div>
 				))}
 			</div>

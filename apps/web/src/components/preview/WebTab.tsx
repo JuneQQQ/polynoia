@@ -23,13 +23,10 @@ type FileEntry = { name: string; type: "file" | "dir"; size: number | null; modi
 
 export function WebTab({ payload }: { payload?: WebPayload | null }) {
   const [device, setDevice] = useState<(typeof DEVICES)[number]["id"]>("desktop");
-  const activeConvId = useStore((s) => s.activeConvId);
-  const convs = useStore((s) => s.convs);
-
-  // We don't have direct ConvSummary here — walk the store for workspace_id.
-  // ChatPane fetches it on convId change, but WebTab is sibling. Approximate
-  // by holding the workspaceId in store under preview.data.workspaceId if
-  // available; fall back to scanning known conv data.
+  // Workspace comes from preview.data.workspaceId (ChatPane sets it on conv
+  // switch / contact click). Don't subscribe to the whole `convs` map — its ref
+  // is replaced on every streaming delta, which would re-render this tab need-
+  // lessly (the activeConvId/convs reads here were dead — never used below).
   const previewData = useStore((s) => s.preview.data);
   const workspaceId = previewData?.workspaceId ?? null;
 

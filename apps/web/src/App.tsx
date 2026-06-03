@@ -87,10 +87,11 @@ export function App() {
 	useEffect(() => {
 		if (activeWorkspaceId === prevWsIdRef.current) return;
 		prevWsIdRef.current = activeWorkspaceId;
-		if (activeWorkspaceId) {
-			setActiveConv(null);
-			setView("chat");
-		}
+		// Any project change — enter / switch / EXIT (→ null) — drops the stale
+		// conv so the chat column follows (leaving a project no longer leaves its
+		// last conversation parked in the middle). Boot-restore is skipped above.
+		setActiveConv(null);
+		setView("chat");
 	}, [activeWorkspaceId, setView]);
 
 	const openConvAndSwitchToChat = (
@@ -106,13 +107,24 @@ export function App() {
 	// belong to the previous conv's workspace). Back to the chat tab.
 	useEffect(() => {
 		resetCenterTabs();
-		// Keep the STORE's activeConvId in sync with the locally-tracked conv.
-		// App's local setActiveConv shadows the store action, so without this the
-		// store's activeConvId stays null and PreviewPane's conflict / pending-edit
-		// panes (which key off store.activeConvId) never show — the "解决冲突"
-		// button would just fall through to the file tree.
-		useStore.setState({ activeConvId: activeConv?.id ?? null });
-	}, [activeConv?.id, resetCenterTabs]);
+		// Sync the STORE's activeConvId AND move the right-rail file column to the
+		// selected conv's workspace: a project conv → that project's files; a DM
+		// (dm-… id, no workspace) → empty. Also drop any file the right rail had
+		// open from the previous conv. So switching conv / project / clicking a
+		// contact actually changes the middle + right columns instead of leaving
+		// them parked on the last one. (activeConvId also drives PreviewPane's
+		// conflict / pending-edit panes — keep it in sync.)
+		const isDm = activeConv?.id?.startsWith("dm-") ?? true;
+		const wsForConv = activeConv?.id && !isDm ? activeWorkspaceId : null;
+		useStore.setState((s) => ({
+			activeConvId: activeConv?.id ?? null,
+			preview: {
+				...s.preview,
+				previewFile: null,
+				data: { ...s.preview.data, workspaceId: wsForConv },
+			},
+		}));
+	}, [activeConv?.id, activeWorkspaceId, resetCenterTabs]);
 
 	// Members changed in the drawer (add/remove) → keep the active conv's member
 	// list in sync so ChatPane's @mention + dispatch target the new roster

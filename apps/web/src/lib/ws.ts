@@ -102,12 +102,21 @@ export class ConvWebSocket {
     this.onErrorCb = cb;
   }
 
-  sendUserMessage(text: string, members: string[], inReplyTo?: string) {
+  /** `msgId`: if supplied, the server persists the message with THIS id so the
+   * client's optimistic-store id matches the DB id (rewind/pin/reply look the
+   * message up by id; a mismatch yields a 404 on those routes). */
+  sendUserMessage(
+    text: string,
+    members: string[],
+    inReplyTo?: string,
+    msgId?: string,
+  ) {
     this.ws?.send(JSON.stringify({
       kind: "user_message",
       text,
       members,
       ...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
+      ...(msgId ? { msg_id: msgId } : {}),
     }));
   }
 

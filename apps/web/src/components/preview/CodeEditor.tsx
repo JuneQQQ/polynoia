@@ -22,6 +22,7 @@ import { showMinimap } from "@replit/codemirror-minimap";
 import { vscodeKeymap } from "@replit/codemirror-vscode-keymap";
 import CodeMirror from "@uiw/react-codemirror";
 import {
+	Download,
 	Eye,
 	Loader2,
 	Map as MapIcon,
@@ -33,6 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
 import { DocPreviewPane, docKind } from "./DocPreviewPane";
+import { downloadText } from "./exportUtils";
 
 const MINIMAP_EXT: Extension = showMinimap.compute([], () => ({
 	create: () => ({ dom: document.createElement("div") }),
@@ -223,6 +225,25 @@ export function CodeEditor({
 					>
 						{preview ? <Pencil size={12} /> : <Eye size={12} />}
 						{preview ? "源码" : "预览"}
+					</button>
+				)}
+				{/* Download the rendered .html — the only export we keep (PDF dropped:
+				    not a rule.md deliverable). Lives in THIS single toolbar so the
+				    HTML preview no longer stacks its own second toolbar row. */}
+				{kind === "html" && preview && (
+					<button
+						type="button"
+						onClick={() =>
+							downloadText(
+								content ?? "",
+								path.split("/").pop() || "page.html",
+								"text/html;charset=utf-8",
+							)
+						}
+						className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface)]"
+						title="下载 .html"
+					>
+						<Download size={12} /> 下载
 					</button>
 				)}
 				{!preview && (

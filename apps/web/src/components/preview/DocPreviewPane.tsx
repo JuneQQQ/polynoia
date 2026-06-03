@@ -10,15 +10,31 @@
  * the rich rendered view. `docKind` is exported so the editor knows when to
  * offer the toggle.
  */
-import { useEffect, useState } from "react";
-import { CrepeEditor } from "./CrepeEditor";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { HtmlPreview } from "./HtmlPreview";
-import { MarpPreview } from "./MarpPreview";
 import { OfficePreview } from "./OfficePreview";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { SheetPreview } from "./SheetPreview";
 import { SourcePreview } from "./SourcePreview";
-import { WorkbookPreview } from "./WorkbookPreview";
+
+// Lazy: heavy renderers not needed at boot — CrepeEditor (Milkdown, ~80KB),
+// MarpPreview (Marp core, ~50KB), WorkbookPreview (xlsx, ~40KB). They load only
+// when a .md / .marp / .xlsx file is actually previewed.
+const CrepeEditor = lazy(() =>
+	import("./CrepeEditor").then((m) => ({ default: m.CrepeEditor })),
+);
+const MarpPreview = lazy(() =>
+	import("./MarpPreview").then((m) => ({ default: m.MarpPreview })),
+);
+const WorkbookPreview = lazy(() =>
+	import("./WorkbookPreview").then((m) => ({ default: m.WorkbookPreview })),
+);
+
+const _DocFallback = (
+	<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
+		加载中…
+	</div>
+);
 
 /** Source-code extensions that the right rail can preview-edit via
  * CodeMirror. Aligned with CodeEditor's langExtForPath: anything that has
@@ -89,12 +105,14 @@ export function DocPreviewPane({
 
 	if (kind === "doc") {
 		return workspaceId ? (
-			<CrepeEditor
-				key={path}
-				workspaceId={workspaceId}
-				path={path}
-				content={content}
-			/>
+			<Suspense fallback={_DocFallback}>
+				<CrepeEditor
+					key={path}
+					workspaceId={workspaceId}
+					path={path}
+					content={content}
+				/>
+			</Suspense>
 		) : (
 			<Empty text="文档编辑需要在项目对话(workspace)里。" />
 		);
@@ -105,7 +123,13 @@ export function DocPreviewPane({
 				downloadHref={downloadHref(workspaceId, path)}
 				fileName={name}
 			>
-				<WorkbookPreview workspaceId={workspaceId} path={path} fileName={name} />
+				<Suspense fallback={_DocFallback}>
+					<WorkbookPreview
+						workspaceId={workspaceId}
+						path={path}
+						fileName={name}
+					/>
+				</Suspense>
 			</PreviewErrorBoundary>
 		) : (
 			<Empty text="表格编辑需要在项目对话(workspace)里。" />
@@ -127,7 +151,11 @@ export function DocPreviewPane({
 		);
 	}
 	if (kind === "marp") {
-		return <MarpPreview content={debounced} fileName={name} />;
+		return (
+			<Suspense fallback={_DocFallback}>
+				<MarpPreview content={debounced} fileName={name} />
+			</Suspense>
+		);
 	}
 	if (kind === "html") {
 		return <HtmlPreview content={debounced} fileName={name} />;

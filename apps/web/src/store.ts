@@ -282,19 +282,34 @@ type Store = {
 	dequeueAskForm: (convId: string, askId: string) => void;
 	/** Shared id-gen + insert path used by the three appendUser* helpers.
 	 * `idPrefix` keeps debug-friendly id distinction; `inReplyTo` threads
-	 * the reply id into the rendered bubble. */
+	 * the reply id into the rendered bubble. `msgId` overrides id generation
+	 * so the caller can sync the SAME id to server (so rewind / pin / reply
+	 * find the persisted row by the id the client also holds). Returns the
+	 * final id (either the supplied one or the freshly generated one). */
 	_appendLocal: (
 		convId: string,
 		payload: Message["payload"],
-		opts?: { idPrefix?: string; inReplyTo?: string | null },
-	) => void;
-	appendUserMessage: (convId: string, text: string, inReplyTo?: string) => void;
+		opts?: {
+			idPrefix?: string;
+			inReplyTo?: string | null;
+			msgId?: string;
+		},
+	) => string;
+	/** Returns the local message id — also used as the server-side id so
+	 * id-based ops (rewind / reply / pin) work without a refresh. */
+	appendUserMessage: (
+		convId: string,
+		text: string,
+		inReplyTo?: string,
+		msgId?: string,
+	) => string;
 	/** Append an image-payload message from user (paste / upload).
 	 * P0: data URL in store only — survives session, NOT page refresh. */
 	appendUserImage: (
 		convId: string,
 		img: { src: string; name?: string; media_type?: string },
-	) => void;
+		msgId?: string,
+	) => string;
 	/** Append a generic file attachment message from user.
 	 * Same persistence story as appendUserImage. */
 	appendUserFile: (
@@ -305,7 +320,8 @@ type Store = {
 			media_type?: string;
 			size_bytes?: number;
 		},
-	) => void;
+		msgId?: string,
+	) => string;
 	applyChunkToConv: (convId: string, action: ChunkAction) => void;
 	/** Hydrate conv from DB. ``mode='replace'`` clears existing state
 	 * (initial load on conv switch); ``'prepend'`` adds older messages to
@@ -718,21 +734,29 @@ export const useStore = create<Store>((set, get) => ({
 	// Shared local-append impl. Old `appendUserMessage / Image / File` were
 	// 95% identical (only payload differed) — consolidated here per Phase D.
 	// The three named actions remain for callsite ergonomics + wire each to
-	// the same id-gen + insert path.
+	// the same id-gen + insert path. Returns the id (caller forwards it to
+	// the server so client/DB share one id — rewind/reply/pin then work
+	// without waiting for a refresh to swap to the server-allocated id).
 	_appendLocal: (
 		convId: string,
 		payload: Message["payload"],
-		opts: { idPrefix?: string; inReplyTo?: string | null } = {},
+		opts: {
+			idPrefix?: string;
+			inReplyTo?: string | null;
+			msgId?: string;
+		} = {},
 	) => {
 		const convs = new Map(get().convs);
 		const cur = convs.get(convId) ?? _emptyConvState();
 		const prefix = opts.idPrefix ?? "u";
-		const id = `${prefix}-${
-			typeof crypto !== "undefined" && crypto.randomUUID
-				? crypto.randomUUID()
-				: `${Date.now()}-${Math.random().toString(36).slice(2)}`
-		}`;
-		if (cur.msgById.has(id)) return;
+		const id =
+			opts.msgId ??
+			`${prefix}-${
+				typeof crypto !== "undefined" && crypto.randomUUID
+					? crypto.randomUUID()
+					: `${Date.now()}-${Math.random().toString(36).slice(2)}`
+			}`;
+		if (cur.msgById.has(id)) return id;
 		const msg: Message = {
 			id,
 			conv_id: convId,
@@ -749,9 +773,10 @@ export const useStore = create<Store>((set, get) => ({
 			msgById: nextById,
 		});
 		set({ convs });
+		return id;
 	},
 
-	appendUserImage: (convId, img) => {
+	appendUserImage: (convId, img, msgId) =>
 		get()._appendLocal(
 			convId,
 			{
@@ -760,11 +785,10 @@ export const useStore = create<Store>((set, get) => ({
 				name: img.name,
 				media_type: img.media_type,
 			},
-			{ idPrefix: "u-img" },
-		);
-	},
+			{ idPrefix: "u-img", msgId },
+		),
 
-	appendUserFile: (convId, file) => {
+	appendUserFile: (convId, file, msgId) =>
 		get()._appendLocal(
 			convId,
 			{
@@ -774,17 +798,15 @@ export const useStore = create<Store>((set, get) => ({
 				media_type: file.media_type,
 				size_bytes: file.size_bytes,
 			},
-			{ idPrefix: "u-file" },
-		);
-	},
+			{ idPrefix: "u-file", msgId },
+		),
 
-	appendUserMessage: (convId, text, inReplyTo) => {
+	appendUserMessage: (convId, text, inReplyTo, msgId) =>
 		get()._appendLocal(
 			convId,
 			{ kind: "text", body: [{ t: "p", c: text }] },
-			{ idPrefix: "u", inReplyTo },
-		);
-	},
+			{ idPrefix: "u", inReplyTo, msgId },
+		),
 
 	applyChunkToConv: (convId, action) => {
 		const convs = new Map(get().convs);

@@ -710,12 +710,15 @@ export const api = {
 	},
 
 	/** Persist a user-side message with arbitrary payload (image / file /
-	 * future structured types). Returns server-assigned message ID. */
+	 * future structured types). Returns the message ID — either the supplied
+	 * `msg_id` (so client + DB share the id, required for rewind/pin/reply) or
+	 * a server-allocated ULID when `msg_id` is omitted. */
 	createMessage: (body: {
 		conv_id: string;
 		payload: Record<string, unknown>;
 		sender_id?: string;
 		in_reply_to?: string;
+		msg_id?: string;
 	}) => postJSON<{ ok: boolean; id: string }>("/api/messages", body),
 
 	/** Pin / unpin a single message ("important Q/A" — separate from

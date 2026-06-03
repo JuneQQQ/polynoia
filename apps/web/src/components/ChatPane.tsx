@@ -599,8 +599,11 @@ export function ChatPane({ convId, members, title }: Props) {
 		let runSender: string | null = null;
 		let runHasTool = false;
 		const flush = () => {
-			// Fold only multi-item runs that actually contain a tool call.
-			if (run.length >= 2 && runHasTool) {
+			// Fold ANY run that contains ≥1 tool call into a ToolCallGroup — even a
+			// single lone tool call. Tool calls should never render "naked"; they're
+			// always wrapped in the fold block (user request). Pure-reasoning runs
+			// (no tool) keep their own ReasoningPart and are not forced into a group.
+			if (runHasTool) {
 				firsts.set(run[0], [...run]);
 				for (let j = 1; j < run.length; j++) skip.add(run[j]);
 			}
@@ -609,22 +612,14 @@ export function ChatPane({ convId, members, title }: Props) {
 			runHasTool = false;
 		};
 		for (const m of messages) {
-			const payload =
+			const kind =
 				claimedSet.has(m.id) || burstByAnchorId.has(m.id)
 					? undefined
-					: (byId.get(m.id)?.payload as
-							| { kind?: string; name?: string }
-							| undefined);
-			const kind = payload?.kind;
-			// `present` is surfaced as its OWN file card (the data-file card emitted
-			// by /api/present, rendered by FilePart with click-preview + download).
-			// Hide the raw "present path=…" tool-call row AND break the fold run —
-			// a delivered file is a natural divider, not a mechanical tool step.
-			if (kind === "tool-call" && payload?.name === "present") {
-				skip.add(m.id);
-				flush();
-				continue;
-			}
+					: (byId.get(m.id)?.payload as { kind?: string } | undefined)?.kind;
+			// `present` folds in with the other tool calls (one unified block, in
+			// time order). The DELIVERABLE itself is the separate `files` panel card
+			// (kind:"files") — not a tool-call/reasoning, so it naturally breaks the
+			// fold run and shows externally as the divider between tool batches.
 			const foldable = kind === "tool-call" || kind === "reasoning";
 			if (foldable && (runSender === null || runSender === m.sender_id)) {
 				run.push(m.id);
@@ -918,7 +913,9 @@ export function ChatPane({ convId, members, title }: Props) {
 						// Optimistic UI append + fire-and-forget persistence. `img.src` is a
 						// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
 						// the DB row stays small and the image re-renders after a refresh.
-						appendUserImage(convId, {
+						// Pre-allocate the id so the optimistic store entry AND the DB row
+						// share it — see onSend's note for why this matters (rewind etc.).
+						const mid = appendUserImage(convId, {
 							src: img.src,
 							name: img.name,
 							media_type: img.media_type,
@@ -926,6 +923,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						api
 							.createMessage({
 								conv_id: convId,
+								msg_id: mid,
 								payload: {
 									kind: "image",
 									src: img.src,
@@ -938,7 +936,7 @@ export function ChatPane({ convId, members, title }: Props) {
 							});
 					}}
 					onAttachFile={(file) => {
-						appendUserFile(convId, {
+						const mid = appendUserFile(convId, {
 							src: file.src,
 							name: file.name,
 							media_type: file.media_type,
@@ -947,6 +945,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						api
 							.createMessage({
 								conv_id: convId,
+								msg_id: mid,
 								payload: {
 									kind: "file",
 									src: file.src,
@@ -969,8 +968,12 @@ export function ChatPane({ convId, members, title }: Props) {
 							return;
 						}
 						lastSentRef.current = { text, ts: now };
-						appendUserMessage(convId, text, inReplyTo);
-						wsRef.current?.sendUserMessage(text, members, inReplyTo);
+						// Pre-allocate the id so the optimistic local message AND the
+						// server-persisted row carry the SAME id. Without this, rewind /
+						// reply / pin on a freshly-sent message fail with 404 because
+						// the client holds `u-<uuid>` while the DB has its own ULID.
+						const msgId = appendUserMessage(convId, text, inReplyTo);
+						wsRef.current?.sendUserMessage(text, members, inReplyTo, msgId);
 					}}
 				/>
 			</div>

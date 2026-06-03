@@ -27,7 +27,12 @@ export function ChatSearchOverlay() {
   const setSearchOverlayOpen = useStore((s) => s.setSearchOverlayOpen);
   const activeConvId = useStore((s) => s.activeConvId);
   const setActiveConv = useStore((s) => s.setActiveConv);
-  const convs = useStore((s) => s.convs);
+  // Subscribe only to the ACTIVE conv's state (single ref), not the whole
+  // `convs` map — the map ref is replaced on every streaming delta, so
+  // `s.convs` would re-render this always-mounted overlay on every token.
+  const activeConv = useStore((s) =>
+    s.activeConvId ? (s.convs.get(s.activeConvId) ?? null) : null,
+  );
   const agents = useStore((s) => s.agents);
 
   const [query, setQuery] = useState("");
@@ -85,7 +90,7 @@ export function ChatSearchOverlay() {
   // Local-conv filter (synchronous, no debounce needed)
   const localHits = useMemo<LocalHit[]>(() => {
     if (!activeConvId || !query.trim()) return [];
-    const cs = convs.get(activeConvId);
+    const cs = activeConv;
     if (!cs) return [];
     const q = query.toLowerCase();
     const out: LocalHit[] = [];
@@ -103,7 +108,7 @@ export function ChatSearchOverlay() {
       }
     }
     return out;
-  }, [query, activeConvId, convs]);
+  }, [query, activeConvId, activeConv]);
 
   if (!open) return null;
 
