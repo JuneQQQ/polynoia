@@ -207,19 +207,28 @@ function TasksBurstPartInner({
 									<div className="text-[10.5px] text-[var(--color-fg-3)] truncate font-mono">
 										{t.label}
 									</div>
-									{diffStat && (
-										<div className="mt-0.5 flex items-center gap-1 text-[10px] font-mono text-[var(--color-fg-3)]">
-											<span title="本泳道已改文件数">✎ {diffStat.files}</span>
-											<span style={{ color: "var(--color-green)" }}>
-												+{diffStat.adds}
-											</span>
-											{diffStat.dels > 0 && (
-												<span style={{ color: "var(--color-red)" }}>
-													−{diffStat.dels}
+									{/* Always render this row (even with no diffs) so every lane
+									    header is the SAME height — a lane with file changes and one
+									    without must line up. Empty → a muted dash placeholder. */}
+									<div className="mt-0.5 flex items-center gap-1 text-[10px] font-mono text-[var(--color-fg-3)] min-h-[15px]">
+										{diffStat ? (
+											<>
+												<span title="本泳道已改文件数">✎ {diffStat.files}</span>
+												<span style={{ color: "var(--color-green)" }}>
+													+{diffStat.adds}
 												</span>
-											)}
-										</div>
-									)}
+												{diffStat.dels > 0 && (
+													<span style={{ color: "var(--color-red)" }}>
+														−{diffStat.dels}
+													</span>
+												)}
+											</>
+										) : (
+											<span className="text-[var(--color-fg-4)]" title="本泳道无文件改动">
+												—
+											</span>
+										)}
+									</div>
 								</div>
 								{/* Per-lane stop (Agent-level terminate) — only while running.
                     Dispatches a window event ChatPane forwards to ws.abort. */}

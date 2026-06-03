@@ -128,7 +128,34 @@ function DocxView({
 	if (err) return <Fallback name={name} reason={err} onDownload={onDownload} />;
 	return (
 		<div className="h-full overflow-auto bg-white">
-			<div ref={ref} className="docx-preview p-4 text-[#111]" />
+			<div ref={ref} className="docx-preview text-[#111]" />
+			{/* Fit-to-pane overrides for docx-preview's defaults. Its wrapper centers
+			    a FIXED-width page (align-items:center + inline page width); on a pane
+			    narrower than the page that pushes the page's LEFT edge off-screen
+			    (unreachable by scroll — the "left characters clipped" bug) and shows a
+			    gray bar up top. Left-align + drop the gray bg + force the page to the
+			    pane width so text reflows to fit instead of overflowing. Classes are
+			    docx-preview's own (wrapper = `${className}-wrapper`, page = section.
+			    `${className}`, with className="docx-preview-doc" from renderAsync). */}
+			<style>{`
+				.docx-preview .docx-preview-doc-wrapper {
+					background: transparent !important;
+					padding: 0 !important;
+					align-items: stretch !important;
+				}
+				.docx-preview .docx-preview-doc-wrapper > section.docx-preview-doc {
+					width: 100% !important;
+					min-width: 0 !important;
+					box-shadow: none !important;
+					margin: 0 !important;
+					padding: 28px 32px !important;
+				}
+				.docx-preview .docx-preview-doc-wrapper > section.docx-preview-doc img,
+				.docx-preview .docx-preview-doc-wrapper > section.docx-preview-doc table {
+					max-width: 100% !important;
+					height: auto;
+				}
+			`}</style>
 		</div>
 	);
 }
@@ -214,10 +241,16 @@ function PptxView({
 			style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 12, paddingBottom: 12 }}
 		>
 			<div ref={ref} className="pptx-preview pptx-preview-fit" />
-			{/* Inter-slide spacing only — no horizontal/vertical stretching of slides. */}
+			{/* Each slide = a distinct CARD. The slides share the deck's background
+			    color, so a plain gap was invisible (they bled into one continuous
+			    block). Add a gap + hairline ring + soft shadow so each slide reads as
+			    its own surface. The ring is a box-shadow (no layout impact → never
+			    distorts the slide's 16:9 box). */}
 			<style>{`
 				.pptx-preview-fit > * {
-					margin-bottom: 12px;
+					margin-bottom: 18px;
+					border-radius: 6px;
+					box-shadow: 0 0 0 1px var(--color-line), var(--shadow-card);
 				}
 				.pptx-preview-fit > *:last-child {
 					margin-bottom: 0;
