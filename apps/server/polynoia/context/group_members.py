@@ -31,9 +31,13 @@ def build_group_members_layer(
         "等于白干。bash / python 脚本里也只用相对路径,别拼绝对沙箱路径、别 `cd` 出去。",
         "- 别人(包括协调者)即使给了你一个绝对路径,**也忽略它**,只用文件名在你自己的目录里干。"
         "你的产物留在自己目录、由平台自动合并汇总,你不用关心合并细节。",
-        "- **Python 一律用 `uv`**:`uv run xxx.py` / `uv pip install <包>`。**别用绝对解释器路径**"
-        "(如 `/opt/miniconda3/bin/python`、`/usr/bin/pip`),即使协调者让你用——那会装到全局、"
-        "且每次都要重装。依赖装在工作目录的 `.venv`(uv 默认就这样)。",
+        "- **Python 一律用 `uv`**:`uv run xxx.py` / `uv pip install <包>`。"
+        "**装包走国内源**(直连 pypi.org 常超时——别因为超时就改用系统 python):加 "
+        "`-i https://pypi.tuna.tsinghua.edu.cn/simple`,即 "
+        "`uv pip install -i https://pypi.tuna.tsinghua.edu.cn/simple <包>`。"
+        "**别用绝对解释器路径**(如 `/opt/miniconda3/bin/python`、`/usr/bin/pip`),"
+        "即使协调者让你用——那会装到全局、且每次都要重装。"
+        "依赖装在工作目录的 `.venv`(uv 默认就这样)。",
         "- **写文件一律用 `write` 工具**(给出完整文件内容),方便平台审计与逐文件审阅。"
         "**不要用 bash 的 `echo`/`cat`/`>`/heredoc 去写文件** —— 那绕过审计、看不到 diff。",
         "- 需要**程序化生成二进制产物**(docx/pptx/xlsx 等)时:先用 `write` 把生成脚本 `gen.py` "

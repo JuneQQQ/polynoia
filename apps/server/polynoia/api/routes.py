@@ -2212,6 +2212,37 @@ def _resolve_safe_path(workspace_root: "Path", rel_path: str) -> "Path":
     return target
 
 
+def _resolve_present_path(ws_id: str, rel_path: str) -> "Path":
+    """Resolve a single file for read / preview / download: prefer the workspace
+    root (main), else fall back to an agent WORKTREE that has it.
+
+    A file an agent ``present()``s is committed to that agent's branch and may not
+    be merged into main yet — without this fallback its card 404s until the burst
+    merge lands. Main stays the source of truth (checked first); only when main
+    lacks the file do we serve the worktree copy (the same bytes that will merge
+    to main), picking the most-recently-modified match. Directory LISTING stays
+    main-only — this is for explicit single-file requests, where a main miss is
+    the present-before-merge case.
+    """
+    root = _workspace_root(ws_id)
+    target = _resolve_safe_path(root, rel_path)  # also the traversal guard
+    if target.is_file():
+        return target
+    wt_dir = root / "worktrees"
+    if rel_path and wt_dir.is_dir():
+        best: "Path | None" = None
+        best_mtime = -1.0
+        for wt in wt_dir.iterdir():
+            if not wt.is_dir():
+                continue
+            cand = (wt / rel_path).resolve()
+            if cand.is_file() and cand.stat().st_mtime > best_mtime:
+                best, best_mtime = cand, cand.stat().st_mtime
+        if best is not None:
+            return best
+    return target  # not found anywhere → the caller's .exists() check 404s
+
+
 # Commit SHAs and branch refs reach git as argv — constrain to safe charsets so
 # a crafted ``sha``/``ref`` can't smuggle a git option or arbitrary revspec.
 # ``ref`` must START with a word char (no leading dash) so it can never look like
@@ -2327,8 +2358,7 @@ async def read_workspace_file(ws_id: str, path: str):
     """Return raw text content. Rejects binary (>1MB or non-UTF-8 decode)."""
     if not path:
         raise HTTPException(400, "path required")
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, path)
+    target = _resolve_present_path(ws_id, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "file not found")
     try:
@@ -2349,8 +2379,7 @@ async def read_workspace_file_blob(ws_id: str, path: str):
     """Return raw bytes for binary-capable previews such as .xlsx."""
     if not path:
         raise HTTPException(400, "path required")
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, path)
+    target = _resolve_present_path(ws_id, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "file not found")
     raw = target.read_bytes()
@@ -2532,8 +2561,7 @@ async def download_workspace_file(ws_id: str, path: str):
     """
     if not path:
         raise HTTPException(400, "path required")
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, path)
+    target = _resolve_present_path(ws_id, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "file not found")
     return FileResponse(
