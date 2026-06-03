@@ -15,8 +15,15 @@ import { CrepeEditor } from "./CrepeEditor";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarpPreview } from "./MarpPreview";
 import { OfficePreview } from "./OfficePreview";
+import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { SheetPreview } from "./SheetPreview";
 import { WorkbookPreview } from "./WorkbookPreview";
+
+/** Download URL for a workspace file (fallback when binary preview fails). */
+function downloadHref(workspaceId: string | null, path: string): string | undefined {
+	if (!workspaceId) return undefined;
+	return `/api/workspaces/${encodeURIComponent(workspaceId)}/files/download?path=${encodeURIComponent(path)}`;
+}
 
 function isMarp(content: string): boolean {
 	return (
@@ -85,7 +92,12 @@ export function DocPreviewPane({
 	}
 	if (kind === "workbook") {
 		return workspaceId ? (
-			<WorkbookPreview workspaceId={workspaceId} path={path} fileName={name} />
+			<PreviewErrorBoundary
+				downloadHref={downloadHref(workspaceId, path)}
+				fileName={name}
+			>
+				<WorkbookPreview workspaceId={workspaceId} path={path} fileName={name} />
+			</PreviewErrorBoundary>
 		) : (
 			<Empty text="表格编辑需要在项目对话(workspace)里。" />
 		);
@@ -95,7 +107,12 @@ export function DocPreviewPane({
 	}
 	if (kind === "word" || kind === "slides") {
 		return workspaceId ? (
-			<OfficePreview workspaceId={workspaceId} path={path} kind={kind} />
+			<PreviewErrorBoundary
+				downloadHref={downloadHref(workspaceId, path)}
+				fileName={name}
+			>
+				<OfficePreview workspaceId={workspaceId} path={path} kind={kind} />
+			</PreviewErrorBoundary>
 		) : (
 			<Empty text="Office 文档预览需要在项目对话(workspace)里。" />
 		);

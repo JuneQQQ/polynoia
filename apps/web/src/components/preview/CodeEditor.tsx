@@ -111,6 +111,12 @@ export function CodeEditor({
 	const kind = docKind(path, content ?? "");
 	const isDoc = kind !== "other";
 	const isWorkbook = kind === "workbook";
+	// Binary office docs (docx/pptx/xlsx) have NO meaningful text source — opening
+	// them in CodeMirror shows garbled bytes + saving would corrupt the file. They
+	// are preview-ONLY (read-only): no 源码 toggle, no save, and we skip the text
+	// read entirely (OfficePreview/WorkbookPreview fetch the bytes themselves).
+	const isBinary =
+		kind === "word" || kind === "slides" || kind === "workbook";
 	const [preview, setPreview] = useState(() => docKind(path, "") !== "other");
 
 	const dirty = content !== null && content !== original;
@@ -119,7 +125,10 @@ export function CodeEditor({
 	// clobber unsaved edits — an agent wrote files to main).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is a reload trigger; content/original are read via functional setState, so listing them would re-fetch on every keystroke.
 	useEffect(() => {
-		if (docKind(path, "") === "workbook") {
+		// Binary docs: don't text-read (it returns garbled bytes); the binary
+		// previewers load the bytes themselves.
+		const k0 = docKind(path, "");
+		if (k0 === "workbook" || k0 === "word" || k0 === "slides") {
 			setContent("");
 			setOriginal("");
 			setLoading(false);
@@ -192,7 +201,12 @@ export function CodeEditor({
 				<span className="text-[11px] mono text-[var(--color-fg-3)] truncate flex-1">
 					{path}
 				</span>
-				{isDoc && !isWorkbook && (
+				{isBinary && (
+					<span className="text-[10px] font-mono text-[var(--color-fg-4)] px-1.5 py-0.5 rounded bg-[var(--color-surface)]">
+						只读预览
+					</span>
+				)}
+				{isDoc && !isBinary && (
 					<button
 						type="button"
 						onClick={() => setPreview((v) => !v)}
@@ -239,7 +253,7 @@ export function CodeEditor({
 						</button>
 					</>
 				)}
-				{!isWorkbook && (
+				{!isBinary && (
 					<button
 						type="button"
 						onClick={save}
@@ -263,7 +277,7 @@ export function CodeEditor({
 					</div>
 				) : isWorkbook ? (
 					<DocPreviewPane workspaceId={workspaceId} path={path} content="" />
-				) : isDoc && preview ? (
+				) : isBinary || (isDoc && preview) ? (
 					<DocPreviewPane
 						workspaceId={workspaceId}
 						path={path}

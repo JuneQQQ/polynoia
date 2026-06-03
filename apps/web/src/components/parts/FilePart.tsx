@@ -89,8 +89,7 @@ function variantFor(name: string): Variant {
 }
 
 export function FilePart({ payload }: { payload: FilePayload }) {
-	const openPreviewFile = useStore((s) => s.openPreviewFile);
-	const openPreview = useStore((s) => s.openPreview);
+	const openCenterFile = useStore((s) => s.openCenterFile);
 
 	const wsFile = parseWorkspaceFileSrc(payload.src);
 	const size = formatBytes(payload.size_bytes);
@@ -98,11 +97,16 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 
 	const onPreview = () => {
 		if (!wsFile) return;
-		// Make sure the right rail is visible + carries this workspace id so
-		// RightPreviewFile can fetch. openPreview ensures the rail opens; the
-		// workspaceId already sticks from ChatPane on conv switch.
-		openPreview("code", { workspaceId: wsFile.wsId });
-		openPreviewFile(wsFile.path);
+		// Open the file CENTERED (a center editor/preview tab), same as the file
+		// tree — not the right rail. Align the center-tab workspace to this file's
+		// workspace first (CenterTabs reads preview.data.workspaceId), then open.
+		useStore.setState((s) => ({
+			preview: {
+				...s.preview,
+				data: { ...s.preview.data, workspaceId: wsFile.wsId },
+			},
+		}));
+		openCenterFile(wsFile.path);
 	};
 
 	const onDownload = () => {
