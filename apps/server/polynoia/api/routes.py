@@ -3035,6 +3035,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             except Exception:
                 log.exception("burst %s: merge_to_main failed (continuing to summary)", tp_id)
             orch_id = reg["orch"]
+            # The orchestrator's POOLED session still holds the worktree it had on
+            # the dispatch turn — from BEFORE the workers' files were merged into
+            # main just above. A pooled reuse skips create_workspace_sandbox, so it
+            # never runs _sync_branch_with_main → the summary turn would 验收 a STALE
+            # worktree and report deliverables as "未交付" even though they ARE in
+            # main. Evict it so the summary turn spawns a FRESH session that
+            # re-syncs the worktree with main. (Touches the is_last block — see
+            # docs/design/conflict-closed-loop-CHARTER.md; merge timing unchanged.)
+            with suppress(Exception):
+                await get_pool().close_session(orch_id, conv_id)
             # Default wrap-up: the orchestrator summarizes the finished burst
             # (otherwise it ends abruptly). A fresh, history-aware turn —
             # nudged to summarize only, NOT to dispatch again. Fire-and-forget.
