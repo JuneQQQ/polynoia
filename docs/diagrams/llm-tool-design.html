@@ -181,8 +181,18 @@
       <li><b>orchestrator</b> —— 建造 + <code>dispatch/discuss/present</code>,<b>无</b> report(它读别人的 verdict,不自评)</li>
       <li><b>builder</b>(coder · generalist)—— 全套建造:retrieve + 记忆 + ask + <code>write</code> + <code>bash</code> + worker(report/req_access)</li>
       <li><b>builder−shell</b>(designer · writer)—— 同 builder 但<b>无 bash</b>(逼显式 <code>write</code> 落产物)</li>
-      <li><b>consult</b>(advisory)—— 只读 + 记忆 + ask + report;<b>无 write/bash</b>(主页 DM 降级态)</li>
+      <li><b>consult</b>(advisory)—— 只读 + 记忆 + ask + report;<b>无 write/bash</b>(只读咨询)</li>
       <li><b>auditor</b>(critic)—— 最小只读:retrieve + recall + report 一个 verdict,连 remember 都没有</li>
+    </ul>
+  </div>
+
+  <div class="callout" style="margin:10px 0 18px;border-left:3px solid var(--mut,#F2994A)">
+    <strong>治理在「项目」,不在「联系人」</strong>(tool_policy.py)。上面这些层是<b>可选的限制档位</b>,不是默认强加:
+    <ul style="margin:6px 0 0;padding-left:22px;">
+      <li><b>项目外(普通 DM)</b> → 每个 agent 直接拿<b>全套 builder</b>。DM 是用户的私有空间,没什么好治理的。</li>
+      <li><b>项目内</b> → <b>默认也是全套 builder</b>;项目方(<code>Workspace.member_tool_roles</code>)<b>主动 opt-in</b> 才把某个 agent 收窄到 critic/consult 等档,会话可再覆盖。</li>
+      <li><b>编排者</b>始终被强制成 orchestrator 档(结构性,ADR-017)。</li>
+      <li>所以联系人自己的 <code>tool_role</code> <b>不再是工具闸门</b> —— 它只是 persona 标签;真正的优先级见 <code>effective_tool_role()</code>:编排者 › 会话覆盖 › 项目策略 › 默认全套。</li>
     </ul>
   </div>
 
@@ -229,7 +239,7 @@
       <li><strong>建造型角色本就该<u>同一套宽工具</u></strong> —— coder/designer/writer/generalist 的差别全在 prompt(人设/技能),工具上只剩 <code>bash</code> 这一条轴(designer/writer 没有,逼显式 <code>write</code> 落产物)。所以它们塌缩成 2 个层,不是 4 套。</li>
       <li><strong>工具该分化的只有「安全」和「结构」</strong> —— 安全 = 能不能写(只读的 critic/advisory vs 可写);结构 = 编排者(<code>dispatch/present</code>、无 report)vs worker(<code>report</code>、无 present)。这两条是承重的,其余都不该按角色硬分。</li>
       <li><strong>per-agent 覆盖才是细粒度入口</strong> —— 用户在「高级」里勾的 <code>tools_whitelist</code> 会在角色层上<b>再收窄</b>(<code>role ∩ allow</code>,只减不增)。所以层是默认值,真正的「每 agent 工具集」(rule.md §自建 Agent)靠这层 whitelist。</li>
-      <li><strong>advisory</strong> 不是 persona,是<b>降级态</b>:对话不属于任何项目时(主页 DM),适配器池把任何联系人降到只读咨询 —— 没有共享沙箱可写。</li>
+      <li><strong>项目外 = 全套,治理下沉到项目</strong> —— 普通 DM 里 agent 直接拿全套 builder(私有空间无需治理);要限制,在<b>项目</b>(<code>Workspace.member_tool_roles</code>)里 opt-in,会话可再覆盖。<code>advisory</code> 不再是「非项目自动降级」,只是一个可选的只读档 + 未知 role 的兜底。</li>
     </ul>
   </div>
 

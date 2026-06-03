@@ -114,6 +114,13 @@ class WorkspaceRow(Base):
     color: Mapped[str] = mapped_column(String(16), default="#E07A3C", nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="Owner", nullable=False)
     members: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # Per-PROJECT tool policy (agent_id → tool_role). EMPTY = no restriction →
+    # every agent gets the full builder toolset (tool governance is opt-in and
+    # lives in the project — see polynoia/tool_policy.py). Inherited by the
+    # project's convs; a conv can still override via its own member_tool_roles.
+    member_tool_roles: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     # Default merge mode inherited by new convs in this workspace.
     # "auto"   → orchestrator runs git_merge after sub-tasks finish
     # "manual" → every edit_file is gated by user approval (per-edit)

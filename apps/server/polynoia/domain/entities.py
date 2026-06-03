@@ -120,6 +120,9 @@ class Workspace(BaseModel):
     color: str = "#E07A3C"
     role: Literal["Owner", "Maintainer", "Contributor"] = "Owner"
     members: list[ULID] = []  # Agent IDs
+    # Per-project tool policy: agent_id → tool_role. Empty = no restriction
+    # (every agent gets the full builder toolset). See polynoia/tool_policy.py.
+    member_tool_roles: dict[ULID, str] = {}
     default_merge_mode: Literal["auto", "manual"] = "auto"
 
 

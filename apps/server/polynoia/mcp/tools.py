@@ -1160,9 +1160,12 @@ ROLE_TOOLS: dict[str, set[str]] = {
     "designer":     _TIER_BUILDER_NOSHELL,
     "writer":       _TIER_BUILDER_NOSHELL,  # == designer (docs vs HTML/CSS — prompt-only diff)
     "critic":       _TIER_AUDITOR,
-    # advisory: NOT a persona — the adapter pool downgrades ANY contact to this
-    # when the conv isn't a project/workspace (a homepage DM is for asking, not
-    # building; no shared sandbox exists). See ADR-013 §location-gate.
+    # advisory: a read-only floor (the unknown-role fail-closed fallback below,
+    # and an opt-in project restriction). NOTE: there is no longer an automatic
+    # "non-project DM → advisory" downgrade — tool governance lives in the
+    # project now (polynoia/tool_policy.py): outside a project every agent gets
+    # the full builder set; inside, the default is full builder and a project
+    # opts in to restrict. ROLE_TOOLS just maps a role name → its tool tier.
     "advisory":     _TIER_CONSULT,
 }
 

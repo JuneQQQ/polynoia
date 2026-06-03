@@ -83,6 +83,19 @@ async def init_db() -> None:
                     "ON conv_memory (author_agent_id)"
                 )
             )
+            # create_all never ALTERs an existing table, so a dev DB created
+            # before workspaces.member_tool_roles (per-project tool policy) needs
+            # the column back-filled. Idempotent: add only if missing.
+            cols = (
+                await conn.execute(_sql("PRAGMA table_info(workspaces)"))
+            ).fetchall()
+            if "member_tool_roles" not in {c[1] for c in cols}:
+                await conn.execute(
+                    _sql(
+                        "ALTER TABLE workspaces ADD COLUMN member_tool_roles "
+                        "JSON NOT NULL DEFAULT '{}'"
+                    )
+                )
 
 
 async def dispose_engine() -> None:

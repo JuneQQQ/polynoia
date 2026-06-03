@@ -168,18 +168,26 @@ class AdapterPool:
             # project's code into every DM. A DM now sees zero project files;
             # project access is opt-in via the approval flow (request_project_access).
             in_project = conv is not None and conv.workspace_id is not None
-            # Effective tool_role precedence:
-            #   1. designated conv orchestrator → forced "orchestrator" (ADR-017)
-            #   2. per-conv override (conv.member_tool_roles[agent_id]) — lets the
-            #      same contact have different tools in different conversations
-            #   3. the contact's own default tool_role
-            if is_conv_orch:
-                effective_role = "orchestrator"
-            else:
-                effective_role = (
-                    (conv.member_tool_roles.get(agent_id) if conv else None)
-                    or agent.tool_role
+            # Tool governance lives in the PROJECT (polynoia/tool_policy.py):
+            # default = full builder EVERYWHERE; the project (Workspace) opts in
+            # to restrict an agent, a conv may further override, and the
+            # designated orchestrator is always forced. The contact's own
+            # Agent.tool_role no longer gates — it's just a persona label now.
+            from polynoia.tool_policy import effective_tool_role
+
+            ws_policy: dict[str, str] | None = None
+            if in_project and conv is not None:
+                _ws = next(
+                    (w for w in workspaces if w.id == conv.workspace_id), None
                 )
+                ws_policy = _ws.member_tool_roles if _ws else None
+            effective_role = effective_tool_role(
+                agent_id=agent_id,
+                is_orchestrator=is_conv_orch,
+                in_project=in_project,
+                conv_member_tool_roles=(conv.member_tool_roles if conv else None),
+                workspace_member_tool_roles=ws_policy,
+            )
             system_prompt = agent.system_prompt
             read_only_ws_id: str | None = None
             if not in_project:
