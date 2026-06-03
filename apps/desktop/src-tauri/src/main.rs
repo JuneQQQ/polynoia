@@ -13,14 +13,15 @@ fn main() {
         // Inject `window.__POLYNOIA_PLATFORM__ = "desktop"` so the web code
         // can detect the host without UA sniffing.
         .setup(|app| {
-            #[cfg(debug_assertions)]
-            {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.eval(
-                        "window.__POLYNOIA_PLATFORM__ = 'desktop';",
-                    );
-                }
+            // Inject the platform tag in BOTH dev and release builds. This was
+            // previously gated behind `#[cfg(debug_assertions)]`, so packaged
+            // `.app`/`.dmg` builds never set `__POLYNOIA_PLATFORM__` and silently
+            // depended on the `__TAURI_INTERNALS__` fallback in platform.ts —
+            // contradicting the documented design (CLAUDE.md §6.3), which makes
+            // this the *primary* desktop-detection signal.
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.eval("window.__POLYNOIA_PLATFORM__ = 'desktop';");
             }
             Ok(())
         })
