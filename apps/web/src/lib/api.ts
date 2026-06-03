@@ -7,6 +7,7 @@ import type {
 	Server,
 	Workspace,
 } from "./types";
+import { isDesktopApp } from "./platform";
 
 export type AdapterProbe = {
 	id: string;
@@ -36,7 +37,11 @@ export type EnabledAdapter = {
 	proxy_kind: ProxyKind;
 };
 
-const BASE = ""; // vite proxy 转发 /api → server
+// Dev (browser or `tauri dev`) goes through Vite's proxy, so a relative base
+// works and avoids CORS. A packaged desktop build (`tauri build`) has no proxy
+// and loads from a `tauri://` origin, so it must reach the Polynoia server
+// directly — this origin is whitelisted in the Tauri CSP and server CORS.
+const BASE = import.meta.env.PROD && isDesktopApp() ? "http://127.0.0.1:7780" : "";
 
 /** Pending edit row, returned by manual-mode endpoints. */
 export type PendingEdit = {
