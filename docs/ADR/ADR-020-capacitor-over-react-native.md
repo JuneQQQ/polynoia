@@ -12,7 +12,7 @@ rule.md 要求移动端是 web/桌面端的**子集**:**查看对话、发消息
 
 这不是凭空的新决定 —— 桌面端(`apps/desktop/`)早已用 **Tauri 2 包 `apps/web/dist`**,零业务代码。移动端面临的是同一道选择题:要不要为第三端再维护一套 UI。
 
-`apps/web` 现状支撑了「复用」这条路:`platform.ts:isMobile()` 已做三级检测(`__POLYNOIA_PLATFORM__` 构建注入 → `window.Capacitor.isNativePlatform()` 运行时 → 屏宽/UA 兜底),`App.tsx` 已有「抽屉 + 单列」的移动分支,`store.ts / lib/{api,ws,types}.ts` ~85% 是纯 TS、无 DOM 假设。`apps/mobile/` 已是 Capacitor 6.2 脚手架(`webDir: "../web/dist"`,插件 keyboard / network / preferences / splash-screen / status-bar 就位)。
+`apps/web` 现状支撑了「复用」这条路:`platform.ts:detectPlatform()` 已做四级检测(`__POLYNOIA_PLATFORM__` 构建注入 → `window.Capacitor.isNativePlatform()` 运行时 → `window.__TAURI_INTERNALS__`(桌面)→ 屏宽/UA 兜底),`App.tsx` 已有「抽屉 + 单列」的移动分支,`store.ts / lib/{api,ws,types}.ts` ~85% 是纯 TS、无 DOM 假设。`apps/mobile/` 已是 Capacitor 6.2 脚手架(`webDir: "../web/dist"`,插件 keyboard / network / preferences / splash-screen / status-bar 就位)。
 
 ## 决策
 
