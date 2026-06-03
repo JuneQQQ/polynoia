@@ -9,7 +9,7 @@
 import { Wrench } from "lucide-react";
 import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { toolDisplayName, useStore } from "../../store";
+import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
 import { MessageView } from "../MessageView";
 
 export function ToolCallGroup({
@@ -20,13 +20,23 @@ export function ToolCallGroup({
 	msgIds: string[];
 }) {
 	const [open, setOpen] = useState(false);
+	// While any member message is still streaming, force the group OPEN so live
+	// thinking / tool output stays visible — otherwise the run collapses the instant
+	// the first tool-call lands and hides reasoning the user was watching. Once
+	// streaming settles, it reverts to `open` (default folded = history). Mirrors
+	// ReasoningPart's own auto-open-while-streaming behavior.
+	const anyStreaming = useStore((s) =>
+		msgIds.some((id) => selectIsMessageStreaming(s, convId, id)),
+	);
+	const expanded = open || anyStreaming;
 	// Collapsed summary: count TOOL-CALL steps + their names (the run may also
 	// contain interleaved reasoning, which is rendered inside the fold but not
-	// counted as a "step"). Localized via toolDisplayName.
-	const lang = useStore((s) => s.lang);
-	const { names, toolCount, hasThinking } = useStore(
+	// counted as a "step"). Return only PRIMITIVES from the selector — a fresh array
+	// would defeat useShallow and re-render this group on every store delta.
+	const { summary, toolCount } = useStore(
 		useShallow((s) => {
 			const cs = s.convs.get(convId);
+			const lang = s.lang;
 			const nm: string[] = [];
 			let thinking = false;
 			for (const id of msgIds) {
@@ -39,13 +49,13 @@ export function ToolCallGroup({
 					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
 				}
 			}
-			return { names: nm, toolCount: nm.length, hasThinking: thinking };
+			const joined =
+				nm.slice(0, 5).join(" · ") +
+				(nm.length > 5 ? " …" : "") +
+				(thinking ? (lang === "en" ? " · thinking" : " · 含思考") : "");
+			return { summary: joined, toolCount: nm.length };
 		}),
 	);
-	const summary =
-		names.slice(0, 5).join(" · ") +
-		(names.length > 5 ? " …" : "") +
-		(hasThinking ? (lang === "en" ? " · thinking" : " · 含思考") : "");
 
 	return (
 		<div className="ml-[68px] mr-6 my-1">
@@ -62,10 +72,10 @@ export function ToolCallGroup({
 					{summary}
 				</span>
 				<span className="ml-auto text-[10px] text-[var(--color-fg-4)] flex-shrink-0">
-					{open ? "收起 ▾" : "展开 ▸"}
+					{expanded ? "收起 ▾" : "展开 ▸"}
 				</span>
 			</button>
-			{open && (
+			{expanded && (
 				<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
 					{msgIds.map((id, i) => (
 						<MessageView
