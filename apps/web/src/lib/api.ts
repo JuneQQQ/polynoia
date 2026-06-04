@@ -7,7 +7,7 @@ import type {
 	Server,
 	Workspace,
 } from "./types";
-import { isDesktopApp } from "./platform";
+import { getServerHttpBase } from "./runtime-config";
 
 export type AdapterProbe = {
 	id: string;
@@ -37,11 +37,10 @@ export type EnabledAdapter = {
 	proxy_kind: ProxyKind;
 };
 
-// Dev (browser or `tauri dev`) goes through Vite's proxy, so a relative base
-// works and avoids CORS. A packaged desktop build (`tauri build`) has no proxy
-// and loads from a `tauri://` origin, so it must reach the Polynoia server
-// directly — this origin is whitelisted in the Tauri CSP and server CORS.
-const BASE = import.meta.env.PROD && isDesktopApp() ? "http://127.0.0.1:7780" : "";
+// Server base from runtime-config: "" (same-origin Vite proxy) for dev/web, the
+// local backend for a packaged desktop build, or a user-configured REMOTE
+// server. Read once at module load — see lib/runtime-config.ts.
+const BASE = getServerHttpBase();
 
 /** Pending edit row, returned by manual-mode endpoints. */
 export type PendingEdit = {

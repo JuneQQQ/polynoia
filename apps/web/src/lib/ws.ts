@@ -3,7 +3,7 @@
  * Wire format: SSE-style frames "data: {json}\n\n" with [DONE] sentinel.
  */
 import type { MessagePayload } from "./types";
-import { isDesktopApp } from "./platform";
+import { getServerWsBase } from "./runtime-config";
 
 export type UIMessageChunk =
   | { type: "start"; message_id: string }
@@ -49,18 +49,9 @@ export class ConvWebSocket {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Packaged desktop (`tauri build`) has no dev proxy and runs from a
-      // `tauri://` origin, so connect to the Polynoia server directly
-      // (ws://127.0.0.1:7780 is whitelisted in the Tauri CSP). Dev + web use the
-      // same-origin host (Vite proxy / reverse proxy in front of the server).
-      let url: string;
-      if (import.meta.env.PROD && isDesktopApp()) {
-        url = `ws://127.0.0.1:7780/ws/conv/${this.convId}`;
-      } else {
-        const proto = window.location.protocol === "https:" ? "wss" : "ws";
-        url = `${proto}://${window.location.host}/ws/conv/${this.convId}`;
-      }
-      this.ws = new WebSocket(url);
+      // Server origin from runtime-config (local default or a configured remote
+      // server) — see lib/runtime-config.ts.
+      this.ws = new WebSocket(`${getServerWsBase()}/ws/conv/${this.convId}`);
       this.ws.onopen = () => resolve();
       this.ws.onerror = (e) => {
         // React 18 Strict Mode double-mount triggers immediate cleanup before
