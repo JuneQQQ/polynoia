@@ -167,7 +167,11 @@ async def ws_terminal(websocket: WebSocket, ws_id: str):
             t.cancel()
         with contextlib.suppress(ValueError, OSError):
             loop.remove_reader(master_fd)
-        _reap(pid, master_fd)
+        # _reap does a BLOCKING os.waitpid(pid, 0); running it inline on the
+        # event loop froze the entire single-threaded uvloop (no new TCP accepts,
+        # every endpoint 000s) when a killed PTY child was slow to reap. Offload
+        # the kill+wait+close to a worker thread so the loop stays responsive.
+        await loop.run_in_executor(None, _reap, pid, master_fd)
         with contextlib.suppress(RuntimeError):
             await websocket.close()
         log.info("terminal closed ws=%s pid=%s", ws_id, pid)
