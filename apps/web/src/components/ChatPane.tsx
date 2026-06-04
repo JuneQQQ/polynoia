@@ -779,6 +779,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						ref={bodyRef}
 						className="absolute inset-0 overflow-y-auto py-4 pb-28"
 					>
+						<div className="mx-auto w-full max-w-[var(--chat-measure)]">
 							{/* Lazy-load top sentinel — visible spinner while older messages
             are being fetched. Shown only if we have more to fetch. */}
 							{loadingOlder && messages.length > 0 && (
@@ -851,6 +852,7 @@ export function ChatPane({ convId, members, title }: Props) {
 									/>
 								);
 							})}
+						</div>
 					</div>
 				</ConvScopeProvider>
 			</div>
@@ -863,6 +865,7 @@ export function ChatPane({ convId, members, title }: Props) {
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot
 				    below) so it never floats over / hides message content. */}
 				{/* Agent-initiated questions — floating panel above Composer */}
+				<div className="mx-auto w-full max-w-[var(--chat-measure)]">
 				<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
 				{/* Composer */}
@@ -996,6 +999,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						wsRef.current?.sendUserMessage(text, members, inReplyTo, msgId);
 					}}
 				/>
+				</div>
 			</div>
 		</main>
 	);

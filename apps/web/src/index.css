@@ -38,6 +38,11 @@
   --leading-normal: 1.55;
   --leading-relaxed: 1.7;   /* chat 消息段落 */
 
+  /* Readable chat-column measure: the message stream + composer cap at this
+     width and center on large/ultrawide screens, so content never stretches
+     edge-to-edge. Screens narrower than this are unaffected (it's a max-width). */
+  --chat-measure: 1080px;
+
   /* ── 颜色 (warm cream paper) ─────────────────────────────────── */
   --color-bg: #f6f2ea;
   --color-surface: #ffffff;
