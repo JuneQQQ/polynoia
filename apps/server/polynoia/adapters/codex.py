@@ -168,21 +168,28 @@ def _merge_mcp_into_config(existing: str, mcp_block: str) -> str:
         # ``# ── Injected by Polynoia CodexAdapter ...`` comment. Strip every
         # line from the first such marker through the next NON-polynoia
         # section header (or EOF), then append the fresh block below.
+        def _is_ours(s: str) -> bool:
+            # `s` is lstripped. Match ONLY the tables we inject —
+            # [mcp_servers.polynoia] and [mcp_servers.polynoia.<sub>] — NOT
+            # sibling tables like [mcp_servers.polynoiaProd]. A bare-prefix check
+            # used to swallow + delete those on every spawn.
+            return s.startswith("[mcp_servers.polynoia]") or s.startswith(
+                "[mcp_servers.polynoia."
+            )
+
         kept: list[str] = []
         in_block = False
         for line in existing.splitlines(keepends=True):
             s = line.lstrip()
             if not in_block:
-                if (
-                    s.startswith("# ── Injected by Polynoia CodexAdapter")
-                    or s.startswith("[mcp_servers.polynoia")
-                ):
+                if s.startswith("# ── Injected by Polynoia CodexAdapter") or _is_ours(s):
                     in_block = True
                     continue
                 kept.append(line)
             else:
-                # Exit on the next [section] that isn't ours.
-                if s.startswith("[") and not s.startswith("[mcp_servers.polynoia"):
+                # Exit on the next [section] that isn't ours (incl. a sibling
+                # [mcp_servers.polynoia*] table) — and keep that line.
+                if s.startswith("[") and not _is_ours(s):
                     in_block = False
                     kept.append(line)
                 # else: still inside the polynoia block — drop the line

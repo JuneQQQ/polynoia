@@ -4205,38 +4205,52 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             is_final=False,
                         )
                         cur_phase: str | None = None
+                        # Wait on ONE persistent __anext__() task per chunk via
+                        # asyncio.wait (NOT wait_for): wait_for cancels the inner
+                        # coroutine on timeout, which finishes the generator, so
+                        # the pending-edit `continue` below used to re-enter a dead
+                        # generator → StopAsyncIteration → the post-approval stream
+                        # was silently truncated. asyncio.wait leaves the task
+                        # alive across idle windows.
+                        anext_task = None
                         while True:
-                            try:
-                                chunk = await asyncio.wait_for(
-                                    agen.__anext__(), timeout=_AGENT_IDLE_TIMEOUT
-                                )
-                            except StopAsyncIteration:
-                                break
-                            except TimeoutError as te:
-                                # Distinguish 'model backend hung' from 'agent
-                                # legitimately blocked on user approval'. In
-                                # manual merge mode, the MCP `write` tool long-
-                                # polls the pending-edit gate inside the codex
-                                # subprocess — codex emits no chunks while
+                            if anext_task is None:
+                                anext_task = asyncio.ensure_future(agen.__anext__())
+                            _done, _ = await asyncio.wait(
+                                {anext_task}, timeout=_AGENT_IDLE_TIMEOUT
+                            )
+                            if not _done:
+                                # Idle window elapsed; the __anext__() task is
+                                # STILL alive. Distinguish 'model backend hung'
+                                # from 'agent legitimately blocked on user
+                                # approval': in manual merge mode the MCP `write`
+                                # tool long-polls the pending-edit gate inside the
+                                # codex subprocess — codex emits no chunks while
                                 # waiting, so per-chunk silence is expected and
-                                # benign. Granting one more 120s window per
-                                # pending edit lets the human review at their
-                                # own pace without the watchdog killing the
-                                # turn. If the user never decides, the in-MCP
-                                # gate eventually self-rejects (300s budget),
-                                # the tool returns, codex resumes streaming,
-                                # and the watchdog goes back to its normal
-                                # duty.
+                                # benign. If a pending edit is waiting, keep
+                                # waiting on the SAME task (never cancel +
+                                # re-enter the generator). If the user never
+                                # decides, the in-MCP gate self-rejects (300s),
+                                # the tool returns, codex resumes streaming.
                                 async with SessionLocal() as _wd_sess:
                                     waiting = await storage_repo.has_waiting_pending_edits(
                                         _wd_sess, conv_id
                                     )
                                 if waiting:
                                     continue
+                                anext_task.cancel()
+                                with contextlib.suppress(BaseException):
+                                    await anext_task
                                 raise RuntimeError(
                                     f"{agent_id} 无响应:{int(_AGENT_IDLE_TIMEOUT)}s "
                                     "内无任何输出(疑似模型后端挂起)"
-                                ) from te
+                                )
+                            try:
+                                chunk = anext_task.result()
+                            except StopAsyncIteration:
+                                break
+                            finally:
+                                anext_task = None
                             emitted_any = True
                             # A terminal error chunk (from a TurnFailedEvent —
                             # 401/429/upstream) means this turn FAILED even though
