@@ -7,10 +7,12 @@
  */
 import { useState } from "react";
 import type { ImagePayload } from "../../lib/types";
+import { assetUrl } from "../../lib/runtime-config";
 import { useStore } from "../../store";
 
 export function ImagePart({ payload }: { payload: ImagePayload }) {
   const [zoomed, setZoomed] = useState(false);
+  const imgSrc = assetUrl(payload.src);
   const openPreview = useStore((s) => s.openPreview);
 
   // Lightweight expand: clicking the thumbnail flips zoomed=true → full
@@ -27,7 +29,7 @@ export function ImagePart({ payload }: { payload: ImagePayload }) {
         title={payload.name || "图片"}
       >
         <img
-          src={payload.src}
+          src={imgSrc}
           alt={payload.name || "image"}
           width={payload.width ?? undefined}
           height={payload.height ?? undefined}
@@ -50,7 +52,7 @@ export function ImagePart({ payload }: { payload: ImagePayload }) {
           onClick={() => setZoomed(false)}
         >
           <img
-            src={payload.src}
+            src={imgSrc}
             alt={payload.name || "image"}
             className="max-w-full max-h-full object-contain rounded-md"
           />

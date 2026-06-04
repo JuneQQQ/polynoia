@@ -26,7 +26,7 @@ from fastapi.responses import (
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
 from polynoia.domain.messages import ConflictFile, ConflictPayload
-from polynoia.sandbox import Sandbox, workspace_merge_lock
+from polynoia.sandbox import Sandbox, workspace_merge_lock, workspace_root_for
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
@@ -912,7 +912,8 @@ def _inspect_workspace_path(raw: str) -> dict:
 @router.post("/api/workspaces/validate-path")
 async def validate_workspace_path(body: dict):
     """Check a custom-workspace path before creating it (UI 校验 button)."""
-    return _inspect_workspace_path(body.get("path") or "")
+    # Offload the blocking git subprocess off the event loop.
+    return await asyncio.to_thread(_inspect_workspace_path, body.get("path") or "")
 
 
 @router.post("/api/workspaces")
@@ -941,10 +942,19 @@ async def create_workspace(body: dict):
     raw_path = (body.get("path") or "").strip()
     resolved_path: str | None = None
     if raw_path:
-        chk = _inspect_workspace_path(raw_path)
+        chk = await asyncio.to_thread(_inspect_workspace_path, raw_path)
         if not chk.get("ok"):
             raise HTTPException(status_code=400, detail=chk.get("error") or "invalid path")
         resolved_path = chk["path"]
+        # Reject binding two workspaces to the same real directory — they would
+        # share one repo HEAD + .polynoia/worktrees and corrupt each other.
+        async with SessionLocal() as _s:
+            for _w in await storage_repo.list_workspaces(_s):
+                if _w.path and os.path.abspath(_w.path) == resolved_path:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"该目录已绑定到项目「{_w.name}」,不能重复绑定: {resolved_path}",
+                    )
 
     ws = Workspace(
         id=new_ulid(),
@@ -1105,7 +1115,7 @@ async def delete_workspace(ws_id: str):
     # leftover dir is non-fatal (the next same-id workspace would reuse it).
     with contextlib.suppress(Exception):
         import shutil
-        ws_dir = (settings.sandbox_root / "workspaces" / ws_id).resolve()
+        ws_dir = workspace_root_for(ws_id).resolve()
         if ws_dir.is_dir():
             shutil.rmtree(ws_dir)
     return {"ok": True}
@@ -1635,22 +1645,34 @@ def _safe_upload_name(name: str) -> str:
     return cleaned or "file"
 
 
-async def _conv_upload_dir(conv_id: str):
+def _safe_conv_token(conv_id: str) -> bool:
+    """A conv id is our own ULID or a `dm-<ULID>` — alnum + a single leading
+    'dm-'. Reject anything with path separators / '..' so a read can't escape."""
+    cid = conv_id[3:] if conv_id.startswith("dm-") else conv_id
+    return bool(cid) and cid.isalnum()
+
+
+async def _conv_upload_dir(conv_id: str, *, create: bool = True):
     """The dedicated, AGENT-ACCESSIBLE upload directory for a conversation.
 
-    Lands inside the same sandbox root the agents run in, so every agent in the
+    Lands inside the same root the agents actually run in, so every agent in the
     conversation can read the user's uploads:
-      - group / project conv (has workspace_id) → the SHARED workspace dir
-      - 1:1 DM (no workspace)                   → that conversation's own dir
+      - group / project conv (has workspace_id) → the workspace's REAL root
+        (custom path or auto sandbox), resolved via workspace_root_for()
+      - 1:1 DM (no workspace)                   → that conversation's own sandbox
+
+    ``create=False`` (read path) never makes directories — so the GET serve
+    endpoint has no filesystem write side-effect.
     """
     async with SessionLocal() as _s:
         conv = await storage_repo.get_conversation(_s, conv_id)
     if conv is not None and getattr(conv, "workspace_id", None):
-        base = settings.sandbox_root / "workspaces" / conv.workspace_id  # group: shared
+        base = workspace_root_for(conv.workspace_id)  # group: real workspace root
     else:
-        base = settings.sandbox_root / conv_id  # DM: its own
+        base = settings.sandbox_root / conv_id  # DM: its own sandbox
     updir = base / "uploads"
-    updir.mkdir(parents=True, exist_ok=True)
+    if create:
+        updir.mkdir(parents=True, exist_ok=True)
     return updir
 
 
@@ -1694,7 +1716,11 @@ async def upload_file(request: Request, name: str = "file", conv_id: str | None 
         return {
             "url": f"/api/files/raw?conv={urllib.parse.quote(conv_id)}&name={urllib.parse.quote(rel)}",
             "name": name,
-            "path": f"uploads/{rel}",  # agent-relative path inside the sandbox
+            # ABSOLUTE path: agents in a group conv run in a worktree
+            # (<ws_root>/.polynoia/worktrees/…) whose cwd is NOT the upload dir, so
+            # a "uploads/<name>" relative path wouldn't resolve. The absolute path
+            # under the workspace root is readable by the MCP file tools.
+            "path": str(target),
             "media_type": media_type,
             "size_bytes": len(data),
         }
@@ -1718,10 +1744,13 @@ async def upload_file(request: Request, name: str = "file", conv_id: str | None 
 @router.get("/api/files/raw")
 async def serve_conv_upload(conv: str, name: str):
     """Serve a per-conversation upload by (conv, name) — backs the URLs returned
-    by /api/upload?conv_id=... . Basename-guarded against path traversal."""
+    by /api/upload?conv_id=... . Read-only: never creates directories, and both
+    `conv` and `name` are guarded against path traversal."""
     import mimetypes
 
-    updir = await _conv_upload_dir(conv)
+    if not _safe_conv_token(conv):
+        raise HTTPException(status_code=400, detail="bad conv id")
+    updir = await _conv_upload_dir(conv, create=False)
     target = updir / os.path.basename(name)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
@@ -2562,7 +2591,7 @@ def _workspace_root(ws_id: str) -> "Path":
     if ws_id.startswith("conv:"):
         root = (settings.sandbox_root / ws_id[len("conv:"):]).resolve()
     else:
-        root = (settings.sandbox_root / "workspaces" / ws_id).resolve()
+        root = workspace_root_for(ws_id).resolve()
     if not (root / ".git").exists():
         raise HTTPException(404, f"workspace {ws_id} not bootstrapped")
     return root
@@ -3734,7 +3763,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     if fn:
                         seen.add((str(sid), str(fn)))
 
-        ws_root = (settings.sandbox_root / "workspaces" / ws_id).resolve()
+        ws_root = workspace_root_for(ws_id).resolve()
         for status, path in changed:
             if not path or status.startswith("D"):
                 continue

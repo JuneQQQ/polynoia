@@ -474,8 +474,10 @@ export function ChatPane({ convId, members, title }: Props) {
 		const onRegen = (ev: Event) => {
 			const ce = ev as CustomEvent<{ convId: string; text: string }>;
 			if (!ce.detail || ce.detail.convId !== convId) return;
-			appendUserMessage(convId, ce.detail.text);
-			wsRef.current?.sendUserMessage(ce.detail.text, members);
+			// Pass the pre-allocated id so the server's human-echo (same id) dedups
+			// against this optimistic bubble instead of appending a duplicate.
+			const rid = appendUserMessage(convId, ce.detail.text);
+			wsRef.current?.sendUserMessage(ce.detail.text, members, undefined, rid);
 		};
 		window.addEventListener("polynoia:regenerate", onRegen);
 		return () => window.removeEventListener("polynoia:regenerate", onRegen);

@@ -462,7 +462,17 @@ class Sandbox:
         the workspace merge lock (won't run mid-merge). Caller should evict the
         adapter pool first (cached sessions point at the about-to-be-deleted
         worktrees). DESTRUCTIVE — wipes all committed work in this workspace.
+
+        REFUSES on a CUSTOM workspace (Workspace.path → a real user directory):
+        the resolved root is the user's actual repo, and rmtree'ing it would
+        irreversibly destroy their code. Only the auto-managed sandbox subtree is
+        ever wiped.
         """
+        if workspace_id in _WORKSPACE_ROOTS:
+            raise ValueError(
+                "refusing to reset a custom workspace (would delete the user's "
+                f"real directory at {_WORKSPACE_ROOTS[workspace_id]})"
+            )
         ws_root = workspace_root_for(workspace_id)
         async with workspace_merge_lock(workspace_id):
             if ws_root.exists():
@@ -580,16 +590,18 @@ class Sandbox:
 
     @classmethod
     async def _exclude_polynoia(cls, ws_root: Path) -> None:
-        """Add ``.polynoia/`` to ``.git/info/exclude`` — a LOCAL ignore that never
-        touches the user's committed .gitignore. So all Polynoia state stays
-        inside the workspace but invisible to the user's git status."""
+        """Add ``.polynoia/`` AND the heavy local-dependency dirs (node_modules,
+        .venv, target, …) to ``.git/info/exclude`` — a LOCAL ignore that never
+        touches the user's committed .gitignore. Keeps Polynoia state invisible to
+        the user's git status AND prevents `git add -A` (in _init_custom_workspace)
+        from staging/committing vendored deps into the workspace base."""
         info = ws_root / ".git" / "info"
         info.mkdir(parents=True, exist_ok=True)
         exclude = info / "exclude"
         existing = exclude.read_text() if exclude.exists() else ""
         if ".polynoia/" not in existing:
             sep = "" if (not existing or existing.endswith("\n")) else "\n"
-            exclude.write_text(existing + sep + ".polynoia/\n")
+            exclude.write_text(existing + sep + ".polynoia/\n" + _LOCAL_DEPS_GITIGNORE)
 
     @classmethod
     async def _write_workspace_manifest(

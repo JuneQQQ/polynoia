@@ -8,6 +8,7 @@
  */
 import { Download } from "lucide-react";
 import { api } from "../../lib/api";
+import { assetUrl } from "../../lib/runtime-config";
 import type { FilesPayload } from "../../lib/types";
 import { useStore } from "../../store";
 import { formatBytes, parseWorkspaceFileSrc, variantFor } from "./FilePart";
@@ -45,7 +46,7 @@ function FileRow({
 			return;
 		}
 		const a = document.createElement("a");
-		a.href = src;
+		a.href = assetUrl(src);
 		a.download = name;
 		a.target = "_blank";
 		a.rel = "noopener noreferrer";

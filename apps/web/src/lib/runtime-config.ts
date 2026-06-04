@@ -42,6 +42,16 @@ export function getServerHttpBase(): string {
   return "";
 }
 
+/** Resolve a blob/asset URL (e.g. "/api/files/<id>/raw") against the configured
+ * server base, so attachments load from the backend even on a remote/desktop
+ * server. Absolute (http/https/data/blob) URLs pass through unchanged. */
+export function assetUrl(src: string): string {
+  if (!src) return src;
+  if (/^(https?:|data:|blob:)/i.test(src)) return src;
+  if (src.startsWith("/")) return getServerHttpBase() + src;
+  return src;
+}
+
 /** WS origin (ws[s]://host[:port]) for the conversation socket. */
 export function getServerWsBase(): string {
   const http = getServerHttpBase();

@@ -21,6 +21,7 @@ import {
 	Presentation,
 } from "lucide-react";
 import { api } from "../../lib/api";
+import { assetUrl } from "../../lib/runtime-config";
 import type { FilePayload } from "../../lib/types";
 import { useStore } from "../../store";
 
@@ -116,9 +117,10 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 			api.downloadWorkspaceFile(wsFile.wsId, wsFile.path);
 			return;
 		}
-		// Data URL / external — same-tab download via transient <a>.
+		// Data URL / external / server blob — same-tab download via transient <a>.
+		// Resolve /api/... against the configured server base (remote/desktop).
 		const a = document.createElement("a");
-		a.href = payload.src;
+		a.href = assetUrl(payload.src);
 		a.download = payload.name;
 		a.target = "_blank";
 		a.rel = "noopener noreferrer";

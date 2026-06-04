@@ -52,8 +52,9 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
   const [active, ...queued] = list;
 
   const onAnswered = (af: AskFormEntry, answerText: string) => {
-    // 1) Render the answer as a user message (so it shows in the chat either way)
-    appendUserMessage(convId, answerText);
+    // 1) Render the answer as a user message (so it shows in the chat either way).
+    // Capture the id so the WS path can echo-dedup against this optimistic bubble.
+    const ansId = appendUserMessage(convId, answerText);
     if (af.blocking_tool) {
       // ⑥ Blocking `ask_user` tool: resolve the SUSPENDED agent turn — it
       // continues with this answer. No new user message / WS turn needed.
@@ -65,7 +66,7 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
       const asker = agents.find((a) => a.id === af.agent_id);
       const isDM = members.length <= 2;
       const tagged = asker && !isDM ? `@${asker.name} ${answerText}` : answerText;
-      ws?.sendUserMessage(tagged, members);
+      ws?.sendUserMessage(tagged, members, undefined, ansId);
     }
     // 3) Drop the card
     dequeue(convId, af.id);
