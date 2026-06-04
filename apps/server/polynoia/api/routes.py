@@ -4833,11 +4833,23 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # 「从此处重来」/ reply / pin on this freshly-sent message resolves
             # the row instead of 404'ing on the client's `u-<uuid>` placeholder.
             async with SessionLocal() as db:
-                await storage_repo.append_message(
+                uid = await storage_repo.append_message(
                     db, conv_id=conv_id, sender_id="you", payload=user_payload,
                     in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
                 )
                 await db.commit()
+            # Real-time multi-client sync: echo the human message to OTHER clients
+            # tailing this conv (e.g. desktop + web both open on the same group),
+            # so the bubble appears live instead of only after a refresh. The
+            # sending client already rendered it optimistically under the SAME id
+            # (msg_id), so an id-keyed store dedups its own echo. Additive +
+            # suppress-guarded — never breaks the dispatch path below.
+            with suppress(Exception):
+                echo = encode_polynoia_card(
+                    "text", user_payload, msg_id or uid,
+                    sender_id="you", sender_label="你",
+                )
+                await _broadcast_to_conv(conv_id, echo)
 
         # Groups MUST have an orchestrator (enforced at creation, ~912). Defense
         # in depth: if a group ever reaches dispatch without a usable orchestrator
