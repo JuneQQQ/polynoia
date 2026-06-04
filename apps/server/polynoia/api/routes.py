@@ -607,6 +607,24 @@ async def suggest_contact(body: dict):
     }
 
 
+def _parse_skills(raw) -> list:
+    """Validate contact-level skill presets from request input → [AgentSkill].
+    Drops entries without both a name and instructions."""
+    from polynoia.domain.entities import AgentSkill
+
+    out: list = []
+    for s in (raw or []):
+        if not isinstance(s, dict):
+            continue
+        nm = (s.get("name") or "").strip()
+        instr = (s.get("instructions") or "").strip()
+        if not nm or not instr:
+            continue
+        desc = (s.get("description") or "").strip() or None
+        out.append(AgentSkill(name=nm[:80], instructions=instr, description=desc))
+    return out
+
+
 @router.post("/api/contacts")
 async def create_contact(body: dict):
     """Create a new user-defined contact (agent) backed by an enabled adapter.
@@ -653,6 +671,7 @@ async def create_contact(body: dict):
     caps = list(dict.fromkeys([*tmpl.caps, *_caps_from_tools(tool_role, tools_whitelist)]))
 
     contact = Agent(
+        skills=_parse_skills(body.get("skills")),
         id=new_ulid(),
         name=name,
         role=tmpl.role,
@@ -723,6 +742,8 @@ async def update_contact(contact_id: str, body: dict):
             existing.tools_whitelist = _validate_tools_whitelist(
                 body["tools_whitelist"]
             )
+        if "skills" in body:
+            existing.skills = _parse_skills(body["skills"])
         # Re-derive capability tags whenever the tool set / role may have changed,
         # so the contact card stays honest. Keep any non-derived (domain) tags.
         if "tool_role" in body or "tools_whitelist" in body:

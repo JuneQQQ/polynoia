@@ -67,6 +67,9 @@ class AgentRow(Base):
     custom: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     tools_whitelist: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # Contact-level skills: [{name, instructions, description?}] — injected into
+    # the agent's identity/system prompt at turn time.
+    skills: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     # Coarse-grained MCP tool exposure role. Drives which subset of polynoia
     # MCP tools this agent can call. See `polynoia.mcp.tools.ROLE_TOOLS`.
     # Values: orchestrator | coder | designer | writer | generalist.

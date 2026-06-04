@@ -61,6 +61,16 @@ class AgentSetup(BaseModel):
     max_context_tokens: int | None = None
 
 
+class AgentSkill(BaseModel):
+    """A reusable capability/prompt preset bound to a contact (agent). Its
+    ``instructions`` are injected into the agent's identity layer (system
+    prompt) at turn time, so "attaching a skill" gives the agent that ability."""
+
+    name: str
+    instructions: str
+    description: str | None = None
+
+
 class Agent(BaseModel):
     """A role — 1 Provider can host N Agents (e.g. claude → designer/reviewer/codeAgent)."""
 
@@ -88,6 +98,9 @@ class Agent(BaseModel):
     tool_role: Literal[
         "orchestrator", "coder", "designer", "writer", "generalist",
     ] = "generalist"
+    # Reusable capability/prompt presets bound at the contact level. Injected
+    # into this agent's identity layer at turn time.
+    skills: list[AgentSkill] = []
     # Network proxy is adapter-level, not per-contact — see OnboardedAdapterRow
     # (egress follows the adapter's shared LLM endpoint, not the persona).
     setup: AgentSetup | None = None

@@ -356,6 +356,9 @@ export type Agent = {
 	human?: boolean;
 	system_prompt?: string | null;
 	tools_whitelist?: string[];
+	/** Contact-level skills (capability/prompt presets) injected into this
+	 * agent's system prompt at turn time. */
+	skills?: { name: string; instructions: string; description?: string | null }[];
 	// NOTE: no proxy here — network egress is adapter-level (set in 适配器管理),
 	// shared by all contacts of an adapter. See api.setAdapterProxy.
 	foreign_from?: string | null;

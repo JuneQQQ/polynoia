@@ -108,6 +108,22 @@ def build_identity_layer(
         parts.append("## 你的人格 / 工作风格")
         parts.append(persona)
 
+    # Contact-level skills (capability/prompt presets bound to this agent). Each
+    # skill's instructions are injected here so the agent actually has the
+    # ability — bound per-contact via the contact editor.
+    skills = [
+        s for s in (getattr(agent, "skills", None) or [])
+        if (s.instructions or "").strip()
+    ]
+    if skills:
+        parts.append("")
+        parts.append("## 你已装配的技能")
+        for s in skills:
+            parts.append(f"### {s.name}")
+            if s.description:
+                parts.append(f"_{s.description}_")
+            parts.append(s.instructions.strip())
+
     return ContextLayer.make(
         kind="identity",
         content="\n".join(parts),

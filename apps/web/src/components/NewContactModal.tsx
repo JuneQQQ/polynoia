@@ -111,6 +111,15 @@ export function NewContactModal({
 	const [color, setColor] = useState(
 		editing?.color ?? pf?.color ?? COLOR_OPTIONS[0],
 	);
+	// Contact-level skills (capability/prompt presets). Bound here, injected
+	// into this agent's system prompt at turn time.
+	const [skills, setSkills] = useState<{ name: string; instructions: string }[]>(
+		() => (editing?.skills ?? []).map((s) => ({ name: s.name, instructions: s.instructions })),
+	);
+	const cleanSkills = () =>
+		skills
+			.map((s) => ({ name: s.name.trim(), instructions: s.instructions.trim() }))
+			.filter((s) => s.name && s.instructions);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
@@ -215,6 +224,7 @@ export function NewContactModal({
 					system_prompt: systemPrompt.trim(),
 					color,
 					max_context_tokens: parsedMaxCtx,
+					skills: cleanSkills(),
 				});
 			} else {
 				await api.createContact({
@@ -224,6 +234,7 @@ export function NewContactModal({
 					system_prompt: systemPrompt.trim() || undefined,
 					color,
 					max_context_tokens: parsedMaxCtx ?? undefined,
+					skills: cleanSkills(),
 				});
 			}
 			await onCreated();
@@ -425,6 +436,61 @@ export function NewContactModal({
 									rows={3}
 									className="w-full text-[12.5px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] resize-y"
 								/>
+							</Field>
+
+							<Field label="技能(可选,绑定到这个联系人)">
+								<div className="space-y-2">
+									{skills.map((s, i) => (
+										<div
+											key={i}
+											className="rounded border border-[var(--color-line)] p-2 space-y-1.5 bg-[var(--color-surface-2)]"
+										>
+											<div className="flex gap-2 items-center">
+												<input
+													type="text"
+													value={s.name}
+													onChange={(e) =>
+														setSkills((arr) =>
+															arr.map((x, j) =>
+																j === i ? { ...x, name: e.target.value } : x,
+															),
+														)
+													}
+													placeholder="技能名,如:写单元测试"
+													className="flex-1 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+												/>
+												<button
+													type="button"
+													onClick={() => setSkills((arr) => arr.filter((_, j) => j !== i))}
+													className="p-1 rounded text-[var(--color-fg-3)] hover:bg-[var(--color-line)] hover:text-[var(--color-fg)]"
+													title="删除技能"
+												>
+													<X size={13} />
+												</button>
+											</div>
+											<textarea
+												value={s.instructions}
+												onChange={(e) =>
+													setSkills((arr) =>
+														arr.map((x, j) =>
+															j === i ? { ...x, instructions: e.target.value } : x,
+														),
+													)
+												}
+												placeholder="这个技能注入给 agent 的指令,如:总是先写 pytest 再写实现,覆盖边界用例。"
+												rows={2}
+												className="w-full text-[12px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] resize-y"
+											/>
+										</div>
+									))}
+									<button
+										type="button"
+										onClick={() => setSkills((arr) => [...arr, { name: "", instructions: "" }])}
+										className="text-[12px] px-2.5 py-1.5 rounded border border-dashed border-[var(--color-line-strong)] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-colors"
+									>
+										+ 添加技能
+									</button>
+								</div>
 							</Field>
 
 							<Field label="颜色">

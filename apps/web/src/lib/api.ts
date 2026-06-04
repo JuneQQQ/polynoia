@@ -444,6 +444,7 @@ export const api = {
 		tool_role?: string;
 		tools_whitelist?: string[];
 		max_context_tokens?: number | null;
+		skills?: { name: string; instructions: string; description?: string }[];
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
 	/**「回到这个对话」dry-run: what reverting workspace main to `sha` would undo. */
 	restorePreview: (wsId: string, sha: string, convId?: string) =>
@@ -504,6 +505,7 @@ export const api = {
 			tool_role: string;
 			tools_whitelist: string[];
 			max_context_tokens: number | null;
+			skills: { name: string; instructions: string; description?: string }[];
 		}>,
 	) =>
 		fetch(`/api/contacts/${id}`, {

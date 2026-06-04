@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from polynoia.domain.entities import (
     Agent,
     AgentSetup,
+    AgentSkill,
     Conversation,
     Pin,
     Provider,
@@ -101,6 +102,7 @@ def _agent_from_row(r: AgentRow) -> Agent:
         system_prompt=r.system_prompt,
         tools_whitelist=r.tools_whitelist or [],
         tool_role=(r.tool_role or "generalist"),  # type: ignore[arg-type]
+        skills=[AgentSkill(**s) for s in (r.skills or [])],
         setup=setup,
         human=r.human,
         foreign_from=r.foreign_from,
@@ -140,6 +142,7 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
         existing.system_prompt = a.system_prompt
         existing.tools_whitelist = a.tools_whitelist
         existing.tool_role = a.tool_role
+        existing.skills = [s.model_dump() for s in a.skills]
         existing.setup = setup_dict
         existing.human = a.human
         existing.foreign_from = a.foreign_from
@@ -150,6 +153,7 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
             caps=a.caps, online=a.online, enabled=a.enabled, custom=a.custom,
             system_prompt=a.system_prompt, tools_whitelist=a.tools_whitelist,
             tool_role=a.tool_role,
+            skills=[s.model_dump() for s in a.skills],
             setup=setup_dict,
             human=a.human, foreign_from=a.foreign_from,
         ))

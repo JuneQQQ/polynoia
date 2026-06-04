@@ -79,6 +79,11 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "NOT NULL DEFAULT 'generalist'",
     ),
     (
+        "agents",
+        "skills",
+        "ALTER TABLE agents ADD COLUMN skills TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
         "merge_conflicts",
         "base_agents_json",
         "ALTER TABLE merge_conflicts ADD COLUMN base_agents_json JSON "
