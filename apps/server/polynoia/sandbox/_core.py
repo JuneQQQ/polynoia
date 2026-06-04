@@ -1765,6 +1765,24 @@ class Sandbox:
             return self.workspace_root / ".polynoia" / "credentials"
         return self.root / ".polynoia" / "credentials"
 
+    async def place_skill_packages(self, names: list[str]) -> None:
+        """Copy installed skill packages into this agent's native skills dir
+        (``<HOME>/.claude/skills/<name>``) so the spawned Claude CLI discovers
+        them. Source folders live in ``settings.skills_dir``. Best-effort:
+        unknown names are skipped; existing copies are refreshed."""
+        dest_root = self.credentials_home / ".claude" / "skills"
+        for raw in names:
+            name = (raw or "").strip()
+            src = settings.skills_dir / name
+            if not name or not src.is_dir():
+                continue
+            dest = dest_root / name
+            with contextlib.suppress(OSError):
+                if dest.exists():
+                    shutil.rmtree(dest, ignore_errors=True)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
+
     def env_for_agent(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Construct subprocess env dict for an agent.
 

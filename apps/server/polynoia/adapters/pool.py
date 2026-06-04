@@ -208,6 +208,9 @@ class AdapterPool:
                 read_only_workspace_id=read_only_ws_id,
                 proxy=proxy,
                 proxy_kind=proxy_kind,
+                # Contact-bound skill packages → placed into the sandbox's native
+                # skills dir so the CLI discovers them.
+                skills=[s.name for s in (agent.skills or []) if s.name],
             )
             self._sessions[key] = new_sess
             return new_sess

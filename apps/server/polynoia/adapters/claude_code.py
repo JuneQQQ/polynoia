@@ -131,6 +131,7 @@ class ClaudeCodeAdapter:
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
+        skills: list[str] | None = None,
     ) -> ClaudeCodeSession:
         # P1.1 routing — group convs in a workspace share git via worktrees;
         # a project-external DM opens its agent's workspace READ-ONLY (ADR-019)
@@ -147,6 +148,12 @@ class ClaudeCodeAdapter:
         else:
             sandbox = await Sandbox.create(conv_id)
         effective_cwd = cwd or str(sandbox.root)
+
+        # Contact-level skill packages: copy each bound skill folder into the
+        # sandbox's native ~/.claude/skills/ so the underlying Claude CLI
+        # discovers them (progressive disclosure) and can run their scripts.
+        if skills:
+            await sandbox.place_skill_packages(skills)
 
         # Register the Polynoia MCP server. Claude Code spawns it as a stdio
         # subprocess; POLYNOIA_CONV_ID + POLYNOIA_AGENT_ID bind that MCP instance

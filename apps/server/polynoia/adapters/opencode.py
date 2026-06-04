@@ -168,6 +168,7 @@ class OpenCodeAdapter:
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
+        skills: list[str] | None = None,  # accepted for adapter parity (OpenCode skill placement: P1)
     ) -> OpenCodeSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).

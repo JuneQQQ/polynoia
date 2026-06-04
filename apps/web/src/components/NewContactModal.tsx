@@ -111,15 +111,40 @@ export function NewContactModal({
 	const [color, setColor] = useState(
 		editing?.color ?? pf?.color ?? COLOR_OPTIONS[0],
 	);
-	// Contact-level skills (capability/prompt presets). Bound here, injected
-	// into this agent's system prompt at turn time.
-	const [skills, setSkills] = useState<{ name: string; instructions: string }[]>(
-		() => (editing?.skills ?? []).map((s) => ({ name: s.name, instructions: s.instructions })),
+	// Skills: a contact binds installed skill PACKAGES by name (placed into its
+	// sandbox at spawn). Install new ones from a git URL / local path.
+	const [installedSkills, setInstalledSkills] = useState<
+		{ name: string; description: string }[]
+	>([]);
+	const [boundSkills, setBoundSkills] = useState<Set<string>>(
+		() => new Set((editing?.skills ?? []).map((s) => s.name)),
 	);
+	const [skillSrc, setSkillSrc] = useState("");
+	const [skillBusy, setSkillBusy] = useState<"idle" | "installing" | "err">("idle");
+	const [skillErr, setSkillErr] = useState("");
+	useEffect(() => {
+		api.listSkills().then(setInstalledSkills).catch(() => {});
+	}, []);
 	const cleanSkills = () =>
-		skills
-			.map((s) => ({ name: s.name.trim(), instructions: s.instructions.trim() }))
-			.filter((s) => s.name && s.instructions);
+		[...boundSkills].map((name) => ({ name, instructions: "" }));
+	const installSkill = async () => {
+		const src = skillSrc.trim();
+		if (!src) return;
+		setSkillBusy("installing");
+		setSkillErr("");
+		try {
+			const s = await api.installSkill(src);
+			setInstalledSkills((arr) =>
+				arr.some((x) => x.name === s.name) ? arr : [...arr, s],
+			);
+			setBoundSkills((b) => new Set(b).add(s.name));
+			setSkillSrc("");
+			setSkillBusy("idle");
+		} catch (e) {
+			setSkillBusy("err");
+			setSkillErr(String(e));
+		}
+	};
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
@@ -440,56 +465,70 @@ export function NewContactModal({
 
 							<Field label="Skill">
 								<div className="space-y-2">
-									{skills.map((s, i) => (
-										<div
-											key={i}
-											className="rounded border border-[var(--color-line)] p-2 space-y-1.5 bg-[var(--color-surface-2)]"
-										>
-											<div className="flex gap-2 items-center">
-												<input
-													type="text"
-													value={s.name}
-													onChange={(e) =>
-														setSkills((arr) =>
-															arr.map((x, j) =>
-																j === i ? { ...x, name: e.target.value } : x,
-															),
-														)
-													}
-													placeholder="技能名,如:写单元测试"
-													className="flex-1 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
-												/>
-												<button
-													type="button"
-													onClick={() => setSkills((arr) => arr.filter((_, j) => j !== i))}
-													className="p-1 rounded text-[var(--color-fg-3)] hover:bg-[var(--color-line)] hover:text-[var(--color-fg)]"
-													title="删除技能"
-												>
-													<X size={13} />
-												</button>
-											</div>
-											<textarea
-												value={s.instructions}
-												onChange={(e) =>
-													setSkills((arr) =>
-														arr.map((x, j) =>
-															j === i ? { ...x, instructions: e.target.value } : x,
-														),
-													)
-												}
-												placeholder="这个技能注入给 agent 的指令,如:总是先写 pytest 再写实现,覆盖边界用例。"
-												rows={2}
-												className="w-full text-[12px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] resize-y"
-											/>
+									{installedSkills.length > 0 ? (
+										<div className="space-y-1">
+											{installedSkills.map((s) => {
+												const on = boundSkills.has(s.name);
+												return (
+													<button
+														key={s.name}
+														type="button"
+														onClick={() =>
+															setBoundSkills((b) => {
+																const n = new Set(b);
+																n.has(s.name) ? n.delete(s.name) : n.add(s.name);
+																return n;
+															})
+														}
+														className={`w-full text-left flex items-start gap-2 px-2.5 py-1.5 rounded border transition-colors ${
+															on
+																? "border-[var(--color-accent)] bg-[var(--color-accent)]/10"
+																: "border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
+														}`}
+													>
+														<span className="text-[12px] mt-px">{on ? "✓" : "+"}</span>
+														<span className="min-w-0">
+															<span className="text-[12.5px] font-mono text-[var(--color-fg)]">
+																{s.name}
+															</span>
+															{s.description && (
+																<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
+																	{s.description}
+																</span>
+															)}
+														</span>
+													</button>
+												);
+											})}
 										</div>
-									))}
-									<button
-										type="button"
-										onClick={() => setSkills((arr) => [...arr, { name: "", instructions: "" }])}
-										className="text-[12px] px-2.5 py-1.5 rounded border border-dashed border-[var(--color-line-strong)] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-colors"
-									>
-										+ 添加技能
-									</button>
+									) : (
+										<p className="text-[11.5px] text-[var(--color-fg-3)]">
+											还没有已安装的 skill。粘贴一个 skill 地址安装(git URL 或本地路径)。
+										</p>
+									)}
+									<div className="flex gap-2">
+										<input
+											type="text"
+											value={skillSrc}
+											onChange={(e) => {
+												setSkillSrc(e.target.value);
+												setSkillBusy("idle");
+											}}
+											placeholder="skill 地址:https://….git 或 /abs/path"
+											className="flex-1 text-[12px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
+										/>
+										<button
+											type="button"
+											onClick={installSkill}
+											disabled={!skillSrc.trim() || skillBusy === "installing"}
+											className="px-3 py-1.5 text-[12px] rounded border border-[var(--color-line-strong)] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] disabled:opacity-50 whitespace-nowrap"
+										>
+											{skillBusy === "installing" ? "安装中…" : "安装"}
+										</button>
+									</div>
+									{skillBusy === "err" && (
+										<p className="text-[11px] text-red-500">✗ {skillErr}</p>
+									)}
 								</div>
 							</Field>
 

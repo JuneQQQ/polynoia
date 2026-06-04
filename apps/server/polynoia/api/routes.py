@@ -608,8 +608,11 @@ async def suggest_contact(body: dict):
 
 
 def _parse_skills(raw) -> list:
-    """Validate contact-level skill presets from request input → [AgentSkill].
-    Drops entries without both a name and instructions."""
+    """Validate contact-level skills from request input → [AgentSkill].
+
+    A skill is bound by NAME (referencing an installed skill package placed into
+    the agent's sandbox at spawn). ``instructions`` are optional — when present
+    they're also injected into the identity layer (inline-prompt fallback)."""
     from polynoia.domain.entities import AgentSkill
 
     out: list = []
@@ -617,9 +620,9 @@ def _parse_skills(raw) -> list:
         if not isinstance(s, dict):
             continue
         nm = (s.get("name") or "").strip()
-        instr = (s.get("instructions") or "").strip()
-        if not nm or not instr:
+        if not nm:
             continue
+        instr = (s.get("instructions") or "").strip()
         desc = (s.get("description") or "").strip() or None
         out.append(AgentSkill(name=nm[:80], instructions=instr, description=desc))
     return out

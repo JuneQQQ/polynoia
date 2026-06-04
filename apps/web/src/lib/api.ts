@@ -251,6 +251,15 @@ export const api = {
 			"/api/workspaces",
 			body,
 		),
+	/** Installed skill packages (folder per skill). */
+	listSkills: () =>
+		getJSON<{ name: string; description: string; path: string }[]>("/api/skills"),
+	/** Install a skill from a git URL or local path → returns the installed skill. */
+	installSkill: (source: string, name?: string) =>
+		postJSON<{ name: string; description: string; path: string }>("/api/skills", {
+			source,
+			name,
+		}),
 	/** Validate a custom-workspace directory before creating (UI 校验 button). */
 	validateWorkspacePath: (path: string) =>
 		postJSON<{
