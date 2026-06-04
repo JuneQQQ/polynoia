@@ -10,6 +10,7 @@ import {
   Plug,
   Plus,
   Search,
+  Server,
   Settings,
   Sparkles,
   Trash2,
@@ -32,6 +33,7 @@ import { ConvRolesModal } from "./ConvRolesModal";
 import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { OnboardingModal } from "./OnboardingModal";
+import { ServerSettingsModal } from "./ServerSettingsModal";
 import { ThemeToggle } from "./ThemeToggle";
 
 export function Sidebar({
@@ -1474,6 +1476,7 @@ function Footer({
 }) {
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
+  const [serverOpen, setServerOpen] = useState(false);
   const status = adapterStatus ?? { enabled: 0, total: 0 };
   const hasEnabled = status.enabled > 0;
   return (
@@ -1545,6 +1548,14 @@ function Footer({
         </button>
         <button
           type="button"
+          onClick={() => setServerOpen(true)}
+          title={lang === "zh" ? "服务器设置" : "Server"}
+          className="press-down p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] transition-all duration-150"
+        >
+          <Server size={13} />
+        </button>
+        <button
+          type="button"
           onClick={onOpenAdapters}
           title={t("manageAdapters", lang)}
           className="press-down p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:rotate-45 transition-all duration-300"
@@ -1552,6 +1563,9 @@ function Footer({
           <Settings size={13} />
         </button>
       </div>
+      {serverOpen && (
+        <ServerSettingsModal onClose={() => setServerOpen(false)} lang={lang} />
+      )}
     </footer>
   );
 }
