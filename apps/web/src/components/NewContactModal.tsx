@@ -42,11 +42,10 @@ const CONTEXT_PRESETS: { label: string; value: number }[] = [
 ];
 const DEFAULT_CONTEXT = 200_000;
 
-// Tool governance no longer lives on the contact — it is a PROJECT concern
-// (apps/server/polynoia/tool_policy.py). A contact is persona-only now: name,
-// model, system prompt, color. Per-agent tool restriction is opt-in inside a
-// project (Workspace/Conversation.member_tool_roles); a plain DM is always the
-// full builder toolset. So this modal no longer carries a 工具集 picker.
+// A contact is persona-only: name, model, system prompt, color. Tools are NOT
+// configured here — they follow one structural fact at runtime (the convo's
+// orchestrator gets the orchestrator toolset, everyone else the full builder
+// set; see apps/server/polynoia/tool_policy.py). So no 工具集 picker.
 
 type Props = {
 	onClose: () => void;

@@ -206,7 +206,6 @@ def _workspace_from_row(r: WorkspaceRow) -> Workspace:
         color=r.color,
         role=r.role,  # type: ignore[arg-type]
         members=r.members or [],
-        member_tool_roles=r.member_tool_roles or {},
         default_merge_mode=r.default_merge_mode,  # type: ignore[arg-type]
     )
 
@@ -226,13 +225,11 @@ async def upsert_workspace(session: AsyncSession, w: Workspace) -> Workspace:
         existing.color = w.color
         existing.role = w.role
         existing.members = w.members
-        existing.member_tool_roles = w.member_tool_roles
         existing.default_merge_mode = w.default_merge_mode
     else:
         session.add(WorkspaceRow(
             id=w.id, server_id=w.server_id, name=w.name, desc=w.desc,
             repo=w.repo, color=w.color, role=w.role, members=w.members,
-            member_tool_roles=w.member_tool_roles,
             default_merge_mode=w.default_merge_mode,
         ))
     await session.flush()
@@ -271,7 +268,6 @@ def _conv_from_row(r: ConversationRow) -> Conversation:
         group=r.group,
         orchestrator_profile=r.orchestrator_profile,  # type: ignore[arg-type]
         member_roles=r.member_roles or {},
-        member_tool_roles=r.member_tool_roles or {},
         orchestrator_member_id=r.orchestrator_member_id,
         pinned=r.pinned,
         archived=r.archived,
@@ -386,7 +382,6 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
         id=c.id, workspace_id=c.workspace_id, title=c.title, members=c.members,
         direct=c.direct, group=c.group, orchestrator_profile=c.orchestrator_profile,
         member_roles=c.member_roles or {},
-        member_tool_roles=c.member_tool_roles or {},
         orchestrator_member_id=c.orchestrator_member_id,
         pinned=c.pinned, archived=c.archived, unread=c.unread,
         last_message_at=c.last_message_at,
@@ -475,41 +470,6 @@ async def set_member_roles(
     return True, before, after
 
 
-_VALID_OVERRIDE_ROLES = frozenset(
-    {"orchestrator", "coder", "designer", "writer", "generalist", "critic", "advisory"}
-)
-
-
-async def set_member_tool_roles(
-    session: AsyncSession,
-    conv_id: str,
-    tool_roles: dict[str, str],
-) -> tuple[bool, dict[str, str], dict[str, str]]:
-    """Replace a conv's per-member tool_role OVERRIDE map. Returns
-    ``(ok, before, after)``.
-
-    Empty / invalid values delete that member's override (→ contact default).
-    Keys not in ``conv.members`` are dropped. The designated orchestrator's
-    effective role is still forced to "orchestrator" at dispatch (ADR-017),
-    regardless of any override here.
-    """
-    row = await session.get(ConversationRow, conv_id)
-    if row is None:
-        return False, {}, {}
-    before = dict(row.member_tool_roles or {})
-    members = set(row.members or [])
-    after: dict[str, str] = {}
-    for k, v in tool_roles.items():
-        if k not in members:
-            continue
-        cleaned = (v or "").strip()
-        if cleaned in _VALID_OVERRIDE_ROLES:
-            after[k] = cleaned
-    row.member_tool_roles = after
-    await session.flush()
-    return True, before, after
-
-
 async def set_members(
     session: AsyncSession,
     conv_id: str,
@@ -537,10 +497,6 @@ async def set_members(
     row.members = after
     if row.member_roles:
         row.member_roles = {k: v for k, v in row.member_roles.items() if k in seen}
-    if row.member_tool_roles:
-        row.member_tool_roles = {
-            k: v for k, v in row.member_tool_roles.items() if k in seen
-        }
     if row.orchestrator_member_id and row.orchestrator_member_id not in seen:
         row.orchestrator_member_id = None
     await session.flush()
@@ -961,8 +917,14 @@ async def get_pending_edit(
 async def set_pending_edit_status(
     session: AsyncSession, pending_id: str, status: str,
 ) -> bool:
-    """Flip status (accepted / rejected / timeout). Returns False if missing."""
-    if status not in ("accepted", "rejected", "timeout"):
+    """Flip status (accepted / rejected / timeout / abandoned). Returns False
+    if missing or already decided.
+
+    ``abandoned`` means the MCP process that was waiting on this row got killed
+    before the user decided — so even if the user later approves, nobody is
+    listening. We mark it instead of leaving a stale ``pending`` row that would
+    confuse the review UI on next page load."""
+    if status not in ("accepted", "rejected", "timeout", "abandoned"):
         raise ValueError(f"invalid status {status!r}")
     from datetime import datetime
     row = await session.get(PendingEditRow, pending_id)
@@ -972,6 +934,55 @@ async def set_pending_edit_status(
     row.decided_at = datetime.utcnow()
     await session.flush()
     return True
+
+
+async def has_waiting_pending_edits(session: AsyncSession, conv_id: str) -> bool:
+    """Cheap existence check used by the idle watchdog. If ANY pending row is
+    waiting for the user in this conv, the watchdog treats per-chunk silence as
+    'agent legitimately blocked on human review', not 'model backend hung'.
+
+    Coarse on purpose: ``pending_edits.agent_id`` stores the adapter slug
+    ('codex'/'claudeCode'/'opencoder'), not the contact ULID, so we can't
+    cheaply match an exact (conv, contact) pair without a lookup. Granting one
+    extra 120s window when ANY pending exists is the right tradeoff — false
+    positives extend by one cycle, never indefinitely."""
+    stmt = (
+        select(PendingEditRow.id)
+        .where(PendingEditRow.conv_id == conv_id)
+        .where(PendingEditRow.status == "pending")
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
+async def abandon_pending_edits_for_adapter(
+    session: AsyncSession, conv_id: str, agent_slug: str,
+) -> list[PendingEditRow]:
+    """Mark every still-pending row created by an adapter (slug) in this conv as
+    ``abandoned``. Returns the updated rows so the caller can broadcast a UI
+    refresh frame for each.
+
+    Called from the turn-failure cleanup: the MCP subprocess that was waiting on
+    these rows just got killed, so the long-poll is now an orphan — even a user
+    'approve' click won't execute the write. Match by adapter slug because
+    that's what ``_gate_via_pending_edit`` writes; precise enough when a conv
+    rarely has two contacts of the same adapter both with pending edits at the
+    same instant."""
+    from datetime import datetime
+    stmt = (
+        select(PendingEditRow)
+        .where(PendingEditRow.conv_id == conv_id)
+        .where(PendingEditRow.agent_id == agent_slug)
+        .where(PendingEditRow.status == "pending")
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    now = datetime.utcnow()
+    for r in rows:
+        r.status = "abandoned"
+        r.decided_at = now
+    if rows:
+        await session.flush()
+    return rows
 
 
 async def list_pending_edits(

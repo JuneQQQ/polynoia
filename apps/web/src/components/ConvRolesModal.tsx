@@ -16,17 +16,6 @@ type Props = {
 	onSaved: (updated: ConversationSummary) => void;
 };
 
-/** Per-conv tool-capability override options. "" = follow the contact default. */
-const TOOL_OVERRIDE_OPTS: { value: string; label: string }[] = [
-	{ value: "", label: "跟随联系人默认" },
-	{ value: "generalist", label: "通用 · 全套工具" },
-	{ value: "coder", label: "后端 · read/edit/write/bash" },
-	{ value: "designer", label: "前端 · 无 bash" },
-	{ value: "writer", label: "文档 · 无 bash" },
-	{ value: "critic", label: "评审 · 只读" },
-	{ value: "orchestrator", label: "协调 · 只拆解派活" },
-];
-
 export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 	const agents = useStore((s) => s.agents);
 	const memberAgents = useMemo(
@@ -38,12 +27,9 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 		[conv.members, agents],
 	);
 
-	// Local drafts keyed by agent_id. Initialize from server snapshot.
+	// Local draft keyed by agent_id. Initialize from server snapshot.
 	const [draft, setDraft] = useState<Record<string, string>>(() => ({
 		...(conv.member_roles ?? {}),
-	}));
-	const [toolDraft, setToolDraft] = useState<Record<string, string>>(() => ({
-		...(conv.member_tool_roles ?? {}),
 	}));
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
@@ -60,22 +46,15 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 		for (const k of rk) {
 			if ((before[k] ?? "") !== (draft[k] ?? "").trim()) return true;
 		}
-		const beforeT = conv.member_tool_roles ?? {};
-		const tk = new Set([...Object.keys(beforeT), ...Object.keys(toolDraft)]);
-		for (const k of tk) {
-			if ((beforeT[k] ?? "") !== (toolDraft[k] ?? "")) return true;
-		}
 		return false;
-	}, [draft, toolDraft, conv.member_roles, conv.member_tool_roles]);
+	}, [draft, conv.member_roles]);
 
 	const save = async () => {
 		if (!dirty) return;
 		setBusy(true);
 		setErr(null);
 		try {
-			// Roles first, then tool overrides; use the latest conv snapshot returned.
-			await api.setMemberRoles(conv.id, draft);
-			const updated = await api.setMemberToolRoles(conv.id, toolDraft);
+			const updated = await api.setMemberRoles(conv.id, draft);
 			onSaved(updated);
 			onClose();
 		} catch (e) {
@@ -113,9 +92,7 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 
 				<div className="px-6 py-4 text-[11.5px] text-[var(--color-fg-3)] leading-relaxed">
 					指定每位成员在本对话里的角色定位(文字职责会作为系统事件注入时间线,下一轮所有
-					agent 都看得到);🛠
-					工具集则覆盖该成员在本对话能用的工具——默认跟随联系人,可在此临时收紧/放开
-					(例如同一个人在评审会话里设「只读」、在开发会话里给全套)。指定的协调者始终强制为协调角色。
+					agent 都看得到)。工具能力由项目统一治理,不在这里单独设。
 				</div>
 
 				<div className="flex-1 overflow-y-auto px-6 pb-4 space-y-3">
@@ -158,20 +135,6 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 									placeholder="如:后端实现 / 前端样式 / 评审者…"
 									className="w-full mt-1 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] transition-colors"
 								/>
-								<select
-									value={toolDraft[a.id] ?? ""}
-									onChange={(e) =>
-										setToolDraft((d) => ({ ...d, [a.id]: e.target.value }))
-									}
-									title="本对话里该成员可用的工具集(覆盖联系人默认)"
-									className="w-full mt-1 text-[11.5px] px-2 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg-2)] outline-none focus:border-[var(--color-accent)] transition-colors"
-								>
-									{TOOL_OVERRIDE_OPTS.map((o) => (
-										<option key={o.value} value={o.value}>
-											🛠 {o.label}
-										</option>
-									))}
-								</select>
 							</div>
 						</div>
 					))}

@@ -114,13 +114,6 @@ class WorkspaceRow(Base):
     color: Mapped[str] = mapped_column(String(16), default="#E07A3C", nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="Owner", nullable=False)
     members: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    # Per-PROJECT tool policy (agent_id → tool_role). EMPTY = no restriction →
-    # every agent gets the full builder toolset (tool governance is opt-in and
-    # lives in the project — see polynoia/tool_policy.py). Inherited by the
-    # project's convs; a conv can still override via its own member_tool_roles.
-    member_tool_roles: Mapped[dict[str, str]] = mapped_column(
-        JSON, default=dict, nullable=False
-    )
     # Default merge mode inherited by new convs in this workspace.
     # "auto"   → orchestrator runs git_merge after sub-tasks finish
     # "manual" → every edit_file is gated by user approval (per-edit)
@@ -151,11 +144,6 @@ class ConversationRow(Base):
     orchestrator_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Per-conv role assignment for each member (agent_id → free-text role).
     member_roles: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
-    # Per-conv tool-capability OVERRIDE (agent_id → tool_role). Empty = contact
-    # default. Lets the same contact have different tools per conversation.
-    member_tool_roles: Mapped[dict[str, str]] = mapped_column(
-        JSON, default=dict, nullable=False
-    )
     # Designated orchestrator. Required for every GROUP conv (enforced at
     # creation); None only for direct (1:1) convs. Nullable here because directs
     # legitimately have none — the group invariant is enforced in the API/dispatch.
@@ -320,7 +308,10 @@ class PendingEditRow(Base):
     # Original MCP tool input args (JSON) — needed so we can re-execute on
     # accept (the actual file write is deferred until user approves).
     args_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    # "pending" / "accepted" / "rejected" / "timeout"
+    # "pending" / "accepted" / "rejected" / "timeout" / "abandoned"
+    # "abandoned" = MCP process holding the long-poll died before the user
+    # decided (e.g. idle-watchdog killed the turn). Distinct from "rejected"
+    # so audit can tell a user 'no' apart from a turn that vanished mid-flight.
     status: Mapped[str] = mapped_column(
         String(16), default="pending", nullable=False, index=True,
     )

@@ -28,6 +28,16 @@ from polynoia.storage.repo import (
 # is (table, column, full `ADD COLUMN` SQL). Idempotent: each column is
 # detected via PRAGMA table_info, applied only if missing. Keeps dev DBs
 # upgradeable without a real migration framework while the app is pre-1.0.
+# Drop-column patches. Each entry is (table, column); applied only if the
+# column still exists. Used when a refactor un-maps a column from the ORM and
+# the live dev DB needs to forget it too — otherwise the NOT NULL constraint
+# bites every subsequent INSERT (member_tool_roles was the original case).
+_DROP_COLUMNS: list[tuple[str, str]] = [
+    ("conversations", "member_tool_roles"),
+    ("workspaces", "member_tool_roles"),
+]
+
+
 _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "conversations",
@@ -79,6 +89,25 @@ async def _apply_schema_patches() -> None:
                 await conn.execute(text(sql))
 
 
+async def _apply_column_drops() -> None:
+    """Idempotent ALTER TABLE … DROP COLUMN for columns the ORM no longer maps.
+
+    Mirrors _apply_schema_patches but in the opposite direction: if a refactor
+    removes a column from the model, a stale dev DB will keep the column with
+    its old NOT NULL constraint and break every INSERT (the ORM no longer fills
+    it). Drop the column once so the live DB tracks the model. SQLite ≥ 3.35
+    required (we're on 3.51, so this just works).
+    """
+    async with engine.begin() as conn:
+        for table, column in _DROP_COLUMNS:
+            res = await conn.execute(text(f"PRAGMA table_info({table})"))
+            cols = {row[1] for row in res.fetchall()}
+            if column in cols:
+                await conn.execute(
+                    text(f"ALTER TABLE {table} DROP COLUMN {column}")
+                )
+
+
 async def _reset_stuck_resolving() -> None:
     """A server crash mid-resolve can leave a conflict in 'resolving' (status is
     flipped before conclude_merge finishes). conclude/probe both self-abort the
@@ -99,6 +128,8 @@ async def bootstrap_db() -> None:
     await init_db()
     # Step 1b: patch existing tables with any new columns (dev-only).
     await _apply_schema_patches()
+    # Step 1b.1: drop columns the model has un-mapped (else NOT NULL bites INSERTs).
+    await _apply_column_drops()
     # Step 1c: recover conflicts left "resolving" by a crash mid-conclude.
     await _reset_stuck_resolving()
 
