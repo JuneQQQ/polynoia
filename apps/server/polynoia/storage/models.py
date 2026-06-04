@@ -111,6 +111,10 @@ class WorkspaceRow(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     desc: Mapped[str | None] = mapped_column(Text, nullable=True)
     repo: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Custom workspace: absolute path to a real dir on this server (None = auto sandbox).
+    path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Integration branch sub-agents branch from + merge into (None until bootstrap resolves).
+    integration_branch: Mapped[str | None] = mapped_column(String(128), nullable=True)
     color: Mapped[str] = mapped_column(String(16), default="#E07A3C", nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="Owner", nullable=False)
     members: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)

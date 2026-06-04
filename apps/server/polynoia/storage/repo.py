@@ -203,6 +203,8 @@ def _workspace_from_row(r: WorkspaceRow) -> Workspace:
         name=r.name,
         desc=r.desc,
         repo=r.repo,
+        path=r.path,
+        integration_branch=r.integration_branch,
         color=r.color,
         role=r.role,  # type: ignore[arg-type]
         members=r.members or [],
@@ -222,6 +224,8 @@ async def upsert_workspace(session: AsyncSession, w: Workspace) -> Workspace:
         existing.name = w.name
         existing.desc = w.desc
         existing.repo = w.repo
+        existing.path = w.path
+        existing.integration_branch = w.integration_branch
         existing.color = w.color
         existing.role = w.role
         existing.members = w.members
@@ -229,7 +233,8 @@ async def upsert_workspace(session: AsyncSession, w: Workspace) -> Workspace:
     else:
         session.add(WorkspaceRow(
             id=w.id, server_id=w.server_id, name=w.name, desc=w.desc,
-            repo=w.repo, color=w.color, role=w.role, members=w.members,
+            repo=w.repo, path=w.path, integration_branch=w.integration_branch,
+            color=w.color, role=w.role, members=w.members,
             default_merge_mode=w.default_merge_mode,
         ))
     await session.flush()

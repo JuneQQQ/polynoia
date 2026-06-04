@@ -117,6 +117,15 @@ class Workspace(BaseModel):
     name: str
     desc: str | None = None
     repo: str | None = None  # git remote 或本地路径
+    # Custom workspace: an absolute path to a REAL directory on the workspace's
+    # server (local or remote). When set, the workspace root IS this dir — agents
+    # work on the real code in place; all Polynoia state lives in <path>/.polynoia/.
+    # None = the default auto-managed sandbox at sandbox_root/workspaces/<id>.
+    path: str | None = None
+    # Integration branch sub-agent worktrees branch from + merge back into.
+    # None until bootstrap resolves it: an existing repo reuses its current
+    # branch; a fresh/empty repo gets "main".
+    integration_branch: str | None = None
     color: str = "#E07A3C"
     role: Literal["Owner", "Maintainer", "Contributor"] = "Owner"
     members: list[ULID] = []  # Agent IDs

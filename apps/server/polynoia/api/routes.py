@@ -851,33 +851,102 @@ async def list_workspaces():
         return [r.model_dump() for r in rows]
 
 
+def _inspect_workspace_path(raw: str) -> dict:
+    """Validate a custom-workspace directory on THIS server's filesystem.
+
+    Returns {ok, error?, path, exists, is_git, branch?}. Used by both the
+    create endpoint and the UI's 校验 button. Paths resolve on whichever server
+    the client is connected to (local or remote) — we never reach across hosts.
+    """
+    p = (raw or "").strip()
+    if not p:
+        return {"ok": False, "error": "path required"}
+    if not os.path.isabs(p):
+        return {"ok": False, "error": "需要绝对路径 (absolute path required)"}
+    ap = os.path.abspath(p)
+    if ap in ("/", os.path.expanduser("~")):
+        return {"ok": False, "error": "不允许把整个根目录/家目录作为工作区"}
+    if not os.path.exists(ap):
+        return {"ok": False, "error": f"目录不存在: {ap}", "exists": False}
+    if not os.path.isdir(ap):
+        return {"ok": False, "error": f"不是目录: {ap}", "exists": True}
+    is_git = os.path.isdir(os.path.join(ap, ".git"))
+    info: dict = {"ok": True, "path": ap, "exists": True, "is_git": is_git}
+    if is_git:
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["git", "-C", ap, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=8,
+            )
+            br = r.stdout.strip()
+            info["branch"] = br if (r.returncode == 0 and br and br != "HEAD") else "main"
+        except Exception:  # noqa: BLE001
+            info["branch"] = "main"
+    else:
+        info["branch"] = "main"  # will be created on init
+    return info
+
+
+@router.post("/api/workspaces/validate-path")
+async def validate_workspace_path(body: dict):
+    """Check a custom-workspace path before creating it (UI 校验 button)."""
+    return _inspect_workspace_path(body.get("path") or "")
+
+
 @router.post("/api/workspaces")
 async def create_workspace(body: dict):
     """Create a new project (workspace). User-driven from "+ 新建项目" entry.
 
-    Body: { name: str, desc?: str, repo?: str, server_id?: str, members: list[agent_id], color?: str }
+    Body: { name, desc?, repo?, server_id?, members, color?,
+            path? }  ← path = absolute dir on THIS server; agents work on the
+                       real code in place (sub-agents on sub-branches → merge
+                       into its integration branch). None = auto sandbox.
     """
     from polynoia.domain.entities import Workspace, new_ulid
+    from polynoia.sandbox import register_workspace_location, integration_branch_for
 
     name = (body.get("name") or "").strip()
     if not name:
-        return {"error": "name required"}, 400
+        raise HTTPException(status_code=400, detail="name required")
     members = body.get("members") or []
     # Always include "you" as a member
     if "you" not in members:
         members = ["you", *members]
     server_id = body.get("server_id") or "local"
     color = body.get("color") or "#E07A3C"
+
+    # Custom workspace: validate the real dir up-front so creation fails loudly.
+    raw_path = (body.get("path") or "").strip()
+    resolved_path: str | None = None
+    if raw_path:
+        chk = _inspect_workspace_path(raw_path)
+        if not chk.get("ok"):
+            raise HTTPException(status_code=400, detail=chk.get("error") or "invalid path")
+        resolved_path = chk["path"]
+
     ws = Workspace(
         id=new_ulid(),
         server_id=server_id,
         name=name,
         desc=body.get("desc"),
         repo=body.get("repo"),
+        path=resolved_path,
         color=color,
         role="Owner",
         members=members,
     )
+
+    # For a custom path, materialize the workspace git now (adopt existing repo /
+    # init a non-repo dir), capture the resolved integration branch, persist it.
+    if resolved_path:
+        register_workspace_location(ws.id, path=resolved_path)
+        try:
+            await Sandbox.ensure_workspace(ws.id)
+        except Exception as e:  # noqa: BLE001 — surface setup failure to the user
+            raise HTTPException(status_code=400, detail=f"工作区初始化失败: {e}") from e
+        ws.integration_branch = integration_branch_for(ws.id)
+
     async with SessionLocal() as session:
         await storage_repo.upsert_workspace(session, ws)
         await session.commit()

@@ -52,6 +52,16 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "NOT NULL DEFAULT 'auto'",
     ),
     (
+        "workspaces",
+        "path",
+        "ALTER TABLE workspaces ADD COLUMN path VARCHAR(1024)",
+    ),
+    (
+        "workspaces",
+        "integration_branch",
+        "ALTER TABLE workspaces ADD COLUMN integration_branch VARCHAR(128)",
+    ),
+    (
         "messages",
         "pinned",
         "ALTER TABLE messages ADD COLUMN pinned BOOLEAN "

@@ -43,9 +43,10 @@ async def test_workspace_first_call_bootstraps_git_and_worktree(
     assert (ws_root / ".git").is_dir()
     # Shared credentials dir at workspace level (not inside the worktree)
     assert (ws_root / ".polynoia" / "manifest.json").is_file()
-    # Worktree lives under worktrees/
+    # Worktree lives under .polynoia/worktrees/ (all Polynoia state stays inside
+    # the workspace, gitignored — so a custom real-repo workspace isn't polluted).
     assert sb.root.parent.name == "worktrees"
-    assert sb.root.parent.parent == ws_root
+    assert sb.root.parent.parent == ws_root / ".polynoia"
     assert (sb.root / ".git").exists()  # worktree pointer file
     # Branch named correctly
     assert sb.branch == "agent/agent-alice/conv-conv-1"

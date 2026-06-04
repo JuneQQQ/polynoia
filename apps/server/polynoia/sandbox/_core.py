@@ -19,6 +19,41 @@ _IS_WINDOWS = os.name == "nt"
 _IS_DARWIN = sys.platform == "darwin"
 log = logging.getLogger(__name__)
 
+# ── Custom-workspace registries ──────────────────────────────────────────
+# Keep the sandbox layer storage-agnostic (it never reads the DB). routes.py —
+# which DOES have DB access — hydrates these at startup + on workspace create:
+#   _WORKSPACE_ROOTS[id]   = absolute path to a REAL user directory (custom
+#                            workspace). Absent → the default auto sandbox at
+#                            sandbox_root/workspaces/<id>.
+#   _WORKSPACE_BRANCHES[id] = integration branch sub-agents branch from + merge
+#                            into. Absent → "main" (back-compat for every
+#                            existing auto workspace).
+_WORKSPACE_ROOTS: dict[str, str] = {}
+_WORKSPACE_BRANCHES: dict[str, str] = {}
+
+
+def register_workspace_location(
+    workspace_id: str, *, path: str | None = None, integration_branch: str | None = None
+) -> None:
+    """Register a custom workspace's real root path and/or integration branch.
+    Called from routes (which has DB access) so _core stays storage-agnostic."""
+    if path:
+        _WORKSPACE_ROOTS[workspace_id] = path
+    if integration_branch:
+        _WORKSPACE_BRANCHES[workspace_id] = integration_branch
+
+
+def workspace_root_for(workspace_id: str) -> Path:
+    """Resolve a workspace's on-disk root: a registered custom real dir, else
+    the default auto sandbox path."""
+    custom = _WORKSPACE_ROOTS.get(workspace_id)
+    return Path(custom) if custom else settings.sandbox_root / "workspaces" / workspace_id
+
+
+def integration_branch_for(workspace_id: str | None) -> str:
+    """Resolve a workspace's integration branch (default 'main')."""
+    return _WORKSPACE_BRANCHES.get(workspace_id or "", "main")
+
 def _copy_cred_file(src: Path, dst: Path) -> None:
     """Copy a credential file. Plain overwrite — no special preservation.
 
@@ -195,12 +230,11 @@ class Sandbox:
 
         Idempotent: re-calling returns the existing worktree object.
         """
-        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        ws_root = workspace_root_for(workspace_id)
         ws_root.mkdir(parents=True, exist_ok=True)
 
-        # Step 1: bootstrap workspace if .git missing
-        if not (ws_root / ".git").exists():
-            await cls._bootstrap_workspace(ws_root, workspace_id)
+        # Step 1: bootstrap (auto) / init (custom empty) / adopt (custom real repo)
+        await cls._ensure_workspace_git(ws_root, workspace_id)
 
         # Step 1b: ALWAYS refresh the workspace-shared credential snapshot.
         # The bootstrap copy is one-time, but OAuth tokens (Pro/Max login)
@@ -214,7 +248,7 @@ class Sandbox:
         # Step 2: short stable suffixes for path readability
         agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
         conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
-        worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
+        worktree_dir = ws_root / ".polynoia" / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         branch = f"agent/{agent_id}/conv-{conv_id}"
         # Guard against orphan worktree dirs: a previous scenario reset (rmtree
         # with ignore_errors=True) or a half-failed worktree-add can leave the
@@ -352,10 +386,10 @@ class Sandbox:
         so resetting it would destroy the version the user hasn't chosen yet
         (breaks the conflict closed-loop). See routes.run_adapter_turn.
         """
-        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        ws_root = workspace_root_for(workspace_id)
         agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
         conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
-        worktree_dir = ws_root / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
+        worktree_dir = ws_root / ".polynoia" / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         if not worktree_dir.exists() or not (ws_root / ".git").exists():
             return False
         sandbox = cls(
@@ -399,8 +433,9 @@ class Sandbox:
                 return 124, "timeout"
             return proc.returncode or 0, out.decode("utf-8", "replace")
 
+        ib = integration_branch_for(self.workspace_id)
         with contextlib.suppress(Exception):
-            rc, _out = await _run(["git", "reset", "--hard", "main"])
+            rc, _out = await _run(["git", "reset", "--hard", ib])
             return rc == 0
         return False
 
@@ -414,10 +449,9 @@ class Sandbox:
         operate on the workspace's main dir, which otherwise wouldn't exist
         until the first agent runs in the conversation.
         """
-        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        ws_root = workspace_root_for(workspace_id)
         ws_root.mkdir(parents=True, exist_ok=True)
-        if not (ws_root / ".git").exists():
-            await cls._bootstrap_workspace(ws_root, workspace_id)
+        await cls._ensure_workspace_git(ws_root, workspace_id)
         return ws_root
 
     @classmethod
@@ -429,7 +463,7 @@ class Sandbox:
         adapter pool first (cached sessions point at the about-to-be-deleted
         worktrees). DESTRUCTIVE — wipes all committed work in this workspace.
         """
-        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        ws_root = workspace_root_for(workspace_id)
         async with workspace_merge_lock(workspace_id):
             if ws_root.exists():
                 shutil.rmtree(ws_root, ignore_errors=True)
@@ -449,13 +483,14 @@ class Sandbox:
         if rc != 0:
             return {"ok": False, "error": f"unknown commit: {sha}"}
         head = await self.main_head_sha() or ""
+        ib = integration_branch_for(self.workspace_id)
         _rc, cnt, _ = await self._workspace_run(
-            ["git", "rev-list", "--count", f"{sha}..main"]
+            ["git", "rev-list", "--count", f"{sha}..{ib}"]
         )
         commits = int(cnt.strip() or "0") if _rc == 0 else 0
-        files = [p for _st, p in await self.files_in_range(sha, "main")]
+        files = [p for _st, p in await self.files_in_range(sha, ib)]
         _rc2, alog, _ = await self._workspace_run(
-            ["git", "log", "--format=%an", f"{sha}..main"]
+            ["git", "log", "--format=%an", f"{sha}..{ib}"]
         )
         authors = sorted({a.strip() for a in alog.splitlines() if a.strip()}) \
             if _rc2 == 0 else []
@@ -483,7 +518,7 @@ class Sandbox:
                 return {"ok": False, "error": f"unknown commit: {sha}"}
             # Full pre-restore HEAD sha → undo ref (safety net).
             _rc, undo_sha, _ = await self._workspace_run(
-                ["git", "rev-parse", "main"]
+                ["git", "rev-parse", integration_branch_for(self.workspace_id)]
             )
             undo_sha = undo_sha.strip()
             ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -510,7 +545,7 @@ class Sandbox:
         at the workspace root (where ``.git/`` is), not at any worktree —
         callers should use ``git log <branch>`` to inspect specific branches.
         """
-        ws_root = settings.sandbox_root / "workspaces" / workspace_id
+        ws_root = workspace_root_for(workspace_id)
         if not (ws_root / ".git").exists():
             return None
         return cls(
@@ -518,6 +553,118 @@ class Sandbox:
             conv_id="(workspace-readonly)",
             workspace_root=ws_root,
             workspace_id=workspace_id,
+        )
+
+    @classmethod
+    async def _ensure_workspace_git(cls, ws_root: Path, workspace_id: str) -> None:
+        """Make sure a workspace root is a usable git repo, dispatching by kind:
+
+        - auto sandbox (no custom path) → ``_bootstrap_workspace`` (git init +
+          committed .gitignore + base commit). Unchanged legacy behavior.
+        - custom real dir, already a git repo → ``_adopt_existing_workspace``
+          (reuse its branch, .git/info/exclude, NO commit to the user's repo).
+        - custom real dir, not yet a repo → ``_init_custom_workspace`` (git init
+          + info/exclude + empty base commit; never writes a .gitignore file).
+
+        Idempotent: existing-repo adopt is gated by ``.polynoia/manifest.json``.
+        """
+        is_custom = workspace_id in _WORKSPACE_ROOTS
+        if (ws_root / ".git").exists():
+            if is_custom and not (ws_root / ".polynoia" / "manifest.json").exists():
+                await cls._adopt_existing_workspace(ws_root, workspace_id)
+            return
+        if is_custom:
+            await cls._init_custom_workspace(ws_root, workspace_id)
+        else:
+            await cls._bootstrap_workspace(ws_root, workspace_id)
+
+    @classmethod
+    async def _exclude_polynoia(cls, ws_root: Path) -> None:
+        """Add ``.polynoia/`` to ``.git/info/exclude`` — a LOCAL ignore that never
+        touches the user's committed .gitignore. So all Polynoia state stays
+        inside the workspace but invisible to the user's git status."""
+        info = ws_root / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        exclude = info / "exclude"
+        existing = exclude.read_text() if exclude.exists() else ""
+        if ".polynoia/" not in existing:
+            sep = "" if (not existing or existing.endswith("\n")) else "\n"
+            exclude.write_text(existing + sep + ".polynoia/\n")
+
+    @classmethod
+    async def _write_workspace_manifest(
+        cls, ws_root: Path, workspace_id: str, *, kind: str, integration_branch: str
+    ) -> None:
+        (ws_root / ".polynoia").mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "workspace_id": workspace_id,
+            "kind": kind,
+            "integration_branch": integration_branch,
+            "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "schema_version": 1,
+        }
+        (ws_root / ".polynoia" / "manifest.json").write_text(
+            json.dumps(manifest, indent=2)
+        )
+
+    @classmethod
+    async def _adopt_existing_workspace(cls, ws_root: Path, workspace_id: str) -> None:
+        """Adopt a user's EXISTING real git repo as a workspace WITHOUT mutating
+        their tracked files. Reuses the repo's current branch as the integration
+        branch (or establishes 'main' if the repo is unborn/detached); excludes
+        .polynoia/ locally; copies host credentials; writes the manifest. No
+        commit to the user's repo, no .gitignore edit.
+        """
+        scratch = cls(
+            root=ws_root, conv_id=f"_workspace_{workspace_id}", workspace_id=workspace_id
+        )
+        rc, cur, _ = await scratch._run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        branch = cur.strip()
+        if rc != 0 or not branch or branch == "HEAD":
+            # Detached or unborn → establish 'main' as the integration branch.
+            branch = "main"
+            await scratch._run(["git", "symbolic-ref", "HEAD", "refs/heads/main"])
+            rc_h, _o, _ = await scratch._run(["git", "rev-parse", "--verify", "-q", "HEAD"])
+            if rc_h != 0:
+                # Unborn repo: an empty base commit so worktrees can branch from it.
+                await scratch._run(["git", "config", "user.email", "agent@polynoia.local"])
+                await scratch._run(["git", "config", "user.name", "polynoia-agent"])
+                await scratch._run([
+                    "git", "commit", "--allow-empty", "-q",
+                    "-m", "polynoia: workspace base",
+                ])
+        register_workspace_location(workspace_id, integration_branch=branch)
+        await cls._exclude_polynoia(ws_root)
+        await scratch._copy_host_credentials()
+        await cls._write_workspace_manifest(
+            ws_root, workspace_id, kind="adopted-real-repo", integration_branch=branch
+        )
+
+    @classmethod
+    async def _init_custom_workspace(cls, ws_root: Path, workspace_id: str) -> None:
+        """Initialize git in a user-chosen real dir that is NOT yet a repo. Like
+        the auto bootstrap but never writes a committed .gitignore into the user's
+        folder — uses .git/info/exclude instead. Integration branch = 'main'."""
+        scratch = cls(
+            root=ws_root, conv_id=f"_workspace_{workspace_id}", workspace_id=workspace_id
+        )
+        await scratch._run(["git", "init", "-q"])
+        await scratch._run(["git", "symbolic-ref", "HEAD", "refs/heads/main"])
+        await scratch._run(["git", "config", "core.autocrlf", "false"])
+        await scratch._run(["git", "config", "user.email", "agent@polynoia.local"])
+        await scratch._run(["git", "config", "user.name", "polynoia-agent"])
+        await cls._exclude_polynoia(ws_root)
+        # Stage + commit whatever the user already has so worktrees branch from a
+        # real base (their existing files become the workspace's main).
+        await scratch._run(["git", "add", "-A"])
+        await scratch._run([
+            "git", "commit", "--allow-empty", "-q",
+            "-m", "polynoia: workspace base (existing files)",
+        ])
+        register_workspace_location(workspace_id, integration_branch="main")
+        await scratch._copy_host_credentials()
+        await cls._write_workspace_manifest(
+            ws_root, workspace_id, kind="custom-init", integration_branch="main"
         )
 
     @classmethod
@@ -947,7 +1094,7 @@ class Sandbox:
         if self.workspace_root is None:
             return 0
         rc, out, _err = await self._workspace_run(
-            ["git", "rev-list", "--count", f"main..{branch}"]
+            ["git", "rev-list", "--count", f"{integration_branch_for(self.workspace_id)}..{branch}"]
         )
         if rc != 0:
             return 0
@@ -964,7 +1111,7 @@ class Sandbox:
             return []
         rc, out, _err = await self._workspace_run([
             "git", "log",
-            f"main..{branch}",
+            f"{integration_branch_for(self.workspace_id)}..{branch}",
             f"-n{n}",
             "--pretty=format:%h %s",
         ])
@@ -977,7 +1124,7 @@ class Sandbox:
         if self.workspace_root is None:
             return None
         rc, out, _err = await self._workspace_run(
-            ["git", "rev-parse", "--short", "main"]
+            ["git", "rev-parse", "--short", integration_branch_for(self.workspace_id)]
         )
         if rc != 0:
             return None
@@ -1329,13 +1476,13 @@ class Sandbox:
             return False, "", "not in workspace mode"
         # Switch the workspace root's HEAD to main first. Worktrees don't
         # interfere — they keep their own checked-out branches.
-        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", "main"])
+        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", integration_branch_for(self.workspace_id)])
         if rc_co != 0:
             return False, "", f"checkout main failed: {err_co.strip()[:200]}"
         argv = ["git", "merge"]
         if no_ff:
             argv.append("--no-ff")
-        argv += ["-m", f"polynoia: merge {branch} into main", branch]
+        argv += ["-m", f"polynoia: merge {branch} into {integration_branch_for(self.workspace_id)}", branch]
         rc, out, err = await self._workspace_run(argv)
         if rc != 0:
             # Conflict or other failure — abort cleanly so main is untouched.
@@ -1381,13 +1528,13 @@ class Sandbox:
         if self.workspace_root is None:
             return ("error", {"message": "not in workspace mode"})
         await self._abort_stray_merge()
-        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", "main"])
+        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", integration_branch_for(self.workspace_id)])
         if rc_co != 0:
             return ("error", {"message": f"checkout main failed: {err_co.strip()[:200]}"})
         rc, out, err = await self._workspace_run([
             "git", "-c", "merge.conflictStyle=diff3",
             "merge", "--no-commit", "--no-ff",
-            "-m", f"polynoia: merge {branch} into main", branch,
+            "-m", f"polynoia: merge {branch} into {integration_branch_for(self.workspace_id)}", branch,
         ])
         _rcu, u_out, _eu = await self._workspace_run(
             ["git", "diff", "--name-only", "--diff-filter=U"]
@@ -1489,7 +1636,7 @@ class Sandbox:
         sides = sides or {}
         deletions = deletions or []
         await self._abort_stray_merge()
-        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", "main"])
+        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", integration_branch_for(self.workspace_id)])
         if rc_co != 0:
             return (False, "", f"checkout main failed: {err_co.strip()[:200]}")
         rc_b, _ob, _eb = await self._workspace_run(["git", "rev-parse", "--verify", branch])
@@ -1544,7 +1691,7 @@ class Sandbox:
                 await self._abort_stray_merge()
                 return (True, await self.main_head_sha() or "", "already merged")
             rc_c, _oc, err_c = await self._workspace_run([
-                "git", "commit", "-m", f"polynoia: resolve+merge {branch} into main",
+                "git", "commit", "-m", f"polynoia: resolve+merge {branch} into {integration_branch_for(self.workspace_id)}",
             ])
             if rc_c != 0:
                 await self._abort_stray_merge()

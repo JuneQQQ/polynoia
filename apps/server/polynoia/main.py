@@ -37,6 +37,17 @@ async def lifespan(_app: FastAPI):
         logging.getLogger("polynoia.main").info(
             "reaped %d orphan tool-call(s) left at running/pending", _reaped,
         )
+    # Hydrate custom-workspace locations into the sandbox resolver so agents on
+    # any conv resolve the right real dir + integration branch after a restart
+    # (the sandbox layer is storage-agnostic; only routes/main touch the DB).
+    from polynoia.sandbox import register_workspace_location
+    from polynoia.storage import repo as _repo
+    async with SessionLocal() as _s:
+        for _w in await _repo.list_workspaces(_s):
+            if getattr(_w, "path", None):
+                register_workspace_location(
+                    _w.id, path=_w.path, integration_branch=_w.integration_branch
+                )
     yield
     # Shutdown
     await dispose_engine()
