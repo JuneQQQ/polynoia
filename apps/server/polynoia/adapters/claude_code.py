@@ -388,6 +388,12 @@ async def _translate_claude_stream(
     #   ^ kept so that when the model's args fail to parse (→ empty `input` +
     #     "X is a required property" error) we can still SHOW the raw JSON the
     #     model actually emitted on the error card.
+    # Whether THIS assistant message streamed any reply text via StreamEvent.
+    # Reset per message_start. When the upstream SSE is buffered (e.g. behind a
+    # proxy that doesn't flush incrementally) NO StreamEvent arrives — only the
+    # final AssistantMessage — and the text would be silently dropped. We use
+    # this flag to emit the complete text once as a (non-streamed) fallback.
+    streamed_text = False
 
     # Diagnostic: when POLYNOIA_LOG_CLAUDE_EVENTS=1, print every SDK message
     # type as it arrives. Useful for debugging "lost streaming" — if we see
@@ -419,6 +425,7 @@ async def _translate_claude_stream(
                 block_tool_id.clear()
                 tool_input_buf.clear()
                 tool_input_sent.clear()
+                streamed_text = False
                 tool_input_raw.clear()
             elif ev_type == "content_block_start":
                 idx = ev.get("index", 0)
@@ -493,6 +500,8 @@ async def _translate_claude_stream(
                             else delta.get("text", "")
                         )
                         block_text[idx] = block_text.get(idx, "") + chunk
+                        if dtype == "text_delta":
+                            streamed_text = True
                         yield PartDeltaEvent(
                             message_id=current_message_id or _new_id(),
                             part_id=existing_part_id,
@@ -604,8 +613,19 @@ async def _translate_claude_stream(
                     # Skip here to avoid emitting it twice (same as TextBlock).
                     pass
                 elif isinstance(block, TextBlock):
-                    # 已经经 stream_event 流出过了,跳过避免重复
-                    pass
+                    # Normally the text already streamed via StreamEvent → skip to
+                    # avoid a duplicate. BUT if nothing streamed for this message
+                    # (e.g. upstream SSE was buffered behind a proxy → only the
+                    # final AssistantMessage arrived), the reply would be silently
+                    # dropped. Emit the complete text once as a non-streamed
+                    # fallback. Guarded by `streamed_text`, so the normal streaming
+                    # path is unaffected (no double-emit).
+                    if not streamed_text and (block.text or "").strip():
+                        yield PartCompletedEvent(
+                            message_id=current_message_id or _new_id(),
+                            part_id=_new_id(),
+                            part=TextPayload(body=[PNTextBlock(c=block.text)]),
+                        )
             continue
 
         # ── UserMessage(tool_result):服务端把 tool 结果送回来 ────

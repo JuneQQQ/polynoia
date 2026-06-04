@@ -21,7 +21,10 @@ from polynoia.adapters.claude_code import _translate_claude_stream
 
 @pytest.mark.asyncio
 async def test_text_assistant_message(claude_msgs_simple) -> None:
-    """AssistantMessage + ResultMessage(success) → turn.completed emitted."""
+    """AssistantMessage(text) with NO preceding StreamEvent (e.g. upstream SSE
+    buffered behind a proxy) → the text is emitted as a non-streamed fallback
+    (a part.completed TextPayload), then turn.completed. Previously this case
+    silently dropped the reply (text_len=0)."""
     msgs = [
         AssistantMessage(
             content=[TextBlock(text="hello")],
@@ -44,10 +47,17 @@ async def test_text_assistant_message(claude_msgs_simple) -> None:
     ]
     types = [e.type for e in events]
     assert "turn.completed" in types
-    # No part.completed for TextBlock — text is supposed to come via StreamEvent
-    # path; the AssistantMessage TextBlock dispatch deliberately skips to avoid
-    # duplication. So we only expect the terminal event.
     assert types[-1] == "turn.completed"
+    # Fallback emitted the complete text (no StreamEvent streamed it).
+    text_parts = [
+        e for e in events
+        if e.type == "part.completed"
+        and getattr(getattr(e, "part", None), "kind", None) == "text"
+    ]
+    assert text_parts, "expected a fallback text part when no StreamEvent streamed"
+    assert any(
+        getattr(b, "c", "") == "hello" for b in text_parts[-1].part.body
+    )
 
 
 @pytest.mark.asyncio
