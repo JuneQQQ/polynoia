@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from polynoia.settings import settings
 
 
 _IS_WINDOWS = os.name == "nt"
+_IS_DARWIN = sys.platform == "darwin"
 log = logging.getLogger(__name__)
 
 # The CodexAdapter appends this block onto the workspace-shared codex config.toml
@@ -775,6 +777,48 @@ class Sandbox:
                     # "suddenly drop" mid-session — the snapshot aged out while the
                     # real login was still valid.
                     _copy_cred_file(src, dst)
+
+        # macOS: Claude Code keeps its OAuth token in the login Keychain, NOT in
+        # ~/.claude/.credentials.json — so the copy loop above seeds no token and
+        # the sandboxed-HOME claude runs unauthenticated ("Not logged in" → every
+        # turn 401s, surfacing as "agent turn failed (no further detail)"). When
+        # the host has no credential file, extract the current token from the
+        # Keychain and materialize it as the file claude reads. Re-extracted on
+        # every refresh so a rotated/expired token stays current (same rationale
+        # as the OAuth file re-copy above).
+        if _IS_DARWIN:
+            host_claude_cred = self._cred_source_home() / ".claude" / ".credentials.json"
+            if not host_claude_cred.exists():
+                await self._seed_claude_keychain_credential(
+                    self.root / ".polynoia" / "credentials" / ".claude"
+                )
+
+    async def _seed_claude_keychain_credential(self, dst_claude_dir: Path) -> None:
+        """macOS only: write ``.claude/.credentials.json`` from the login Keychain.
+
+        Claude Code stores the OAuth token under the generic-password item
+        ``Claude Code-credentials``. Best-effort: any failure (item missing,
+        keychain locked, non-macOS) returns quietly and lets the turn fail
+        loudly upstream rather than crashing sandbox setup.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "security", "find-generic-password",
+                "-s", "Claude Code-credentials", "-w",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await proc.communicate()
+        except Exception:  # noqa: BLE001 — `security` unavailable / sandboxed
+            return
+        token = out.strip()
+        if proc.returncode != 0 or not token:
+            return
+        dst_claude_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_claude_dir / ".credentials.json"
+        dst.write_bytes(token)
+        with contextlib.suppress(OSError):
+            dst.chmod(0o600)
 
     def _write_manifest(self) -> None:
         """Write ``.polynoia/manifest.json`` with conv metadata."""
