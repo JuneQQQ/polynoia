@@ -120,9 +120,6 @@ class Workspace(BaseModel):
     color: str = "#E07A3C"
     role: Literal["Owner", "Maintainer", "Contributor"] = "Owner"
     members: list[ULID] = []  # Agent IDs
-    # Per-project tool policy: agent_id → tool_role. Empty = no restriction
-    # (every agent gets the full builder toolset). See polynoia/tool_policy.py.
-    member_tool_roles: dict[ULID, str] = {}
     default_merge_mode: Literal["auto", "manual"] = "auto"
 
 
@@ -141,12 +138,6 @@ class Conversation(BaseModel):
     # e.g. {"01KS...": "后端实现", "02KS...": "前端样式"}
     # Used by the context assembler to prefix each member's system prompt.
     member_roles: dict[ULID, str] = {}
-    # Per-member tool-capability OVERRIDE for this conv (agent_id → tool_role).
-    # Contact's own tool_role is the default; this lets the same contact be e.g.
-    # read-only "critic" in a review conv and full "coder" in a build conv. The
-    # designated orchestrator is still forced to "orchestrator" (ADR-017). Empty
-    # = every member uses its contact default. See adapters/pool.py.
-    member_tool_roles: dict[ULID, str] = {}
     # Which member is acting as orchestrator in this conv. None = no
     # orchestrator (group operates flat). The designated member gets the
     # ORCHESTRATOR_PROMPT prepended to their per-turn system prompt.

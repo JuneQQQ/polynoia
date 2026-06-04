@@ -30,7 +30,7 @@ from polynoia.sandbox import Sandbox, workspace_merge_lock
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
-from polynoia.storage.models import MessageRow, WorkspaceRow
+from polynoia.storage.models import AgentRow, MessageRow, WorkspaceRow
 from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
@@ -1862,6 +1862,36 @@ def _pending_edit_to_dict(row) -> dict:
     }
 
 
+async def _abandon_in_flight_pending_edits(conv_id: str, contact_id: str) -> None:
+    """Turn-cleanup helper: mark any pending edits the failed/aborted turn was
+    waiting on as 'abandoned' and push a UI update so the review card disappears.
+
+    Resolves the contact's adapter slug (codex / claudeCode / opencoder) and
+    matches on that — pending_edits.agent_id stores the slug, not the contact
+    ULID. Best-effort: if the agent row is missing or the contact isn't a real
+    adapter contact (e.g. 'you'), short-circuit silently."""
+    async with SessionLocal() as session:
+        agent_row = await session.get(AgentRow, contact_id)
+        slug = getattr(agent_row, "adapter_id", None) if agent_row else None
+        if not slug:
+            return
+        rows = await storage_repo.abandon_pending_edits_for_adapter(
+            session, conv_id, slug
+        )
+        if not rows:
+            return
+        await session.commit()
+        snapshot = [_pending_edit_to_dict(r) for r in rows]
+    for d in snapshot:
+        frame = (
+            'data: {"type":"data-pending-edit","data":'
+            + json.dumps(d)
+            + "}\n\n"
+        )
+        with suppress(Exception):
+            await _broadcast_to_conv(conv_id, frame)
+
+
 @router.post("/api/pending-edits")
 async def create_pending_edit_endpoint(body: dict):
     """Create a pending edit (called by MCP tool process in manual mode).
@@ -3023,32 +3053,6 @@ async def set_conv_member_roles(conv_id: str, body: dict):
         return conv.model_dump(mode="json") if conv else {"ok": True}
 
 
-@router.patch("/api/conversations/{conv_id}/member_tool_roles")
-async def set_conv_member_tool_roles(conv_id: str, body: dict):
-    """Replace per-member tool-capability OVERRIDES for a group conv.
-
-    Body: ``{ "tool_roles": { "<agent_id>": "coder"|"designer"|... } }``
-
-    Empty / invalid values clear that member's override (→ contact default).
-    The designated orchestrator is still forced to "orchestrator" at dispatch
-    (ADR-017) regardless of any override. No system event message — tool
-    capability is platform-enforced, not something agents need narrated.
-    """
-    raw = body.get("tool_roles") or {}
-    if not isinstance(raw, dict):
-        return {"error": "tool_roles must be an object"}, 400
-    tool_roles = {str(k): str(v) for k, v in raw.items()}
-    async with SessionLocal() as session:
-        ok, _before, _after = await storage_repo.set_member_tool_roles(
-            session, conv_id, tool_roles,
-        )
-        if not ok:
-            return {"error": "conversation not found"}, 404
-        await session.commit()
-        conv = await storage_repo.get_conversation(session, conv_id)
-        return conv.model_dump(mode="json") if conv else {"ok": True}
-
-
 @router.patch("/api/conversations/{conv_id}/members")
 async def set_conv_members(conv_id: str, body: dict):
     """Add/remove members of a group conv.
@@ -4013,6 +4017,26 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             except StopAsyncIteration:
                                 break
                             except TimeoutError as te:
+                                # Distinguish 'model backend hung' from 'agent
+                                # legitimately blocked on user approval'. In
+                                # manual merge mode, the MCP `write` tool long-
+                                # polls the pending-edit gate inside the codex
+                                # subprocess — codex emits no chunks while
+                                # waiting, so per-chunk silence is expected and
+                                # benign. Granting one more 120s window per
+                                # pending edit lets the human review at their
+                                # own pace without the watchdog killing the
+                                # turn. If the user never decides, the in-MCP
+                                # gate eventually self-rejects (300s budget),
+                                # the tool returns, codex resumes streaming,
+                                # and the watchdog goes back to its normal
+                                # duty.
+                                async with SessionLocal() as _wd_sess:
+                                    waiting = await storage_repo.has_waiting_pending_edits(
+                                        _wd_sess, conv_id
+                                    )
+                                if waiting:
+                                    continue
                                 raise RuntimeError(
                                     f"{agent_id} 无响应:{int(_AGENT_IDLE_TIMEOUT)}s "
                                     "内无任何输出(疑似模型后端挂起)"
@@ -4094,6 +4118,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     await pool.close_session(agent_id, conv_id)
                 await emit_agent_status(agent_id, "aborted")
                 _live_clear_agent(conv_id, agent_id)
+                # The killed MCP subprocess was holding the long-poll on any
+                # pending-edit rows it created — those rows now have nobody
+                # listening, so a future user 'approve' would do nothing. Mark
+                # them abandoned so the review card disappears + audit is honest.
+                with suppress(Exception):
+                    await _abandon_in_flight_pending_edits(conv_id, agent_id)
                 # Persist whatever the agent produced before the user aborted +
                 # an "aborted" marker, so the interrupted turn 回显 on reload
                 # (neutral tone, not a red error — reason="aborted").
@@ -4124,6 +4154,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             except Exception as exc:
                 await emit_agent_status(agent_id, "error", {"message": str(exc)})
                 _live_clear_agent(conv_id, agent_id)
+                # Same cleanup as the abort path: any pending-edit rows this
+                # turn's MCP was waiting on are now orphans.
+                with suppress(Exception):
+                    await _abandon_in_flight_pending_edits(conv_id, agent_id)
                 # Persist the partial work trace (files were really written) +
                 # the error itself BEFORE returning, so a mid-stream crash still
                 # 回显 on reload instead of looking like a silent stop.

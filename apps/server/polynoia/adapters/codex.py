@@ -150,15 +150,43 @@ POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
 
 
 def _merge_mcp_into_config(existing: str, mcp_block: str) -> str:
-    """Append ``mcp_block`` to the user's ``existing`` config.toml.
+    """Merge — or REPLACE — the polynoia MCP block in the user's config.toml.
 
-    Idempotent: if a ``[mcp_servers.polynoia]`` table is already present (e.g.
-    the user's own copy already had one, or a previous run wrote it) we leave
-    the file untouched. TOML tables are order-independent, so appending at the
-    end is always valid.
+    The block carries per-spawn env (``POLYNOIA_CONV_ID`` / ``POLYNOIA_TURN_AGENT_ID``
+    / ``POLYNOIA_AGENT_ROLE`` / ...). The workspace-shared codex config.toml is
+    written ONCE and reused across every conv in the workspace, so keeping a
+    stale block froze those env vars to the FIRST conv ever opened — every
+    subsequent conv's MCP ``write`` then created pending-edits against the wrong
+    ``conv_id``, the new conv's review UI never saw the card, and the idle
+    watchdog killed the turn 120s later. We now REPLACE the existing block so
+    each spawn gets the current conv's env. 'Idempotent' here means 'exactly
+    one polynoia block in the file', not 'never re-write it'.
     """
     if _MCP_BLOCK_MARKER in existing:
-        return existing
+        # The injected block spans TWO TOML tables — ``[mcp_servers.polynoia]``
+        # and ``[mcp_servers.polynoia.env]`` — optionally preceded by a
+        # ``# ── Injected by Polynoia CodexAdapter ...`` comment. Strip every
+        # line from the first such marker through the next NON-polynoia
+        # section header (or EOF), then append the fresh block below.
+        kept: list[str] = []
+        in_block = False
+        for line in existing.splitlines(keepends=True):
+            s = line.lstrip()
+            if not in_block:
+                if (
+                    s.startswith("# ── Injected by Polynoia CodexAdapter")
+                    or s.startswith("[mcp_servers.polynoia")
+                ):
+                    in_block = True
+                    continue
+                kept.append(line)
+            else:
+                # Exit on the next [section] that isn't ours.
+                if s.startswith("[") and not s.startswith("[mcp_servers.polynoia"):
+                    in_block = False
+                    kept.append(line)
+                # else: still inside the polynoia block — drop the line
+        existing = "".join(kept).rstrip() + "\n" if kept else ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
     return existing + mcp_block

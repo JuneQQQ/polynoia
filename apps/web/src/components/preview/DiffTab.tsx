@@ -5,6 +5,7 @@
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view.css";
 import { useMemo } from "react";
+import { useStore } from "../../store";
 import type { DiffPayload, Hunk } from "../../lib/types";
 import { inferLang } from "./diffLang";
 
@@ -26,6 +27,7 @@ function hunksToUnifiedDiff(file: string, hunks: Hunk[]): string {
 }
 
 export function DiffTab({ payload }: { payload?: DiffPayload | null }) {
+  const split = useStore((s) => s.diffSplit);
   const diffData = useMemo(() => {
     if (!payload) return null;
     const lang = inferLang(payload.file);
@@ -71,7 +73,7 @@ export function DiffTab({ payload }: { payload?: DiffPayload | null }) {
       </div>
       <DiffView
         data={diffData as any}
-        diffViewMode={DiffModeEnum.Unified}
+        diffViewMode={split ? DiffModeEnum.Split : DiffModeEnum.Unified}
         diffViewHighlight={true}
         diffViewWrap={false}
         diffViewFontSize={12}
