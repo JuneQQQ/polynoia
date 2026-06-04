@@ -17,8 +17,12 @@ export default defineConfig({
           if (/codemirror|@uiw|@replit/.test(id)) return "cm";
           if (/highlight\.js|rehype|remark|react-markdown/.test(id)) return "md";
           if (/@git-diff-view/.test(id)) return "diff";
-          if (/milkdown|@marp|marp-|xlsx|docx-preview|pptx-preview|pptxgenjs/.test(id))
-            return "docs";
+          // NOTE: the doc-renderer libs (milkdown / marp / xlsx / docx / pptx)
+          // were forced into a single "docs" chunk, which created a cross-chunk
+          // circular init → "Cannot access 'X' before initialization" at boot in
+          // production builds (React never mounted → black screen in the packaged
+          // .app; dev's unbundled ESM masked it). Let Rollup chunk them along
+          // their lazy() dynamic-import boundaries instead.
           if (/framer-motion|^.*\/motion\//.test(id)) return "motion";
         },
       },
