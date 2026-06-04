@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # the repo's cwd. Override any of these via POLYNOIA_DB_URL / _FILES_DIR /
     # _SANDBOX_ROOT.
     polynoia_home: Path = Path.home() / ".polynoia"
+    # Installed skill packages (a folder per skill: SKILL.md + resources/scripts),
+    # platform-level + reusable across contacts. Fetched from a git URL / local
+    # path into here, then placed into each agent's sandbox skills dir at spawn.
+    skills_dir: Path = Path.home() / ".polynoia" / "skills"
+    # Proxy for `git clone` when installing a skill from a URL. None → git
+    # inherits the backend process's http(s)_proxy env (how it's launched behind
+    # the GFW). Set POLYNOIA_GIT_PROXY to override explicitly (e.g.
+    # http://127.0.0.1:7890).
+    git_proxy: str | None = None
     db_url: str = f"sqlite+aiosqlite:///{Path.home() / '.polynoia' / 'polynoia.db'}"
     files_dir: Path = Path.home() / ".polynoia" / "files"
     sandbox_root: Path = Path.home() / "sandbox" / "polynoia"

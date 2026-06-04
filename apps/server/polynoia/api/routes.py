@@ -625,6 +625,32 @@ def _parse_skills(raw) -> list:
     return out
 
 
+@router.get("/api/skills")
+async def list_skills_endpoint():
+    """Installed skill packages: [{name, description, path}]."""
+    from polynoia import skills as _skills
+    return _skills.list_skills()
+
+
+@router.post("/api/skills")
+async def install_skill_endpoint(body: dict):
+    """Install a skill from a git URL or local path into the central skills dir.
+
+    Body: { "source": "https://…/foo-skill.git" | "/abs/local/skill", "name"? }
+    """
+    from polynoia import skills as _skills
+    try:
+        return await _skills.install_skill(body.get("source") or "", body.get("name"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.delete("/api/skills/{name}")
+async def delete_skill_endpoint(name: str):
+    from polynoia import skills as _skills
+    return {"ok": _skills.remove_skill(name)}
+
+
 @router.post("/api/contacts")
 async def create_contact(body: dict):
     """Create a new user-defined contact (agent) backed by an enabled adapter.

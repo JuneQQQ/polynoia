@@ -438,7 +438,7 @@ export function NewContactModal({
 								/>
 							</Field>
 
-							<Field label="技能(可选,绑定到这个联系人)">
+							<Field label="Skill">
 								<div className="space-y-2">
 									{skills.map((s, i) => (
 										<div
