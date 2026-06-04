@@ -1535,27 +1535,84 @@ async def record_handoff_report(conv_id: str, body: dict):
             "verdict": {"status": status, "contract_ok": contract_ok}}
 
 
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
+
+
+def _safe_upload_name(name: str) -> str:
+    """Sanitize an upload filename to a flat, traversal-safe basename."""
+    base = os.path.basename((name or "file").strip()) or "file"
+    cleaned = re.sub(r"[^\w.\-]+", "_", base)[:120]
+    return cleaned or "file"
+
+
+async def _conv_upload_dir(conv_id: str):
+    """The dedicated, AGENT-ACCESSIBLE upload directory for a conversation.
+
+    Lands inside the same sandbox root the agents run in, so every agent in the
+    conversation can read the user's uploads:
+      - group / project conv (has workspace_id) → the SHARED workspace dir
+      - 1:1 DM (no workspace)                   → that conversation's own dir
+    """
+    async with SessionLocal() as _s:
+        conv = await storage_repo.get_conversation(_s, conv_id)
+    if conv is not None and getattr(conv, "workspace_id", None):
+        base = settings.sandbox_root / "workspaces" / conv.workspace_id  # group: shared
+    else:
+        base = settings.sandbox_root / conv_id  # DM: its own
+    updir = base / "uploads"
+    updir.mkdir(parents=True, exist_ok=True)
+    return updir
+
+
 @router.post("/api/upload")
-async def upload_file(request: Request, name: str = "file"):
+async def upload_file(request: Request, name: str = "file", conv_id: str | None = None):
     """Store an uploaded attachment and return a server URL to reference.
 
     Raw bytes in the body; media-type from the Content-Type header; original
-    filename in ?name=. The message payload then stores the returned `url`
-    (e.g. /api/files/<id>/raw) in its `src` instead of inlining a fat base64
-    data: URL — small DB rows + the attachment re-renders after a refresh.
+    filename in ?name=. When ``conv_id`` is given the file lands in that
+    conversation's dedicated, agent-accessible ``uploads/`` dir (group = shared
+    workspace area, DM = its own) under its original name — so agents can read it
+    by ``uploads/<name>``. Without conv_id it falls back to the legacy global
+    store. The message payload stores the returned ``url`` (not a fat base64
+    data: URL) so rows stay small and attachments survive a refresh.
     """
     import mimetypes
 
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="empty upload")
-    if len(data) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="file too large (25MB max)")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"附件过大,单个文件上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
+            f" (file too large, {MAX_UPLOAD_BYTES // (1024 * 1024)}MB max)",
+        )
     media_type = (request.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+
+    if conv_id:
+        updir = await _conv_upload_dir(conv_id)
+        safe = _safe_upload_name(name)
+        target = updir / safe
+        if target.exists():  # de-dupe collisions: name-1, name-2, ...
+            stem, ext = os.path.splitext(safe)
+            i = 1
+            while target.exists():
+                target = updir / f"{stem}-{i}{ext}"
+                i += 1
+        target.write_bytes(data)
+        rel = target.name
+        return {
+            "url": f"/api/files/raw?conv={urllib.parse.quote(conv_id)}&name={urllib.parse.quote(rel)}",
+            "name": name,
+            "path": f"uploads/{rel}",  # agent-relative path inside the sandbox
+            "media_type": media_type,
+            "size_bytes": len(data),
+        }
+
+    # Legacy global store (no conversation context).
     ext = mimetypes.guess_extension(media_type) or ""
     fid = uuid.uuid4().hex[:20]
-    from polynoia.settings import settings as _settings
-    updir = _settings.sandbox_root / "uploads"
+    updir = settings.sandbox_root / "uploads"
     updir.mkdir(parents=True, exist_ok=True)
     (updir / f"{fid}{ext}").write_bytes(data)
     return {
@@ -1565,6 +1622,20 @@ async def upload_file(request: Request, name: str = "file"):
         "media_type": media_type,
         "size_bytes": len(data),
     }
+
+
+@router.get("/api/files/raw")
+async def serve_conv_upload(conv: str, name: str):
+    """Serve a per-conversation upload by (conv, name) — backs the URLs returned
+    by /api/upload?conv_id=... . Basename-guarded against path traversal."""
+    import mimetypes
+
+    updir = await _conv_upload_dir(conv)
+    target = updir / os.path.basename(name)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    return Response(content=target.read_bytes(), media_type=media_type)
 
 
 @router.get("/api/files/{file_id}/raw")

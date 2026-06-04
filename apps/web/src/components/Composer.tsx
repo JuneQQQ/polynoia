@@ -7,7 +7,7 @@
  *   - 插入后光标位置正确;同一行可多次 @
  *   - picker 列表:本 conv 的 members + 所有 enabled adapter agents(全局可召唤)
  */
-import { ArrowUp, FileText, Paperclip, Reply, X } from "lucide-react";
+import { ArrowUp, FileText, Paperclip, Plus, Reply, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent } from "../lib/types";
@@ -279,7 +279,7 @@ export function Composer({
     }
     let url: string;
     try {
-      const res = await api.upload(file, file.name || "attachment");
+      const res = await api.upload(file, file.name || "attachment", convId);
       url = res.url;
     } catch {
       window.alert(`上传失败:${file.name}`);
@@ -317,6 +317,7 @@ export function Composer({
 
   // Hidden <input type="file"> driven by the paperclip icon click.
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : [];
     for (const f of files) dispatchAttachment(f);
@@ -567,14 +568,62 @@ export function Composer({
               className="hidden"
               onChange={onPickFiles}
             />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="w-8 h-8 grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-colors duration-150"
-              title="添加附件(也支持粘贴)"
-            >
-              <Paperclip size={16} />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setPlusMenuOpen((v) => !v)}
+                className="w-8 h-8 grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-all duration-150"
+                title="添加附件 / 附加 skill(也支持粘贴)"
+                aria-haspopup="menu"
+                aria-expanded={plusMenuOpen}
+              >
+                <Plus
+                  size={18}
+                  className={`transition-transform duration-200 ${plusMenuOpen ? "rotate-45" : ""}`}
+                />
+              </button>
+              {plusMenuOpen && (
+                <>
+                  {/* click-away backdrop */}
+                  <button
+                    type="button"
+                    aria-label="关闭"
+                    className="fixed inset-0 z-10 cursor-default"
+                    onClick={() => setPlusMenuOpen(false)}
+                  />
+                  <div
+                    role="menu"
+                    className="absolute bottom-full left-0 mb-2 z-20 min-w-[180px] rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1 anim-fade-up"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setPlusMenuOpen(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] transition-colors"
+                    >
+                      <Paperclip size={14} className="text-[var(--color-fg-3)]" />
+                      添加附件
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => setPlusMenuOpen(false)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)] transition-colors"
+                      title="技能选择器开发中"
+                    >
+                      <Sparkles size={14} />
+                      附加 skill
+                      <span className="ml-auto text-[9px] uppercase tracking-wide opacity-60">
+                        soon
+                      </span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
             {/* Merge-mode toggle — relocated from the header into the composer */}
             {showMergeToggle && onToggleMergeMode && (
               <div

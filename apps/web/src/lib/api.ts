@@ -288,20 +288,25 @@ export const api = {
 	/** Single-conv summary fetch. Returns the same shape as the list endpoint. */
 	/** Upload an attachment (raw bytes) → returns a server URL to reference in
 	 * the message payload (instead of inlining base64). */
-	upload: (file: File, name: string) =>
-		fetch(`/api/upload?name=${encodeURIComponent(name)}`, {
-			method: "POST",
-			headers: { "content-type": file.type || "application/octet-stream" },
-			body: file,
-		}).then(async (r) => {
+	upload: (file: File, name: string, convId?: string) =>
+		fetch(
+			`/api/upload?name=${encodeURIComponent(name)}${convId ? `&conv_id=${encodeURIComponent(convId)}` : ""}`,
+			{
+				method: "POST",
+				headers: { "content-type": file.type || "application/octet-stream" },
+				body: file,
+			},
+		).then(async (r) => {
 			if (!r.ok)
 				throw new Error(
 					(await r.text().catch(() => "")) || `${r.status} ${r.statusText}`,
 				);
 			return r.json() as Promise<{
-				id: string;
+				id?: string;
 				url: string;
 				name: string;
+				/** Agent-relative sandbox path for per-conv uploads, e.g. uploads/foo.png */
+				path?: string;
 				media_type: string;
 				size_bytes: number;
 			}>;
