@@ -10,7 +10,6 @@ import {
   Plug,
   Plus,
   Search,
-  Server,
   Settings,
   Sparkles,
   Trash2,
@@ -32,8 +31,9 @@ const ADAPTER_LABEL: Record<string, string> = {
 import { ConvRolesModal } from "./ConvRolesModal";
 import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
+import { isMobile as _isMobile } from "../lib/platform";
 import { OnboardingModal } from "./OnboardingModal";
-import { ServerSettingsModal } from "./ServerSettingsModal";
+
 import { ThemeToggle } from "./ThemeToggle";
 
 export function Sidebar({
@@ -57,6 +57,8 @@ export function Sidebar({
 
   // "+ 新建对话" modal — workspace 内才显示
   const [newConvOpen, setNewConvOpen] = useState(false);
+  // Project create/edit is desktop/web-only (mobile is a lightweight IM subset).
+  const mobile = _isMobile();
   // "+ 新建项目" modal — 全局 sidebar 模式才显示。编辑既有项目时复用同一个
   // modal:editingWorkspace = null → 创建,有值 → 编辑(镜像 editingContact)。
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -1033,12 +1035,12 @@ export function Sidebar({
             count={filteredWorkspaces.length}
             open={projectsOpen}
             onToggle={() => setProjectsOpen((v) => !v)}
-            onAction={() => setNewProjectOpen(true)}
+            onAction={mobile ? undefined : () => setNewProjectOpen(true)}
             actionTitle={t("newProject", lang)}
           />
           {projectsOpen && (
             <>
-              {filteredWorkspaces.length === 0 && !q && (
+              {filteredWorkspaces.length === 0 && !q && !mobile && (
                 <button
                   type="button"
                   onClick={() => setNewProjectOpen(true)}
@@ -1175,7 +1177,7 @@ export function Sidebar({
       </div>
 
       <Footer onOpenAdapters={() => setOnboardingOpen(true)} adapterStatus={adapterStatus} />
-      {newProjectOpen && (
+      {!mobile && newProjectOpen && (
         <NewProjectModal
           editing={editingWorkspace}
           onClose={() => {
@@ -1476,7 +1478,6 @@ function Footer({
 }) {
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
-  const [serverOpen, setServerOpen] = useState(false);
   const status = adapterStatus ?? { enabled: 0, total: 0 };
   const hasEnabled = status.enabled > 0;
   return (
@@ -1548,14 +1549,6 @@ function Footer({
         </button>
         <button
           type="button"
-          onClick={() => setServerOpen(true)}
-          title={lang === "zh" ? "服务器设置" : "Server"}
-          className="press-down p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] transition-all duration-150"
-        >
-          <Server size={13} />
-        </button>
-        <button
-          type="button"
           onClick={onOpenAdapters}
           title={t("manageAdapters", lang)}
           className="press-down p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:rotate-45 transition-all duration-300"
@@ -1563,9 +1556,6 @@ function Footer({
           <Settings size={13} />
         </button>
       </div>
-      {serverOpen && (
-        <ServerSettingsModal onClose={() => setServerOpen(false)} lang={lang} />
-      )}
-    </footer>
+      </footer>
   );
 }

@@ -10,27 +10,27 @@
  * Design note: this is the `runtime-config` shim referenced in CLAUDE.md §6.3.
  */
 import { isDesktopApp } from "./platform";
+import { storage } from "./storage";
 
 const LS_KEY = "polynoia-server-url";
 
-/** The user-configured remote server base, or "" if none. */
+/** Running inside a Capacitor native shell (iOS/Android). */
+export function isCapacitor(): boolean {
+  const cap = (globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return !!(cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform());
+}
+
+/** The user-configured remote server base, or "" if none. Durable on native
+ * (Preferences-backed) via the storage facade. */
 export function getServerOverride(): string {
-  try {
-    return (typeof localStorage !== "undefined" && localStorage.getItem(LS_KEY)) || "";
-  } catch {
-    return "";
-  }
+  return storage.getItem(LS_KEY) || "";
 }
 
 /** Point the client at a remote server, e.g. "http://10.2.255.109:7780".
  * Pass "" to clear the override and fall back to the local default. */
 export function setServerUrl(url: string): void {
-  try {
-    if (url) localStorage.setItem(LS_KEY, url.replace(/\/+$/, ""));
-    else localStorage.removeItem(LS_KEY);
-  } catch {
-    /* storage unavailable — keep default */
-  }
+  if (url) storage.setItem(LS_KEY, url.replace(/\/+$/, ""));
+  else storage.removeItem(LS_KEY);
 }
 
 /** HTTP base for REST calls (no trailing slash). "" = same-origin (dev/web proxy). */
@@ -56,6 +56,10 @@ export function assetUrl(src: string): string {
 export function getServerWsBase(): string {
   const http = getServerHttpBase();
   if (http) return http.replace(/^http/, "ws"); // http→ws, https→wss
+  // On Capacitor there is NO same-origin backend (the WebView origin is
+  // capacitor/https://localhost), so never fall back to window.location — the
+  // connect gate guarantees an override is set before any conv socket opens.
+  if (isCapacitor()) return "";
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${window.location.host}`;
 }

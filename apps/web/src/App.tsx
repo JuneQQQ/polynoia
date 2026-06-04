@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
+import { ConnectServerScreen } from "./components/ConnectServerScreen";
 import { RightDrawer } from "./components/RightDrawer";
 import { Sidebar } from "./components/Sidebar";
 import { PreviewPane } from "./components/preview/PreviewPane";
@@ -11,6 +12,7 @@ import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { api } from "./lib/api";
 import { isMobile } from "./lib/platform";
+import { getServerOverride, isCapacitor } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
@@ -177,8 +179,17 @@ export function App() {
 
 	// ── Mobile layout (Capacitor iOS/Android or narrow viewport) ─────
 	if (mobile) {
+		// First-run gate: a phone has no local backend, so it must be pointed at a
+		// remote Polynoia server before anything else. (Browser/desktop have a
+		// same-origin / local default and skip this.)
+		if (isCapacitor() && !getServerOverride()) {
+			return <ConnectServerScreen />;
+		}
 		return (
-			<div className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]">
+			<div
+				className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
+				style={{ paddingTop: "env(safe-area-inset-top)" }}
+			>
 				{/* Drawer overlay */}
 				{drawerOpen && (
 					<>

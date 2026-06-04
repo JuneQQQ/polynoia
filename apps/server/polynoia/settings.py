@@ -18,6 +18,14 @@ class Settings(BaseSettings):
         # call the server cross-origin; without these the .app/.dmg is CORS-blocked.
         "tauri://localhost",       # macOS / Linux
         "http://tauri.localhost",  # Windows
+        # Mobile (Capacitor) WebView origins — the app loads from a localhost
+        # scheme and calls the remote server cross-origin. The exact string
+        # depends on the Capacitor scheme (https with iosScheme/androidScheme
+        # "https"; capacitor:// legacy), so list all; confirm from server logs on
+        # first device run. Overridable via POLYNOIA_CORS_ORIGINS.
+        "https://localhost",       # Capacitor iOS/Android (scheme "https")
+        "capacitor://localhost",   # Capacitor legacy/native scheme
+        "http://localhost",        # defensive
     ]
 
     # Storage — strict platform/user data separation:

@@ -93,6 +93,29 @@ pnpm open:android
 # 或命令行:cd android && ./gradlew assembleRelease
 ```
 
+## 连接服务器(首次启动)
+
+手机**不跑本地后端** —— 它连接一台远程 Polynoia server。首次启动会出现
+**连接服务器界面**(`ConnectServerScreen`):
+
+1. 填服务器地址(局域网 IP / 域名,如 `http://10.2.255.109:7780`)
+2. 「测试连接」(打 `GET /api/agents`)→ 显示 ✓ N 个 agent
+3. 「连接」→ 地址持久化(原生用 `@capacitor/preferences`,见 `lib/storage.ts`)+ 重载
+
+之后可在抽屉底部齿轮(服务器设置)里改地址。HTTP/WS 全部走
+`lib/runtime-config.ts` 的 `getServerHttpBase()` / `getServerWsBase()`(WebView 下
+**绝不**回退到 `window.location`)。
+
+### 服务器端必须放行 CORS
+
+WebView 跨源调用后端,server 的 `cors_origins`(`apps/server/polynoia/settings.py`)
+已加 `https://localhost` / `capacitor://localhost` / `http://localhost`。**真机首次连接
+若失败**,从 server 访问日志读真实 `Origin`,确认在白名单里(可用
+`POLYNOIA_CORS_ORIGINS` 覆盖)。后端须 `--host 0.0.0.0` 才能被手机访问。
+
+> iOS 还需在开发机装 CocoaPods(`sudo gem install cocoapods` 或 `brew install
+> cocoapods`),首次 `cap add ios` 时若未装会跳过 `pod install`,在 Xcode 里补跑即可。
+
 ## 关键文件
 
 | 文件 | 作用 |
@@ -120,15 +143,23 @@ if (mobile) {
 
 `platform.ts` 检测优先级:Capacitor runtime → Tauri runtime → 视口/UA。
 
+## 已完成(本轮)
+
+- ✅ 连接服务器界面 + 远程后端连通(`ConnectServerScreen` + `runtime-config`)
+- ✅ 持久化走 `@capacitor/preferences`(`lib/storage.ts`,server 地址等关键值)
+- ✅ 状态栏配色 / SplashScreen / 键盘(`lib/native.ts:initNative`)+ 安全区适配
+- ✅ 后台/前台恢复 + 网络恢复 → WS 自动重连(`@capacitor/app` + `@capacitor/network`)
+- ✅ 移动端裁剪到 IM 子集(隐藏新建项目;文件树/终端/提交历史本就不挂载)
+- ✅ 后端 CORS 放行 Capacitor 源
+
 ## 已知 P1+ 工作
 
 - 推送通知(`@capacitor/push-notifications`):agent 完成/abort/出错 push
 - 系统通知(`@capacitor/local-notifications`)
-- 本地存 token / theme(`@capacitor/preferences`)
 - iOS 启动屏图 + 角标(目前用占位)
-- Android 状态栏颜色根据 theme 切换
 - Deep link(`com.polynoia.mobile://conv/<id>` 跳到指定对话)
 - 离线 conv 列表缓存
+- 审批改为原生底部 Sheet(v1 沿用悬浮条)
 
 ## 已知限制(对比桌面/网页)
 

@@ -11,7 +11,7 @@ describe("BrandIcon", () => {
 			<BrandIcon concept="mono" platform="web" />,
 		);
 		expect(svg).toContain("<rect"); // web uses a rounded rect, not a squircle path
-		expect(svg).toContain("#d97757"); // flat orange fill
+		expect(svg).toContain("#e96a3c"); // flat orange fill (brightened palette)
 		expect(svg).toContain(">P<"); // the P glyph
 		expect(svg).not.toContain("<path"); // web is flat — no squircle
 		expect(svg).not.toContain("url(#pn-sheen"); // no sheen on web
@@ -21,7 +21,7 @@ describe("BrandIcon", () => {
 		const svg = renderToStaticMarkup(
 			<BrandIcon concept="triad" platform="web" />,
 		);
-		for (const color of ["#d97757", "#4f9b87", "#8470b8"]) {
+		for (const color of ["#e96a3c", "#3aab8d", "#8a64d8"]) {
 			expect(svg).toContain(color);
 		}
 		expect(svg).toContain("multiply");

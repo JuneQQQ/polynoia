@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { type ConversationSummary, api } from "../lib/api";
 import { computeBursts } from "../lib/burstClaim";
 import type { Message, TasksPayload } from "../lib/types";
+import { onNetworkChange, onResume } from "../lib/native";
 import { ConvWebSocket } from "../lib/ws";
 import {
 	type AgentPhase,
@@ -292,6 +293,31 @@ export function ChatPane({ convId, members, title }: Props) {
 					}
 			}
 		});
+		// Reconnect-with-backoff: the socket drops on a network blip, a server
+		// restart, or (mobile) the app being backgrounded. A single shared timer
+		// (guarded) prevents parallel attempts; resume/network-restore reset the
+		// backoff for a snappy reconnect. The server replays mid-stream content
+		// via data-stream-resume on the fresh socket.
+		let mounted = true;
+		let backoff = 800;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const schedule = () => {
+			if (!mounted || timer) return;
+			timer = setTimeout(async () => {
+				timer = null;
+				if (!mounted || !ws.isDisconnected()) return;
+				await ws.reconnect();
+				if (mounted && ws.isDisconnected()) {
+					backoff = Math.min(backoff * 2, 15000);
+					schedule();
+				} else {
+					backoff = 800;
+				}
+			}, backoff);
+		};
+		ws.onClose(() => {
+			if (mounted) schedule();
+		});
 		ws.connect().catch((e) => {
 			// Filter out the React 18 Strict-Mode double-mount false alarm:
 			// when the first mount's effect is unmounted before WS even opens, the
@@ -301,7 +327,21 @@ export function ChatPane({ convId, members, title }: Props) {
 				return;
 			console.error("ws connect failed", e);
 		});
+		const offResume = onResume(() => {
+			backoff = 800;
+			schedule();
+		});
+		const offNet = onNetworkChange((connected) => {
+			if (connected) {
+				backoff = 800;
+				schedule();
+			}
+		});
 		return () => {
+			mounted = false;
+			if (timer) clearTimeout(timer);
+			offResume();
+			offNet();
 			ws.close();
 		};
 	}, [convId, applyChunkToConv]);
@@ -881,7 +921,11 @@ export function ChatPane({ convId, members, title }: Props) {
 			    content scrolls BEHIND it (悬浮在内容之上). The scroll area's matching
 			    bottom padding (pb-28) keeps the last message clear; the gradient fades
 			    content into the bg as it approaches the composer. */}
-			<div ref={composerRef} className="absolute bottom-0 inset-x-0 z-10">
+			<div
+				ref={composerRef}
+				className="absolute bottom-0 inset-x-0 z-10"
+				style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+			>
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot
 				    below) so it never floats over / hides message content. */}
 				{/* Agent-initiated questions — floating panel above Composer */}

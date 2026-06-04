@@ -140,6 +140,47 @@ export class ConvWebSocket {
     this.ws?.send(JSON.stringify({ kind: "agent_status_query" }));
   }
 
+  private _reconnecting = false;
+
+  /** True when there is no live socket (none / closing / closed). */
+  isDisconnected(): boolean {
+    return (
+      !this.ws ||
+      this.ws.readyState === WebSocket.CLOSED ||
+      this.ws.readyState === WebSocket.CLOSING
+    );
+  }
+
+  /** Re-open the socket after a background/network drop (mobile resume). Reuses
+   * the registered onChunk/onClose/onError callbacks; single-flight so a flurry
+   * of resume+network events can't spawn parallel sockets, and detaches the dead
+   * socket's handlers so its close can't re-trigger this. Re-syncs agent status;
+   * the server replays mid-stream content via `data-stream-resume`. */
+  async reconnect(): Promise<void> {
+    if (this._intentionallyClosed || this._reconnecting) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return; // still live
+    this._reconnecting = true;
+    try {
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.ws.onerror = null;
+        try {
+          this.ws.close();
+        } catch {
+          /* already closing */
+        }
+        this.ws = null;
+      }
+      this.buffer = "";
+      await this.connect();
+      this.queryAgentStatus();
+    } catch {
+      /* leave disconnected — next resume/network event will retry */
+    } finally {
+      this._reconnecting = false;
+    }
+  }
+
   close() {
     this._intentionallyClosed = true;
     // Don't call close() while still CONNECTING — browser logs a noisy error.
