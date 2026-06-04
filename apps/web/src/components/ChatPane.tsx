@@ -63,6 +63,21 @@ export function ChatPane({ convId, members, title }: Props) {
 
 	const wsRef = useRef<ConvWebSocket | null>(null);
 	const bodyRef = useRef<HTMLDivElement>(null);
+	// The floating composer overlays the bottom of the message stream; its height
+	// grows when the per-agent running-status strip appears (while an agent is
+	// answering) or the input wraps. Measure it so the scroll area's bottom
+	// padding always clears it — otherwise the latest (still-answering) message
+	// sits behind the status bar. See the composer overlay's ref below.
+	const composerRef = useRef<HTMLDivElement>(null);
+	const [composerH, setComposerH] = useState(112);
+	useEffect(() => {
+		const el = composerRef.current;
+		if (!el || typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(() => setComposerH(el.offsetHeight));
+		ro.observe(el);
+		setComposerH(el.offsetHeight);
+		return () => ro.disconnect();
+	}, []);
 	// Dedupe: drop identical user-message frames sent within 500ms of each
 	// other — defensive against double-submit (Strict Mode / accidental
 	// double-Enter / Enter+click). Otherwise the agent sees N copies and
@@ -779,7 +794,10 @@ export function ChatPane({ convId, members, title }: Props) {
 				<ConvScopeProvider value={{ convId, inWorkspace, members }}>
 					<div
 						ref={bodyRef}
-						className="absolute inset-0 overflow-y-auto py-4 pb-28"
+						className="absolute inset-0 overflow-y-auto py-4"
+						// Clear the floating composer + running-status strip, so the
+						// message being answered always sits ABOVE the status bar.
+						style={{ paddingBottom: composerH + 24 }}
 					>
 						<div className="mx-auto w-full max-w-[var(--chat-measure)]">
 							{/* Lazy-load top sentinel — visible spinner while older messages
@@ -863,7 +881,7 @@ export function ChatPane({ convId, members, title }: Props) {
 			    content scrolls BEHIND it (悬浮在内容之上). The scroll area's matching
 			    bottom padding (pb-28) keeps the last message clear; the gradient fades
 			    content into the bg as it approaches the composer. */}
-			<div className="absolute bottom-0 inset-x-0 z-10">
+			<div ref={composerRef} className="absolute bottom-0 inset-x-0 z-10">
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot
 				    below) so it never floats over / hides message content. */}
 				{/* Agent-initiated questions — floating panel above Composer */}
