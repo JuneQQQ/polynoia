@@ -30,6 +30,7 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 	const agents = useStore((s) => s.agents);
 	const reviewIndex = useStore((s) => s.reviewIndex);
 	const setReviewIndex = useStore((s) => s.setReviewIndex);
+	const split = useStore((s) => s.diffSplit);
 	const [busy, setBusy] = useState<"accept" | "reject" | null>(null);
 
 	const pending = list.filter((e) => e.status === "pending");
@@ -146,7 +147,7 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 			<div className="flex-1 overflow-y-auto">
 				<DiffView
 					data={diffData as never}
-					diffViewMode={DiffModeEnum.Unified}
+					diffViewMode={split ? DiffModeEnum.Split : DiffModeEnum.Unified}
 					diffViewHighlight={true}
 					diffViewWrap={false}
 					diffViewFontSize={12}

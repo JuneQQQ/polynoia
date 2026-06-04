@@ -527,7 +527,10 @@ export const useStore = create<Store>((set, get) => ({
 	centerFileTabs: [],
 	activeCenterTab: "chat",
 	commitsTabOpen: false,
-	diffSplit: false,
+	// Default to 并排 (side-by-side) — DiffTab/DiffReviewPane/CommitHistoryView all
+	// read this. Most reviews compare old vs new of a small change; split makes the
+	// before/after legible without forcing the user to discover the toggle.
+	diffSplit: true,
 	reviewIndex: 0,
 	terminalOpen: false,
 
