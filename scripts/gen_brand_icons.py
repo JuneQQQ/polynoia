@@ -32,8 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 PC = {
     "cream": "#f3ede1", "cream2": "#fbf6ec",
     "dark2": "#25201c", "darkInk": "#15110e",
-    "orange": "#d97757", "orangeLt": "#e89270", "orangeDk": "#c0613d",
-    "teal": "#4f9b87", "violet": "#8470b8",
+    "orange": "#e96a3c", "orangeLt": "#f0a07e", "orangeDk": "#d4552c",
+    "teal": "#3aab8d", "violet": "#8a64d8",
 }
 
 
@@ -69,7 +69,7 @@ def _triad(scale: float = 1.0) -> str:
     cs = [(50, 39, PC["orange"]), (38, 60, PC["teal"]), (62, 60, PC["violet"])]
     discs = "".join(
         f'<circle cx="{x}" cy="{y}" r="21" fill="{c}" '
-        f'fill-opacity="0.92" style="mix-blend-mode:multiply"/>'
+        f'fill-opacity="0.86" style="mix-blend-mode:multiply"/>'
         for x, y, c in cs
     )
     g = f'<g style="isolation:isolate">{discs}</g>'

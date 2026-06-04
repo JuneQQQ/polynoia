@@ -19,11 +19,11 @@ const PC = {
 	cream2: "#fbf6ec",
 	dark2: "#25201c",
 	darkInk: "#15110e",
-	orange: "#d97757",
-	orangeLt: "#e89270",
-	orangeDk: "#c0613d",
-	teal: "#4f9b87",
-	violet: "#8470b8",
+	orange: "#e96a3c",
+	orangeLt: "#f0a07e",
+	orangeDk: "#d4552c",
+	teal: "#3aab8d",
+	violet: "#8a64d8",
 } as const;
 
 // —— superellipse path, identical sampling to icon-art-v2.jsx ——
@@ -82,7 +82,7 @@ function GlyphTriad() {
 					cy={d.y}
 					r={21}
 					fill={d.c}
-					fillOpacity="0.92"
+					fillOpacity="0.86"
 					style={{ mixBlendMode: "multiply" }}
 				/>
 			))}
