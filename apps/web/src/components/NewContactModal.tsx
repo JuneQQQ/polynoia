@@ -133,11 +133,18 @@ export function NewContactModal({
 		setSkillBusy("installing");
 		setSkillErr("");
 		try {
-			const s = await api.installSkill(src);
-			setInstalledSkills((arr) =>
-				arr.some((x) => x.name === s.name) ? arr : [...arr, s],
-			);
-			setBoundSkills((b) => new Set(b).add(s.name));
+			const installed = await api.installSkill(src);
+			// A source can be a collection → multiple skills. Merge them all into
+			// the list; auto-bind only when it's a single skill (a collection is
+			// the user's to pick from).
+			setInstalledSkills((arr) => {
+				const byName = new Map(arr.map((x) => [x.name, x]));
+				for (const s of installed) byName.set(s.name, s);
+				return [...byName.values()];
+			});
+			if (installed.length === 1) {
+				setBoundSkills((b) => new Set(b).add(installed[0].name));
+			}
 			setSkillSrc("");
 			setSkillBusy("idle");
 		} catch (e) {

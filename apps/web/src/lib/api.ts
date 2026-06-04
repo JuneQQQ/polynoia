@@ -254,9 +254,10 @@ export const api = {
 	/** Installed skill packages (folder per skill). */
 	listSkills: () =>
 		getJSON<{ name: string; description: string; path: string }[]>("/api/skills"),
-	/** Install a skill from a git URL or local path → returns the installed skill. */
+	/** Install skill(s) from a git URL or local path. A source can be a single
+	 * skill OR a collection (e.g. a plugin's skills/), so it returns a LIST. */
 	installSkill: (source: string, name?: string) =>
-		postJSON<{ name: string; description: string; path: string }>("/api/skills", {
+		postJSON<{ name: string; description: string; path: string }[]>("/api/skills", {
 			source,
 			name,
 		}),

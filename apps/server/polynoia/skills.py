@@ -8,9 +8,14 @@ A skill is a FOLDER:
 
 Discovery is convention-based: scan ``settings.skills_dir``, read each
 SKILL.md's frontmatter (progressive disclosure — only name+description are cheap
-to surface). Installing from an address = fetch that folder into skills_dir:
-  · git URL  → ``git clone`` (uses settings.git_proxy / the ambient proxy env)
-  · local path → copy the directory tree
+to surface). Installing from an address fetches the source then EXTRACTS the
+skill(s) inside it — a source can be:
+  · a single skill   (root SKILL.md)                     → 1 skill
+  · a collection      (a `skills/<name>/SKILL.md` layout) → N skills
+                       (this is how plugins like obra/superpowers ship)
+  · top-level skill dirs (`<name>/SKILL.md`)             → N skills
+Sources: a git URL (``git clone``, via settings.git_proxy / the ambient proxy
+env) or a local directory (copied).
 
 At agent spawn the bound skill folders are placed into the sandbox's native
 skills dir (e.g. ~/.claude/skills/) so the underlying CLI discovers them.
@@ -20,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import uuid
 from pathlib import Path
 
 from polynoia.settings import settings
@@ -30,7 +36,8 @@ _NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 def _safe_name(name: str) -> str:
     n = (name or "").strip().strip("/").split("/")[-1]
     n = n[:-4] if n.endswith(".git") else n
-    return n if _NAME_RE.match(n) else ""
+    n = re.sub(r"[^A-Za-z0-9._-]+", "-", n).strip("-")
+    return n if n and _NAME_RE.match(n) else ""
 
 
 def _parse_skill_md(folder: Path) -> dict:
@@ -61,62 +68,100 @@ def list_skills() -> list[dict]:
         return []
     out: list[dict] = []
     for d in sorted(root.iterdir()):
-        if d.is_dir():
+        if d.is_dir() and not d.name.startswith("."):
             m = _parse_skill_md(d)
             out.append({**m, "path": str(d)})
     return out
 
 
-async def install_skill(source: str, name: str | None = None) -> dict:
-    """Install a skill from a git URL or a local path into skills_dir/<name>.
+def _find_skill_dirs(root: Path) -> list[Path]:
+    """Locate the skill folder(s) inside a fetched source, most-specific first:
+    a root skill, a ``skills/`` collection, top-level ``<name>/SKILL.md`` dirs,
+    else any SKILL.md anywhere."""
+    if (root / "SKILL.md").is_file():
+        return [root]
+    coll = root / "skills"
+    if coll.is_dir():
+        dirs = [d for d in sorted(coll.iterdir()) if d.is_dir() and (d / "SKILL.md").is_file()]
+        if dirs:
+            return dirs
+    dirs = [
+        d for d in sorted(root.iterdir())
+        if d.is_dir() and not d.name.startswith(".") and (d / "SKILL.md").is_file()
+    ]
+    if dirs:
+        return dirs
+    return sorted({p.parent for p in root.rglob("SKILL.md")})
 
-    Returns {name, description, path}. Raises ValueError on bad input/failure.
-    """
+
+def _install_one(skill_dir: Path, *, fallback_name: str) -> dict:
+    """Copy a single skill folder into skills_dir under a sanitized name (from
+    SKILL.md frontmatter, else the folder name, else fallback). De-dups names."""
+    meta = _parse_skill_md(skill_dir)
+    name = _safe_name(meta.get("name") or "") or _safe_name(skill_dir.name) or _safe_name(fallback_name) or "skill"
+    dest = settings.skills_dir / name
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(skill_dir, dest, ignore=shutil.ignore_patterns(".git"))
+    return {**_parse_skill_md(dest), "name": name, "path": str(dest)}
+
+
+async def install_skill(source: str, name: str | None = None) -> list[dict]:
+    """Install the skill(s) found at ``source`` (git URL or local dir) into
+    skills_dir. Returns the list of installed skills [{name, description, path}].
+    Raises ValueError on bad input / no skill found / fetch failure."""
     source = (source or "").strip()
     if not source:
         raise ValueError("source required")
     settings.skills_dir.mkdir(parents=True, exist_ok=True)
 
-    is_git = source.endswith(".git") or re.match(r"^(https?|git|ssh)://", source) or source.startswith("git@")
-    derived = name or (source if not is_git else source.rstrip("/").split("/")[-1])
-    safe = _safe_name(derived)
-    if not safe:
-        raise ValueError(f"could not derive a safe skill name from {source!r}")
-    dest = settings.skills_dir / safe
-    if dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
+    is_git = (
+        source.endswith(".git")
+        or bool(re.match(r"^(https?|git|ssh)://", source))
+        or source.startswith("git@")
+    )
+    repo_name = name or _safe_name(source.rstrip("/").split("/")[-1]) or "skill"
+    fetched: Path | None = None
+    tmp: Path | None = None
+    try:
+        if is_git:
+            tmp = settings.skills_dir / f".clone-{uuid.uuid4().hex[:10]}"
+            argv = ["git"]
+            # Proxy for the clone: explicit setting, else the ambient env the
+            # backend was launched with (how it reaches the net behind a GFW).
+            if settings.git_proxy:
+                argv += ["-c", f"http.proxy={settings.git_proxy}", "-c", f"https.proxy={settings.git_proxy}"]
+            argv += ["clone", "--depth", "1", source, str(tmp)]
+            proc = await asyncio.create_subprocess_exec(
+                *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+            except (TimeoutError, asyncio.TimeoutError):
+                proc.kill()
+                raise ValueError("git clone timed out (180s)") from None
+            if proc.returncode != 0:
+                raise ValueError(f"git clone failed: {out.decode('utf-8', 'replace')[-400:]}")
+            fetched = tmp
+        else:
+            fetched = Path(source).expanduser()
+            if not fetched.is_dir():
+                raise ValueError(f"local skill path is not a directory: {fetched}")
 
-    if is_git:
-        argv = ["git"]
-        # Proxy for the clone: explicit setting, else the ambient env that the
-        # backend was launched with (how it reaches the network behind a GFW).
-        if settings.git_proxy:
-            argv += ["-c", f"http.proxy={settings.git_proxy}", "-c", f"https.proxy={settings.git_proxy}"]
-        argv += ["clone", "--depth", "1", source, str(dest)]
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
-        except (TimeoutError, asyncio.TimeoutError):
-            proc.kill()
-            raise ValueError("git clone timed out (120s)") from None
-        if proc.returncode != 0:
-            shutil.rmtree(dest, ignore_errors=True)
-            raise ValueError(f"git clone failed: {out.decode('utf-8', 'replace')[-300:]}")
-        shutil.rmtree(dest / ".git", ignore_errors=True)  # don't keep the skill's own .git
-    else:
-        src = Path(source).expanduser()
-        if not src.is_dir():
-            raise ValueError(f"local skill path is not a directory: {src}")
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
-
-    if not (dest / "SKILL.md").exists():
-        # Not fatal, but warn the caller via the parsed meta (description empty).
-        pass
-    return {**_parse_skill_md(dest), "path": str(dest)}
+        skill_dirs = _find_skill_dirs(fetched)
+        if not skill_dirs:
+            raise ValueError(
+                f"no SKILL.md found in {source!r} — not a skill or skill collection"
+            )
+        installed = [_install_one(d, fallback_name=repo_name) for d in skill_dirs]
+        # de-dup by name (keep last) while preserving order
+        seen: dict[str, dict] = {}
+        for s in installed:
+            seen[s["name"]] = s
+        return list(seen.values())
+    finally:
+        if tmp is not None and tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def remove_skill(name: str) -> bool:
