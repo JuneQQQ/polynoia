@@ -43,6 +43,13 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
   const [name, setName] = useState(editing?.name ?? "");
   const [desc, setDesc] = useState(editing?.desc ?? "");
   const [repo, setRepo] = useState("");
+  // Custom workspace: an absolute dir on the server. Agents work on the real
+  // code in place (sub-agents on sub-branches → merge into its branch).
+  const [path, setPath] = useState("");
+  const [pathCheck, setPathCheck] = useState<{
+    state: "idle" | "checking" | "ok" | "err";
+    msg: string;
+  }>({ state: "idle", msg: "" });
   const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
   // Pre-select the project's current members (minus the implicit "you") so
   // edit mode shows the real roster and lets the user add/remove members.
@@ -75,6 +82,30 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
 
   const canSubmit = name.trim().length > 0 && selected.size >= 1 && !submitting;
 
+  const checkPath = async () => {
+    const p = path.trim();
+    if (!p) {
+      setPathCheck({ state: "idle", msg: "" });
+      return;
+    }
+    setPathCheck({ state: "checking", msg: "校验中…" });
+    try {
+      const r = await api.validateWorkspacePath(p);
+      if (!r.ok) {
+        setPathCheck({ state: "err", msg: r.error || "无效路径" });
+        return;
+      }
+      setPathCheck({
+        state: "ok",
+        msg: r.is_git
+          ? `已是 git 仓库 · 集成分支 ${r.branch}(子 Agent 合并到这里)`
+          : `非 git 目录 · 将初始化并用 main 作为集成分支`,
+      });
+    } catch (e) {
+      setPathCheck({ state: "err", msg: String(e) });
+    }
+  };
+
   const submit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
@@ -95,6 +126,7 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
         name: name.trim(),
         desc: desc.trim() || undefined,
         repo: repo.trim() || undefined,
+        path: path.trim() || undefined,
         members: Array.from(selected),
         color,
       });
@@ -163,6 +195,48 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
               className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
             />
           </Field>
+          {!isEdit && (
+            <Field label="工作区目录(可选)">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={path}
+                  onChange={(e) => {
+                    setPath(e.target.value);
+                    setPathCheck({ state: "idle", msg: "" });
+                  }}
+                  placeholder="留空 = 自动沙箱;或填本机/远程真实目录,如 /data/lsb/myproject"
+                  className="flex-1 text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={checkPath}
+                  disabled={!path.trim() || pathCheck.state === "checking"}
+                  className="px-3 py-1.5 text-[12px] rounded border border-[var(--color-line-strong)] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] disabled:opacity-50 whitespace-nowrap"
+                >
+                  校验
+                </button>
+              </div>
+              {pathCheck.state !== "idle" && (
+                <p
+                  className={`mt-1.5 text-[11.5px] ${
+                    pathCheck.state === "ok"
+                      ? "text-[var(--color-accent)]"
+                      : pathCheck.state === "err"
+                        ? "text-red-500"
+                        : "text-[var(--color-fg-3)]"
+                  }`}
+                >
+                  {pathCheck.state === "ok" ? "✓ " : pathCheck.state === "err" ? "✗ " : ""}
+                  {pathCheck.msg}
+                </p>
+              )}
+              <p className="mt-1 text-[11px] text-[var(--color-fg-3)] leading-relaxed">
+                指向真实仓库时:Agent 在子分支上改 → 合并回该仓库的现有分支(原地);
+                Polynoia 状态全部存于该目录下 <code>.polynoia/</code>,不污染你的代码。
+              </p>
+            </Field>
+          )}
           {/* 仓库路径 is a creation-time sandbox concern — not editable later. */}
           {!isEdit && (
             <Field label="仓库路径(可选)">

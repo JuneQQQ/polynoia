@@ -244,11 +244,23 @@ export const api = {
 		members: string[];
 		color?: string;
 		server_id?: string;
+		/** Custom workspace: absolute dir on the server; agents work on it in place. */
+		path?: string;
 	}) =>
 		postJSON<{ workspace: Workspace; main_conv_id: string | null }>(
 			"/api/workspaces",
 			body,
 		),
+	/** Validate a custom-workspace directory before creating (UI 校验 button). */
+	validateWorkspacePath: (path: string) =>
+		postJSON<{
+			ok: boolean;
+			error?: string;
+			path?: string;
+			exists?: boolean;
+			is_git?: boolean;
+			branch?: string;
+		}>("/api/workspaces/validate-path", { path }),
 	/** Edit a project's persona-level fields (name / desc / color). Sidebar ⋮
 	 * 「编辑项目」. Mirrors updateContact. */
 	updateWorkspace: (
