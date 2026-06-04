@@ -1699,10 +1699,11 @@ async def upload_file(request: Request, name: str = "file", conv_id: str | None 
             "size_bytes": len(data),
         }
 
-    # Legacy global store (no conversation context).
+    # Global store (no conversation context) — central blob dir under
+    # ~/.polynoia/files. Payload stores the short URL, never base64.
     ext = mimetypes.guess_extension(media_type) or ""
     fid = uuid.uuid4().hex[:20]
-    updir = settings.sandbox_root / "uploads"
+    updir = settings.files_dir
     updir.mkdir(parents=True, exist_ok=True)
     (updir / f"{fid}{ext}").write_bytes(data)
     return {
@@ -1737,8 +1738,13 @@ async def serve_uploaded_file(file_id: str):
     if not file_id.isalnum():  # our ids are hex — reject any path separators
         raise HTTPException(status_code=400, detail="bad file id")
     from polynoia.settings import settings as _settings
-    updir = _settings.sandbox_root / "uploads"
-    matches = list(updir.glob(f"{file_id}.*")) + list(updir.glob(file_id))
+    # New central blob dir, with a fallback to the legacy sandbox_root/uploads so
+    # attachments uploaded before the move still resolve.
+    matches: list = []
+    for updir in (_settings.files_dir, _settings.sandbox_root / "uploads"):
+        matches = list(updir.glob(f"{file_id}.*")) + list(updir.glob(file_id))
+        if matches:
+            break
     if not matches:
         raise HTTPException(status_code=404, detail="file not found")
     target = matches[0]

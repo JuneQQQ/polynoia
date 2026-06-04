@@ -12,8 +12,12 @@ After this runs, the API endpoints serve directly from SQL.
 """
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from sqlalchemy import select, text
 
+from polynoia.settings import settings
 from polynoia.storage.db import SessionLocal, engine, init_db
 from polynoia.storage.models import ProviderRow
 from polynoia.storage.repo import (
@@ -137,8 +141,36 @@ async def _reset_stuck_resolving() -> None:
             )
 
 
+def _ensure_central_home() -> None:
+    """Create ~/.polynoia/ (+ files/) and carry over a legacy cwd-local DB.
+
+    The platform DB moved from the cwd-relative ./polynoia.db to the central
+    ~/.polynoia/polynoia.db. To avoid orphaning existing instances' data, if the
+    new DB doesn't exist yet but a legacy ./polynoia.db does, copy it over once.
+    """
+    settings.polynoia_home.mkdir(parents=True, exist_ok=True)
+    settings.files_dir.mkdir(parents=True, exist_ok=True)
+    url = settings.db_url
+    if not url.startswith("sqlite"):
+        return
+    # sqlite+aiosqlite:////abs/path → /abs/path  (strip scheme + leading ///)
+    new_db = Path(url.split(":///", 1)[-1]) if ":///" in url else None
+    if new_db is None or new_db.exists():
+        return
+    for legacy in (Path.cwd() / "polynoia.db", Path("polynoia.db").resolve()):
+        if legacy.exists() and legacy.resolve() != new_db.resolve():
+            shutil.copy2(legacy, new_db)
+            for suffix in ("-wal", "-shm"):
+                side = legacy.with_name(legacy.name + suffix)
+                if side.exists():
+                    shutil.copy2(side, new_db.with_name(new_db.name + suffix))
+            break
+
+
 async def bootstrap_db() -> None:
     """Create tables + seed default data if empty."""
+    # Step 0: central ~/.polynoia/ home + one-time legacy-DB carry-over.
+    _ensure_central_home()
     # Step 1: create tables (idempotent — but won't ADD COLUMN to existing).
     await init_db()
     # Step 1b: patch existing tables with any new columns (dev-only).

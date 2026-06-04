@@ -20,8 +20,19 @@ class Settings(BaseSettings):
         "http://tauri.localhost",  # Windows
     ]
 
-    # Storage
-    db_url: str = "sqlite+aiosqlite:///./polynoia.db"
+    # Storage — strict platform/user data separation:
+    #   • PLATFORM data (providers/adapters/agents/servers/workspace metadata/
+    #     conversations/messages/pins/orchestration state) → the central SQLite
+    #     DB below, one per Polynoia instance/account, under ~/.polynoia/.
+    #   • USER data (agent-written code, git history, artifacts) → the filesystem
+    #     git worktrees under `sandbox_root` or the user's real `Workspace.path`.
+    #   • BLOBs (chat attachments) → `files_dir`; payloads store a short URL only.
+    # `~/.polynoia/` keeps platform data in a stable per-user home, not buried in
+    # the repo's cwd. Override any of these via POLYNOIA_DB_URL / _FILES_DIR /
+    # _SANDBOX_ROOT.
+    polynoia_home: Path = Path.home() / ".polynoia"
+    db_url: str = f"sqlite+aiosqlite:///{Path.home() / '.polynoia' / 'polynoia.db'}"
+    files_dir: Path = Path.home() / ".polynoia" / "files"
     sandbox_root: Path = Path.home() / "sandbox" / "polynoia"
 
     # Anthropic / OpenAI
