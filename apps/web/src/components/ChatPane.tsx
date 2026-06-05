@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { type ConversationSummary, api } from "../lib/api";
 import { computeBursts } from "../lib/burstClaim";
 import type { Message, TasksPayload } from "../lib/types";
+import { isMobile } from "../lib/platform";
 import { onNetworkChange, onResume } from "../lib/native";
 import { ConvWebSocket } from "../lib/ws";
 import {
@@ -30,6 +31,10 @@ type Props = {
 };
 
 export function ChatPane({ convId, members, title }: Props) {
+	// Mobile: App.tsx owns the chat header (back + title), so ChatPane drops its
+	// own masthead to avoid a double header, and the message stream + composer
+	// run at roomier, touch-friendly density (see Composer's `mobile` path).
+	const mobile = isMobile();
 	// Fine-grained selectors:
 	//   messages: derived ordered list — wrap in useShallow because selectMessages
 	//             allocates a new Array every call; without shallow, zustand's
@@ -733,7 +738,9 @@ export function ChatPane({ convId, members, title }: Props) {
 
 	return (
 		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative">
-			{/* Chat header — editorial masthead: serif title + gradient hair-line */}
+			{/* Chat header — editorial masthead: serif title + gradient hair-line.
+          Hidden on mobile (App.tsx renders the back+title bar instead). */}
+			{!mobile && (
 			<header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
 				<span
 					aria-hidden
@@ -815,6 +822,7 @@ export function ChatPane({ convId, members, title }: Props) {
 					</button>
 				</div>
 			</header>
+			)}
 
 			{/* Manual-mode per-file review strip — Cursor-style, sits above the chat
           (←/→ through the queue, ✓/✗ the focused change). */}
@@ -839,7 +847,9 @@ export function ChatPane({ convId, members, title }: Props) {
 						// message being answered always sits ABOVE the status bar.
 						style={{ paddingBottom: composerH + 24 }}
 					>
-						<div className="mx-auto w-full max-w-[var(--chat-measure)]">
+						<div
+							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-4" : ""}`}
+						>
 							{/* Lazy-load top sentinel — visible spinner while older messages
             are being fetched. Shown only if we have more to fetch. */}
 							{loadingOlder && messages.length > 0 && (

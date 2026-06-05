@@ -10,6 +10,7 @@
 import { ArrowUp, FileText, Paperclip, Plus, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { isMobile } from "../lib/platform";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
 
@@ -107,6 +108,9 @@ export function Composer({
   statusSlot,
 }: Props) {
   const [text, setText] = useState("");
+  // Mobile: roomier pill, bigger tap targets, and a 16px textarea (anything
+  // smaller makes iOS Safari auto-zoom on focus). Desktop density unchanged.
+  const mobile = isMobile();
   // Pending workspace-file refs (drag-dropped from FileTree). Each chip is
   // rendered above the textarea with an × to remove. On send we fan them
   // out via the existing onAttachFile callback (one file message per ref)
@@ -408,7 +412,7 @@ export function Composer({
     // input pill (below) visually FLOATS over the message stream (悬空). The pill
     // carries its own surface bg + shadow.
     <div className="bg-transparent">
-      <div className="px-6 pt-2 pb-3 relative">
+      <div className={`relative ${mobile ? "px-3 pt-2 pb-3" : "px-6 pt-2 pb-3"}`}>
         {/* @-mention picker */}
         {mention && filtered.length > 0 && (
           <div className="absolute bottom-full left-5 right-5 mb-1 z-30 bg-[var(--color-surface)] border border-[var(--color-line)] rounded-lg shadow-lg overflow-hidden max-h-[280px] overflow-y-auto">
@@ -540,7 +544,9 @@ export function Composer({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`rounded-[22px] border bg-[var(--color-surface)] shadow-[var(--shadow-card)] px-2.5 pt-2 pb-2 transition-colors duration-200 focus-within:border-[var(--color-accent)]/55 ${
+          className={`border bg-[var(--color-surface)] shadow-[var(--shadow-card)] transition-colors duration-200 focus-within:border-[var(--color-accent)]/55 ${
+            mobile ? "rounded-[26px] px-3 pt-2.5 pb-2.5" : "rounded-[22px] px-2.5 pt-2 pb-2"
+          } ${
             isDragOver
               ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]/40"
               : "border-[var(--color-line-strong)]"
@@ -556,7 +562,9 @@ export function Composer({
             onPaste={handlePaste}
             placeholder={placeholder}
             rows={1}
-            className="w-full resize-none bg-transparent outline-none text-[14px] leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] min-h-[40px] max-h-[200px] px-2 py-1.5"
+            className={`w-full resize-none bg-transparent outline-none leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] max-h-[200px] ${
+              mobile ? "text-[16px] min-h-[28px] px-2 py-2" : "text-[14px] min-h-[40px] px-2 py-1.5"
+            }`}
           />
           {/* Docked control bar — sits INSIDE the box, ChatGPT/Claude-style */}
           <div className="flex items-center gap-1.5 px-0.5">
@@ -572,10 +580,12 @@ export function Composer({
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="w-8 h-8 grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-all duration-150"
+              className={`grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-all duration-150 ${
+                mobile ? "w-10 h-10" : "w-8 h-8"
+              }`}
               title="添加附件(也支持粘贴)"
             >
-              <Plus size={18} />
+              <Plus size={mobile ? 22 : 18} />
             </button>
             {/* Merge-mode toggle — relocated from the header into the composer */}
             {showMergeToggle && onToggleMergeMode && (
@@ -621,13 +631,15 @@ export function Composer({
               onClick={submit}
               disabled={!text.trim() && pendingFileRefs.length === 0}
               title="发送 (Enter)"
-              className={`ml-auto w-8 h-8 grid place-items-center rounded-full transition-all duration-150 ${
+              className={`ml-auto grid place-items-center rounded-full transition-all duration-150 ${
+                mobile ? "w-10 h-10" : "w-8 h-8"
+              } ${
                 text.trim() || pendingFileRefs.length > 0
                   ? "bg-[var(--color-accent)] text-white hover:brightness-110 press-down"
                   : "bg-[var(--color-surface-3)] text-[var(--color-fg-4)] cursor-not-allowed"
               }`}
             >
-              <ArrowUp size={17} strokeWidth={2.4} />
+              <ArrowUp size={mobile ? 20 : 17} strokeWidth={2.4} />
             </button>
           </div>
         </div>

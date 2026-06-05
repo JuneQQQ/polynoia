@@ -1,4 +1,4 @@
-import { Menu } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
@@ -29,7 +29,10 @@ export function App() {
 		members: string[];
 		title: string;
 	} | null>(() => {
-		// Restore the conv you were in so a refresh lands back here, not on home.
+		// Mobile always boots to the contacts/projects list (home), never straight
+		// into the last chat. Desktop/web restores the conv you were in so a
+		// refresh lands back there, not on home.
+		if (isMobile()) return null;
 		try {
 			const raw = window.localStorage.getItem("polynoia:active-conv");
 			return raw ? JSON.parse(raw) : null;
@@ -37,10 +40,10 @@ export function App() {
 			return null;
 		}
 	});
-	// Mobile: sidebar is a drawer, hidden by default. Desktop/browser: sidebar
-	// is a permanent left column.
+	// Mobile: the contacts/projects list is the full-screen home; selecting a
+	// conversation pushes the chat over it (back button returns). Desktop:
+	// sidebar is a permanent left column.
 	const mobile = isMobile();
-	const [drawerOpen, setDrawerOpen] = useState(false);
 
 	useEffect(() => {
 		Promise.all([
@@ -185,79 +188,55 @@ export function App() {
 		if (isCapacitor() && !getServerOverride()) {
 			return <ConnectServerScreen />;
 		}
+		// Chat open → full-screen chat pushed over the list, with a back button.
+		if (view === "chat" && activeConv) {
+			return (
+				<div
+					className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
+					style={{ paddingTop: "env(safe-area-inset-top)" }}
+				>
+					{/* Single chat header — back (→ list) + title. ChatPane drops its
+              own masthead on mobile, so this is the only header. */}
+					<div className="flex items-center gap-1 px-1.5 py-2.5 border-b border-[var(--color-line)] bg-[var(--color-surface)]">
+						<button
+							type="button"
+							onClick={() => setActiveConv(null)}
+							className="w-10 h-10 grid place-items-center rounded-full hover:bg-[var(--color-line)] text-[var(--color-fg-2)]"
+							aria-label="返回列表"
+						>
+							<ArrowLeft size={22} />
+						</button>
+						<span className="flex-1 min-w-0 truncate font-display text-[16px] font-medium text-[var(--color-fg)]">
+							{activeConv.title}
+						</span>
+					</div>
+					{/* flex flex-col so ChatPane's flex-1 <main> can fill height —
+              without it the composer (absolute bottom-0) pins to the top. */}
+					<div className="flex-1 min-h-0 flex flex-col">
+						<ChatPane
+							convId={activeConv.id}
+							members={activeConv.members}
+							title={activeConv.title}
+						/>
+					</div>
+				</div>
+			);
+		}
+		// Home = the contacts + projects list (Sidebar), shown directly as the
+		// full screen. No welcome card, no drawer, no swipe — tapping a contact /
+		// conversation pushes into the chat above.
 		return (
 			<div
 				className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{ paddingTop: "env(safe-area-inset-top)" }}
 			>
-				{/* Drawer overlay */}
-				{drawerOpen && (
-					<>
-						<div
-							className="fixed inset-0 bg-black/40 z-30"
-							onClick={() => setDrawerOpen(false)}
-							role="button"
-							tabIndex={0}
-							aria-label="close drawer"
-						/>
-						<div className="fixed left-0 top-0 bottom-0 w-72 z-40 shadow-xl bg-[var(--color-surface)]">
-							<Sidebar
-								activeConvId={activeConv?.id ?? null}
-								onSelectConv={(id, members, title) => {
-									setActiveConv({ id, members, title });
-									setView("chat");
-									setDrawerOpen(false);
-								}}
-							/>
-						</div>
-					</>
-				)}
-				{/* Top bar with hamburger */}
-				{view === "chat" && activeConv ? (
-					<>
-						<div className="flex items-center px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface)]">
-							<button
-								type="button"
-								onClick={() => setDrawerOpen(true)}
-								className="p-1.5 rounded hover:bg-[var(--color-line)]"
-								aria-label="open sidebar"
-							>
-								<Menu size={18} />
-							</button>
-						</div>
-						<div className="flex-1 min-h-0">
-							<ChatPane
-								convId={activeConv.id}
-								members={activeConv.members}
-								title={activeConv.title}
-							/>
-						</div>
-					</>
-				) : (
-					<div className="flex-1 flex flex-col">
-						<div className="flex items-center px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface)]">
-							<button
-								type="button"
-								onClick={() => setDrawerOpen(true)}
-								className="p-1.5 rounded hover:bg-[var(--color-line)]"
-								aria-label="open sidebar"
-							>
-								<Menu size={18} />
-							</button>
-							<span className="ml-3 text-[14px] font-semibold">Polynoia</span>
-						</div>
-						<main className="flex-1 grid place-items-center text-[var(--color-fg-3)]">
-							<div className="text-center px-6">
-								<div className="text-[16px] font-semibold text-[var(--color-fg)] mb-2">
-									欢迎使用 Polynoia
-								</div>
-								<div className="text-[12.5px]">
-									点左上角菜单 · 选一个联系人或项目开始
-								</div>
-							</div>
-						</main>
-					</div>
-				)}
+				<Sidebar
+					activeConvId={activeConv?.id ?? null}
+					onSelectConv={(id, members, title) => {
+						setActiveConv({ id, members, title });
+						setView("chat");
+					}}
+				/>
 			</div>
 		);
 	}

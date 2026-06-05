@@ -33,10 +33,19 @@ type PrefsApi = {
   remove(o: { key: string }): Promise<void>;
   keys(): Promise<{ keys: string[] }>;
 };
-let _prefs: Promise<PrefsApi> | null = null;
-function prefs(): Promise<PrefsApi> {
+// NB: the resolved value is a WRAPPER ({ api }), never the bare Preferences
+// proxy. Capacitor's native plugin proxy answers ANY property get as a plugin
+// method — including `.then` — so if the proxy were a promise's resolution
+// value, the Promise machinery would treat it as a thenable and invoke
+// `Preferences.then()`, which rejects with UNIMPLEMENTED on iOS/Android (and
+// takes the whole boot() chain down before React mounts). Web didn't hit this
+// because its shim object has no magic `.then`. Wrapping keeps the proxy inert.
+let _prefs: Promise<{ api: PrefsApi }> | null = null;
+function prefs(): Promise<{ api: PrefsApi }> {
   if (!_prefs) {
-    _prefs = import("@capacitor/preferences").then((m) => m.Preferences as unknown as PrefsApi);
+    _prefs = import("@capacitor/preferences").then((m) => ({
+      api: m.Preferences as unknown as PrefsApi,
+    }));
   }
   return _prefs;
 }
@@ -53,7 +62,7 @@ export const storage = {
   setItem(key: string, value: string): void {
     if (NATIVE) {
       cache.set(key, value);
-      void prefs().then((p) => p.set({ key, value })).catch(() => {});
+      void prefs().then(({ api }) => api.set({ key, value })).catch(() => {});
       return;
     }
     try {
@@ -65,7 +74,7 @@ export const storage = {
   removeItem(key: string): void {
     if (NATIVE) {
       cache.delete(key);
-      void prefs().then((p) => p.remove({ key })).catch(() => {});
+      void prefs().then(({ api }) => api.remove({ key })).catch(() => {});
       return;
     }
     try {
@@ -82,7 +91,7 @@ export const storage = {
 export async function prefetchStorage(): Promise<void> {
   if (!NATIVE) return;
   try {
-    const p = await prefs();
+    const { api: p } = await prefs();
     const { keys } = await p.keys();
     await Promise.all(
       keys.map(async (k) => {

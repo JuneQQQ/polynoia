@@ -53,6 +53,12 @@ const config: CapacitorConfig = {
   },
   android: {
     backgroundColor: "#FBFAF7",
+    // The app shell loads from https://localhost (androidScheme "https"), but
+    // the Polynoia backend is frequently a plain-HTTP LAN box (e.g.
+    // http://10.2.255.109:7780). Without this the WebView blocks those fetches
+    // as mixed content → "Failed to fetch". Pairs with usesCleartextTraffic in
+    // AndroidManifest.xml (OS-level cleartext permit). iOS allows it via ATS.
+    allowMixedContent: true,
   },
   ios: {
     backgroundColor: "#FBFAF7",

@@ -178,7 +178,9 @@ export function Sidebar({
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
-  const sbResizeHandle = (
+  // No edge-resize on mobile — the sidebar IS the full-screen home list there
+  // (no drag, per product). Desktop keeps the draggable edge.
+  const sbResizeHandle = mobile ? null : (
     <div
       onMouseDown={startSbResize}
       onDoubleClick={() => setSbWidth(260)}
@@ -338,7 +340,7 @@ export function Sidebar({
   // ─── Collapsed: narrow icon rail (VS Code activity-bar style) ───
   // Doesn't disappear — shrinks to icon width: expand button + monogram +
   // search + a column of conversation/project avatars + theme toggle.
-  if (sidebarCollapsed) {
+  if (sidebarCollapsed && !mobile) {
     return (
       <aside className="relative w-[52px] flex-shrink-0 flex flex-col items-center gap-1 py-3 bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] border-r border-[var(--color-sidebar-line)]">
         {railResizeHandle}
@@ -447,7 +449,7 @@ export function Sidebar({
     return (
       <aside
         className="relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0"
-        style={{ width: sbWidth }}
+        style={{ width: mobile ? "100%" : sbWidth }}
       >
         {sbResizeHandle}
         <header className="flex items-center gap-2 px-3 py-3 border-b border-[var(--color-sidebar-line)]">
@@ -471,6 +473,7 @@ export function Sidebar({
               {ws?.role} {srv && `· ${srv.name}`}
             </div>
           </div>
+          {!mobile && (
           <button
             type="button"
             onClick={toggleSidebar}
@@ -480,6 +483,7 @@ export function Sidebar({
           >
             <PanelLeftClose size={15} />
           </button>
+          )}
           <button
             type="button"
             onClick={() => setSearchOverlayOpen(true)}
@@ -608,7 +612,9 @@ export function Sidebar({
           整个 sidebar 的"标题章"暗示。不再用黑色 border 硬切。 */}
       <header className="relative flex flex-col items-start gap-3 px-5 pt-5 pb-5">
         {/* Collapse the whole sidebar (VS Code Cmd+B). Re-open via the chat
-            header's expand button or Cmd+B. */}
+            header's expand button or Cmd+B. Desktop only — on mobile the
+            sidebar is the full-screen home list, never collapsed. */}
+        {!mobile && (
         <button
           type="button"
           onClick={toggleSidebar}
@@ -618,6 +624,7 @@ export function Sidebar({
         >
           <PanelLeftClose size={16} />
         </button>
+        )}
         {/* Brand mark — the 三色交叠 (triad) concept per the 图标 9版 handoff:
             the in-app logo uses column 2 on all platforms (web favicon stays
             the mono "P" — see assets/brand/README.md). 40×40 to match the old
@@ -829,7 +836,9 @@ export function Sidebar({
                     style={{
                       animationDelay: `${idx * 30}ms`,
                     }}
-                    className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left transition-all duration-200 ${
+                    className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 rounded-sm text-left transition-all duration-200 ${
+                      mobile ? "py-3.5" : "py-2.5"
+                    } ${
                       // While this row's ⋮ menu is open, lift it into its own
                       // stacking context (z-30) so the menu — rendered with
                       // top-full and thus overlapping the NEXT row — paints
@@ -853,7 +862,9 @@ export function Sidebar({
                       {/* Circle avatar — softer, "people-like" per Polynoia.html
                           mockup. Sized 32px to match the design's r=16 dots. */}
                       <div
-                        className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium tracking-wide transition-transform duration-200 group-hover:scale-[1.04]"
+                        className={`rounded-full grid place-items-center text-white font-medium tracking-wide transition-transform duration-200 group-hover:scale-[1.04] ${
+                          mobile ? "w-10 h-10 text-[13px]" : "w-8 h-8 text-[11px]"
+                        }`}
                         style={{ background: a.color }}
                       >
                         {a.initials}
@@ -878,10 +889,18 @@ export function Sidebar({
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13.5px] truncate text-[var(--color-sidebar-fg)] leading-snug">
+                      <div
+                        className={`truncate text-[var(--color-sidebar-fg)] leading-snug ${
+                          mobile ? "text-[15.5px]" : "text-[13.5px]"
+                        }`}
+                      >
                         {a.name}
                       </div>
-                      <div className="text-[11px] text-[var(--color-sidebar-muted)] truncate mt-0.5 leading-tight font-mono">
+                      <div
+                        className={`text-[var(--color-sidebar-muted)] truncate mt-0.5 leading-tight font-mono ${
+                          mobile ? "text-[12px]" : "text-[11px]"
+                        }`}
+                      >
                         {isAdapter && !ready
                           ? t("offlineHint", lang)
                           : (() => {
