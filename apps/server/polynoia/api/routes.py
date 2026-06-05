@@ -4030,10 +4030,30 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 "配一句一行说明(谁交付了什么)。"
             )
         if drain.conflicted:
-            parts.append(
-                "本批合并出现**冲突**(对话里已出冲突卡)。用 1-2 句向用户说明哪些文件冲突、"
-                "需要 ta 选边,不要再 dispatch 派活。"
-            )
+            # AUTO mode = hands-off: the orchestrator resolves the merge itself
+            # via resolve_conflict (read both sides → reconcile against contract →
+            # land merged content), only escalating to the user if it truly can't.
+            # MANUAL mode keeps the human in the loop (pick a side in the card).
+            if getattr(_conv, "merge_mode", "auto") == "auto":
+                async with SessionLocal() as _cdb:
+                    open_ids = [
+                        r.id
+                        for r in await storage_repo.list_conflicts(_cdb, conv_id)
+                        if r.status == "open"
+                    ]
+                ids_txt = "、".join(open_ids) if open_ids else "(见对话里的冲突卡)"
+                parts.append(
+                    "本批合并出现**冲突**(Auto 模式,你来消解,别丢给用户)。对每个冲突 "
+                    f"{ids_txt} 用 `resolve_conflict`:先只传 conflict_id 读两边"
+                    "(ours=main 侧、theirs=分支侧、markers=带冲突标记的版本),`recall` 一下共享"
+                    "契约,产出每个文件合并后的**完整内容**,再用 {conflict_id, files:{path:content}} "
+                    "调一次落地。只有确实无法合理合并时,才用 1-2 句请用户选边。"
+                )
+            else:
+                parts.append(
+                    "本批合并出现**冲突**(对话里已出冲突卡)。用 1-2 句向用户说明哪些文件冲突、"
+                    "需要 ta 选边,不要再 dispatch 派活。"
+                )
         if failed and not drain.deliverables and not drain.conflicted:
             parts.append(f"有 {failed} 个子任务失败。用 1-2 句如实说明哪条没成、影响什么。")
         nudge = "（系统提示)子任务已结束。" + " ".join(parts)

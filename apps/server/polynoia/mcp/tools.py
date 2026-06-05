@@ -1104,13 +1104,86 @@ class _PresentTool(_ToolBase):
         return {"presented": True, "paths": rels}
 
 
+class _ResolveConflictTool(_ToolBase):
+    name = "resolve_conflict"
+    description = (
+        "Resolve a merge conflict yourself by supplying the MERGED full content "
+        "of each conflicted file, then re-merge the branch into main. "
+        "Orchestrator-only — use it in AUTO merge mode to land a clean merge "
+        "instead of making the user pick a side.\n"
+        "TWO-STEP: (1) call with ONLY {conflict_id} to read both sides — `ours` "
+        "is what's already in main, `theirs` is the branch's version, `markers` "
+        "is the conflicted file with <<<<<<< ======= >>>>>>> regions. Reconcile "
+        "them against the shared-memory contract (recall it first). (2) call AGAIN "
+        "with {conflict_id, files:{path: FULL merged file content}} to land it. "
+        "Returns {kind:'conflict', files:[...]} on the read, {kind:'resolved', "
+        "sha} on success, or {kind:'error', ...}. Only fall back to ask_user "
+        "(pick a side) if the two truly cannot be reconciled."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "conflict_id": {"type": "string", "description": "the conflict id from the conflict card"},
+            "files": {
+                "type": "object",
+                "description": "path → FULL merged file content. Omit on the first (read) call.",
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["conflict_id"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        cid = (args.get("conflict_id") or "").strip()
+        if not cid:
+            return {"kind": "error", "error": "conflict_id required"}
+        files = args.get("files")
+        # ── Read phase: no merged content yet → hand back both sides. ──
+        if not files:
+            row = await _callback_server(
+                f"/api/conflicts/{cid}", method="GET", label="resolve_conflict",
+            )
+            if row.get("kind") == "error":
+                return row
+            if row.get("status") in ("resolved", "abandoned"):
+                return {"kind": "gone", "status": row.get("status")}
+            out = []
+            for f in row.get("files", []):
+                out.append({
+                    "path": f.get("path"),
+                    "ctype": f.get("ctype"),
+                    "is_binary": f.get("is_binary", False),
+                    "markers": (f.get("markers") or "")[:20000],
+                    "ours": (f.get("ours") or "")[:20000],
+                    "theirs": (f.get("theirs") or "")[:20000],
+                })
+            return {
+                "kind": "conflict", "branch": row.get("branch"), "files": out,
+                "note": "产出每个文件合并后的完整内容,再用 {conflict_id, files:{path:content}} 调一次本工具落地。",
+            }
+        # ── Resolve phase. ──
+        if not isinstance(files, dict) or not files:
+            return {"kind": "error", "error": "files must be a non-empty {path: content} object"}
+        ctx.append_audit("tool.resolve_conflict", {"conflict_id": cid, "n": len(files)})
+        res = await _callback_server(
+            f"/api/conflicts/{cid}/resolve",
+            json={"resolutions": files, "resolved_by": ctx.turn_agent_id or ctx.agent_id},
+            label="resolve_conflict",
+        )
+        if res.get("kind") == "error":
+            return res
+        if res.get("ok"):
+            return {"kind": "resolved", "sha": res.get("sha")}
+        return {"kind": "error", "error": res.get("error") or "resolve failed", "detail": res}
+
+
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
         _ReadTool, _WriteTool,
         _BashTool, _GrepTool, _GlobTool,
         _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
-        _AskUserTool, _RequestProjectAccessTool, _PresentTool,
+        _AskUserTool, _RequestProjectAccessTool, _PresentTool, _ResolveConflictTool,
     ]
 }
 
@@ -1140,7 +1213,7 @@ _ASK      = {"ask_user"}                           # block + ask the user a ques
 _MUTATE   = {"write"}                              # the SOLE file-mutation tool → one audit entry
 _SHELL    = {"bash"}                               # run a shell command
 _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
-_ORCHESTRATE = {"dispatch", "discuss", "present"}  # delegate + present — orchestrator ONLY
+_ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}  # delegate + present + auto-resolve merges — orchestrator ONLY
 # Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
 # self-report); `present` is orchestrator-only (workers `report`, the
 # orchestrator bundles + presents from main at summary). The removed
