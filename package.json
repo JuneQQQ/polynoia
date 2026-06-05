@@ -6,6 +6,7 @@
   "workspaces": [
     "apps/web",
     "apps/desktop",
+    "apps/mobile",
     "packages/*"
   ],
   "scripts": {
