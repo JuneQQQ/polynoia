@@ -358,14 +358,14 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 									{p.installed && !p.authenticated && (
 										<Hint title="登录命令" cmd={p.login_cmd} docs={p.docs} />
 									)}
-									{isEnabled && (
-										<ProxyControl
-											cfg={
-												proxyById[p.id] ?? { proxy: null, proxy_kind: "system" }
-											}
-											onSave={(cfg) => saveProxy(p.id, cfg)}
-										/>
-									)}
+									{/* Proxy is per-adapter and configurable for every provider
+									    (not only enabled ones) — each CLI may need its own egress. */}
+									<ProxyControl
+										cfg={
+											proxyById[p.id] ?? { proxy: null, proxy_kind: "system" }
+										}
+										onSave={(cfg) => saveProxy(p.id, cfg)}
+									/>
 								</div>
 							</div>
 						);
