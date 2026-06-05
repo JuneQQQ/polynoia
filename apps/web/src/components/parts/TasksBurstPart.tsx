@@ -15,9 +15,8 @@
  * agent).
  */
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, Loader2, Square, Undo2, X } from "lucide-react";
+import { Check, Loader2, Square, X } from "lucide-react";
 import { memo, useState } from "react";
-import { api } from "../../lib/api";
 import type { BurstInfo } from "../../lib/burstClaim";
 import type { DiffPayload, TasksPayload } from "../../lib/types";
 import { useStore } from "../../store";
@@ -361,61 +360,9 @@ function BurstChangesSummary({
 	}
 	const diffs = [...byFile.values()];
 
-	const [revBusy, setRevBusy] = useState(false);
-	const [confirmBatch, setConfirmBatch] = useState(false);
-	const [reverted, setReverted] = useState<Set<string>>(() => new Set());
-	const [batchErr, setBatchErr] = useState<string | null>(null);
-
 	if (diffs.length === 0) return null;
 	const adds = diffs.reduce((s, d) => s + (d.additions || 0), 0);
 	const dels = diffs.reduce((s, d) => s + (d.deletions || 0), 0);
-	// Only committed (proactive) diffs are revertable.
-	const committed = diffs.filter((d) => d.commit_sha);
-	const allReverted =
-		committed.length > 0 && committed.every((d) => reverted.has(d.file));
-
-	// Revert the WHOLE burst's changes, file by file, on a single confirm.
-	// Sequential (each applyDiff serializes on the workspace merge lock); STOP at
-	// the first failure to avoid a half-revert. Non-transactional — TODO: a
-	// batched server endpoint could make a multi-file revert atomic.
-	const revertBatch = async () => {
-		setConfirmBatch(false);
-		setRevBusy(true);
-		setBatchErr(null);
-		const done = new Set(reverted);
-		let k = done.size;
-		for (const d of committed) {
-			if (done.has(d.file)) continue;
-			try {
-				const res = await api.applyDiff({
-					conv_id: convId,
-					file: d.file,
-					reverse: true,
-					agent_id: d.agent_id ?? undefined,
-					hunks: d.hunks.map((h) => ({
-						header: h.header,
-						lines: h.lines as Array<[string, number, string]>,
-					})),
-				});
-				if (res.ok) {
-					done.add(d.file);
-					k++;
-				} else {
-					setBatchErr(
-						`已撤销 ${k}/${committed.length};${d.file} 撤销失败:${res.error || ""};其余未处理`,
-					);
-					break;
-				}
-			} catch (e) {
-				setBatchErr(
-					`已撤销 ${k}/${committed.length};${d.file} 撤销失败:${String(e)};其余未处理`,
-				);
-				break;
-			}
-		}
-		setReverted(done);
-		setRevBusy(false);
-	};
 
 	return (
 		<details className="border-t border-[var(--color-line)] bg-[var(--color-surface-2)]/40">
@@ -423,49 +370,7 @@ function BurstChangesSummary({
 				<span>本轮改动 · {diffs.length} 文件</span>
 				<span style={{ color: "var(--color-green)" }}>+{adds}</span>
 				{dels > 0 && <span style={{ color: "var(--color-red)" }}>−{dels}</span>}
-				<span className="flex-1" />
-				{committed.length > 0 &&
-					!allReverted &&
-					(confirmBatch ? (
-						<button
-							type="button"
-							onClick={(e) => {
-								e.preventDefault();
-								revertBatch();
-							}}
-							disabled={revBusy}
-							className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-white bg-[var(--color-red)] hover:opacity-90 disabled:opacity-50 normal-case tracking-normal"
-						>
-							{revBusy ? (
-								<Loader2 size={10} className="animate-spin" />
-							) : (
-								<Undo2 size={10} />
-							)}
-							确认撤销本轮 {committed.length} 个文件?
-						</button>
-					) : (
-						<button
-							type="button"
-							onClick={(e) => {
-								e.preventDefault();
-								setConfirmBatch(true);
-							}}
-							className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 normal-case tracking-normal"
-						>
-							<Undo2 size={10} /> 撤销本轮全部
-						</button>
-					))}
-				{allReverted && (
-					<span className="text-[var(--color-amber)] normal-case tracking-normal">
-						已撤销本轮全部
-					</span>
-				)}
 			</summary>
-			{batchErr && (
-				<div className="px-4 pb-1 text-[10.5px] text-[var(--color-red)] normal-case tracking-normal">
-					{batchErr}
-				</div>
-			)}
 			<div className="flex flex-col gap-2 px-4 pb-3">
 				{diffs.map((d) => (
 					<DiffPart key={d.file} payload={d} inBatch={diffs.length > 1} />

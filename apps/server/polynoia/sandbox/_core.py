@@ -1046,19 +1046,25 @@ class Sandbox:
         }
 
     async def workspace_commits(
-        self, ref: str = "main", limit: int = 80, skip: int = 0
+        self, ref: str = "main", limit: int = 80, skip: int = 0,
+        include_all: bool = False,
     ) -> list[dict]:
         """List commits on ``ref`` (newest first) with per-commit +/- stats.
 
-        Each: ``{sha, short, author, email, date, subject, files, additions,
-        deletions}``. Workspace mode only. ``ref`` is validated by the caller.
+        Each: ``{sha, short, author, email, date, subject, parents, files,
+        additions, deletions, is_merge, lane}``. ``parents`` (full SHAs) lets the
+        client draw the commit graph. Workspace mode only; ``ref`` caller-validated.
+
+        ``include_all=True`` (graph mode) keeps EVERY commit — including the clean
+        ``--no-ff`` merge wrappers + empty plumbing the flat list hides — because
+        those nodes ARE the branch/merge structure the tree view needs to draw.
         """
         if self.workspace_root is None:
             return []
         # \x1e (record separator) prefixes each commit so the interleaved
         # --numstat lines can be re-associated with their commit unambiguously.
         sep = "\x1e"
-        fmt = f"{sep}%H%x09%h%x09%an%x09%ae%x09%aI%x09%s"
+        fmt = f"{sep}%H%x09%h%x09%an%x09%ae%x09%aI%x09%P%x09%s"
         rc, out, _err = await self._workspace_run([
             # core.quotepath=false → non-ASCII paths emitted verbatim (UTF-8),
             # not C-quoted, so --numstat paths round-trip correctly.
@@ -1079,9 +1085,18 @@ class Sandbox:
             if not chunk:
                 continue
             lines = chunk.split("\n")
-            head = lines[0].split("\t")
-            if len(head) != 6:
+            head = lines[0].split("\t", 6)
+            if len(head) != 7:
                 continue
+            parents = head[5].split()
+            subject = head[6]
+            is_merge = len(parents) >= 2
+            # A conflict resolution lands as `polynoia: resolve+merge … into main`
+            # — it carries the real merged/resolved content, so it's meaningful and
+            # must be visible (this is "where the conflict landed in main"). A clean
+            # `polynoia: merge … into main` --no-ff wrapper only duplicates the
+            # agent's own commit (already listed), so it stays hidden below.
+            is_resolve = is_merge and "resolve+merge" in subject
             adds = dels = files = 0
             for stat_line in lines[1:]:
                 if not stat_line.strip():
@@ -1092,21 +1107,57 @@ class Sandbox:
                 files += 1
                 adds += self._stat_int(cols[0])
                 dels += self._stat_int(cols[1])
-            # Skip empty commits — `--no-ff` merge wrappers report 0 files under
-            # --numstat. They're plumbing (no content the user changed) and are
-            # the main source of the "duplicate / same-content" list clutter.
-            if files == 0:
-                continue
+            # git's --numstat is empty for a merge commit, so a `resolve+merge`
+            # reports 0 files here. Recompute its stats against the FIRST parent
+            # (prior main) — the net change the resolution landed, same basis the
+            # commit_diff endpoint uses, so the list +/- matches the diff view.
+            if is_resolve and files == 0:
+                rc2, out2, _ = await self._workspace_run([
+                    "git", "-c", "core.quotepath=false", "diff", "--numstat",
+                    parents[0], head[0],
+                ])
+                if rc2 == 0:
+                    for stat_line in out2.splitlines():
+                        cols = stat_line.split("\t")
+                        if len(cols) < 3:
+                            continue
+                        files += 1
+                        adds += self._stat_int(cols[0])
+                        dels += self._stat_int(cols[1])
+            # Hide plumbing: clean `--no-ff` merge wrappers (duplicate the agent
+            # commit) and truly-empty non-merge commits. Conflict resolutions are
+            # kept regardless — they carry content the user needs to see. Graph
+            # mode (include_all) keeps everything — the merge nodes ARE the tree.
+            if not include_all:
+                if is_merge and not is_resolve:
+                    continue
+                if files == 0 and not is_resolve:
+                    continue
             commits.append({
                 "sha": head[0],
                 "short": head[1],
                 "author": head[2],
                 "email": head[3],
                 "date": head[4],
-                "subject": head[5],
+                "subject": subject,
+                "parents": parents,
                 "files": files,
                 "additions": adds,
                 "deletions": dels,
+                "is_merge": is_merge,
+                # Where the commit was made: an agent's own worktree branch vs the
+                # workspace `main`. Agent content commits (`agent:…`) AND captured
+                # pending worktree work (`polynoia: capture…`) are BRANCH; merges /
+                # resolves / init / user edits / apply·revert land on main.
+                "lane": (
+                    "branch"
+                    if not is_merge
+                    and (
+                        subject.startswith("agent:")
+                        or subject.startswith("polynoia: capture")
+                    )
+                    else "main"
+                ),
             })
         return commits
 
@@ -1447,6 +1498,7 @@ class Sandbox:
         resolutions: dict[str, str] | None = None,
         sides: dict[str, str] | None = None,
         deletions: list[str] | None = None,
+        author: str | None = None,
     ) -> tuple[bool, str, str]:
         """Re-enter the merge for real and finish it with the given resolutions.
 
@@ -1519,8 +1571,15 @@ class Sandbox:
             if rc_idx == 0:
                 await self._abort_stray_merge()
                 return (True, await self.main_head_sha() or "", "already merged")
+            # Attribute the resolve commit to the agent that fixed it (author),
+            # so the history shows "顾屿 解决冲突" not the generic polynoia-agent
+            # ("你"). Manual/human resolves pass author=None → default identity.
+            author_args = (
+                ["--author", f"{author} <{author}@polynoia.local>"] if author else []
+            )
             rc_c, _oc, err_c = await self._workspace_run([
-                "git", "commit", "-m", f"polynoia: resolve+merge {branch} into main",
+                "git", "commit", *author_args,
+                "-m", f"polynoia: resolve+merge {branch} into main",
             ])
             if rc_c != 0:
                 await self._abort_stray_merge()

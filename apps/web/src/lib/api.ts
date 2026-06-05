@@ -93,6 +93,12 @@ export type CommitMeta = {
 	files: number;
 	additions: number;
 	deletions: number;
+	/** True for git merge commits (clean merge / resolve+merge). */
+	is_merge?: boolean;
+	/** Where the commit was made: an agent's worktree branch vs the shared main. */
+	lane?: "branch" | "main";
+	/** Parent commit SHAs (full) — only populated in graph mode; drives the tree. */
+	parents?: string[];
 };
 /** One changed file inside a commit / working-tree diff. */
 export type CommitFileDiff = {
@@ -621,10 +627,11 @@ export const api = {
 		if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
 		return r.arrayBuffer();
 	},
-	/** Commit history of a workspace branch (newest first). */
-	workspaceCommits: (wsId: string, ref = "main", limit = 80, skip = 0) =>
+	/** Commit history of a workspace branch (newest first). ``graph`` returns the
+	 * full set (merge nodes + parents) for the tree view. */
+	workspaceCommits: (wsId: string, ref = "main", limit = 80, skip = 0, graph = false) =>
 		getJSON<{ commits: CommitMeta[] }>(
-			`/api/workspaces/${wsId}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}&skip=${skip}`,
+			`/api/workspaces/${wsId}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}&skip=${skip}${graph ? "&graph=true" : ""}`,
 		),
 	/** Structured per-file diff of a commit vs its parent. */
 	workspaceCommitDiff: (wsId: string, sha: string, path?: string) =>

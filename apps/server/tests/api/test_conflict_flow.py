@@ -169,3 +169,52 @@ async def test_resolve_take_side_uses_git_index(env) -> None:
     resp = await resolve_conflict_endpoint(cid, {"sides": {"f.txt": "theirs"}})
     assert resp["ok"] is True
     assert (root / "f.txt").read_text() == "L1\nD-SIDE\nL3\n"
+
+
+@pytest.mark.asyncio
+async def test_resolve_conflict_tool_lands_merge_in_process(env, monkeypatch) -> None:
+    """The resolve_conflict MCP tool — wired (via _callback_server) to the real
+    in-process endpoints — lands a real content conflict into main. Proves the
+    auto-fix round reuses the human resolve path end to end, and that conflict_id
+    inference + resolved_by attribution work."""
+    from polynoia.mcp.tools import ToolContext, _ResolveConflictTool
+
+    conv_id = new_ulid()
+    ws_id = "wsTOOL"
+    async with SessionLocal() as db:
+        await storage_repo.create_conversation(
+            db, Conversation(id=conv_id, title="t", members=["you"])
+        )
+        await db.commit()
+    _d, branch, files, root = await _build_content_conflict(ws_id, conv_id)
+    async with SessionLocal() as db:
+        cid = await storage_repo.create_conflict(
+            db, conv_id=conv_id, workspace_id=ws_id, branch=branch,
+            agent_id="ag-D", files=files, card_msg_id="conflict-tool",
+        )
+        await db.commit()
+
+    # Route the tool's HTTP callbacks straight to the in-process FastAPI handlers.
+    async def _in_process(path, *, method="POST", json=None, params=None, label):
+        parts = path.strip("/").split("/")
+        if method == "GET" and parts[-1] == "conflicts":
+            return await list_conflicts_endpoint(
+                parts[2], status=(params or {}).get("status")
+            )
+        if parts[-1] == "resolve":
+            return await resolve_conflict_endpoint(parts[2], json)
+        return {"kind": "error", "error": f"unmapped {path}"}
+
+    monkeypatch.setenv("POLYNOIA_API_BASE", "http://in-process")
+    monkeypatch.setattr("polynoia.mcp.tools._callback_server", _in_process)
+
+    # turn_agent_id == ag-D == the branch author → conflict_id is inferred.
+    ctx = ToolContext(conv_id=conv_id, agent_id="claudeCode", turn_agent_id="ag-D")
+    out = await _ResolveConflictTool().execute(
+        ctx, {"resolutions": {"f.txt": "L1\nMERGED\nL3\n"}}
+    )
+    assert out["resolved"] is True and out["sha"]
+    assert out["conflict_id"] == cid
+    assert (root / "f.txt").read_text() == "L1\nMERGED\nL3\n"
+    got = await get_conflict_endpoint(cid)
+    assert got["status"] == "resolved" and got["resolved_by"] == "ag-D"
