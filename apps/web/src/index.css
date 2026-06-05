@@ -677,3 +677,80 @@ body.polynoia-resizing * {
 [data-theme="dark"] .hljs-deletion { color: var(--color-red); }
 [data-theme="dark"] .hljs-emphasis { font-style: italic; }
 [data-theme="dark"] .hljs-strong { font-weight: 600; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   「夜读」 — Mobile editorial-nocturne layer.
+   A warm, literary atmosphere for the Capacitor app: an ember glow bleeding
+   from the top, a fine paper grain, oversized serif mastheads on hairline
+   rules, mono micro-labels, and orchestrated entrances. Every selector here is
+   mobile-scoped (applied only on mobile root containers / .pn-m-* classes), so
+   web + desktop are untouched. Tuned for the dark theme (the app's default).
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Signature atmosphere — drop on a full-screen mobile container. Two stacked
+   pseudo-layers behind content: (1) an ember radial glow from the top + a faint
+   violet floor, (2) a fractal-noise paper grain. */
+.pn-m-atmos { position: relative; isolation: isolate; }
+.pn-m-atmos::before {
+  content: "";
+  position: absolute; inset: 0; z-index: -2; pointer-events: none;
+  background:
+    radial-gradient(135% 62% at 50% -14%, rgba(236, 138, 76, 0.20), rgba(236, 138, 76, 0.05) 38%, transparent 64%),
+    radial-gradient(120% 55% at 50% 116%, rgba(155, 126, 224, 0.08), transparent 70%);
+}
+.pn-m-atmos::after {
+  content: "";
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  opacity: 0.05; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-theme="dark"] .pn-m-atmos::after { opacity: 0.06; }
+
+/* Ember hairline rule — a thin accent line that ignites at the left and fades
+   into the dark. Sits under a masthead. */
+.pn-m-rule {
+  height: 1px; border: 0;
+  background: linear-gradient(90deg,
+    var(--color-accent) 0%,
+    color-mix(in srgb, var(--color-accent) 45%, transparent) 22%,
+    var(--color-line) 60%,
+    transparent 100%);
+}
+
+/* Mono micro-label — wide-tracked uppercase caption (editorial kicker). */
+.pn-m-kicker {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--color-fg-3);
+}
+
+/* Orchestrated entrance — a slower, more deliberate rise than anim-fade-up,
+   for the connect screen's staged reveal. Pair with .pn-d-1 … .pn-d-6. */
+@keyframes pn-rise {
+  from { opacity: 0; transform: translateY(14px); filter: blur(3px); }
+  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
+}
+.pn-rise { animation: pn-rise 620ms var(--ease-out-soft) both; }
+.pn-d-1 { animation-delay: 60ms; }
+.pn-d-2 { animation-delay: 150ms; }
+.pn-d-3 { animation-delay: 250ms; }
+.pn-d-4 { animation-delay: 360ms; }
+.pn-d-5 { animation-delay: 480ms; }
+.pn-d-6 { animation-delay: 610ms; }
+
+/* The brand mark's slow ember breathing on the connect screen. */
+@keyframes pn-ember {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.06); }
+}
+.pn-ember { animation: pn-ember 4.5s ease-in-out infinite; }
+
+/* Tactile press for list rows / buttons on touch. */
+.pn-m-press { transition: transform 120ms var(--ease-out-soft); }
+.pn-m-press:active { transform: scale(0.985); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pn-rise, .pn-ember { animation: none; }
+}

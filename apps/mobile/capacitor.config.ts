@@ -43,7 +43,7 @@ const config: CapacitorConfig = {
   plugins: {
     SplashScreen: {
       launchShowDuration: 800,
-      backgroundColor: "#FBFAF7",
+      backgroundColor: "#14110c",
       androidScaleType: "CENTER_CROP",
     },
     Keyboard: {
@@ -52,7 +52,7 @@ const config: CapacitorConfig = {
     },
   },
   android: {
-    backgroundColor: "#FBFAF7",
+    backgroundColor: "#14110c",
     // The app shell loads from https://localhost (androidScheme "https"), but
     // the Polynoia backend is frequently a plain-HTTP LAN box (e.g.
     // http://10.2.255.109:7780). Without this the WebView blocks those fetches
@@ -61,7 +61,7 @@ const config: CapacitorConfig = {
     allowMixedContent: true,
   },
   ios: {
-    backgroundColor: "#FBFAF7",
+    backgroundColor: "#14110c",
     contentInset: "automatic",
   },
 };

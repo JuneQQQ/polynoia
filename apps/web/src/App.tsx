@@ -192,21 +192,23 @@ export function App() {
 		if (view === "chat" && activeConv) {
 			return (
 				<div
-					className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
+					className="pn-m-atmos h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
 					style={{ paddingTop: "env(safe-area-inset-top)" }}
 				>
-					{/* Single chat header — back (→ list) + title. ChatPane drops its
-              own masthead on mobile, so this is the only header. */}
-					<div className="flex items-center gap-1 px-1.5 py-2.5 border-b border-[var(--color-line)] bg-[var(--color-surface)]">
+					{/* Single chat header — back (→ list) + title. Frosted over the
+              ember glow, an ember hairline rule beneath. ChatPane drops its own
+              masthead on mobile, so this is the only header. */}
+					<div className="relative flex items-center gap-1 px-1.5 py-2.5 bg-[var(--color-surface)]/70 backdrop-blur-md">
+						<span aria-hidden className="pn-m-rule absolute inset-x-0 bottom-0" />
 						<button
 							type="button"
 							onClick={() => setActiveConv(null)}
-							className="w-10 h-10 grid place-items-center rounded-full hover:bg-[var(--color-line)] text-[var(--color-fg-2)]"
+							className="w-10 h-10 grid place-items-center rounded-full hover:bg-[var(--color-line)] text-[var(--color-fg-2)] press-down"
 							aria-label="返回列表"
 						>
 							<ArrowLeft size={22} />
 						</button>
-						<span className="flex-1 min-w-0 truncate font-display text-[16px] font-medium text-[var(--color-fg)]">
+						<span className="flex-1 min-w-0 truncate font-display text-[17px] font-medium tracking-wide text-[var(--color-fg)]">
 							{activeConv.title}
 						</span>
 					</div>
@@ -227,7 +229,7 @@ export function App() {
 		// conversation pushes into the chat above.
 		return (
 			<div
-				className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
+				className="pn-m-atmos h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{ paddingTop: "env(safe-area-inset-top)" }}
 			>
 				<Sidebar

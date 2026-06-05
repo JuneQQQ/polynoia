@@ -629,10 +629,17 @@ export function Sidebar({
             the in-app logo uses column 2 on all platforms (web favicon stays
             the mono "P" — see assets/brand/README.md). 40×40 to match the old
             monogram's footprint above the wordmark. */}
-        <BrandIcon concept="triad" platform="web" size={40} className="rounded-lg" />
+        <BrandIcon
+          concept="triad"
+          platform="web"
+          size={mobile ? 46 : 40}
+          className="rounded-lg"
+        />
         <div className="flex flex-col items-start leading-tight">
           <span
-            className="font-display text-[20px] font-medium tracking-wide leading-none"
+            className={`font-display font-medium tracking-wide leading-none ${
+              mobile ? "text-[27px]" : "text-[20px]"
+            }`}
             style={{ color: "var(--color-sidebar-fg)" }}
           >
             Polynoia
