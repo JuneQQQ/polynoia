@@ -607,26 +607,48 @@ export const api = {
 	 * "TypeError: Failed to fetch" on fetch() of a binary octet-stream response
 	 * (even same-origin) while XHR with responseType=arraybuffer succeeds. Same
 	 * behavior in real browsers — this is purely a WebView compatibility choice. */
-	workspaceFileBytesRead: (wsId: string, path: string) =>
-		new Promise<{ data: ArrayBuffer; modified: number }>((resolve, reject) => {
-			const url = `/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`;
-			const xhr = new XMLHttpRequest();
-			xhr.open("GET", url, true);
-			xhr.responseType = "arraybuffer";
-			xhr.onload = () => {
-				if (xhr.status >= 200 && xhr.status < 300) {
-					resolve({
-						data: xhr.response as ArrayBuffer,
-						modified: Number(xhr.getResponseHeader("X-Modified") || "0"),
-					});
-				} else {
-					reject(new Error(`${xhr.status} ${xhr.statusText || "request failed"}`));
+	workspaceFileBytesRead: (wsId: string, path: string) => {
+		const url = `/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`;
+		const attempt = () =>
+			new Promise<{ data: ArrayBuffer; modified: number }>((resolve, reject) => {
+				const xhr = new XMLHttpRequest();
+				xhr.open("GET", url, true);
+				xhr.responseType = "arraybuffer";
+				xhr.timeout = 30000;
+				xhr.onload = () => {
+					if (xhr.status >= 200 && xhr.status < 300) {
+						resolve({
+							data: xhr.response as ArrayBuffer,
+							modified: Number(xhr.getResponseHeader("X-Modified") || "0"),
+						});
+					} else {
+						reject(new Error(`${xhr.status} ${xhr.statusText || "request failed"}`));
+					}
+				};
+				xhr.onerror = () => reject(new Error("network error (xhr)"));
+				xhr.ontimeout = () => reject(new Error("request timed out"));
+				xhr.send();
+			});
+		// Retry transient WebView network errors (the dev server juggles HMR +
+		// many module requests; the WebView occasionally drops an in-flight XHR).
+		// Retry only on network/timeout, not on HTTP status errors (4xx/5xx).
+		const sleep = (ms: number) =>
+			new Promise<void>((r) => window.setTimeout(r, ms));
+		return (async () => {
+			let lastErr: unknown;
+			for (let i = 0; i < 4; i++) {
+				try {
+					return await attempt();
+				} catch (e) {
+					lastErr = e;
+					const msg = String((e as Error)?.message ?? e);
+					if (/^\d{3}\b/.test(msg)) throw e; // real HTTP error → don't retry
+					await sleep(300 * (i + 1));
 				}
-			};
-			xhr.onerror = () => reject(new Error("network error (xhr)"));
-			xhr.ontimeout = () => reject(new Error("request timed out"));
-			xhr.send();
-		}),
+			}
+			throw lastErr;
+		})();
+	},
 	/** Write raw bytes + auto-commit on main. */
 	workspaceFileBytesWrite: async (
 		wsId: string,
