@@ -75,7 +75,20 @@ export function RightPreviewFile({
 				if (alive) setContent(text);
 			})
 			.catch((e) => {
-				if (alive) setError(String(e?.message ?? e));
+				// Surface the exact endpoint + base on screen so failures are
+				// diagnosable without remote devtools.
+				const ep = mobile ? "blob" : "raw";
+				const base = (() => {
+					try {
+						return new URL(
+							`/api/workspaces/${workspaceId}/files/${ep}`,
+							window.location.href,
+						).href;
+					} catch {
+						return `/files/${ep}`;
+					}
+				})();
+				if (alive) setError(`${String(e?.name ?? "")} ${String(e?.message ?? e)}\n${base}`);
 			})
 			.finally(() => {
 				if (alive) setLoading(false);
@@ -159,7 +172,7 @@ function ErrorCard({
 				<div className="text-[13px] font-medium text-[var(--color-fg)] mb-1 truncate">
 					{basename(path)}
 				</div>
-				<div className="text-[11px] text-[var(--color-fg-3)] mb-3">
+				<div className="text-[11px] text-[var(--color-fg-3)] mb-3 whitespace-pre-wrap break-all text-left">
 					无法预览:{reason}
 				</div>
 				<button
