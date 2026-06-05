@@ -14,6 +14,25 @@ import { storage } from "./storage";
 
 const LS_KEY = "polynoia-server-url";
 
+// Apply a `?server=` URL override once at load — a controllable lever for a bare
+// WebView (no settings UI). `?server=http://host:7780` pins a remote backend;
+// `?server=` (empty value) CLEARS any stale override so the client falls back to
+// the same-origin Vite proxy (relative /api → :5173 → 7780), which sidesteps CORS
+// entirely. Persisted to localStorage so it survives SPA navigation. Runs at
+// module import — before api.ts reads `const BASE = getServerHttpBase()`. Mirrors
+// platform.ts's `?platform=`.
+(function applyServerQueryOverride() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("server")) return;
+    const v = (params.get("server") ?? "").trim();
+    if (v) storage.setItem(LS_KEY, v.replace(/\/+$/, ""));
+    else storage.removeItem(LS_KEY);
+  } catch {
+    // window/localStorage unavailable — ignore.
+  }
+})();
+
 /** Running inside a Capacitor native shell (iOS/Android). */
 export function isCapacitor(): boolean {
   const cap = (globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;

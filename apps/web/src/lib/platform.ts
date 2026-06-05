@@ -27,10 +27,39 @@ declare global {
 
 let _cached: Platform | undefined;
 
+const PLATFORM_LS_KEY = "polynoia-platform";
+
+/** Read a `?platform=` URL override, persisted so it survives SPA navigation
+ * that drops the query string. Lets a bare WebView force the layout via its load
+ * URL (`?platform=mobile`), independent of the fragile UA/viewport heuristic. */
+function readPlatformOverride(): Platform | undefined {
+  try {
+    const fromQuery = new URLSearchParams(window.location.search).get("platform");
+    if (fromQuery === "mobile" || fromQuery === "desktop" || fromQuery === "browser") {
+      window.localStorage.setItem(PLATFORM_LS_KEY, fromQuery);
+      return fromQuery;
+    }
+    const stored = window.localStorage.getItem(PLATFORM_LS_KEY);
+    if (stored === "mobile" || stored === "desktop" || stored === "browser") {
+      return stored;
+    }
+  } catch {
+    // URL / localStorage unavailable — fall through to runtime detection.
+  }
+  return undefined;
+}
+
 export function detectPlatform(): Platform {
   if (_cached) return _cached;
   if (typeof window === "undefined") {
     _cached = "browser";
+    return _cached;
+  }
+  // 0. Explicit `?platform=` override (persisted) — highest priority so a bare
+  //    WebView can force the layout from its load URL.
+  const override = readPlatformOverride();
+  if (override) {
+    _cached = override;
     return _cached;
   }
   // 1. Build-time injection (Tauri build pre-injects this)

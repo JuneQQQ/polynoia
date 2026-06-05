@@ -363,6 +363,10 @@ export function Composer({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // IME composition (中文/日文/韩文输入法):合成期间 Enter/空格/方向键属于
+    // 输入法(确认候选词 / 选词),在这里拦截会把合成吃掉 → 汉字录不进去。
+    // 合成结束前完全让位给 IME。keyCode 229 是部分 Android WebView 的旧式信号。
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     // Picker keyboard control
     if (mention && filtered.length > 0) {
       if (e.key === "ArrowDown") {

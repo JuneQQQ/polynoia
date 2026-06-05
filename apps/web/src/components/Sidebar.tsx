@@ -448,7 +448,7 @@ export function Sidebar({
 
     return (
       <aside
-        className="relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0"
+        className={`relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0 ${mobile ? "h-full min-h-0" : ""}`}
         style={{ width: mobile ? "100%" : sbWidth }}
       >
         {sbResizeHandle}
@@ -604,7 +604,7 @@ export function Sidebar({
   // ─── Layer 1: 顶级 ───
   return (
     <aside
-      className="relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0 overflow-hidden"
+      className={`relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0 overflow-hidden ${mobile ? "h-full min-h-0" : ""}`}
       style={{ width: sbWidth }}
     >
       {sbResizeHandle}

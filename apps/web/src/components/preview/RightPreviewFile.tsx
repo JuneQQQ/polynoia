@@ -14,8 +14,11 @@
 import { Download, FileX2, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { isMobile } from "../../lib/platform";
+import { assetUrl } from "../../lib/runtime-config";
 import { useStore } from "../../store";
 import { DocPreviewPane, docKind } from "./DocPreviewPane";
+import { MobileMarkdownView } from "./MobileMarkdownView";
 
 function basename(path: string): string {
 	return path.split("/").pop() ?? path;
@@ -42,6 +45,11 @@ export function RightPreviewFile({
 	const _k = docKind(path, "");
 	const isSlides = _k === "slides";
 	const isBinary = _k === "workbook" || _k === "word";
+	// Mobile renders images directly (<img>) and never needs the text fetch for
+	// them — the raw text endpoint would 415 on binary image bytes.
+	const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path);
+	const mobile = isMobile();
+	const skipImageFetch = isImage && mobile;
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is the reload trigger.
 	useEffect(() => {
@@ -49,18 +57,38 @@ export function RightPreviewFile({
 		// themselves). MUST stay after all hook calls — early-returning before
 		// this effect when isSlides flipped (file switch from .py to .pptx)
 		// caused "rendered fewer hooks than expected".
-		if (isBinary || isSlides) return;
+		if (isBinary || isSlides || skipImageFetch) return;
 		let alive = true;
 		setContent(null);
 		setError(null);
 		setLoading(true);
-		api
-			.workspaceFileRead(workspaceId, path)
-			.then((res) => {
-				if (alive) setContent(res.content);
+		// Mobile fetches text via /files/blob (in-memory Response) + decode, not
+		// /files/raw (PlainTextResponse) — the latter fails over the Vite proxy
+		// from a remote device ("Failed to fetch"), while blob works.
+		const fetchText = mobile
+			? api
+					.workspaceFileBytesRead(workspaceId, path)
+					.then((r) => new TextDecoder("utf-8").decode(r.data))
+			: api.workspaceFileRead(workspaceId, path).then((r) => r.content);
+		fetchText
+			.then((text) => {
+				if (alive) setContent(text);
 			})
 			.catch((e) => {
-				if (alive) setError(String(e?.message ?? e));
+				// Surface the exact endpoint + base on screen so failures are
+				// diagnosable without remote devtools.
+				const ep = mobile ? "blob" : "raw";
+				const base = (() => {
+					try {
+						return new URL(
+							`/api/workspaces/${workspaceId}/files/${ep}`,
+							window.location.href,
+						).href;
+					} catch {
+						return `/files/${ep}`;
+					}
+				})();
+				if (alive) setError(`${String(e?.name ?? "")} ${String(e?.message ?? e)}\n${base}`);
 			})
 			.finally(() => {
 				if (alive) setLoading(false);
@@ -68,7 +96,7 @@ export function RightPreviewFile({
 		return () => {
 			alive = false;
 		};
-	}, [workspaceId, path, filesTick, isBinary, isSlides]);
+	}, [workspaceId, path, filesTick, isBinary, isSlides, skipImageFetch, mobile]);
 
 	// Routing — order matters: pptx + binary docs render WITHOUT a text fetch
 	// (their previewers fetch bytes themselves), so route them before the
@@ -80,6 +108,19 @@ export function RightPreviewFile({
 		// DocPreviewPane → WorkbookPreview fetches the .xlsx bytes itself.
 		return <DocPreviewPane workspaceId={workspaceId} path={path} content="" />;
 	}
+	// Mobile image preview — render the bytes directly via <img> (same-origin
+	// /files/blob through the Vite proxy; assetUrl honors any server override).
+	if (mobile && isImage) {
+		const src = assetUrl(
+			`/api/workspaces/${encodeURIComponent(workspaceId)}/files/blob?path=${encodeURIComponent(path)}`,
+		);
+		return (
+			<div className="h-full w-full overflow-auto bg-[var(--color-surface-2)] grid place-items-center p-3">
+				{/* biome-ignore lint/a11y/useAltText: filename alt below */}
+				<img src={src} alt={path} className="max-w-full h-auto object-contain" />
+			</div>
+		);
+	}
 	if (loading || content === null) {
 		if (error)
 			return <ErrorCard path={path} workspaceId={workspaceId} reason={error} />;
@@ -87,6 +128,31 @@ export function RightPreviewFile({
 			<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)]">
 				<Loader2 size={14} className="animate-spin" />
 			</div>
+		);
+	}
+	// Mobile: robust read-only path that avoids the heavy/editable desktop
+	// renderers (CrepeEditor/Milkdown, CodeMirror SourcePreview) which can crash
+	// or fail to lazy-load in the Android WebView. Every text file shows its
+	// content; desktop keeps the rich renderers untouched.
+	if (mobile) {
+		// Markdown (incl. Marp source) → lightweight react-markdown.
+		if (/\.(md|markdown|mdx|marp)$/i.test(path)) {
+			return <MobileMarkdownView content={content} />;
+		}
+		// csv/tsv (table) + html (rendered) — these DocPreviewPane renderers are
+		// light and work fine in the WebView.
+		if (/\.(csv|tsv|html?)$/i.test(path)) {
+			return (
+				<DocPreviewPane workspaceId={workspaceId} path={path} content={content} />
+			);
+		}
+		// Everything else that's UTF-8 text (code / json / yaml / txt / logs / …)
+		// → show the raw content. Binary-unknown files fail the text fetch above
+		// and land on ErrorCard instead.
+		return (
+			<pre className="h-full w-full overflow-auto bg-[var(--color-surface-2)] m-0 p-3 text-[12px] leading-relaxed font-mono whitespace-pre text-[var(--color-fg-2)]">
+				{content}
+			</pre>
 		);
 	}
 	return (
@@ -106,7 +172,7 @@ function ErrorCard({
 				<div className="text-[13px] font-medium text-[var(--color-fg)] mb-1 truncate">
 					{basename(path)}
 				</div>
-				<div className="text-[11px] text-[var(--color-fg-3)] mb-3">
+				<div className="text-[11px] text-[var(--color-fg-3)] mb-3 whitespace-pre-wrap break-all text-left">
 					无法预览:{reason}
 				</div>
 				<button
@@ -150,8 +216,11 @@ function PptxRender({
 		let alive = true;
 		setBuf(null);
 		setErr(null);
+		// /files/blob (in-memory) not /files/download (streamed FileResponse):
+		// download fails over the Vite proxy from a remote device.
 		api
-			.workspaceFileBytes(workspaceId, path)
+			.workspaceFileBytesRead(workspaceId, path)
+			.then((r) => r.data)
 			.then((b) => {
 				if (alive) setBuf(b);
 			})

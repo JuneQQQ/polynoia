@@ -26,6 +26,13 @@ class Settings(BaseSettings):
         "https://localhost",       # Capacitor iOS/Android (scheme "https")
         "capacitor://localhost",   # Capacitor legacy/native scheme
         "http://localhost",        # defensive
+        # LAN dev: an Android WebView / phone loads the Vite dev page from the
+        # host's LAN IP, then calls the API cross-origin. Both the page origin
+        # (:5173) and a direct-backend origin (:7780) must be allowed, else the
+        # browser CORS-blocks every request and the app shows no data. Change the
+        # IP to your host, or set POLYNOIA_CORS_ORIGINS to override the whole list.
+        "http://10.2.255.109:5173",
+        "http://10.2.255.109:7780",
     ]
 
     # Storage — strict platform/user data separation:
