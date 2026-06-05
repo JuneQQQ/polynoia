@@ -250,6 +250,13 @@ export function Sidebar({
    * Card guards use this instead of `total > 0` so a failed probe doesn't
    * permanently hide the first-run card. */
   const [adapterStatusLoaded, setAdapterStatusLoaded] = useState(false);
+  /** The "第一步 接入适配器" card only shows while enabled===0. When adapters are
+   * already ready on entry (host CLI creds auto-reused → enabled>0 from the
+   * start), the user never sees that card, so the create-contact card is THEIR
+   * first step — it should read 第一步, not 第二步. Latches true the moment we
+   * observe a real zero-adapter state post-load, so the contact card stays
+   * 第二步 for users who actually go through the adapter step first. */
+  const [adapterStepSeen, setAdapterStepSeen] = useState(false);
   const refreshAdapterStatus = useCallback(async () => {
     // Fast path — pure DB read, no CLI subprocess. Updates the status pill
     // count + first-run card visibility immediately after enable/disable.
@@ -286,6 +293,9 @@ export function Sidebar({
     const id = setInterval(refreshAdapterStatus, 30_000);
     return () => clearInterval(id);
   }, [refreshAdapterStatus]);
+  useEffect(() => {
+    if (adapterStatusLoaded && adapterStatus.enabled === 0) setAdapterStepSeen(true);
+  }, [adapterStatusLoaded, adapterStatus.enabled]);
 
   // ALL hooks must run before any early return — React requires consistent
   // hook order across renders. Filtering memos are used by Layer 1 only,
@@ -701,7 +711,7 @@ export function Sidebar({
           />
           <div className="flex items-baseline gap-2 mb-1.5">
             <span className="font-mono text-[9.5px] uppercase tracking-[0.25em] text-[var(--color-accent)]">
-              {t("secondRunStep", lang)}
+              {t(adapterStepSeen ? "secondRunStep" : "firstRunStep", lang)}
             </span>
             <span className="font-display text-[14px] text-[var(--color-sidebar-fg)] tracking-wide">
               {t("secondRunTitle", lang)}
