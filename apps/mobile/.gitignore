@@ -1,0 +1,18 @@
+# Capacitor-generated native projects
+ios/App/Pods/
+ios/App/build/
+ios/App/Podfile.lock
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.idea/
+android/*.iml
+
+# Dependencies
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

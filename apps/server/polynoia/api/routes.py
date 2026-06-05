@@ -59,6 +59,12 @@ _DISCUSSION_FANOUT_CAP = 2
 # dead model backend, wedged CLI session) → fail the turn instead of freezing
 # the burst lane forever. Idle-based (not total) so productive long turns live.
 _AGENT_IDLE_TIMEOUT = 120.0
+# When a turn produces NO output (hung backend), auto-retry up to N times with
+# INCREASING backoff between tries, surfacing each retry to the user (not silent).
+# Each retry also gives the model MORE idle patience (a merely-slow start isn't
+# killed). Only retries when nothing was streamed yet — so there's no double-emit.
+_TURN_RETRIES = 5
+_RETRY_BACKOFF = (5.0, 15.0, 30.0, 60.0, 120.0)  # seconds before retry 1..5 (越来越长)
 
 # Cross-handler conv broadcaster: HTTP endpoints (e.g. /api/pending-edits POST)
 # need to push WS chunks to all clients tailing a conv. Each ws_conv handler
@@ -4228,7 +4234,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # attempt fails BEFORE emitting anything, treat it as a stale
                 # session: evict + respawn once. (We only retry when nothing
                 # streamed yet, so there's no double-emit.)
-                for attempt in range(2):
+                for attempt in range(_TURN_RETRIES + 1):
+                    # Later attempts wait longer for first output (a slow model
+                    # start shouldn't be killed as "hung").
+                    idle_to = _AGENT_IDLE_TIMEOUT + attempt * 60.0
                     sess = await pool.get_session(agent_id, conv_id)
                     if sess is None:
                         await emit_agent_status(
@@ -4283,7 +4292,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             if anext_task is None:
                                 anext_task = asyncio.ensure_future(agen.__anext__())
                             _done, _ = await asyncio.wait(
-                                {anext_task}, timeout=_AGENT_IDLE_TIMEOUT
+                                {anext_task}, timeout=idle_to
                             )
                             if not _done:
                                 # Idle window elapsed; the __anext__() task is
@@ -4321,7 +4330,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 with contextlib.suppress(BaseException):
                                     await anext_task
                                 raise RuntimeError(
-                                    f"{agent_id} 无响应:{int(_AGENT_IDLE_TIMEOUT)}s "
+                                    f"{agent_id} 无响应:{int(idle_to)}s "
                                     "内无任何输出(疑似模型后端挂起)"
                                 )
                             try:
@@ -4386,9 +4395,24 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     except asyncio.CancelledError:
                         raise
                     except Exception:
-                        if attempt == 0 and not emitted_any:
+                        # Hung backend (incl. the idle-timeout RuntimeError) with
+                        # NOTHING streamed yet → auto-retry up to _TURN_RETRIES with
+                        # INCREASING backoff, and SHOW each retry to the user from
+                        # the first one (never silent). Safe to re-run: no output
+                        # was emitted, so there's no double-emit.
+                        if attempt < _TURN_RETRIES and not emitted_any:
+                            wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+                            await _persist_and_emit_error(
+                                emit, conv_id=conv_id, sender_id=agent_id,
+                                message=(
+                                    f"⏳ {agent_id} 无响应,自动重试中"
+                                    f"({attempt + 1}/{_TURN_RETRIES})· {int(wait)}s 后再试…"
+                                ),
+                                reason="timeout", retryable=False,
+                            )
                             with suppress(Exception):
                                 await pool.close_session(agent_id, conv_id)
+                            await asyncio.sleep(wait)
                             continue  # respawn fresh + retry
                         raise
             except asyncio.CancelledError:
