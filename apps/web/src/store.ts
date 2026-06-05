@@ -236,7 +236,11 @@ type Store = {
 	 * manual = user resolves). Mirrored from ChatPane's convSummary so deep parts
 	 * (ConflictPart) can show the right hint without prop-drilling. */
 	mergeMode: "auto" | "manual";
-	setMergeMode: (m: "auto" | "manual") => void;
+	/** Which conv `mergeMode` describes — so a deep part (ConflictPart) can tell
+	 * the value is for ITS conv and not a stale value from a conv just switched
+	 * away from (the mirror effect lags conv-switch by a fetch). */
+	mergeModeConvId: string | null;
+	setMergeMode: (m: "auto" | "manual", convId: string | null) => void;
 	/** Active reply target — set by MessageView "回复" action, consumed by
 	 * Composer. Cleared after send. Scoped per-conv via convId in the value. */
 	replyingTo: {
@@ -662,7 +666,8 @@ export const useStore = create<Store>((set, get) => ({
 	setComposerDraft: (value) => set({ composerDraft: value }),
 	setView: (v) => set({ view: v }),
 	mergeMode: "auto",
-	setMergeMode: (m) => set({ mergeMode: m }),
+	mergeModeConvId: null,
+	setMergeMode: (m, convId) => set({ mergeMode: m, mergeModeConvId: convId }),
 	setLang: (l) => {
 		if (typeof window !== "undefined") {
 			window.localStorage.setItem("polynoia.lang", l);

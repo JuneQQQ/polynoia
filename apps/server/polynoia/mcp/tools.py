@@ -677,13 +677,16 @@ async def _callback_server(
     base = os.environ.get("POLYNOIA_API_BASE")
     if not base:
         return {"kind": "error", "error": f"{label} unavailable (no API base in this context)"}
-    # Retry TRANSIENT failures (transport error / 5xx) a few times with backoff —
-    # a momentary blip on the localhost callback shouldn't surface to the LLM as a
-    # hard tool failure it can't fix by changing inputs (e.g. a `report` that
-    # transiently 500s once stalled a whole burst). A 4xx is a REAL client error
-    # (bad inputs) → return immediately so the model corrects rather than looping.
+    # Retry TRANSIENT failures (transport error / 5xx) with backoff — but ONLY for
+    # idempotent GET reads (recall / conflict read+list). A POST/PATCH callback
+    # (dispatch / report / remember / present / resolve) is NOT idempotent:
+    # retrying a 5xx-after-commit or an ambiguous transport error would DUPLICATE
+    # the side effect (two bursts, a doubled verdict), so those get a single
+    # attempt. A 4xx is a real client error → return immediately so the model
+    # corrects rather than looping.
+    attempts = 3 if method.upper() == "GET" else 1
     last_err = ""
-    for attempt in range(3):
+    for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(
                 base_url=base, timeout=30.0, trust_env=False
@@ -700,7 +703,7 @@ async def _callback_server(
             last_err = f"{label} endpoint returned {r.status_code}: {r.text[:200]}"
         except (httpx.RequestError, httpx.HTTPError) as e:
             last_err = f"{label} transport failure: {e}"
-        if attempt < 2:
+        if attempt < attempts - 1:
             await asyncio.sleep(0.5 * (attempt + 1))
     return {"kind": "error", "error": last_err or f"{label} failed after retries"}
 

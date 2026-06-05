@@ -617,9 +617,14 @@ export function ChatPane({ convId, members, title }: Props) {
 	const inWorkspace = !!convSummary?.workspace_id;
 	// Mirror the active conv's merge gate into the store so deep parts
 	// (ConflictPart) can branch their UI on auto vs manual without prop-drilling.
+	// Tag it with convId; while convSummary is still loading mark it unknown
+	// (null convId) so a freshly-switched conv's ConflictPart doesn't read a stale
+	// mode from the conv we just left.
 	useEffect(() => {
-		useStore.getState().setMergeMode(mergeMode);
-	}, [mergeMode]);
+		if (convSummary)
+			useStore.getState().setMergeMode(mergeMode, convId);
+		else useStore.getState().setMergeMode("auto", null);
+	}, [mergeMode, convId, convSummary]);
 
 	const toggleMergeMode = async () => {
 		if (!convSummary) return;

@@ -342,8 +342,14 @@ function TasksBurstPartInner({
 											useStore.getState().convs.get(convId)?.msgById ??
 											new Map<string, Message>();
 										const { firsts, skip } = computeLaneFold(byId, lane);
-										return lane.map((mid, i) => {
+										// Track RENDERED position (not the raw array index): dropped
+										// (skipped) bash tool-calls don't count, so the first VISIBLE
+										// item gets isGrouped=false even if earlier items were dropped.
+										let shownAny = false;
+										return lane.map((mid) => {
 											if (skip.has(mid)) return null;
+											const grouped = shownAny;
+											shownAny = true;
 											const grp = firsts.get(mid);
 											if (grp)
 												return (
@@ -360,7 +366,7 @@ function TasksBurstPartInner({
 													convId={convId}
 													msgId={mid}
 													compact
-													isGrouped={i > 0}
+													isGrouped={grouped}
 												/>
 											);
 										});

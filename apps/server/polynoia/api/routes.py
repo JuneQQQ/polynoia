@@ -4174,7 +4174,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # open and is skipped on the next drain). The fix turn is NOT a
                         # burst worker (no burst_card_id/_task_id) so it never touches
                         # the is_last state machine.
-                        if cid and _conv and _conv.merge_mode == "auto" and orch_id:
+                        # ONLY auto-resolve when orch_id is the conv's TRUE
+                        # orchestrator (burst case). In a non-burst drain orch_id is
+                        # the speaking agent itself — auto-spawning a "you're the
+                        # arbiter" turn for the branch's own author is judge-and-party
+                        # (the exact bias we avoid); leave those for the user instead.
+                        _true_orch = bool(
+                            orch_id
+                            and _conv
+                            and orch_id == getattr(_conv, "orchestrator_member_id", None)
+                        )
+                        if cid and _conv and _conv.merge_mode == "auto" and _true_orch:
                             nudge = _build_conflict_fix_prompt(cid, b, author, files)
                             if nudge is not None:
                                 _spawn_turn(conv_id, orch_id, run_adapter_turn(

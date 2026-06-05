@@ -10,6 +10,7 @@ import { useState } from "react";
 import { api } from "../../lib/api";
 import type { ConflictPayload } from "../../lib/types";
 import { useStore } from "../../store";
+import { useConvScope } from "./_context";
 
 const CTYPE_LABEL: Record<string, string> = {
   content: "内容",
@@ -24,8 +25,14 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
   const upsertConflict = useStore((s) => s.upsertConflict);
   const agents = useStore((s) => s.agents);
   // auto = orchestrator resolves (don't make it look like it's waiting on the
-  // user); manual = user resolves in the panel. Switching mode updates this live.
+  // user); manual = user resolves in the panel. Only trust the auto hint when the
+  // store's mergeMode is confirmed FOR THIS conv (mergeModeConvId match) — on a
+  // fresh conv-switch the mirror lags, so default to the safe manual buttons.
+  const scope = useConvScope();
   const mergeMode = useStore((s) => s.mergeMode);
+  const mergeModeConvId = useStore((s) => s.mergeModeConvId);
+  const isAuto =
+    mergeMode === "auto" && !!scope && mergeModeConvId === scope.convId;
   const [busy, setBusy] = useState(false);
   const status = payload.status;
   const files = payload.files ?? [];
@@ -121,18 +128,26 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
           >
             <AlertTriangle size={12} /> 已放弃,分支未合并进 main
           </span>
-        ) : mergeMode === "auto" ? (
+        ) : isAuto ? (
           // AUTO → the orchestrator resolves (from the clean post-merge state).
           // No manual-takeover here: a half-auto-resolved intermediate isn't a
           // valid hand-off point. To resolve by hand, switch the conv to MANUAL
           // (which restarts from the original surfaced conflict — resolve is
-          // atomic, so there's never a partial state to inherit).
+          // atomic, so there's never a partial state to inherit). If the
+          // orchestrator can't auto-fix (e.g. all-binary), switching to Manual is
+          // the way out — hence the hint.
           <span
-            className="inline-flex items-center gap-1 text-[11px]"
+            className="inline-flex items-center gap-1.5 text-[11px]"
             style={{ color: "var(--color-amber)" }}
           >
-            <Loader2 size={12} className="animate-spin" /> auto 模式 ·
-            协调者自动合并中…
+            <Loader2 size={12} className="animate-spin flex-shrink-0" />
+            <span>
+              auto 模式 · 协调者自动合并中…
+              <span className="text-[var(--color-fg-4)]">
+                {" "}
+                (长时间未动可切 Manual 手动解决)
+              </span>
+            </span>
           </span>
         ) : (
           <>
