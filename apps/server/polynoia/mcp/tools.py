@@ -939,8 +939,12 @@ class _AskUserTool(_ToolBase):
         if not ask_id:
             return {"kind": "error", "error": reg.get("error", "failed to register question")}
         ctx.append_audit("tool.ask", {"ask_id": ask_id, "n": len(questions)})
-        # Block this turn: poll until the user answers (or ~10min timeout).
-        for _ in range(300):
+        # Block this turn: poll until the user answers — for as long as it takes.
+        # No timeout: a question to the human should wait indefinitely (the idle
+        # watchdog in routes.py exempts conversations with an open ask_user, so
+        # the turn is never killed for being "silent" here). The user can still
+        # abort the turn from the UI if they want to bail.
+        while True:
             await asyncio.sleep(2)
             poll = await _callback_server(
                 f"/api/conversations/{ctx.conv_id}/ask/{ask_id}",
@@ -948,7 +952,6 @@ class _AskUserTool(_ToolBase):
             )
             if poll.get("answered"):
                 return {"kind": "answered", "answer": poll.get("answer", "")}
-        return {"kind": "error", "error": "user did not answer within 10 minutes"}
 
 
 class _RequestProjectAccessTool(_ToolBase):
@@ -991,7 +994,10 @@ class _RequestProjectAccessTool(_ToolBase):
                 pid = r.json().get("id")
                 if not pid:
                     return {"kind": "error", "error": "no pending id"}
-                deadline = asyncio.get_event_loop().time() + 300  # 5 min budget
+                # Wait for the user's decision for as long as it takes — no
+                # deadline. The idle watchdog (routes.py) exempts conversations
+                # with a pending project-access request, so the turn isn't killed
+                # while the user decides. They can abort from the UI to bail.
                 while True:
                     r = await client.get(
                         f"/api/pending-access/{pid}/wait", params={"timeout": 60},
@@ -1004,11 +1010,6 @@ class _RequestProjectAccessTool(_ToolBase):
                         return {"kind": "granted", "workspace_id": row.get("workspace_id"),
                                 "note": "项目已授权,但要在你的下一轮才会挂载——请用户把任务再发一次。"}
                     if st in ("rejected", "timeout"):
-                        return {"kind": "denied"}
-                    if asyncio.get_event_loop().time() >= deadline:
-                        with contextlib.suppress(Exception):
-                            await client.post(f"/api/pending-access/{pid}/decide",
-                                              json={"decision": "reject"})
                         return {"kind": "denied"}
         except (httpx.RequestError, httpx.HTTPError) as e:
             return {"kind": "error", "error": f"transport failure: {e}"}

@@ -85,6 +85,21 @@ _pending_discussions: dict[str, list[dict]] = {}
 # `ask_user` MCP tool registers an entry then polls it (suspending the agent's
 # turn); the frontend POSTs the answer to resolve it. poll_ask pops on delivery.
 _pending_asks: dict[str, str | None] = {}
+# ask_id → conv_id, so the idle watchdog can tell when a conv is legitimately
+# blocked on an ask_user (per-chunk silence is expected while the user thinks).
+# Set at register, dropped when poll_ask delivers the answer.
+_ask_conv: dict[str, str] = {}
+
+
+def _conv_has_open_ask(conv_id: str) -> bool:
+    """True while this conv has an ask_user awaiting the user's answer (value is
+    still None). Used by the idle watchdog to NOT kill the turn — the user may
+    take any amount of time to answer."""
+    return any(
+        _ask_conv.get(aid) == conv_id
+        for aid, ans in _pending_asks.items()
+        if ans is None
+    )
 
 # Conversation-scoped execution state — lives at MODULE level (per conv_id), NOT
 # per WS connection. This is what makes execution backend-driven + refresh-safe:
@@ -1507,6 +1522,7 @@ async def register_ask(conv_id: str, body: dict):
     questions = body.get("questions") or []
     title = (body.get("title") or "").strip()
     _pending_asks[ask_id] = None
+    _ask_conv[ask_id] = conv_id
     af = {
         "id": ask_id, "agent_id": agent_id, "kind": "ask-form",
         "title": title, "blocking": True, "questions": questions,
@@ -1538,6 +1554,7 @@ async def register_ask(conv_id: str, body: dict):
 async def poll_ask(conv_id: str, ask_id: str):
     """Polled by the `ask_user` tool. Returns {answered, answer}; pops on delivery."""
     if _pending_asks.get(ask_id) is not None:
+        _ask_conv.pop(ask_id, None)
         return {"answered": True, "answer": _pending_asks.pop(ask_id)}
     return {"answered": False, "answer": None}
 
@@ -4261,10 +4278,23 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 # re-enter the generator). If the user never
                                 # decides, the in-MCP gate self-rejects (300s),
                                 # the tool returns, codex resumes streaming.
-                                async with SessionLocal() as _wd_sess:
-                                    waiting = await storage_repo.has_waiting_pending_edits(
-                                        _wd_sess, conv_id
-                                    )
+                                # "Blocked on the human" also covers a blocking
+                                # ask_user (in-memory, conv has an unanswered
+                                # question) and an ADR-020 project-access request
+                                # — the user may take any amount of time, so the
+                                # watchdog must NOT kill the turn while one is
+                                # open. Keep waiting on the SAME task.
+                                waiting = _conv_has_open_ask(conv_id)
+                                if not waiting:
+                                    async with SessionLocal() as _wd_sess:
+                                        waiting = (
+                                            await storage_repo.has_waiting_pending_edits(
+                                                _wd_sess, conv_id
+                                            )
+                                            or await storage_repo.has_waiting_pending_access(
+                                                _wd_sess, conv_id
+                                            )
+                                        )
                                 if waiting:
                                     continue
                                 anext_task.cancel()

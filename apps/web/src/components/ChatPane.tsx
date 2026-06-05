@@ -951,7 +951,7 @@ export function ChatPane({ convId, members, title }: Props) {
 					onToggleMergeMode={toggleMergeMode}
 					statusSlot={
 						activeAgents.length > 0 ? (
-							<div className="anim-fade-up mb-2 flex flex-wrap items-center gap-1.5 px-1 text-[11.5px]">
+							<div className="anim-fade-up mb-2 flex flex-wrap items-center justify-center gap-1.5 px-1 text-[11.5px]">
 								{activeAgents.map((a) => {
 									const agent = agents.find((x) => x.id === a.id);
 									const label =

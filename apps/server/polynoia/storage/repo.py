@@ -964,6 +964,20 @@ async def has_waiting_pending_edits(session: AsyncSession, conv_id: str) -> bool
     return (await session.execute(stmt)).first() is not None
 
 
+async def has_waiting_pending_access(session: AsyncSession, conv_id: str) -> bool:
+    """Like has_waiting_pending_edits, but for ADR-020 project-access requests.
+    The idle watchdog uses it so a turn blocked on request_project_access (the
+    agent long-polls while the user picks a project + 批准/拒绝) isn't mistaken
+    for a hung backend and killed."""
+    stmt = (
+        select(PendingAccessRow.id)
+        .where(PendingAccessRow.conv_id == conv_id)
+        .where(PendingAccessRow.status == "pending")
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
+
+
 async def abandon_pending_edits_for_adapter(
     session: AsyncSession, conv_id: str, agent_slug: str,
 ) -> list[PendingEditRow]:

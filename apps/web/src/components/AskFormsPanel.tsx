@@ -115,6 +115,10 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 
 const EMPTY: readonly AskFormEntry[] = [];
 
+// Sentinel option for the user-supplied 「其他」 free-text choice on single/multi
+// questions — so the user is never boxed into the agent's preset options.
+const OTHER = "__pn_other__";
+
 function AskCard({
   af,
   agents,
@@ -135,6 +139,14 @@ function AskCard({
     }
     return init;
   });
+  // Free-text for the 「其他」 choice, keyed by q.id.
+  const [otherText, setOtherText] = useState<Record<string, string>>({});
+  // 「这问题不够清楚 · 让它展开说」 — instead of answering, bounce a free-form
+  // clarification request back to the asking agent; it re-asks with more detail.
+  const [clarifyOpen, setClarifyOpen] = useState(false);
+  const [clarifyText, setClarifyText] = useState(
+    "你的问题对我来说不够清楚——请把背景、每个选项的含义、以及你到底要我定哪个点,都展开讲清楚,然后再问我一次。",
+  );
 
   const asker = agents.find((a) => a.id === af.agent_id);
 
@@ -142,6 +154,8 @@ function AskCard({
     setAnswers((a) => ({ ...a, [qid]: v }));
   const setFill = (qid: string, v: string) =>
     setAnswers((a) => ({ ...a, [qid]: v }));
+  const setOther = (qid: string, v: string) =>
+    setOtherText((o) => ({ ...o, [qid]: v }));
   const toggleMulti = (qid: string, v: string) => {
     setAnswers((a) => {
       const cur = new Set((a[qid] as string[]) ?? []);
@@ -155,8 +169,16 @@ function AskCard({
     // Free-text 补充说明 is inherently optional — never block submit on a fill.
     if (q.kind === "fill") return true;
     const v = answers[q.id];
-    if (q.kind === "single") return typeof v === "string" && v.length > 0;
-    if (q.kind === "multi") return Array.isArray(v) && v.length > 0;
+    if (q.kind === "single") {
+      // 「其他」 selected → require the custom text.
+      if (v === OTHER) return (otherText[q.id] ?? "").trim().length > 0;
+      return typeof v === "string" && v.length > 0;
+    }
+    if (q.kind === "multi") {
+      const arr = Array.isArray(v) ? v : [];
+      if (arr.includes(OTHER) && !(otherText[q.id] ?? "").trim()) return false;
+      return arr.length > 0;
+    }
     return true;
   });
 
@@ -169,11 +191,17 @@ function AskCard({
     for (const q of af.questions) {
       const v = answers[q.id];
       if (q.kind === "single") {
-        const opt = q.options?.find((o) => o.value === v);
-        parts.push(`${q.label} · ${opt?.label ?? v}`);
+        if (v === OTHER) {
+          parts.push(`${q.label} · ${otherText[q.id] || "(其他)"}`);
+        } else {
+          const opt = q.options?.find((o) => o.value === v);
+          parts.push(`${q.label} · ${opt?.label ?? v}`);
+        }
       } else if (q.kind === "multi") {
-        const labels = (v as string[]).map(
-          (vv) => q.options?.find((o) => o.value === vv)?.label ?? vv,
+        const labels = (v as string[]).map((vv) =>
+          vv === OTHER
+            ? otherText[q.id] || "(其他)"
+            : (q.options?.find((o) => o.value === vv)?.label ?? vv),
         );
         parts.push(`${q.label} · ${labels.join(" + ")}`);
       } else {
@@ -181,6 +209,13 @@ function AskCard({
       }
     }
     onAnswered(af, parts.join(" · "));
+  };
+
+  // ④ Bounce the question back asking the agent to clarify (chat about it).
+  const sendClarify = () => {
+    const t = clarifyText.trim();
+    if (!t || !active) return;
+    onAnswered(af, t);
   };
 
   return (
@@ -273,6 +308,40 @@ function AskCard({
                   </button>
                 );
               })}
+              {q.kind === "single" && (
+                <button
+                  type="button"
+                  onClick={() => active && setSingle(q.id, OTHER)}
+                  disabled={!active}
+                  className={`w-full flex items-start gap-2 px-2.5 py-1.5 rounded-md text-left border transition ${
+                    answers[q.id] === OTHER
+                      ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
+                      : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
+                  }`}
+                >
+                  <span
+                    className="w-3.5 h-3.5 rounded-full border-[1.5px] mt-0.5 flex-shrink-0"
+                    style={{
+                      borderColor:
+                        answers[q.id] === OTHER ? "var(--color-accent)" : "var(--color-line-strong)",
+                      background: answers[q.id] === OTHER ? "var(--color-accent)" : "transparent",
+                    }}
+                  />
+                  <div className="flex-1 min-w-0 text-[12px] font-medium text-[var(--color-fg)]">
+                    其他(自己填)
+                  </div>
+                </button>
+              )}
+              {q.kind === "single" && answers[q.id] === OTHER && (
+                <textarea
+                  value={otherText[q.id] ?? ""}
+                  onChange={(e) => setOther(q.id, e.target.value)}
+                  placeholder="输入你的答案…"
+                  rows={2}
+                  disabled={!active}
+                  className="w-full px-2.5 py-2 text-[12.5px] rounded-md border border-[var(--color-accent)]/60 bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
+                />
+              )}
               {q.kind === "multi" && q.options?.map((opt) => {
                 const picked = ((answers[q.id] as string[]) ?? []).includes(opt.value);
                 return (
@@ -309,6 +378,47 @@ function AskCard({
                   </button>
                 );
               })}
+              {q.kind === "multi" && (
+                <button
+                  type="button"
+                  onClick={() => active && toggleMulti(q.id, OTHER)}
+                  disabled={!active}
+                  className={`w-full flex items-start gap-2 px-2.5 py-1.5 rounded-md text-left border transition ${
+                    ((answers[q.id] as string[]) ?? []).includes(OTHER)
+                      ? "bg-[var(--color-accent-soft)] border-[var(--color-accent)]"
+                      : "bg-[var(--color-surface)] border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
+                  }`}
+                >
+                  <span
+                    className="w-3.5 h-3.5 rounded-[3px] border-[1.5px] grid place-items-center mt-0.5 flex-shrink-0"
+                    style={{
+                      borderColor: ((answers[q.id] as string[]) ?? []).includes(OTHER)
+                        ? "var(--color-accent)"
+                        : "var(--color-line-strong)",
+                      background: ((answers[q.id] as string[]) ?? []).includes(OTHER)
+                        ? "var(--color-accent)"
+                        : "transparent",
+                    }}
+                  >
+                    {((answers[q.id] as string[]) ?? []).includes(OTHER) && (
+                      <Check size={9} color="#fff" strokeWidth={3} />
+                    )}
+                  </span>
+                  <div className="flex-1 min-w-0 text-[12px] font-medium text-[var(--color-fg)]">
+                    其他(自己填)
+                  </div>
+                </button>
+              )}
+              {q.kind === "multi" && ((answers[q.id] as string[]) ?? []).includes(OTHER) && (
+                <textarea
+                  value={otherText[q.id] ?? ""}
+                  onChange={(e) => setOther(q.id, e.target.value)}
+                  placeholder="输入你的答案…"
+                  rows={2}
+                  disabled={!active}
+                  className="w-full px-2.5 py-2 text-[12.5px] rounded-md border border-[var(--color-accent)]/60 bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
+                />
+              )}
               {q.kind === "fill" && (
                 <textarea
                   value={(answers[q.id] as string) ?? ""}
@@ -325,15 +435,59 @@ function AskCard({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center gap-2 pl-4 pr-3 py-2.5 bg-[var(--color-surface-2)] border-t border-[var(--color-line)]">
-        <button
-          type="button"
-          onClick={submit}
-          disabled={!isAnswered || !active}
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Send size={12} /> Send answer
-        </button>
+      <div className="pl-4 pr-3 py-2.5 bg-[var(--color-surface-2)] border-t border-[var(--color-line)] space-y-2">
+        {clarifyOpen && active && (
+          <textarea
+            value={clarifyText}
+            onChange={(e) => setClarifyText(e.target.value)}
+            rows={3}
+            placeholder="告诉它问题哪里不清楚、你想让它展开什么…"
+            className="w-full px-2.5 py-2 text-[12px] rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
+          />
+        )}
+        <div className="flex items-center gap-2">
+          {clarifyOpen ? (
+            <>
+              <button
+                type="button"
+                onClick={sendClarify}
+                disabled={!clarifyText.trim() || !active}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Send size={12} /> 发送追问
+              </button>
+              <button
+                type="button"
+                onClick={() => setClarifyOpen(false)}
+                className="text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={!isAnswered || !active}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Send size={12} /> Send answer
+              </button>
+              {active && (
+                <button
+                  type="button"
+                  onClick={() => setClarifyOpen(true)}
+                  className="ml-auto inline-flex items-center gap-1 text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
+                  title="把这个问题打回去,让 Agent 把背景和选项讲清楚再问"
+                >
+                  <MessageCircleQuestion size={12} />
+                  问题不清楚?让它展开说
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
