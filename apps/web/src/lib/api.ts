@@ -600,17 +600,33 @@ export const api = {
 			modified: number;
 		}>;
 	},
-	/** Read a workspace file as raw bytes. Used for binary previews such as .xlsx. */
-	workspaceFileBytesRead: async (wsId: string, path: string) => {
-		const r = await fetch(
-			`/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`,
-		);
-		if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-		return {
-			data: await r.arrayBuffer(),
-			modified: Number(r.headers.get("X-Modified") || "0"),
-		};
-	},
+	/** Read a workspace file as raw bytes. Used for binary previews such as .xlsx,
+	 * and (mobile) for ALL previews via /files/blob.
+	 *
+	 * Uses XMLHttpRequest, not fetch(): some Android WebViews throw
+	 * "TypeError: Failed to fetch" on fetch() of a binary octet-stream response
+	 * (even same-origin) while XHR with responseType=arraybuffer succeeds. Same
+	 * behavior in real browsers — this is purely a WebView compatibility choice. */
+	workspaceFileBytesRead: (wsId: string, path: string) =>
+		new Promise<{ data: ArrayBuffer; modified: number }>((resolve, reject) => {
+			const url = `/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`;
+			const xhr = new XMLHttpRequest();
+			xhr.open("GET", url, true);
+			xhr.responseType = "arraybuffer";
+			xhr.onload = () => {
+				if (xhr.status >= 200 && xhr.status < 300) {
+					resolve({
+						data: xhr.response as ArrayBuffer,
+						modified: Number(xhr.getResponseHeader("X-Modified") || "0"),
+					});
+				} else {
+					reject(new Error(`${xhr.status} ${xhr.statusText || "request failed"}`));
+				}
+			};
+			xhr.onerror = () => reject(new Error("network error (xhr)"));
+			xhr.ontimeout = () => reject(new Error("request timed out"));
+			xhr.send();
+		}),
 	/** Write raw bytes + auto-commit on main. */
 	workspaceFileBytesWrite: async (
 		wsId: string,
