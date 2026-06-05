@@ -7,7 +7,7 @@
  *   - 插入后光标位置正确;同一行可多次 @
  *   - picker 列表:本 conv 的 members + 所有 enabled adapter agents(全局可召唤)
  */
-import { ArrowUp, FileText, Paperclip, Plus, Reply, X } from "lucide-react";
+import { ArrowUp, FileText, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { isMobile } from "../lib/platform";
@@ -585,7 +585,7 @@ export function Composer({
               }`}
               title="添加附件(也支持粘贴)"
             >
-              <Plus size={mobile ? 22 : 18} />
+              <Paperclip size={mobile ? 20 : 16} />
             </button>
             {/* Merge-mode toggle — relocated from the header into the composer */}
             {showMergeToggle && onToggleMergeMode && (
