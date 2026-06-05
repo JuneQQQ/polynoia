@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Polynoia · 多 Agent 冲突解决方案(底层设计原理)</title>
+<style>
+  :root{
+    --bg:#FAF8F4; --surface:#ffffff; --surface2:#F4F1EA;
+    --line:#E7E2D8; --line2:#D8D2C4;
+    --blue:#5B8FF9; --blue-soft:#E8F0FE;
+    --orange:#F2994A; --orange-soft:#FDF0E3;
+    --gray:#E5E7EB; --green:#27AE60; --green-soft:#E4F5EB;
+    --red:#E5484D; --red-soft:#FCE8E9;
+    --purple:#8B5CF6; --purple-soft:#F0EBFD;
+    --slate:#1F2937; --fg2:#4A5568; --fg3:#8A8577;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft Yahei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--slate);font-family:var(--sans);
+    line-height:1.7;-webkit-font-smoothing:antialiased;}
+  code,.mono{font-family:var(--mono);font-size:.88em}
+  .mono-token{font-family:var(--mono);background:var(--surface2);border:1px solid var(--line);
+    padding:1px 6px;border-radius:5px;font-size:.84em;white-space:nowrap;color:var(--slate)}
+  a{color:var(--blue);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+  section{padding:58px 0;border-bottom:1px dashed var(--line)}
+  section:last-child{border-bottom:none}
+  .kicker{display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.12em;
+    text-transform:uppercase;font-weight:600;margin-bottom:12px}
+  h1{font-size:43px;line-height:1.15;margin:0 0 18px;font-weight:800;letter-spacing:-.5px}
+  h2{font-size:28px;margin:0 0 8px;font-weight:750;letter-spacing:-.3px}
+  h3{font-size:18px;margin:0 0 6px;font-weight:700}
+  .lead{font-size:18px;color:var(--fg2);max-width:800px}
+  .sub{color:var(--fg3);font-size:14.5px;margin:6px 0 0}
+  p{margin:14px 0}
+
+  nav.top{position:sticky;top:0;z-index:50;background:rgba(250,248,244,.86);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  nav.top .wrap{display:flex;align-items:center;gap:6px;height:54px;flex-wrap:wrap}
+  nav.top .brand{font-weight:800;letter-spacing:-.3px;margin-right:8px}
+  nav.top .brand b{color:var(--orange)}
+  nav.top a{font-size:13px;color:var(--fg2);padding:5px 9px;border-radius:7px}
+  nav.top a:hover{background:var(--surface2);text-decoration:none;color:var(--slate)}
+
+  .hero{padding-top:70px}
+  .hero .philo{margin-top:28px;padding:22px 26px;background:var(--surface);
+    border:1px solid var(--line);border-left:4px solid var(--orange);border-radius:14px;
+    box-shadow:0 1px 0 rgba(0,0,0,.02);max-width:900px}
+  .hero .philo b{color:var(--slate)}
+  .pillrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:24px}
+  .pill{font-size:13px;padding:7px 14px;border-radius:999px;border:1px solid var(--line);
+    background:var(--surface);display:inline-flex;align-items:center;gap:7px;font-weight:600}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+
+  .grid{display:grid;gap:18px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:900px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;
+    transition:transform .18s ease, box-shadow .18s ease}
+  .card:hover{transform:translateY(-3px);box-shadow:0 10px 28px -16px rgba(31,41,55,.35)}
+  .card .ico{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;
+    justify-content:center;margin-bottom:14px;font-size:21px}
+  .tag{display:inline-block;font-size:11px;font-family:var(--mono);padding:2px 8px;border-radius:6px;
+    font-weight:600;letter-spacing:.03em}
+  .tag.ok{background:var(--green-soft);color:var(--green)}
+  .tag.warn{background:var(--orange-soft);color:#B8651B}
+  .tag.future{background:var(--purple-soft);color:var(--purple)}
+  .tag.live{background:var(--blue-soft);color:#2E62C9}
+  .tag.new{background:var(--purple-soft);color:var(--purple)}
+
+  ul.clean{margin:10px 0;padding-left:20px}
+  ul.clean li{margin:6px 0}
+  .muted{color:var(--fg3)}
+
+  /* layer band */
+  .band{display:flex;gap:18px;align-items:flex-start;background:var(--surface);
+    border:1px solid var(--line);border-radius:16px;padding:22px 24px;position:relative;overflow:hidden}
+  .band + .band{margin-top:16px}
+  .band .rail{flex:0 0 64px;width:64px;text-align:center}
+  .band .rail .num{width:64px;height:64px;border-radius:16px;display:flex;align-items:center;
+    justify-content:center;font-weight:800;font-size:26px;color:#fff;margin-bottom:8px}
+  .band .rail .when{font-size:10.5px;color:var(--fg3);font-weight:600;line-height:1.3}
+  .band .body{flex:1;min-width:0}
+  .band .when-pill{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:6px;
+    background:var(--surface2);border:1px solid var(--line);color:var(--fg2)}
+  .anchor{font-family:var(--mono);font-size:11.5px;color:var(--fg3);margin-top:10px;line-height:1.9}
+  .anchor b{color:var(--fg2);font-weight:600}
+
+  pre{background:#1b2230;color:#dbe4f0;border-radius:12px;padding:18px 20px;overflow:auto;
+    font-family:var(--mono);font-size:13px;line-height:1.62;margin:16px 0;border:1px solid #2a3346}
+  pre .c{color:#7e8aa0} pre .k{color:#7fb2ff} pre .g{color:#67d98b}
+  pre .o{color:#f4a261} pre .r{color:#ff7a7f} pre .p{color:#c4a7ff}
+
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;
+    background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--surface2);font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--fg2)}
+  tr:last-child td{border-bottom:none}
+  td .mono-token{font-size:12px}
+
+  .flowwrap{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:24px}
+  svg{display:block;width:100%;height:auto}
+
+  .callout{display:flex;gap:14px;background:var(--surface);border:1px solid var(--line);
+    border-left:4px solid var(--red);border-radius:12px;padding:16px 18px}
+  .callout.blue{border-left-color:var(--blue)}
+  .callout.green{border-left-color:var(--green)}
+  .callout.purple{border-left-color:var(--purple)}
+  .callout .mk{flex:0 0 30px;font-size:22px;line-height:1.3}
+  .callout h3{margin:0 0 4px}
+  .callout p{margin:2px 0;font-size:14px;color:var(--fg2)}
+
+  .chat{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:8px}
+  .chat .hd{display:flex;align-items:center;gap:8px;padding:12px 16px;background:var(--surface2);
+    border-bottom:1px solid var(--line);font-weight:700;font-size:14px}
+  .chat .bd{padding:18px 16px;display:flex;flex-direction:column;gap:14px}
+  .msg{display:flex;gap:10px;align-items:flex-start}
+  .av{flex:0 0 32px;width:32px;height:32px;border-radius:9px;display:flex;align-items:center;
+    justify-content:center;font-size:14px;color:#fff;font-weight:700}
+  .bub{background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:10px 13px;
+    font-size:14px;max-width:600px}
+  .who{font-size:12px;color:var(--fg3);margin-bottom:3px;font-weight:600}
+  .sys{align-self:center;font-size:12.5px;color:var(--fg3);background:var(--surface2);
+    border:1px dashed var(--line2);padding:5px 12px;border-radius:999px}
+  .ccard{border:1px solid var(--orange);background:var(--orange-soft);border-radius:12px;
+    padding:12px 14px;max-width:600px;font-size:13.5px}
+  .ccard.done{border-color:var(--green);background:var(--green-soft)}
+  .ccard .ttl{font-weight:700;margin-bottom:4px;display:flex;gap:8px;align-items:center}
+
+  footer{padding:46px 0 70px;color:var(--fg3);font-size:13.5px}
+  footer .wrap{display:flex;flex-direction:column;gap:6px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--fg2)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+</style>
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand">Poly<b>noia</b></span>
+  <a href="#spine">纵深防御</a>
+  <a href="#intent">意图冲突</a>
+  <a href="#file">文件冲突</a>
+  <a href="#code">代码冲突</a>
+  <a href="#semantic">语义冲突</a>
+  <a href="#autofix">自动修复</a>
+  <a href="#ui">前端呈现</a>
+  <a href="#history">提交历史·树</a>
+  <a href="#rollback">撤销</a>
+</div></nav>
+
+<!-- ───────── HERO ───────── -->
+<header class="hero"><div class="wrap">
+  <div class="kicker" style="color:var(--orange)">Conflict Resolution · Design Internals</div>
+  <h1>多 Agent 冲突解决方案 · 底层设计原理</h1>
+  <p class="lead">多个 AI Agent 像同事一样在同一个工作区并行干活,冲突无可避免——而且不止一种。
+    Polynoia 把冲突拆成<b>四个正交的层</b>,在四个不同的时间点拦截:
+    <b>意图 → 文件 → 代码 → 语义</b>,= <b>分派 → 隔离 → 合并 → 验收</b>。
+    每一层都可独立失败而不击穿后续层。</p>
+
+  <div class="philo">
+    <b>中心哲学 —— 只为真实的争用付费。</b> 两个 agent 改不同文件、目标不打架 → 零协调开销;
+    只有当他们的<b>意图</b>、<b>同一文件</b>、<b>同一行代码</b>或<b>同一处语义</b>真正撞上,
+    系统才掏出对应那一层的协调成本。没有全局锁,没有把所有写串行化——
+    代价精确落在真正冲突的那个点上。底座是 <b>git</b>:它是唯一事实源,不是自研的冲突引擎。
+  </div>
+
+  <div class="pillrow">
+    <span class="pill"><i class="dot" style="background:var(--purple)"></i>意图 · orchestrator 拆解</span>
+    <span class="pill"><i class="dot" style="background:var(--blue)"></i>文件 · 分支隔离 + 写闸</span>
+    <span class="pill"><i class="dot" style="background:var(--orange)"></i>代码 · git 真合并探测</span>
+    <span class="pill"><i class="dot" style="background:var(--green)"></i>语义 · LLM 修复 + 验收</span>
+  </div>
+</div></header>
+
+<!-- ───────── SPINE 时间轴 ───────── -->
+<section id="spine"><div class="wrap">
+  <div class="kicker" style="color:var(--blue)">Defense in Depth · Timeline</div>
+  <h2>一次并行协作里,四类冲突在四个时间点被拦截</h2>
+  <p class="lead">从用户发话到产物落地,任务流经四道闸。每道闸只管自己那类冲突,放行的交给下一道。</p>
+
+  <div class="flowwrap">
+    <svg viewBox="0 0 1040 250" role="img" aria-label="four-layer conflict timeline">
+      <defs>
+        <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#8A8577"/></marker>
+      </defs>
+      <!-- timeline baseline -->
+      <line x1="40" y1="40" x2="1000" y2="40" stroke="#D8D2C4" stroke-width="2"/>
+      <text x="40" y="26" font-size="12" fill="#8A8577">用户发话</text>
+      <text x="1000" y="26" font-size="12" fill="#8A8577" text-anchor="end">产物落地 main</text>
+
+      <g font-family="var(--sans)">
+        <!-- 1 intent -->
+        <circle cx="160" cy="40" r="7" fill="#8B5CF6"/>
+        <rect x="60" y="70" width="200" height="120" rx="14" fill="#F0EBFD" stroke="#8B5CF6"/>
+        <text x="160" y="96" text-anchor="middle" font-size="15" font-weight="800" fill="#7c3aed">① 意图冲突</text>
+        <text x="160" y="116" text-anchor="middle" font-size="11.5" fill="#4A5568">分派期 · 对齐"做什么"</text>
+        <text x="160" y="140" text-anchor="middle" font-size="11" fill="#8A8577">dispatch / discuss</text>
+        <text x="160" y="156" text-anchor="middle" font-size="11" fill="#8A8577">ask_user · orchestrator</text>
+        <text x="160" y="178" text-anchor="middle" font-size="10.5" fill="#7c3aed">→ 拆成不冲突的子任务</text>
+
+        <!-- 2 file -->
+        <circle cx="400" cy="40" r="7" fill="#5B8FF9"/>
+        <rect x="300" y="70" width="200" height="120" rx="14" fill="#E8F0FE" stroke="#5B8FF9"/>
+        <text x="400" y="96" text-anchor="middle" font-size="15" font-weight="800" fill="#2E62C9">② 文件冲突</text>
+        <text x="400" y="116" text-anchor="middle" font-size="11.5" fill="#4A5568">写入期 · 落盘前隔离</text>
+        <text x="400" y="140" text-anchor="middle" font-size="11" fill="#8A8577">per-agent worktree 分支</text>
+        <text x="400" y="156" text-anchor="middle" font-size="11" fill="#8A8577">file lock · pending-edit 闸</text>
+        <text x="400" y="178" text-anchor="middle" font-size="10.5" fill="#2E62C9">→ 各写各的分支</text>
+
+        <!-- 3 code -->
+        <circle cx="640" cy="40" r="7" fill="#F2994A"/>
+        <rect x="540" y="70" width="200" height="120" rx="14" fill="#FDF0E3" stroke="#F2994A"/>
+        <text x="640" y="96" text-anchor="middle" font-size="15" font-weight="800" fill="#B8651B">③ 代码冲突</text>
+        <text x="640" y="116" text-anchor="middle" font-size="11.5" fill="#4A5568">合并期 · git 撞车</text>
+        <text x="640" y="140" text-anchor="middle" font-size="11" fill="#8A8577">probe_merge 真 3-way</text>
+        <text x="640" y="156" text-anchor="middle" font-size="11" fill="#8A8577">surface 冲突卡 · 4 类 ctype</text>
+        <text x="640" y="178" text-anchor="middle" font-size="10.5" fill="#B8651B">→ 冻成一等数据</text>
+
+        <!-- 4 semantic -->
+        <circle cx="880" cy="40" r="7" fill="#27AE60"/>
+        <rect x="780" y="70" width="200" height="120" rx="14" fill="#E4F5EB" stroke="#27AE60"/>
+        <text x="880" y="96" text-anchor="middle" font-size="15" font-weight="800" fill="#1E8E4E">④ 语义冲突</text>
+        <text x="880" y="116" text-anchor="middle" font-size="11.5" fill="#4A5568">验收期 · 能合但逻辑错</text>
+        <text x="880" y="140" text-anchor="middle" font-size="11" fill="#8A8577">LLM 自动修复轮</text>
+        <text x="880" y="156" text-anchor="middle" font-size="11" fill="#8A8577">report · critic · present</text>
+        <text x="880" y="178" text-anchor="middle" font-size="10.5" fill="#1E8E4E">→ 闭环验收</text>
+
+        <line x1="260" y1="130" x2="296" y2="130" stroke="#8A8577" stroke-width="2" marker-end="url(#a)"/>
+        <line x1="500" y1="130" x2="536" y2="130" stroke="#8A8577" stroke-width="2" marker-end="url(#a)"/>
+        <line x1="740" y1="130" x2="776" y2="130" stroke="#8A8577" stroke-width="2" marker-end="url(#a)"/>
+      </g>
+      <text x="520" y="228" text-anchor="middle" font-size="12.5" fill="#8A8577">
+        从「谁做什么」的协议 → 「不重复写」的隔离 → 「不冲突合」的同步 → 「逻辑通」的闭环</text>
+    </svg>
+  </div>
+</div></section>
+
+<!-- ───────── ① 意图冲突 ───────── -->
+<section id="intent"><div class="wrap">
+  <div class="kicker" style="color:var(--purple)">Layer 1 · Intent</div>
+  <h2>① 意图冲突 —— 在"动手之前"对齐目标</h2>
+  <p class="lead">两个 agent 若对"该做什么"理解不同,后面所有的隔离与合并都是白费。所以第一道闸在
+    <b>任务分派期</b>:Orchestrator(本身就是一个 <span class="mono-token">role=orchestrator</span> 的 Agent)
+    把用户意图拆成<b>互不冲突</b>的子任务,并用共享契约锁定边界。</p>
+
+  <div class="band">
+    <div class="rail"><div class="num" style="background:var(--purple)">①</div><div class="when">分派期</div></div>
+    <div class="body">
+      <h3>机制 · 拆解 / 讨论 / 表决</h3>
+      <ul class="clean">
+        <li><b>dispatch</b> —— Orchestrator 并行派活,每个子任务带 <span class="mono-token">contract</span>(锁定的边界条款),
+          workers 在各自分支并行展开,不互相踩。</li>
+        <li><b>discuss</b> —— 需要先对齐时开圆桌,多 agent 往返讨论收敛意图,再动手。</li>
+        <li><b>ask_user</b> —— 意图本身有歧义 → 阻塞并向用户发 ask-form,人来拍板。</li>
+      </ul>
+      <div class="anchor">
+        <b>锚点</b><br>
+        · <span class="mono-token">mcp/tools.py · _DispatchTool</span> / <span class="mono-token">_DiscussTool</span> / <span class="mono-token">_AskUserTool</span><br>
+        · <span class="mono-token">api/routes.py · dispatch drain → BurstCard + spawn workers</span><br>
+        · <span class="mono-token">contract</span> 注入每个 worker 的 prompt(共享边界,防意图漂移)
+      </div>
+    </div>
+  </div>
+  <p class="sub">拦截时间点:<span class="when-pill">任务分发时</span> —— 把潜在的意图冲突消解成"不重叠的子任务",从源头减少后续撞车。</p>
+</div></section>
+
+<!-- ───────── ② 文件冲突 ───────── -->
+<section id="file"><div class="wrap">
+  <div class="kicker" style="color:var(--blue)">Layer 2 · File</div>
+  <h2>② 文件冲突 —— 在"落盘之前"隔离写入</h2>
+  <p class="lead">多个 agent 想改同一文件?第二道闸在<b>写入期</b>:每个 agent 在共享工作区里有自己的
+    git worktree + 分支,并行写互不可见;manual 模式下每次写还要先过用户审批闸。</p>
+
+  <div class="band">
+    <div class="rail"><div class="num" style="background:var(--blue)">②</div><div class="when">写入期</div></div>
+    <div class="body">
+      <h3>机制 · 分支隔离 + 写闸 + 文件锁</h3>
+      <ul class="clean">
+        <li><b>per-agent worktree 分支</b> <span class="mono-token">agent/&lt;id&gt;/conv-&lt;conv&gt;</span>:从 main 切出,
+          各 agent 的写落在自己分支,撞车被推迟到"集成时"而非"编辑时"。</li>
+        <li><b>pending-edit 闸</b>(manual 模式):<span class="mono-token">write</span> 落盘前 POST 一条待审编辑、
+          长轮询等用户 ✓/✗;auto 模式直接放行。</li>
+        <li><b>per-(conv,file) 锁</b>:同进程内对同一文件的写串行化,防写撕裂。</li>
+      </ul>
+      <div class="anchor">
+        <b>锚点</b><br>
+        · <span class="mono-token">sandbox/_core.py · create_workspace_sandbox</span>(worktree + 分支)<br>
+        · <span class="mono-token">mcp/tools.py · _gate_via_pending_edit</span> / <span class="mono-token">ToolContext.file_lock</span><br>
+        · <span class="mono-token">api/routes.py · /api/pending-edits(create / wait / decide)</span>
+      </div>
+    </div>
+  </div>
+  <p class="sub">拦截时间点:<span class="when-pill">落盘前</span> —— 隔离让大多数"同时改"根本不构成冲突;真撞上的留给第三层。</p>
+</div></section>
+
+<!-- ───────── ③ 代码冲突 ───────── -->
+<section id="code"><div class="wrap">
+  <div class="kicker" style="color:var(--orange)">Layer 3 · Code (git merge)</div>
+  <h2>③ 代码冲突 —— 合并时用真 git 探测,不留痕</h2>
+  <p class="lead">分支隔离把撞车推迟到合并那一刻。第三道闸在<b>合并期</b>:对每条分支跑一次真 3-way 合并,
+    干净则静默落地,冲突则抓三方 blob 冻成一等数据、再把现场抹平。没有自研行 diff——判定权交给 git。</p>
+
+  <pre><span class="c"># probe_merge(branch) —— sandbox/_core.py</span>
+git -c merge.conflictStyle=diff3 <span class="k">merge</span> --no-commit --no-ff <span class="o">&lt;branch&gt;</span>
+git diff --name-only --diff-filter=<span class="r">U</span>          <span class="c"># 有 U(unmerged) 文件? = 冲突</span>
+git show <span class="o">:1:</span>&lt;path&gt;  <span class="c"># base</span>   |  git show <span class="o">:2:</span>&lt;path&gt;  <span class="c"># ours(main)</span>  |  git show <span class="o">:3:</span>&lt;path&gt;  <span class="c"># theirs(分支)</span>
+git <span class="k">merge</span> --abort                              <span class="c"># ★ 抹平现场,main 一字未动</span></pre>
+
+  <div class="grid g4" style="margin-top:8px">
+    <div class="card"><div class="ico" style="background:var(--green-soft)">✅</div><h3>clean</h3>
+      <p class="muted">无 U → 直接 commit,分支静默落地 main。</p></div>
+    <div class="card"><div class="ico" style="background:var(--orange-soft)">⚠️</div><h3>conflict</h3>
+      <p class="muted">有 U → 抓三方 blob → abort → 冻成 <span class="mono-token">ConflictRow</span>。</p></div>
+    <div class="card"><div class="ico" style="background:var(--blue-soft)">🔒</div><h3>串行锁</h3>
+      <p class="muted">合并按 <b>workspace_id</b> 串行(共享 .git 只有一个 HEAD)。</p></div>
+    <div class="card"><div class="ico" style="background:var(--red-soft)">🧯</div><h3>不留痕</h3>
+      <p class="muted">每条路径结束 main 与探测前完全一致;崩溃恢复先验 MERGE_HEAD 再 abort。</p></div>
+  </div>
+
+  <h3 style="margin-top:24px">四类 ctype · 由三方 blob 的存在性推导</h3>
+  <table>
+    <thead><tr><th>ctype</th><th>判定</th><th>携带数据</th><th>谁能解</th></tr></thead>
+    <tbody>
+      <tr><td><span class="mono-token">content</span></td><td>base/ours/theirs 三方都在</td><td>markers(diff3)+ 三方全文</td><td><span class="tag ok">LLM 语义合并</span></td></tr>
+      <tr><td><span class="mono-token">add_add</span></td><td>无 base(两侧都新建)</td><td>ours + theirs</td><td><span class="tag ok">LLM 合并/选边</span></td></tr>
+      <tr><td><span class="mono-token">modify_delete</span></td><td>缺一侧</td><td>存活侧 + base</td><td><span class="tag warn">LLM 判断/留人</span></td></tr>
+      <tr><td><span class="mono-token">binary</span></td><td>含 NUL,不可 decode</td><td>无文本</td><td><span class="tag future">永远人工</span></td></tr>
+    </tbody>
+  </table>
+  <div class="anchor">
+    <b>锚点</b> · <span class="mono-token">sandbox/_core.py · probe_merge / conclude_merge / _capture_conflict_file</span> ·
+    <span class="mono-token">api/routes.py · _drain_unmerged_branches / _surface_conflict</span> ·
+    <span class="mono-token">workspace_merge_lock</span>
+  </div>
+  <p class="sub">拦截时间点:<span class="when-pill">分支合并时</span> —— 文本层撞车冻成可见、可裁决、可回滚的冲突卡。</p>
+</div></section>
+
+<!-- ───────── ④ 语义冲突 ───────── -->
+<section id="semantic"><div class="wrap">
+  <div class="kicker" style="color:var(--green)">Layer 4 · Semantic</div>
+  <h2>④ 语义冲突 —— 文本能合,但逻辑对不上</h2>
+  <p class="lead">最难的一类:git 合得干干净净,可两段改动放在一起<b>行为是错的</b>(接口不匹配、违反契约、双方各加了一半校验)。
+    这层靠 <b>LLM 的判断</b> + <b>验收闭环</b>:既在冲突里做语义合并,也在合并后做核对。</p>
+
+  <div class="band">
+    <div class="rail"><div class="num" style="background:var(--green)">④</div><div class="when">合并 / 验收期</div></div>
+    <div class="body">
+      <h3>机制 · LLM 修复 + report + critic + present</h3>
+      <ul class="clean">
+        <li><b>LLM 自动修复轮</b> <span class="tag new">NEW</span> —— content/add_add 冲突不是机械选边,而是让<b>分支作者</b>
+          读懂两侧意图、产出语义正确的合并文本(见下一节)。</li>
+        <li><b>report 自评</b> —— 每个 worker 用 <span class="mono-token">report</span> 上报 status/deliverables/<span class="mono-token">contract_ok</span>;
+          没报告 = "未验证"对待,不隐瞒。</li>
+        <li><b>critic / auditor 角色</b> —— 只读 + report 的审查 tier(<span class="mono-token">_TIER_AUDITOR</span>),专做核对不做改。</li>
+        <li><b>orchestrator 验收 + present</b> —— 汇总轮核对每条 report 的 contract_ok、抽查产物,再统一 <span class="mono-token">present</span> 已验收的成果。</li>
+      </ul>
+      <div class="anchor">
+        <b>锚点</b><br>
+        · <span class="mono-token">api/routes.py · _build_conflict_fix_prompt</span> · <span class="mono-token">mcp/tools.py · resolve_conflict</span>(LLM 语义合并)<br>
+        · <span class="mono-token">mcp/tools.py · _ReportTool / _RecallTool / _TIER_AUDITOR / _PresentTool</span><br>
+        · <span class="mono-token">api/routes.py · is_last → 验收 summary → _maybe_handoff_to_orchestrator</span>
+      </div>
+    </div>
+  </div>
+  <p class="sub">拦截时间点:<span class="when-pill">合并时(语义合并)</span> + <span class="when-pill">合并后(验收)</span> —— 文本通过不等于逻辑通过。</p>
+</div></section>
+
+<!-- ───────── AUTO-FIX 深挖 ───────── -->
+<section id="autofix"><div class="wrap">
+  <div class="kicker" style="color:var(--purple)">Deep Dive · Auto-Fix Round</div>
+  <h2>聚焦:LLM 自动修复轮 —— 让 agent 自动做人会做的事 <span class="tag new">NEW</span></h2>
+  <p class="lead">在 <span class="mono-token">merge_mode='auto'</span> 的对话里,代码冲突 surface 后不直接停下等人——
+    系统 fire-and-forget 拉起<b>分支作者</b>修一轮;修好则卡翻绿静默落地,修不好/二进制才留给人。
+    它<b>一字不改</b>地复用人工 resolve 的全路径。</p>
+
+  <div class="flowwrap">
+    <svg viewBox="0 0 1000 150" role="img" aria-label="auto-fix sequence">
+      <defs><marker id="b" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#8A8577"/></marker></defs>
+      <g font-size="12" font-family="var(--sans)">
+        <rect x="10"  y="50" width="150" height="54" rx="12" fill="#FDF0E3" stroke="#F2994A"/>
+        <text x="85"  y="72" text-anchor="middle" font-weight="700" fill="#B8651B">probe → conflict</text>
+        <text x="85"  y="90" text-anchor="middle" font-size="11" fill="#8A8577">_drain_unmerged</text>
+        <rect x="196" y="50" width="150" height="54" rx="12" fill="#FDF0E3" stroke="#F2994A"/>
+        <text x="271" y="72" text-anchor="middle" font-weight="700" fill="#B8651B">surface open 卡</text>
+        <text x="271" y="90" text-anchor="middle" font-size="11" fill="#8A8577">_surface_conflict</text>
+        <rect x="382" y="50" width="170" height="54" rx="12" fill="#F0EBFD" stroke="#8B5CF6"/>
+        <text x="467" y="69" text-anchor="middle" font-weight="700" fill="#7c3aed">spawn 作者 turn</text>
+        <text x="467" y="85" text-anchor="middle" font-size="10.5" fill="#8A8577">fire-and-forget · 三方内联</text>
+        <text x="467" y="98" text-anchor="middle" font-size="10" fill="#8A8577">_build_conflict_fix_prompt</text>
+        <rect x="588" y="50" width="178" height="54" rx="12" fill="#F0EBFD" stroke="#8B5CF6"/>
+        <text x="677" y="72" text-anchor="middle" font-weight="700" fill="#7c3aed">resolve_conflict 工具</text>
+        <text x="677" y="90" text-anchor="middle" font-size="11" fill="#8A8577">POST /conflicts/{id}/resolve</text>
+        <rect x="802" y="50" width="186" height="54" rx="12" fill="#E4F5EB" stroke="#27AE60"/>
+        <text x="895" y="72" text-anchor="middle" font-weight="700" fill="#1E8E4E">conclude → resolved</text>
+        <text x="895" y="90" text-anchor="middle" font-size="11" fill="#8A8577">卡翻绿 · main@sha</text>
+        <line x1="160" y1="77" x2="192" y2="77" stroke="#8A8577" stroke-width="2" marker-end="url(#b)"/>
+        <line x1="346" y1="77" x2="378" y2="77" stroke="#8A8577" stroke-width="2" marker-end="url(#b)"/>
+        <line x1="552" y1="77" x2="584" y2="77" stroke="#8A8577" stroke-width="2" marker-end="url(#b)"/>
+        <line x1="766" y1="77" x2="798" y2="77" stroke="#8A8577" stroke-width="2" marker-end="url(#b)"/>
+      </g>
+    </svg>
+  </div>
+
+  <h3 style="margin-top:30px">三条非显然的不变量(本设计的关键)</h3>
+  <div class="grid" style="gap:14px;margin-top:14px">
+    <div class="callout"><div class="mk">🔁</div><div>
+      <h3>① 为何必须把三方数据内联进 prompt</h3>
+      <p>作者的 worktree 是 <span class="mono-token">merge --abort</span> 之后的<b>分支侧</b>,磁盘上根本没有冲突标记,
+        也<b>看不到 main(theirs)侧</b>。read 工具无法做三方合并,冲突三方必须随 prompt 送达
+        (<span class="mono-token">_build_conflict_fix_prompt</span>,带 size cap;全二进制/过大则回退留人)。</p>
+    </div></div>
+    <div class="callout"><div class="mk">⚡</div><div>
+      <h3>② 为何 spawn 必须 fire-and-forget</h3>
+      <p>drain 此刻正持有 <span class="mono-token">workspace_merge_lock</span>。若 <span class="mono-token">await</span> 修复 turn,
+        它的 <span class="mono-token">resolve_conflict → /resolve</span> 会再抢同一把锁——而 <span class="mono-token">asyncio.Lock</span>
+        不可重入 → <b>自死锁</b>。用 <span class="mono-token">_spawn_turn</span>(create_task)让 drain 先释放锁,修复 turn 跨 task 排队,无环。</p>
+    </div></div>
+    <div class="callout"><div class="mk">🛡️</div><div>
+      <h3>③ 为何不会无限循环</h3>
+      <p>drain 会跳过"已有 open/resolving/abandoned 卡"的分支(<span class="mono-token">already</span> guard)。
+        每个冲突至多触发<b>一次</b>自动修复;失败回 <span class="mono-token">open</span> 后仍在 already 集合 → 后续 drain 不重试,
+        优雅降级为"留人手动解"。修复 turn 不挂 burst 参数,不污染 <span class="mono-token">is_last</span> 状态机。</p>
+    </div></div>
+  </div>
+
+  <h3 style="margin-top:30px">解决到底是什么操作?—— 三策略,不是「覆盖」也不是「git 死合」</h3>
+  <p class="lead">很多人以为冲突解决=选一边覆盖。实际上 <span class="mono-token">conclude_merge(branch, resolutions, sides, deletions)</span>
+    提供 <b>per-file 三选一</b>,决策方(auto=LLM / manual=人)按文件挑;<b>覆盖只是其一,语义合并才是主路</b>。</p>
+  <table>
+    <thead><tr><th>策略</th><th>入参</th><th>是什么</th><th>用在</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag ok">语义合并(主力)</span></td><td><span class="mono-token">resolutions = {path: 完整文本}</span></td><td>读三方,产出<b>合并后的完整文件</b>(如 union 两边的 key)—— 非覆盖、非死板拼接</td><td>content / add_add</td></tr>
+      <tr><td><span class="tag warn">选边覆盖</span></td><td><span class="mono-token">sides = {path: 'ours'|'theirs'}</span></td><td>整侧取一(<span class="mono-token">checkout --ours/--theirs</span>)—— 这才是「直接覆盖」</td><td>二进制 / 一方明显赢</td></tr>
+      <tr><td><span class="tag live">删除</span></td><td><span class="mono-token">deletions = [path]</span></td><td>接受删文件(<span class="mono-token">git rm</span>)</td><td>modify/delete</td></tr>
+    </tbody>
+  </table>
+  <p class="sub">可<b>混用</b>(一次 resolve 里不同文件用不同策略)。落地:在<b>当前 main</b> 上重新 <span class="mono-token">git merge --no-commit</span> 再 apply 选择
+    + marker 残留校验 → 生成<b>双父 merge commit</b>;binary 永远人工,modify_delete 允许 LLM 放弃 → 留 open。</p>
+</div></section>
+
+<!-- ───────── 前端呈现 ───────── -->
+<section id="ui"><div class="wrap">
+  <div class="kicker" style="color:var(--blue)">Frontend · 后端逻辑如何服务 UX</div>
+  <h2>这些后端逻辑,全程接到了前端</h2>
+  <p class="lead">冲突闭环的每一步都对应一个用户能看到的状态。后端 <span class="mono-token">data-conflict</span> WS 帧
+    → 前端 <span class="mono-token">upsertConflict</span> → 冲突卡原地翻转,refresh 也能水合恢复。自动修复无需任何新前端代码即可呈现。</p>
+
+  <div class="grid g2" style="margin-top:20px">
+    <div>
+      <div class="chat">
+        <div class="hd">💬 #支付重构 · <span class="muted" style="font-weight:500">auto 模式</span></div>
+        <div class="bd">
+          <div class="sys">两个 agent 的分支同时改了 <span class="mono-token">checkout.py</span></div>
+          <div class="msg"><div class="av" style="background:var(--orange)">⚠</div><div>
+            <div class="who">Orchestrator</div>
+            <div class="ccard"><div class="ttl">⚠️ 合并冲突 · <span class="mono-token">checkout.py</span> <span class="tag warn">待解决 → 解决中</span></div>
+              <div class="muted">顾屿 的分支与 main 冲突(content)。auto 模式 → 已让作者自动修复…</div></div>
+          </div></div>
+          <div class="msg"><div class="av" style="background:var(--purple)">顾</div><div>
+            <div class="who">顾屿 · 自动修复轮</div>
+            <div class="bub">两侧都加了金额校验,我合并成一段、保留两边的边界检查,调用
+              <span class="mono-token">resolve_conflict</span> 提交。</div></div></div>
+          <div class="msg"><div class="av" style="background:var(--green)">✓</div><div>
+            <div class="who">Orchestrator</div>
+            <div class="ccard done"><div class="ttl">✨ 顾屿 自动修复 → <span class="mono-token">main@a1b2c3d</span> <span class="tag ok">已解决</span></div>
+              <div class="muted">由 LLM 自动合并 · 可在历史里查看这次 merge,或一键撤销。</div></div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h3>接线核对(已验证)</h3>
+      <ul class="clean">
+        <li>✅ <b>WS 帧</b> <span class="mono-token">data-conflict</span> → <span class="mono-token">ChatPane · upsertConflict</span> → store <span class="mono-token">conflictsByConv</span></li>
+        <li>✅ <b>状态翻转</b> open → resolving(黄)→ resolved(绿)<span class="mono-token">ConflictPart</span> 原地重渲</li>
+        <li>✅ <b>刷新水合</b> <span class="mono-token">GET /conversations/{id}/conflicts</span> → <span class="mono-token">hydrateConflicts</span></li>
+        <li>✅ <b>解决面板</b> <span class="mono-token">ConflictResolvePane</span> 读 ours/theirs/ctype,POST 同一个 <span class="mono-token">/resolve</span></li>
+        <li>✨ <b>自动修复可感知</b> <span class="mono-token">ConflictPart</span> 现在把 <span class="mono-token">resolved_by</span> 映射成 agent 名,
+          并用 ✨ 区分「XX 自动修复」vs「你解决」</li>
+      </ul>
+      <div class="callout green" style="margin-top:8px"><div class="mk">🔌</div><div>
+        <h3>自动修复 = 零新前端代码即可见</h3>
+        <p>auto-fix 成功复用既有 <span class="mono-token">/resolve → _broadcast_conflict_card</span> 广播,
+          前端原有的 open→resolved 渲染链自动接住。本次仅为「让用户分清人工 vs 自动」补了一处 <span class="mono-token">ConflictPart</span> 文案。</p>
+      </div></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ───────── 提交历史 / git 树 ───────── -->
+<section id="history"><div class="wrap">
+  <div class="kicker" style="color:var(--green)">Commit History · Provenance &amp; Tree</div>
+  <h2>提交历史:谁在哪条分支做了什么、怎么合进 main</h2>
+  <p class="lead">冲突闭环的产物最终是 git 提交。提交历史面板不只是 diff 浏览器 —— 它还要如实回答
+    <b>归属</b>(谁做的)、<b>位置</b>(在自己分支还是 main)、<b>结构</b>(分支怎么分叉、怎么合回)。
+    底座仍是 git:<span class="mono-token">workspace_commits</span> 读真实拓扑,不另存账本。</p>
+
+  <div class="grid g3" style="margin-top:22px">
+    <div class="card">
+      <div class="ico" style="background:var(--purple-soft)">👤</div>
+      <h3>① 归属:按 persona 署名</h3>
+      <p class="muted">agent 写文件的提交改用 <b>persona</b>(<span class="mono-token">turn_agent_id</span>)署名,不再是共享适配器
+        (claudeCode/codex)→ 历史显示 <b>顾屿/沈昭/周野</b>。冲突解决提交由 <span class="mono-token">conclude_merge(author=resolved_by)</span>
+        归属到<b>解决它的 agent</b>,不再是泛泛的「你」。</p>
+      <div class="anchor"><span class="mono-token">git_commit</span> · <span class="mono-token">conclude_merge(author=)</span> · 前端 <span class="mono-token">findAgent</span></div>
+    </div>
+    <div class="card">
+      <div class="ico" style="background:var(--blue-soft)">🌿</div>
+      <h3>② 位置:分支 / main 徽章</h3>
+      <p class="muted">每条提交带 <span class="mono-token">lane</span>:<span class="tag" style="background:var(--accent-soft,#FDF0E3);color:var(--orange)">分支</span>
+        = agent 自己 worktree 上的内容提交;<span class="tag ok">main</span> = 合并 / 解决 / 初始化 / 用户编辑(落在 main)。
+        一眼看出哪些是分支私活、哪些是集成。</p>
+      <div class="anchor"><span class="mono-token">workspace_commits → lane</span> · 前端 <span class="mono-token">LaneBadge</span></div>
+    </div>
+    <div class="card">
+      <div class="ico" style="background:var(--green-soft)">🌳</div>
+      <h3>③ 结构:git 树可视化</h3>
+      <p class="muted">「树」模式 <span class="mono-token">?graph=true</span> 返回<b>全量</b>提交(连合并节点)+ <span class="mono-token">parents</span>;
+        前端 <span class="mono-token">computeGraph</span> 做 lane 布局、<span class="mono-token">GraphCell</span> 画 SVG —— main 主线 + 各分支分叉/合回一目了然。</p>
+      <div class="anchor"><span class="mono-token">workspace_commits(include_all)</span> · <span class="mono-token">computeGraph / GraphCell</span></div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:28px">提交树长什么样(真实拓扑)</h3>
+  <div class="flowwrap">
+    <svg viewBox="0 0 760 320" role="img" aria-label="commit graph">
+      <title>commit graph</title>
+      <!-- lanes: x=40 (main), x=92 (branch) -->
+      <!-- main vertical spine -->
+      <path d="M40 30 L40 290" stroke="#27AE60" stroke-width="2.5" fill="none"/>
+      <!-- branch fork/merge curves (branch lane x=92) -->
+      <!-- 沈昭 branch: forks from 875b4ce(y=230) up, merges at 126d832(y=40) -->
+      <path d="M40 230 C92 210 92 200 92 180" stroke="#8B5CF6" stroke-width="2" fill="none"/>
+      <path d="M92 180 C92 110 92 70 40 40" stroke="#8B5CF6" stroke-width="2" fill="none"/>
+      <!-- 顾屿 branch: forks from 875b4ce(y=230) up, merges at a76fcb1(y=120) -->
+      <path d="M40 230 C70 210 70 160 70 130" stroke="#5B8FF9" stroke-width="2" fill="none"/>
+      <path d="M70 130 C70 130 70 130 40 120" stroke="#5B8FF9" stroke-width="2" fill="none"/>
+
+      <!-- nodes (cx, cy) + labels -->
+      <g font-family="var(--sans)" font-size="12.5">
+        <circle cx="40" cy="40"  r="6" fill="#27AE60"/>
+        <text x="120" y="36" font-weight="700" fill="#1E8E4E">126d832 · resolve+merge</text>
+        <text x="120" y="52" font-size="11" fill="#8A8577">main · ✨ 顾屿 自动修复 → main@126d832</text>
+
+        <circle cx="92" cy="90"  r="6" fill="#8B5CF6"/>
+        <text x="120" y="86" font-weight="700" fill="#7c3aed">970b281 · 沈昭</text>
+        <text x="120" y="102" font-size="11" fill="#8A8577">分支 · agent worktree(加 theme)</text>
+
+        <circle cx="40" cy="120" r="6" fill="#27AE60"/>
+        <text x="120" y="116" font-weight="700" fill="#1E8E4E">a76fcb1 · merge</text>
+        <text x="120" y="132" font-size="11" fill="#8A8577">main · 顾屿 干净合并</text>
+
+        <circle cx="70" cy="170" r="6" fill="#5B8FF9"/>
+        <text x="120" y="166" font-weight="700" fill="#2E62C9">9bff980 · 顾屿</text>
+        <text x="120" y="182" font-size="11" fill="#8A8577">分支 · agent worktree(加 request_timeout)</text>
+
+        <circle cx="40" cy="230" r="6" fill="#27AE60"/>
+        <text x="120" y="226" font-weight="700" fill="#1E8E4E">875b4ce · merge</text>
+        <text x="120" y="242" font-size="11" fill="#8A8577">main</text>
+
+        <circle cx="40" cy="290" r="6" fill="#27AE60"/>
+        <text x="120" y="286" font-weight="700" fill="#1E8E4E">6935b11 · 初始化工作区</text>
+        <text x="120" y="302" font-size="11" fill="#8A8577">main · root</text>
+      </g>
+    </svg>
+  </div>
+  <p class="sub">圆点按 lane 配色,旁边显示 persona(非适配器);合并/解决提交归属到真正做事的 agent;
+    分支从 main 分叉出去、再(经 merge / resolve+merge)合回 —— 整条「谁→哪条分支→怎么合进 main」清晰可读。</p>
+</div></section>
+
+<!-- ───────── 撤销 ───────── -->
+<section id="rollback"><div class="wrap">
+  <div class="kicker" style="color:var(--red)">Rollback · Defense in Reverse</div>
+  <h2>四道撤销:从轻到重</h2>
+  <div class="grid g4" style="margin-top:24px">
+    <div class="card"><div class="ico" style="background:var(--green-soft)">⤺</div><h3>① 探测守卫 abort</h3>
+      <p class="muted">探测撞冲突立即 <span class="mono-token">merge --abort</span>,main 从未改变。自动发生。</p></div>
+    <div class="card"><div class="ico" style="background:var(--orange-soft)">⊘</div><h3>② pending-edit 拒绝</h3>
+      <p class="muted">manual 模式点 ✗,改动根本不 commit——落盘前拦下。</p></div>
+    <div class="card"><div class="ico" style="background:var(--blue-soft)">✕</div><h3>③ abandon 冲突</h3>
+      <p class="muted"><span class="mono-token">/conflicts/{id}/abandon</span> → abandoned,分支保留不合并。</p></div>
+    <div class="card"><div class="ico" style="background:var(--red-soft)">⟲</div><h3>④ restore main</h3>
+      <p class="muted"><span class="mono-token">restore_main_to</span> 做 reset --hard + 写 <span class="mono-token">refs/polynoia/undo/&lt;ts&gt;</span> 安全网。最重。</p></div>
+  </div>
+  <div class="callout" style="margin-top:18px;border-left-color:var(--orange)"><div class="mk">↩︎</div><div>
+    <h3>单卡 diff「撤销」= patch 反向 apply,合并后会优雅降级</h3>
+    <p>diff 卡的「撤销」是 <span class="mono-token">git apply --reverse</span> 反打这张卡的补丁。一旦该文件在这笔之后又被改过
+      (尤其经过冲突 union 合并),补丁上下文对不上、反 apply 必然失败 —— 这是 git 本性,不是 bug。前端因此<b>不再抛生硬报错</b>,
+      而是隐藏注定失败的按钮、提示「该笔已被后续改动覆盖」。合并后正确的撤销是 <b>commit 级</b>:消息上的
+      <span class="mono-token">回到这个对话</span>(= 第④道 <span class="mono-token">restore_main_to</span>)。</p>
+  </div></div>
+</div></section>
+
+<!-- ───────── FOOTER ───────── -->
+<footer><div class="wrap">
+  <div class="legend">
+    <span><i class="dot" style="background:var(--purple)"></i> 意图 / auto-fix</span>
+    <span><i class="dot" style="background:var(--blue)"></i> 文件 / system</span>
+    <span><i class="dot" style="background:var(--orange)"></i> 代码 / markers</span>
+    <span><i class="dot" style="background:var(--green)"></i> 语义 / success</span>
+    <span><i class="dot" style="background:var(--red)"></i> error / rollback</span>
+  </div>
+  <p style="margin-top:14px">
+    权威设计:<span class="mono-token">docs/design/conflict-closed-loop-2026-05-30.md</span> ·
+    开发边界宪章:<span class="mono-token">docs/design/conflict-closed-loop-CHARTER.md</span>
+  </p>
+  <p>四层锚点:意图 <span class="mono-token">_DispatchTool/_DiscussTool/_AskUserTool</span> ·
+    文件 <span class="mono-token">create_workspace_sandbox/_gate_via_pending_edit</span> ·
+    代码 <span class="mono-token">probe_merge/conclude_merge/_surface_conflict</span> ·
+    语义 <span class="mono-token">_build_conflict_fix_prompt/resolve_conflict/_ReportTool/_PresentTool</span></p>
+  <p>提交历史锚点:<span class="mono-token">workspace_commits(parents/lane/include_all)</span> ·
+    <span class="mono-token">git_commit(persona)/conclude_merge(author)</span> ·
+    前端 <span class="mono-token">CommitHistoryView · computeGraph / GraphCell / LaneBadge / AgentChip</span></p>
+  <p class="muted">Polynoia(AgentHub)· 多 Agent 冲突解决方案底层设计原理 · 配色遵循 CLAUDE.md §12</p>
+</div></footer>
+
+</body>
+</html>

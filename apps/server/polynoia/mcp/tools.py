@@ -273,8 +273,13 @@ class ToolContext:
         msg_lines.append("")
         msg_lines.append(message_suffix)
         msg = "\n".join(msg_lines)
-        # Commit with author override matching agent
-        author = f"{self.agent_id} <{self.agent_id}@polynoia.local>"
+        # Author the commit as the PERSONA (turn_agent_id = the contact, e.g. 顾屿)
+        # rather than the shared adapter id (claudeCode/codex/opencoder), so the
+        # commit-history view attributes it to the right agent — findAgent matches
+        # the author against agent.id. Falls back to the adapter id for legacy
+        # turns that predate turn_agent_id.
+        who = self.turn_agent_id or self.agent_id
+        author = f"{who} <{who}@polynoia.local>"
         rc, _, err = await self._run_in_sandbox([
             "git", "commit", "-q", "--author", author, "-m", msg,
         ])
@@ -1262,77 +1267,142 @@ class _PresentTool(_ToolBase):
         return {"presented": True, "paths": rels}
 
 
+# Markers that must NEVER survive into a resolution — a left-over conflict
+# marker means the merge isn't actually resolved. Checked client-side here to
+# save a round-trip; conclude_merge re-validates server-side (_core.py).
+_CONFLICT_MARKERS = ("<<<<<<<", ">>>>>>>", "|||||||")
+
+
 class _ResolveConflictTool(_ToolBase):
     name = "resolve_conflict"
     description = (
-        "Resolve a merge conflict yourself by supplying the MERGED full content "
-        "of each conflicted file, then re-merge the branch into main. "
-        "Orchestrator-only — use it in AUTO merge mode to land a clean merge "
-        "instead of making the user pick a side.\n"
-        "TWO-STEP: (1) call with ONLY {conflict_id} to read both sides — `ours` "
-        "is what's already in main, `theirs` is the branch's version, `markers` "
-        "is the conflicted file with <<<<<<< ======= >>>>>>> regions. Reconcile "
-        "them against the shared-memory contract (recall it first). (2) call AGAIN "
-        "with {conflict_id, files:{path: FULL merged file content}} to land it. "
-        "Returns {kind:'conflict', files:[...]} on the read, {kind:'resolved', "
-        "sha} on success, or {kind:'error', ...}. Only fall back to ask_user "
-        "(pick a side) if the two truly cannot be reconciled."
+        "Resolve an OPEN merge conflict on YOUR branch and land it in main. Call "
+        "this ONLY when you've been asked to fix a conflict (you'll be given the "
+        "conflict_id and the conflicting files' three sides). Provide a per-file "
+        "decision via ONE OR MORE of:\n"
+        "  • resolutions: {path: full_merged_text} — the complete file content with "
+        "ALL conflict markers (<<<<<<< ======= >>>>>>>) removed. Use for text "
+        "conflicts you can merge.\n"
+        "  • sides: {path: 'ours'|'theirs'} — take one whole side verbatim. 'ours' = "
+        "main's version, 'theirs' = your branch's version. Use for binary files or "
+        "when one side wins outright.\n"
+        "  • deletions: [path] — remove the file (for modify/delete conflicts where "
+        "deletion is correct).\n"
+        "Cover EVERY conflicting file or the merge will abort. If you cannot safely "
+        "resolve a conflict, do NOT guess — leave it and the user will decide."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
-            "conflict_id": {"type": "string", "description": "the conflict id from the conflict card"},
-            "files": {
+            "conflict_id": {
+                "type": "string",
+                "description": "The conflict's id (given in the fix request). "
+                "Omit only if you have exactly one open conflict on your branch.",
+            },
+            "resolutions": {
                 "type": "object",
-                "description": "path → FULL merged file content. Omit on the first (read) call.",
+                "description": "path → complete merged file text (no conflict markers)",
                 "additionalProperties": {"type": "string"},
             },
+            "sides": {
+                "type": "object",
+                "description": "path → 'ours' (main) or 'theirs' (your branch)",
+                "additionalProperties": {"type": "string", "enum": ["ours", "theirs"]},
+            },
+            "deletions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "paths to delete",
+            },
         },
-        "required": ["conflict_id"],
+        "required": [],
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        cid = (args.get("conflict_id") or "").strip()
-        if not cid:
-            return {"kind": "error", "error": "conflict_id required"}
-        files = args.get("files")
-        # ── Read phase: no merged content yet → hand back both sides. ──
-        if not files:
-            row = await _callback_server(
-                f"/api/conflicts/{cid}", method="GET", label="resolve_conflict",
-            )
-            if row.get("kind") == "error":
-                return row
-            if row.get("status") in ("resolved", "abandoned"):
-                return {"kind": "gone", "status": row.get("status")}
-            out = []
-            for f in row.get("files", []):
-                out.append({
-                    "path": f.get("path"),
-                    "ctype": f.get("ctype"),
-                    "is_binary": f.get("is_binary", False),
-                    "markers": (f.get("markers") or "")[:20000],
-                    "ours": (f.get("ours") or "")[:20000],
-                    "theirs": (f.get("theirs") or "")[:20000],
-                })
+        base = os.environ.get("POLYNOIA_API_BASE")
+        if not base:
+            # Standalone / test context — no server to land the merge into.
+            return {"resolved": False, "note": "standalone (no API base)"}
+
+        resolutions = args.get("resolutions") or {}
+        sides = args.get("sides") or {}
+        deletions = args.get("deletions") or []
+        if not (resolutions or sides or deletions):
             return {
-                "kind": "conflict", "branch": row.get("branch"), "files": out,
-                "note": "产出每个文件合并后的完整内容,再用 {conflict_id, files:{path:content}} 调一次本工具落地。",
+                "resolved": False,
+                "error": "give at least one of resolutions / sides / deletions",
             }
-        # ── Resolve phase. ──
-        if not isinstance(files, dict) or not files:
-            return {"kind": "error", "error": "files must be a non-empty {path: content} object"}
-        ctx.append_audit("tool.resolve_conflict", {"conflict_id": cid, "n": len(files)})
-        res = await _callback_server(
-            f"/api/conflicts/{cid}/resolve",
-            json={"resolutions": files, "resolved_by": ctx.turn_agent_id or ctx.agent_id},
-            label="resolve_conflict",
+
+        # Client-side guard: a resolution still carrying conflict markers is a
+        # mistake — bounce it back so the LLM rewrites rather than burning a
+        # server round-trip that conclude_merge would reject anyway.
+        for p, text in resolutions.items():
+            if any(m in text for m in _CONFLICT_MARKERS):
+                return {
+                    "resolved": False,
+                    "error": (
+                        f"resolution for {p} still contains conflict markers "
+                        "(<<<<<<< / ======= / >>>>>>>). Return the fully merged "
+                        "file with all markers removed."
+                    ),
+                }
+
+        # Resolve the conflict id. The fix prompt normally supplies it; the
+        # branch-inference fallback covers the agent omitting it when it has a
+        # single open conflict. The branch carries the per-turn (contact) id.
+        conflict_id = args.get("conflict_id")
+        if not conflict_id:
+            mine = ctx.turn_agent_id or ctx.agent_id
+            listing = await _callback_server(
+                f"/api/conversations/{ctx.conv_id}/conflicts",
+                method="GET",
+                params={"status": "open"},
+                label="list-conflicts",
+            )
+            if isinstance(listing, dict) and listing.get("kind") == "error":
+                return {"resolved": False, "error": listing.get("error", "lookup failed")}
+            rows = listing if isinstance(listing, list) else []
+            candidates = [r for r in rows if r.get("agent_id") == mine]
+            if len(candidates) != 1:
+                return {
+                    "resolved": False,
+                    "error": (
+                        f"could not infer conflict_id ({len(candidates)} open "
+                        "conflicts on your branch) — pass conflict_id explicitly"
+                    ),
+                }
+            conflict_id = candidates[0]["id"]
+
+        result = await _callback_server(
+            f"/api/conflicts/{conflict_id}/resolve",
+            json={
+                "resolutions": resolutions,
+                "sides": sides,
+                "deletions": deletions,
+                # Attribute the resolution to the acting agent (contact ULID), so
+                # the conv-memory decision note + card show who fixed it.
+                "resolved_by": ctx.turn_agent_id or ctx.agent_id,
+            },
+            label="resolve-conflict",
         )
-        if res.get("kind") == "error":
-            return res
-        if res.get("ok"):
-            return {"kind": "resolved", "sha": res.get("sha")}
-        return {"kind": "error", "error": res.get("error") or "resolve failed", "detail": res}
+        if isinstance(result, dict) and result.get("kind") == "error":
+            return {"resolved": False, "error": result.get("error", "resolve failed")}
+        ok = bool(result.get("ok")) if isinstance(result, dict) else False
+        # Best-effort telemetry: this tool is pure-HTTP and may run before any
+        # sandbox is materialized (audit writes to the sandbox), so never let an
+        # uninitialized sandbox break the resolve.
+        with contextlib.suppress(Exception):
+            ctx.append_audit(
+                "agent.resolve_conflict",
+                {"conflict_id": conflict_id, "ok": ok, "sha": (result or {}).get("sha", "")},
+            )
+        if ok:
+            return {"resolved": True, "sha": result.get("sha", ""), "conflict_id": conflict_id}
+        return {
+            "resolved": False,
+            "error": (result or {}).get("error", "merge did not land"),
+            "conflict_id": conflict_id,
+        }
 
 
 TOOL_REGISTRY: dict[str, _ToolBase] = {
@@ -1341,7 +1411,8 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
         _ReadTool, _WriteTool,
         _BashTool, _GrepTool, _GlobTool,
         _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
-        _AskUserTool, _RequestProjectAccessTool, _PresentTool, _ResolveConflictTool,
+        _AskUserTool, _RequestProjectAccessTool, _PresentTool,
+        _ResolveConflictTool,
     ]
 }
 
@@ -1371,7 +1442,8 @@ _ASK      = {"ask_user"}                           # block + ask the user a ques
 _MUTATE   = {"write"}                              # the SOLE file-mutation tool → one audit entry
 _SHELL    = {"bash"}                               # run a shell command
 _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
-_ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}  # delegate + present + auto-resolve merges — orchestrator ONLY
+_RESOLVE  = {"resolve_conflict"}                   # land a merge conflict on the builder's OWN branch
+_ORCHESTRATE = {"dispatch", "discuss", "present"}  # delegate + present — orchestrator ONLY
 # Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
 # self-report); `present` is orchestrator-only (workers `report`, the
 # orchestrator bundles + presents from main at summary). The removed
@@ -1380,7 +1452,9 @@ _ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}  # delegat
 
 # ── Functional tiers (role names map onto these) ────────────────
 _TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE
-_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER
+# Builders own a branch, so they (and only they) can `resolve_conflict` to land
+# the auto-fix of a conflict on it — see the conflict closed-loop auto-fix round.
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE
 _TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
 _TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
 _TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write

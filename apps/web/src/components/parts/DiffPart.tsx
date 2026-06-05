@@ -15,13 +15,19 @@ import type { DiffPayload } from "../../lib/types";
 import { useStore } from "../../store";
 import { useConvScope } from "./_context";
 
+// `git apply --reverse` can't land once the file diverged from this card's
+// captured diff (e.g. after a conflict union-merge shifted the surrounding
+// lines). Detect that specific failure so we can guide to the commit-history
+// restore instead of leaking the raw git error.
+const REVERT_DIVERGED = /does not apply|patch failed|--reverse failed|with conflicts/i;
+
 export function DiffPart({
 	payload,
 	inBatch,
 }: {
 	payload: DiffPayload;
-	/** Rendered inside a multi-file burst-changes summary — warn that a
-	 * per-file revert is partial (use 撤销本轮全部 for the whole batch). */
+	/** Rendered inside a multi-file burst-changes summary — warn that
+	 * reverting just this one file may leave the batch inconsistent. */
 	inBatch?: boolean;
 }) {
 	// A `commit_sha` means an agent ALREADY made + committed this edit (a
@@ -70,6 +76,9 @@ export function DiffPart({
 	const [revertSha, setRevertSha] = useState<string | null>(null);
 	const [revBusy, setRevBusy] = useState(false);
 	const [confirmRevert, setConfirmRevert] = useState(false);
+	// Set when reverse-apply can't land because the file moved on (conflict
+	// merge etc.) — switches the card from a doomed 撤销 to a commit-history CTA.
+	const [divergedRevert, setDivergedRevert] = useState(false);
 
 	// Commit-first revert: reverse-apply the diff (whole file or one hunk) as a
 	// NEW commit. Fails if the file changed since (surfaced as an error).
@@ -99,6 +108,11 @@ export function DiffPart({
 				// reverse-applied to a no-op — nothing was committed (the file is
 				// already in this state, or changed since). Don't claim "已撤销".
 				setErr("无改动可撤销(文件可能已变化)");
+			} else if (REVERT_DIVERGED.test(res.error || "")) {
+				// File moved on since this card (e.g. a conflict union-merge) → the
+				// patch can't reverse-apply. Drop the raw git error; the correct undo
+				// for an already-merged edit is the commit-history restore.
+				setDivergedRevert(true);
 			} else {
 				setErr(res.error || "撤销失败");
 			}
@@ -178,7 +192,7 @@ export function DiffPart({
 							<div key={hi}>
 								<div className="flex items-center gap-2 px-3 py-1 bg-[var(--color-surface-2)] text-[var(--color-fg-4)] text-[10.5px]">
 									<span className="flex-1 truncate">{h.header}</span>
-									{committed && !reverted && (
+									{committed && !reverted && !divergedRevert && (
 										<button
 											type="button"
 											onClick={() => revert([h])}
@@ -234,6 +248,16 @@ export function DiffPart({
 										</span>
 									)}
 								</span>
+							) : divergedRevert ? (
+								<span
+									className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
+									style={{
+										background: "var(--color-green-soft)",
+										color: "var(--color-green)",
+									}}
+								>
+									<Check size={11} /> 已提交
+								</span>
 							) : (
 								<>
 									<span
@@ -269,7 +293,7 @@ export function DiffPart({
 											onClick={() => setConfirmRevert(true)}
 											title={
 												inBatch
-													? "仅撤销此文件(本轮共改多个文件,单独撤销可能造成不一致 — 建议用「撤销本轮全部」)"
+													? "仅撤销此文件(本轮共改多个文件,单独撤销可能造成不一致)"
 													: "撤销整次改动(反向 apply,会在 main 上新增一次提交)"
 											}
 											className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium hover:bg-[var(--color-line)] transition"
@@ -322,6 +346,18 @@ export function DiffPart({
 								)}
 								{busy ? "应用中…" : "应用"}
 							</button>
+						)}
+						{divergedRevert && (
+							<span
+								className="text-[10.5px] px-2 py-1 rounded"
+								style={{
+									background: "var(--color-amber-soft)",
+									color: "var(--color-amber)",
+								}}
+								title="冲突合并等后续改动让该文件偏离了这笔 diff,反向 apply 无法精确撤销"
+							>
+								该笔已被后续改动覆盖
+							</span>
 						)}
 						{err && (
 							<span

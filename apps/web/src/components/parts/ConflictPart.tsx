@@ -5,7 +5,7 @@
  * ConflictResolvePane in the right rail; resolved/abandoned show the outcome.
  * See docs/design/conflict-closed-loop-2026-05-30.md.
  */
-import { AlertTriangle, Check, GitMerge, Loader2, X } from "lucide-react";
+import { AlertTriangle, Check, GitMerge, Loader2, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import type { ConflictPayload } from "../../lib/types";
@@ -22,10 +22,16 @@ const CTYPE_LABEL: Record<string, string> = {
 export function ConflictPart({ payload }: { payload: ConflictPayload }) {
   const openPreview = useStore((s) => s.openPreview);
   const upsertConflict = useStore((s) => s.upsertConflict);
+  const agents = useStore((s) => s.agents);
   const [busy, setBusy] = useState(false);
   const status = payload.status;
   const files = payload.files ?? [];
   const active = status === "open" || status === "resolving";
+  const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
+  // The human resolve path sends resolved_by:"you"; the auto-fix round sends the
+  // branch author's agent id. So a non-"you" resolver == the LLM auto-fix.
+  const resolvedBy = payload.resolved_by;
+  const autoFixed = !!resolvedBy && resolvedBy !== "you";
 
   const abandon = async () => {
     if (busy) return;
@@ -99,8 +105,11 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
             className="inline-flex items-center gap-1 text-[11px]"
             style={{ color: "var(--color-green)" }}
           >
-            <Check size={12} /> {payload.resolved_by ?? "已"}解决 → main@
-            {(payload.resolved_sha ?? "").slice(0, 9)}
+            {autoFixed ? <Sparkles size={12} /> : <Check size={12} />}{" "}
+            {autoFixed
+              ? `${nameOf(resolvedBy ?? "")} 自动修复`
+              : `${resolvedBy === "you" ? "你" : "已"}解决`}{" "}
+            → main@{(payload.resolved_sha ?? "").slice(0, 9)}
           </span>
         ) : status === "abandoned" ? (
           <span

@@ -435,7 +435,16 @@ function MessageActions({
 				window.alert("代码已经在这个状态了,无需回退。");
 				return;
 			}
-			const who = pv.authors.length ? `(${pv.authors.join("、")})` : "";
+			// Agent commits are authored by the persona id; map id/name/handle →
+			// display name so the dialog reads "(顾屿、沈昭)" not raw ULIDs. The
+			// system merge identity (polynoia-agent) → "系统".
+			const roster = useStore.getState().agents;
+			const nameOf = (a: string) =>
+				roster.find((x) => x.id === a || x.name === a || x.handle === a)?.name ??
+				(a === "polynoia-agent" ? "系统" : a);
+			const who = pv.authors.length
+				? `(${pv.authors.map(nameOf).join("、")})`
+				: "";
 			const fileList =
 				pv.files.slice(0, 8).join("、") + (pv.files.length > 8 ? " …" : "");
 			const ok = window.confirm(
@@ -479,7 +488,16 @@ function MessageActions({
 					);
 					return;
 				}
-				const who = pv.authors.length ? `(${pv.authors.join("、")})` : "";
+				// Agent commits are authored by the persona id; map id/name/handle →
+			// display name so the dialog reads "(顾屿、沈昭)" not raw ULIDs. The
+			// system merge identity (polynoia-agent) → "系统".
+			const roster = useStore.getState().agents;
+			const nameOf = (a: string) =>
+				roster.find((x) => x.id === a || x.name === a || x.handle === a)?.name ??
+				(a === "polynoia-agent" ? "系统" : a);
+			const who = pv.authors.length
+				? `(${pv.authors.map(nameOf).join("、")})`
+				: "";
 				const fileList =
 					pv.files.slice(0, 8).join("、") +
 					(pv.files.length > 8 ? " …" : "");
