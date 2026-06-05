@@ -15,17 +15,20 @@
 import {
 	Check,
 	CheckCircle2,
+	ChevronDown,
 	FolderKey,
 	Globe,
 	KeyRound,
 	Loader2,
 	RefreshCw,
+	Server,
 	Sparkles,
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { type AdapterProbe, api } from "../lib/api";
 import type { ProxyKind } from "../lib/types";
+import { getServerOverride, setServerUrl } from "../lib/runtime-config";
 
 type ProxyCfg = { proxy: string | null; proxy_kind: ProxyKind };
 
@@ -368,7 +371,158 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 						);
 					})}
 				</div>
+
+				<div className="border-t border-[var(--color-line)] px-5 py-3">
+					<ServerSection />
+				</div>
 			</div>
+		</div>
+	);
+}
+
+function ServerSection() {
+	const current = getServerOverride();
+	const [mode, setMode] = useState<"local" | "remote">(current ? "remote" : "local");
+	const [url, setUrl] = useState(current || "http://10.2.255.109:7780");
+	const [expanded, setExpanded] = useState(false);
+	const [saving, setSaving] = useState(false);
+	const [test, setTest] = useState<{ kind: "idle" | "ok" | "err" | "testing"; msg: string }>({
+		kind: "idle",
+		msg: "",
+	});
+
+	const effectiveBase = () =>
+		mode === "local" ? "" : url.trim().replace(/\/+$/, "");
+
+	async function runTest() {
+		const base = effectiveBase();
+		setTest({ kind: "testing", msg: "连接中…" });
+		try {
+			const [healthRes, agentsRes] = await Promise.all([
+				fetch(`${base}/api/health`),
+				fetch(`${base}/api/agents`),
+			]);
+			if (!healthRes.ok) throw new Error(`HTTP ${healthRes.status}`);
+			if (!agentsRes.ok) throw new Error(`HTTP ${agentsRes.status}`);
+			const health = await healthRes.json();
+			const agents = await agentsRes.json();
+			const n = Array.isArray(agents) ? agents.length : "?";
+			setTest({
+				kind: "ok",
+				msg: `v${health.version ?? "?"} · ${n} 个 agent · 服务器时间 ${health.time ? health.time.slice(11, 19) : ""}`,
+			});
+		} catch (e) {
+			setTest({ kind: "err", msg: "连接失败: " + String((e as Error).message || e) });
+		}
+	}
+
+	function save() {
+		setSaving(true);
+		setServerUrl(mode === "remote" ? effectiveBase() : "");
+		setTimeout(() => window.location.reload(), 400);
+	}
+
+	return (
+		<div>
+			<button
+				type="button"
+				onClick={() => setExpanded((v) => !v)}
+				className="w-full flex items-center gap-2 text-[12px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition-colors"
+			>
+				<Server size={12} />
+				<span>服务器</span>
+				<span className="ml-auto text-[10.5px] text-[var(--color-fg-4)] font-mono">
+					{mode === "local" ? "local" : url.replace(/^https?:\/\//, "")}
+				</span>
+				<ChevronDown size={11} className={`transition-transform duration-200 ${expanded ? "rotate-180" : ""}`} />
+			</button>
+			{expanded && (
+				<div
+					className={`mt-2.5 space-y-2.5 transition-opacity duration-300 ${
+						saving ? "opacity-40 pointer-events-none" : "opacity-100"
+					}`}
+				>
+					<div
+						className="flex rounded-md overflow-hidden border border-[var(--color-line)]"
+						style={{ height: 28 }}
+					>
+						<button
+							type="button"
+							onClick={() => { setMode("local"); setTest({ kind: "idle", msg: "" }); }}
+							className={`flex-1 text-[11px] font-medium transition-all duration-150 ${
+								mode === "local"
+									? "bg-[var(--color-accent)] text-white"
+									: "bg-transparent text-[var(--color-fg-3)] hover:text-[var(--color-fg-2)]"
+							}`}
+						>
+							本机
+						</button>
+						<button
+							type="button"
+							onClick={() => { setMode("remote"); setTest({ kind: "idle", msg: "" }); }}
+							className={`flex-1 text-[11px] font-medium transition-all duration-150 ${
+								mode === "remote"
+									? "bg-[var(--color-accent)] text-white"
+									: "bg-transparent text-[var(--color-fg-3)] hover:text-[var(--color-fg-2)]"
+							}`}
+						>
+							远程
+						</button>
+					</div>
+					{mode === "local" ? (
+						<div className="px-2 py-1.5 rounded bg-[var(--color-surface-2)] text-[11px] text-[var(--color-fg-3)] font-mono">
+							127.0.0.1:7780
+						</div>
+					) : (
+						<input
+							autoFocus
+							type="text"
+							value={url}
+							onChange={(e) => {
+								setUrl(e.target.value);
+								setTest({ kind: "idle", msg: "" });
+							}}
+							placeholder="http://10.2.255.109:7780"
+							className="w-full text-[11px] px-2 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] font-mono outline-none focus:border-[var(--color-accent)]"
+						/>
+					)}
+					{test.kind !== "idle" && (
+						<div
+							className={`flex items-center gap-1.5 text-[10.5px] px-2 py-1 rounded ${
+								test.kind === "ok"
+									? "text-emerald-600 bg-emerald-500/10"
+									: test.kind === "err"
+										? "text-red-500 bg-red-500/10"
+										: "text-[var(--color-fg-3)] bg-[var(--color-surface-2)]"
+							}`}
+						>
+							{test.kind === "testing" && <Loader2 size={10} className="animate-spin" />}
+							{test.kind === "ok" && <Check size={10} />}
+							{test.kind === "err" && <X size={10} />}
+							{test.msg}
+						</div>
+					)}
+					<div className="flex items-center gap-2 pt-0.5">
+						<button
+							type="button"
+							onClick={runTest}
+							disabled={test.kind === "testing"}
+							className="px-2 py-1 text-[10.5px] rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] disabled:opacity-40 transition"
+						>
+							测试连接
+						</button>
+						<button
+							type="button"
+							onClick={save}
+							disabled={saving}
+							className="ml-auto inline-flex items-center gap-1 px-3 py-1 text-[10.5px] rounded bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition"
+						>
+							{saving && <Loader2 size={10} className="animate-spin" />}
+							{saving ? "重连中…" : "保存并重连"}
+						</button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

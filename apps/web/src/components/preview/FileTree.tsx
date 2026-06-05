@@ -5,12 +5,11 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
 	Check,
-	CheckSquare,
 	ChevronDown,
 	ChevronRight,
-	Download,
 	File,
 	Folder,
+	FolderOpen,
 	GitCommitHorizontal,
 	Loader2,
 	RefreshCw,
@@ -75,6 +74,13 @@ export function FileTree({
 			setZipBusy(false);
 		}
 	};
+
+	const [ctxMenu, setCtxMenu] = useState<{
+		x: number;
+		y: number;
+		path: string;
+		type: "file" | "dir";
+	} | null>(null);
 
 	const loadDir = useCallback(
 		async (dirPath: string, force = false) => {
@@ -148,8 +154,15 @@ export function FileTree({
 		});
 	};
 
-	return (
-		<div className="h-full overflow-y-auto py-2 px-1">
+return (
+		<div
+			className="h-full overflow-y-auto py-2 px-1"
+			onContextMenu={(e) => {
+				e.preventDefault();
+				setCtxMenu(null);
+			}}
+			onClick={() => setCtxMenu(null)}
+		>
 			<div className="px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold">
 				<span className="truncate flex-1">资源管理器</span>
 				<button
@@ -160,35 +173,6 @@ export function FileTree({
 					aria-label="打开提交历史"
 				>
 					<GitCommitHorizontal size={11} />
-				</button>
-				<button
-					type="button"
-					onClick={() => {
-						setSelectMode((on) => {
-							const next = !on;
-							if (!next) setSelected(new Set());
-							return next;
-						});
-					}}
-					aria-pressed={selectMode}
-					className={`p-0.5 rounded transition-colors ${
-						selectMode
-							? "text-[var(--color-accent)]"
-							: "text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
-					}`}
-					title={selectMode ? "退出选择" : "选择文件 / 目录打包下载"}
-					aria-label={selectMode ? "退出选择" : "选择文件下载"}
-				>
-					<CheckSquare size={11} />
-				</button>
-				<button
-					type="button"
-					onClick={() => api.downloadWorkspaceArchive(workspaceId)}
-					className="p-0.5 rounded transition-colors text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
-					title="下载整个工作区(zip,含 .git)"
-					aria-label="下载整个工作区"
-				>
-					<Download size={11} />
 				</button>
 				<button
 					type="button"
@@ -221,10 +205,10 @@ export function FileTree({
 							<motion.span
 								key="ok"
 								className="inline-flex"
-								initial={{ scale: 0, rotate: -45 }}
-								animate={{ scale: 1, rotate: 0 }}
-								exit={{ scale: 0, opacity: 0 }}
-								transition={{ type: "spring", stiffness: 520, damping: 16 }}
+								initial={{ scale: 0.6, opacity: 0 }}
+								animate={{ scale: 1, opacity: 1 }}
+								exit={{ scale: 0.6, opacity: 0 }}
+								transition={{ type: "spring", stiffness: 400, damping: 20 }}
 							>
 								<Check size={11} strokeWidth={3} />
 							</motion.span>
@@ -232,7 +216,9 @@ export function FileTree({
 							<motion.span
 								key="rf"
 								className="inline-flex"
-								exit={{ opacity: 0 }}
+								initial={false}
+								exit={{ rotate: -90, opacity: 0 }}
+								transition={{ duration: 0.15 }}
 							>
 								<RefreshCw
 									size={10}
@@ -243,11 +229,25 @@ export function FileTree({
 					</AnimatePresence>
 				</button>
 			</div>
+			<DirTree
+				dirPath=""
+				depth={0}
+				dirs={dirs}
+				expanded={expanded}
+				activePath={activePath ?? null}
+				onToggle={toggleDir}
+				onSelect={onOpen}
+				workspaceId={workspaceId}
+				selectMode={selectMode}
+				selected={selected}
+				onTogglePath={togglePath}
+				onCtxMenu={(x, y, path, type) => setCtxMenu({ x, y, path, type })}
+			/>
 			{selectMode && (
-				<div className="px-2 py-1.5 flex items-center gap-2 border-y border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px]">
+				<div className="px-2 py-1.5 flex items-center gap-2 border-t border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px] sticky bottom-0">
 					<span className="flex-1 truncate text-[var(--color-fg-2)]">
 						{selected.size === 0
-							? "勾选要打包的文件或目录"
+							? "勾选要下载的文件或目录"
 							: `已选 ${selected.size} 项`}
 					</span>
 					{selected.size > 0 && (
@@ -267,28 +267,33 @@ export function FileTree({
 						className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--color-accent)] text-white text-[10.5px] font-medium disabled:opacity-40 disabled:cursor-not-allowed"
 						title="把勾选的文件/目录打包成 zip 下载"
 					>
-						{zipBusy ? (
-							<Loader2 size={10} className="animate-spin" />
-						) : (
-							<Download size={10} />
-						)}
+						{zipBusy ? <Loader2 size={10} className="animate-spin" /> : null}
 						下载所选
+					</button>
+					<button
+						type="button"
+						onClick={() => { setSelectMode(false); setSelected(new Set()); }}
+						className="px-1.5 py-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
+						title="退出选择"
+					>
+						取消
 					</button>
 				</div>
 			)}
-			<DirTree
-				dirPath=""
-				depth={0}
-				dirs={dirs}
-				expanded={expanded}
-				activePath={activePath ?? null}
-				onToggle={toggleDir}
-				onSelect={onOpen}
-				workspaceId={workspaceId}
-				selectMode={selectMode}
-				selected={selected}
-				onTogglePath={togglePath}
-			/>
+			{ctxMenu && (
+				<ContextMenu
+					x={ctxMenu.x}
+					y={ctxMenu.y}
+					path={ctxMenu.path}
+					type={ctxMenu.type}
+					workspaceId={workspaceId}
+					onClose={() => setCtxMenu(null)}
+					onSelectMode={() => {
+						setSelectMode(true);
+						setCtxMenu(null);
+					}}
+				/>
+)}
 		</div>
 	);
 }
@@ -305,6 +310,7 @@ function DirTree({
 	selectMode,
 	selected,
 	onTogglePath,
+	onCtxMenu,
 }: {
 	dirPath: string;
 	depth: number;
@@ -313,15 +319,11 @@ function DirTree({
 	activePath: string | null;
 	onToggle: (path: string) => void;
 	onSelect: (path: string) => void;
-	/** Threaded through so file rows can carry {wsId, path} in their drag
-	 * payload — the Composer reconstructs the workspace download URL on send. */
 	workspaceId: string;
-	/** Multi-select mode for download-as-zip. When true each row shows a
-	 * checkbox; toggling it adds/removes its path from `selected`. Dirs are
-	 * sent as-is to POST /archive which walks them recursively. */
 	selectMode: boolean;
 	selected: Set<string>;
 	onTogglePath: (path: string) => void;
+	onCtxMenu?: (x: number, y: number, path: string, type: "file" | "dir") => void;
 }) {
 	const entry = dirs[dirPath];
 	if (!entry) {
@@ -330,6 +332,19 @@ function DirTree({
 				<Loader2 size={10} className="animate-spin" /> 加载中
 			</div>
 		) : null;
+	}
+	if (depth === 0 && entry.entries.length === 0) {
+		return (
+			<div className="flex flex-col items-center justify-center py-10 px-4 text-center">
+				<FolderOpen size={28} className="text-[var(--color-fg-4)] mb-2" />
+				<p className="text-[12px] text-[var(--color-fg-3)] leading-relaxed">
+					工作区还没有文件
+				</p>
+				<p className="text-[10.5px] text-[var(--color-fg-4)] mt-1">
+					发给 Agent 让它开始编写代码，文件会自动出现在这里
+				</p>
+			</div>
+		);
 	}
 	return (
 		<>
@@ -358,7 +373,13 @@ function DirTree({
 				if (e.type === "dir") {
 					const isOpen = expanded.has(childPath);
 					return (
-						<div key={childPath}>
+						<div
+							key={childPath}
+							onContextMenu={(ev) => {
+								ev.preventDefault();
+								onCtxMenu?.(ev.clientX, ev.clientY, childPath, "dir");
+							}}
+						>
 							<div
 								className="flex items-center gap-1 w-full text-[11.5px] text-[var(--color-fg-2)] hover:bg-[var(--color-line)]/40 rounded"
 								style={{ paddingLeft: 6 + depth * 10 }}
@@ -397,6 +418,7 @@ function DirTree({
 									selectMode={selectMode}
 									selected={selected}
 									onTogglePath={onTogglePath}
+									onCtxMenu={onCtxMenu}
 								/>
 							)}
 						</div>
@@ -427,6 +449,10 @@ function DirTree({
 								: "text-[var(--color-fg-2)] hover:bg-[var(--color-line)]/40"
 						}`}
 						style={selectMode ? { paddingLeft: 6 + depth * 10 } : undefined}
+						onContextMenu={(ev) => {
+							ev.preventDefault();
+							onCtxMenu?.(ev.clientX, ev.clientY, childPath, "file");
+						}}
 					>
 						{checkbox}
 						<button
@@ -448,21 +474,102 @@ function DirTree({
 							/>
 							<span className="truncate flex-1 text-left">{e.name}</span>
 						</button>
-						<button
-							type="button"
-							onClick={(ev) => {
-								ev.stopPropagation();
-								api.downloadWorkspaceFile(workspaceId, childPath);
-							}}
-							className="p-0.5 rounded opacity-0 group-hover/file:opacity-60 hover:!opacity-100 transition-opacity text-[var(--color-fg-3)] hover:text-[var(--color-accent)]"
-							title={`下载 ${e.name}`}
-							aria-label={`下载 ${e.name}`}
-						>
-							<Download size={11} />
-						</button>
 					</div>
 				);
 			})}
 		</>
+	);
+}
+
+function ContextMenu({
+	x,
+	y,
+	path,
+	type,
+	workspaceId,
+	onClose,
+	onSelectMode,
+}: {
+	x: number;
+	y: number;
+	path: string;
+	type: "file" | "dir";
+	workspaceId: string;
+	onClose: () => void;
+	onSelectMode: () => void;
+}) {
+	const [downloading, setDownloading] = useState(false);
+
+	const downloadFile = async () => {
+		if (type === "file") {
+			api.downloadWorkspaceFile(workspaceId, path);
+		} else {
+			setDownloading(true);
+			try {
+				await api.downloadWorkspaceSelection(workspaceId, [path]);
+			} catch (e) {
+				console.error("download dir failed", e);
+			} finally {
+				setDownloading(false);
+			}
+		}
+		onClose();
+	};
+
+	const downloadAsZip = async () => {
+		setDownloading(true);
+		try {
+			await api.downloadWorkspaceSelection(workspaceId, [path]);
+		} catch (e) {
+			console.error("download as zip failed", e);
+		} finally {
+			setDownloading(false);
+		}
+		onClose();
+	};
+
+	const fileName = path.split("/").pop() || path;
+
+	const items = [
+		type === "file"
+			? { label: `下载 ${fileName}`, action: downloadFile, icon: null }
+			: { label: `下载 ${fileName} (zip)`, action: downloadAsZip, icon: null },
+		{ label: "多选打包下载…", action: () => { onSelectMode(); onClose(); }, icon: null },
+	];
+
+	const menuW = 180;
+	const menuH = items.length * 28 + 4;
+	const adjustedX = x + menuW > window.innerWidth ? x - menuW : x;
+	const adjustedY = y + menuH > window.innerHeight ? y - menuH : y;
+
+	return (
+		<div
+			className="fixed inset-0 z-[100]"
+			onClick={onClose}
+		>
+			<ul
+				className="fixed min-w-[140px] py-1 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] shadow-lg text-[12px] text-[var(--color-fg)]"
+				style={{ left: adjustedX, top: adjustedY }}
+				onClick={(e) => e.stopPropagation()}
+			>
+				{items.map((item, i) => (
+					<li key={i}>
+						<button
+							type="button"
+							onClick={item.action}
+							disabled={downloading}
+							className="w-full text-left px-3 py-1.5 hover:bg-[var(--color-accent)]/10 transition-colors disabled:opacity-50"
+						>
+							{downloading && i === 0 ? (
+								<span className="inline-flex items-center gap-1.5">
+									<Loader2 size={12} className="animate-spin" />
+									下载中…
+								</span>
+							) : item.label}
+						</button>
+					</li>
+				))}
+			</ul>
+		</div>
 	);
 }
