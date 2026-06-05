@@ -473,6 +473,20 @@ export function Sidebar({
               {ws?.role} {srv && `· ${srv.name}`}
             </div>
           </div>
+          {ws && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingWorkspace(ws);
+                setNewProjectOpen(true);
+              }}
+              title={t("editProject", lang)}
+              aria-label={t("editProject", lang)}
+              className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors flex-shrink-0"
+            >
+              <Pencil size={15} />
+            </button>
+          )}
           {!mobile && (
           <button
             type="button"
@@ -594,6 +608,28 @@ export function Sidebar({
               } catch {
                 // ignore
               }
+            }}
+          />
+        )}
+        {!mobile && newProjectOpen && (
+          <NewProjectModal
+            editing={editingWorkspace}
+            onClose={() => {
+              setNewProjectOpen(false);
+              setEditingWorkspace(null);
+            }}
+            onSaved={async () => {
+              try {
+                const list = await api.workspaces();
+                useStore.setState({ workspaces: list });
+              } catch {
+                // ignore
+              }
+              setEditingWorkspace(null);
+            }}
+            onCreated={async () => {
+              setNewProjectOpen(false);
+              setEditingWorkspace(null);
             }}
           />
         )}

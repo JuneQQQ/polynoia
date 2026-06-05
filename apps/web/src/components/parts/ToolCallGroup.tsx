@@ -38,22 +38,26 @@ export function ToolCallGroup({
 	const anyStreaming = useStore((s) =>
 		msgIds.some((id) => selectIsMessageStreaming(s, convId, id)),
 	);
-	const expanded = open || anyStreaming;
 	// Collapsed summary + the sender's avatar (all members share one sender).
 	// Return only PRIMITIVES from the selector — a fresh array/object would defeat
 	// useShallow and re-render this group on every store delta.
-	const { summary, toolCount, avColor, avInitials, avName, avId } = useStore(
+	const { summary, toolCount, running, avColor, avInitials, avName, avId } =
+		useStore(
 		useShallow((s) => {
 			const cs = s.convs.get(convId);
 			const lang = s.lang;
 			const nm: string[] = [];
+			let anyRunning = false;
 			let thinking = false;
 			for (const id of msgIds) {
 				const p = cs?.msgById.get(id)?.payload as
-					| { kind?: string; name?: string }
+					| { kind?: string; name?: string; running?: boolean }
 					| undefined;
 				if (p?.kind === "reasoning") {
 					thinking = true;
+				} else if (p?.kind === "terminal") {
+					nm.push("bash");
+					if (p.running) anyRunning = true;
 				} else {
 					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
 				}
@@ -69,6 +73,7 @@ export function ToolCallGroup({
 			return {
 				summary: joined,
 				toolCount: nm.length,
+				running: anyRunning,
 				avColor: a?.color ?? null,
 				avInitials: a?.initials ?? "?",
 				avName: a?.name ?? "Agent",
@@ -76,6 +81,9 @@ export function ToolCallGroup({
 			};
 		}),
 	);
+	// Keep the fold OPEN while a member is still streaming OR a bash terminal is
+	// running — so the user watches the live output; it auto-collapses once done.
+	const expanded = open || anyStreaming || running;
 
 	return (
 		<div className="flex gap-3 px-6 my-1">

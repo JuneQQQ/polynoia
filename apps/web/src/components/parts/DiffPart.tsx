@@ -110,9 +110,10 @@ export function DiffPart({
 	};
 
 	return (
-		<div className="border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] max-w-[640px]">
-			{/* Header chip — click to expand the diff inline. */}
-			<div className="flex items-center gap-2 px-3 py-2 bg-[var(--color-surface-2)]">
+		<div className="rounded-lg overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[640px]">
+			{/* Header — same chrome as the ToolCallGroup fold block (bordered pill,
+			    surface-2/50, click to toggle). */}
+			<div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-surface-2)]/50 hover:bg-[var(--color-surface-2)] transition-colors">
 				<button
 					type="button"
 					onClick={() => setOpen((v) => !v)}
@@ -160,10 +161,11 @@ export function DiffPart({
 				)}
 				{committed && (
 					<span
-						className="text-[10px] text-[var(--color-fg-3)] font-mono flex-shrink-0"
-						title={`已提交 ${payload.commit_sha}`}
+						className="text-[10px] text-[var(--color-fg-3)] font-mono flex-shrink-0 inline-flex items-center gap-1"
+						title={payload.commit_sha ? `已提交 ${payload.commit_sha}` : "已提交"}
 					>
-						已改{payload.commit_sha ? ` @${payload.commit_sha}` : ""}
+						<Check size={11} className="text-[var(--color-green)]" />
+						{payload.commit_sha ? payload.commit_sha.slice(0, 7) : "已改"}
 					</span>
 				)}
 			</div>

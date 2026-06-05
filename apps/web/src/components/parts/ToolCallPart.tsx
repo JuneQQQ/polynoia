@@ -88,6 +88,113 @@ function prettyJSON(obj: unknown): string {
   }
 }
 
+/** Unescape a JSON string body that may be MID-STREAM (an unterminated/partial
+ * trailing escape). Falls back progressively so a half-arrived `\` never throws. */
+function unescapeJSONBody(s: string): string {
+  try {
+    return JSON.parse(`"${s}"`);
+  } catch {
+    try {
+      return JSON.parse(`"${s.replace(/\\+$/, "")}"`);
+    } catch {
+      return s
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "\t")
+        .replace(/\\r/g, "\r")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
+    }
+  }
+}
+
+/** Pull {path, content} out of a write tool call — from the parsed `input` once
+ * it's available, else from the still-streaming raw `input_preview` JSON (the
+ * content field is often unterminated while the model is mid-write). Best-effort:
+ * this drives a live preview; the final `diff` card is authoritative. */
+function extractWriteFields(payload: ToolCallPayload): {
+  path: string;
+  content: string;
+} {
+  const inp = payload.input as Record<string, unknown> | undefined;
+  if (inp && typeof inp.content === "string") {
+    return {
+      path: typeof inp.path === "string" ? inp.path : "",
+      content: inp.content,
+    };
+  }
+  const raw =
+    typeof payload.input_preview === "string" ? payload.input_preview : "";
+  const pathM = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const path = pathM ? unescapeJSONBody(pathM[1]) : "";
+  const cTerm = raw.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]/);
+  const cOpen = raw.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)$/);
+  const content = cTerm
+    ? unescapeJSONBody(cTerm[1])
+    : cOpen
+      ? unescapeJSONBody(cOpen[1])
+      : "";
+  return { path, content };
+}
+
+/** Live "writing code into the file" card — shown while the model is still
+ * generating a `write` tool call's content. The content streams in (the same
+ * data the tool-call card's input_preview carries) rendered as code, with a
+ * blinking cursor; once the write completes the canonical `diff` card replaces
+ * it. */
+function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
+  const { path, content } = extractWriteFields(payload);
+  const [open, setOpen] = useState(true);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el && open) el.scrollTop = el.scrollHeight;
+  }, [content, open]);
+  // Same chrome as the read / terminal cards: chevron + icon + name + summary +
+  // status pill. Expanded while the model streams the file content; once the
+  // write completes this card unmounts and the collapsed `diff` card takes over.
+  return (
+    <div
+      className="rounded-md overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[680px] text-[12px]"
+      style={{ borderLeft: "3px solid var(--color-accent)" }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 w-full px-2.5 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
+      >
+        {open ? (
+          <ChevronDown size={11} className="text-[var(--color-fg-4)] flex-shrink-0" />
+        ) : (
+          <ChevronRight size={11} className="text-[var(--color-fg-4)] flex-shrink-0" />
+        )}
+        <Pencil size={12} className="text-[var(--color-fg-3)] flex-shrink-0" />
+        <span className="font-mono font-semibold text-[11.5px] flex-shrink-0">
+          write
+        </span>
+        <span className="font-mono text-[11px] text-[var(--color-fg-3)] truncate flex-1">
+          {path}
+        </span>
+        <span
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ml-auto"
+          style={{ background: "var(--color-accent-soft)", color: "var(--color-accent)" }}
+        >
+          <Loader2 size={11} className="animate-spin" />
+          写入中
+        </span>
+      </button>
+      {open && (
+        <div
+          ref={bodyRef}
+          className="font-mono text-[11px] leading-[1.55] p-2.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all bg-[var(--color-surface)] text-[var(--color-fg-2)] border-t border-[var(--color-line)]"
+        >
+          {content}
+          <span className="inline-block w-[7px] h-[1.05em] align-text-bottom bg-[var(--color-fg-3)] animate-pulse ml-0.5" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
   const [expanded, setExpanded] = useState(false);
   const userTouched = useRef(false);
@@ -95,6 +202,15 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
   const ToolIcon = TOOL_ICONS[displayName.toLowerCase()] ?? Settings;
   const ss = STATE_STYLE(payload.state);
   const isError = payload.state === "error" || !!payload.is_error;
+  // Dedup + ordering fix: a successful file-write already shows as a rich `diff`
+  // card and a `bash` run as a live `terminal` card (both posted by the tools
+  // themselves). The raw tool-call card for those is then redundant AND lands
+  // out of order vs the async diff/terminal card (the "write → bash → diff"
+  // jumble). Hide it on success; keep it on error so failures stay visible.
+  const lname = displayName.toLowerCase();
+  const isWriteFamily =
+    lname === "write" || lname === "filewrite" || lname === "apply_patch";
+  const isBashFamily = lname === "bash" || lname === "shell";
   const hasInput = payload.input && Object.keys(payload.input).length > 0;
   // Args still streaming in (big dispatch) → show the raw partial JSON in the
   // EXPANDED body, and auto-open so the user watches them build (like Cursor).
@@ -117,8 +233,22 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
   // user can see WHY it failed (e.g. dispatch called with no `tasks`).
   const showEmptyInputOnError = isError && !hasInput && !hasPreview;
 
+  // `bash` has a live `terminal` card → hide the raw tool-call card (except on
+  // error, so failures stay visible).
+  if (isBashFamily && !isError) return null;
+  // `write` family: stream the code into the file live while the model is still
+  // generating the content, then hand off to the canonical `diff` card once the
+  // write completes. (Keep the tool-call card on error.)
+  if (isWriteFamily && !isError) {
+    if (payload.state === "completed") return null;
+    return <WriteStreamCard payload={payload} />;
+  }
+
   return (
-    <div className="border border-[var(--color-line)] rounded-md overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] max-w-[680px] text-[12px]">
+    <div
+      className="rounded-md overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[680px] text-[12px]"
+      style={{ borderLeft: `3px solid ${ss.fg}` }}
+    >
       {/* Header — clickable to toggle */}
       <button
         type="button"

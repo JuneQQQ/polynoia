@@ -21,6 +21,7 @@ import { SchemaPart } from "./SchemaPart";
 import { SqlPart } from "./SqlPart";
 import { SwatchesPart } from "./SwatchesPart";
 import { TasksPart } from "./TasksPart";
+import { TerminalPart } from "./TerminalPart";
 import { TextPart } from "./TextPart";
 import { ToolCallPart } from "./ToolCallPart";
 import { TypingPart } from "./TypingPart";
@@ -58,6 +59,7 @@ export const PARTS_REGISTRY: Partial<{
 	sql: SqlPart,
 	schema: SchemaPart,
 	logs: LogsPart,
+	terminal: TerminalPart,
 	api: ApiPart,
 	typing: TypingPart,
 	"tool-call": ToolCallPart,

@@ -22,6 +22,7 @@ import { FloatingReviewBar } from "./FloatingReviewBar";
 import { MessageView } from "./MessageView";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
+import { cleanToolName } from "./parts/ToolCallPart";
 import { ConvScopeProvider } from "./parts/_context";
 
 type Props = {
@@ -694,25 +695,51 @@ export function ChatPane({ convId, members, title }: Props) {
 			runHasTool = false;
 		};
 		for (const m of messages) {
-			const kind =
+			const pl = (
 				claimedSet.has(m.id) || burstByAnchorId.has(m.id)
 					? undefined
-					: (byId.get(m.id)?.payload as { kind?: string } | undefined)?.kind;
-			// `present` folds in with the other tool calls (one unified block, in
-			// time order). The DELIVERABLE itself is the separate `files` panel card
-			// (kind:"files") — not a tool-call/reasoning, so it naturally breaks the
-			// fold run and shows externally as the divider between tool batches.
-			const foldable = kind === "tool-call" || kind === "reasoning";
+					: byId.get(m.id)?.payload
+			) as { kind?: string; name?: string } | undefined;
+			const kind = pl?.kind;
+			// Classify for folding (user request):
+			//   · reasoning / non-write tool-call / terminal(bash) → fold into the
+			//     "N 步工具调用" block. bash's live terminal card belongs in the fold;
+			//     its raw tool-call message is DROPPED (the terminal card represents
+			//     it) so it neither renders nor double-counts.
+			//   · write-family tool-call + diff cards → stay STANDALONE (the file-
+			//     edit block is the only thing allowed outside the fold).
+			let foldable = false;
+			let countsAsTool = false;
+			if (kind === "reasoning") {
+				foldable = true;
+			} else if (kind === "terminal") {
+				foldable = true;
+				countsAsTool = true;
+			} else if (kind === "tool-call") {
+				const nm = cleanToolName(pl?.name ?? "").toLowerCase();
+				if (nm === "bash" || nm === "shell") {
+					// Represented by the terminal card → drop this raw tool-call from
+					// the timeline without breaking the surrounding fold run.
+					skip.add(m.id);
+					continue;
+				}
+				if (nm === "write" || nm === "filewrite" || nm === "apply_patch") {
+					foldable = false; // standalone file-edit block
+				} else {
+					foldable = true;
+					countsAsTool = true;
+				}
+			}
 			if (foldable && (runSender === null || runSender === m.sender_id)) {
 				run.push(m.id);
 				runSender = m.sender_id;
-				if (kind === "tool-call") runHasTool = true;
+				if (countsAsTool) runHasTool = true;
 			} else {
 				flush();
 				if (foldable) {
 					run.push(m.id);
 					runSender = m.sender_id;
-					if (kind === "tool-call") runHasTool = true;
+					if (countsAsTool) runHasTool = true;
 				}
 			}
 		}

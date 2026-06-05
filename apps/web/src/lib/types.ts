@@ -135,6 +135,15 @@ export type LogsPayload = {
 	}[];
 };
 
+export type TerminalPayload = {
+	kind: "terminal";
+	command: string;
+	output: string;
+	running: boolean;
+	exit_code?: number | null;
+	truncated?: boolean;
+};
+
 export type ApiPayload = {
 	kind: "api";
 	method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -285,6 +294,7 @@ export type MessagePayload =
 	| SqlPayload
 	| SchemaPayload
 	| LogsPayload
+	| TerminalPayload
 	| ApiPayload
 	| TypingPayload
 	| ToolCallPayload
