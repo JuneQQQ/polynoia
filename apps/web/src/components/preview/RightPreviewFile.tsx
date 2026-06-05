@@ -14,8 +14,10 @@
 import { Download, FileX2, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { isMobile } from "../../lib/platform";
 import { useStore } from "../../store";
 import { DocPreviewPane, docKind } from "./DocPreviewPane";
+import { MobileMarkdownView } from "./MobileMarkdownView";
 
 function basename(path: string): string {
 	return path.split("/").pop() ?? path;
@@ -88,6 +90,12 @@ export function RightPreviewFile({
 				<Loader2 size={14} className="animate-spin" />
 			</div>
 		);
+	}
+	// Mobile: render Markdown read-only via react-markdown instead of the heavy
+	// editable CrepeEditor (Milkdown), which can crash / fail to lazy-load in the
+	// Android WebView. Desktop keeps the rich editor.
+	if (isMobile() && /\.(md|markdown|mdx|marp)$/i.test(path)) {
+		return <MobileMarkdownView content={content} />;
 	}
 	return (
 		<DocPreviewPane workspaceId={workspaceId} path={path} content={content} />
