@@ -2526,12 +2526,14 @@ _AUTOFIX_TOTAL_CAP = 60_000      # chars total inlined across all files
 
 
 def _build_conflict_fix_prompt(
-    cid: str, branch: str, files: list[dict]
+    cid: str, branch: str, author: str, files: list[dict]
 ) -> str | None:
-    """Compose the auto-fix turn prompt for a branch author: inline each
-    conflicting file's sides, then instruct it to call the `resolve_conflict`
-    tool. Returns None when nothing is auto-fixable (every file binary or too
-    large) so the caller skips the spawn and leaves it for a human."""
+    """Compose the AUTO-mode auto-fix turn prompt for the ORCHESTRATOR (the
+    neutral arbiter — not the branch author, who'd be judge-and-party): inline
+    each conflicting file's sides, then instruct it to call `resolve_conflict`
+    per the batch contract. Returns None when nothing is auto-fixable (every
+    file binary or too large) so the caller skips the spawn and leaves it for a
+    human in the conflict panel."""
     sections: list[str] = []
     deferred: list[str] = []      # binary — describe, never inline
     skipped_large: list[str] = []
@@ -2546,7 +2548,7 @@ def _build_conflict_fix_prompt(
             continue
         if ctype == "modify_delete":
             survivor = f.get("ours") or f.get("theirs") or ""
-            who = "main(ours)" if f.get("ours") else "你的分支(theirs)"
+            who = "main(ours)" if f.get("ours") else "该成员分支(theirs)"
             snippet = survivor[:_AUTOFIX_PER_FILE_CAP]
             if len(snippet) > budget:
                 skipped_large.append(path)
@@ -2583,7 +2585,7 @@ def _build_conflict_fix_prompt(
         sections.append(
             f"### `{path}` — {label}\n"
             f"OURS(main):\n```\n{ours}\n```\n"
-            f"THEIRS(你的分支):\n```\n{theirs}\n```"
+            f"THEIRS(该成员分支):\n```\n{theirs}\n```"
         )
         actionable += 1
 
@@ -2591,7 +2593,10 @@ def _build_conflict_fix_prompt(
         return None  # nothing safely auto-mergeable → leave for a human
 
     parts = [
-        f"你在分支 `{branch}` 上的改动合并进 main 时产生了冲突,请尽量自动解决。",
+        f"成员 `{author}` 的分支 `{branch}` 合并进 main 时产生了冲突。**你是本群协调器,"
+        "auto 模式下由你统一裁决合并(不交给成员自解——他只懂自己那侧,会偏)。** "
+        "请优先按本批 dispatch 的 **contract**(上方共享记忆里)裁定取舍,再用 "
+        "`resolve_conflict` 落地。",
         "\n\n".join(sections),
     ]
     if deferred:
@@ -2605,7 +2610,7 @@ def _build_conflict_fix_prompt(
         f"用 `resolve_conflict` 工具(conflict_id=`{cid}`)一次性提交解决方案:\n"
         "- content/add_add:`resolutions` 给 `{path: 合并后的完整文本}`,"
         "**不得保留任何 `<<<<<<<`/`=======`/`>>>>>>>` 标记**;\n"
-        "- 整侧取舍:`sides` 给 `{path: 'ours'|'theirs'}`('ours'=main,'theirs'=你的分支);\n"
+        "- 整侧取舍:`sides` 给 `{path: 'ours'|'theirs'}`('ours'=main,'theirs'=该成员分支);\n"
         "- 删除:`deletions` 给 `[path]`。\n"
         "必须覆盖每一个冲突文件,否则合并会被中止。**若不确定如何安全合并,就不要"
         "调用工具——留给用户在面板上手动解决。** 不要用 `write`,只有 `resolve_conflict` "
@@ -4157,22 +4162,23 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             ws_id, b, author, files, orch_id,
                             base_agents=list(merged_authors),
                         )
-                        # auto mode → spawn the branch author to fix the conflict
-                        # it just surfaced (closed-loop auto-fix round). MUST be
-                        # fire-and-forget: we still hold workspace_merge_lock here,
-                        # and the fix turn's resolve_conflict → /resolve re-acquires
-                        # it — _spawn_turn (create_task) lets this drain release the
-                        # lock first, so the fix turn queues on it instead of
-                        # self-deadlocking. The `already` skip above means each
-                        # conflict triggers this at most once (a failed fix reverts
-                        # to open and is skipped on the next drain). The fix turn is
-                        # NOT a burst worker (no burst_card_id/_task_id) so it never
-                        # touches the is_last state machine.
-                        if cid and _conv and _conv.merge_mode == "auto":
-                            nudge = _build_conflict_fix_prompt(cid, b, files)
+                        # AUTO mode → spawn the ORCHESTRATOR (neutral arbiter) to
+                        # resolve, NOT the branch author (judge-and-party). MANUAL
+                        # mode → leave the conflict card for the user (no spawn).
+                        # MUST be fire-and-forget: we still hold workspace_merge_lock
+                        # here, and the fix turn's resolve_conflict → /resolve
+                        # re-acquires it — _spawn_turn (create_task) lets this drain
+                        # release the lock first, so the fix turn queues on it instead
+                        # of self-deadlocking. The `already` skip above means each
+                        # conflict triggers this at most once (a failed fix reverts to
+                        # open and is skipped on the next drain). The fix turn is NOT a
+                        # burst worker (no burst_card_id/_task_id) so it never touches
+                        # the is_last state machine.
+                        if cid and _conv and _conv.merge_mode == "auto" and orch_id:
+                            nudge = _build_conflict_fix_prompt(cid, b, author, files)
                             if nudge is not None:
-                                _spawn_turn(conv_id, author, run_adapter_turn(
-                                    author, nudge, depth=1, parent_agent_id=None,
+                                _spawn_turn(conv_id, orch_id, run_adapter_turn(
+                                    orch_id, nudge, depth=1, parent_agent_id=None,
                                     inject_history=True, suppress_dispatch=True,
                                 ))
                     elif status == "error":

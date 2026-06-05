@@ -127,8 +127,8 @@ async def test_inference_ambiguous_errors(monkeypatch):
 
 
 def test_tier_exposure():
-    """Only branch-owning builders can resolve_conflict."""
-    for role in ("coder", "generalist", "designer", "writer"):
-        assert "resolve_conflict" in tools_for_role(role), role
-    for role in ("orchestrator", "critic", "advisory"):
+    """resolve_conflict is ORCHESTRATOR-only (neutral arbiter) — builders/critic/
+    advisory never self-resolve their own branch's conflict."""
+    assert "resolve_conflict" in tools_for_role("orchestrator")
+    for role in ("coder", "generalist", "designer", "writer", "critic", "advisory"):
         assert "resolve_conflict" not in tools_for_role(role), role

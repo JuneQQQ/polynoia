@@ -23,6 +23,9 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
   const openPreview = useStore((s) => s.openPreview);
   const upsertConflict = useStore((s) => s.upsertConflict);
   const agents = useStore((s) => s.agents);
+  // auto = orchestrator resolves (don't make it look like it's waiting on the
+  // user); manual = user resolves in the panel. Switching mode updates this live.
+  const mergeMode = useStore((s) => s.mergeMode);
   const [busy, setBusy] = useState(false);
   const status = payload.status;
   const files = payload.files ?? [];
@@ -119,31 +122,45 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
             <AlertTriangle size={12} /> 已放弃,分支未合并进 main
           </span>
         ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                // Self-populate the resolve store from THIS card's payload — the
-                // card already carries the full conflict (id + files + blobs), so
-                // opening the pane doesn't depend on the live/hydrate path having
-                // filled conflictsByConv.
-                upsertConflict({ ...payload, id: payload.conflict_id });
-                openPreview("code");
-              }}
-              className="inline-flex items-center gap-1 px-3 py-1 text-[11px] rounded font-medium text-white hover:opacity-90 transition"
-              style={{ background: "var(--color-amber)" }}
-            >
-              <GitMerge size={11} /> 解决冲突
-            </button>
-            <button
-              type="button"
-              onClick={abandon}
-              disabled={busy}
-              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-[var(--color-line)] text-[var(--color-fg-2)] hover:text-[var(--color-red)] hover:border-[var(--color-red)] transition disabled:opacity-50"
-            >
-              {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} 放弃
-            </button>
-          </>
+          <div className="flex flex-col gap-1.5 w-full">
+            {/* auto mode → the orchestrator is resolving this; tell the user it's
+                handled (not waiting on them). The panel below stays available as a
+                manual override. manual mode → no hint, the user drives. */}
+            {mergeMode === "auto" && (
+              <span
+                className="inline-flex items-center gap-1 text-[11px]"
+                style={{ color: "var(--color-amber)" }}
+              >
+                <Loader2 size={12} className="animate-spin" /> auto 模式 ·
+                协调者自动合并中…
+              </span>
+            )}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  // Self-populate the resolve store from THIS card's payload — the
+                  // card already carries the full conflict (id + files + blobs), so
+                  // opening the pane doesn't depend on the live/hydrate path having
+                  // filled conflictsByConv.
+                  upsertConflict({ ...payload, id: payload.conflict_id });
+                  openPreview("code");
+                }}
+                className="inline-flex items-center gap-1 px-3 py-1 text-[11px] rounded font-medium text-white hover:opacity-90 transition"
+                style={{ background: "var(--color-amber)" }}
+              >
+                <GitMerge size={11} /> {mergeMode === "auto" ? "手动接管" : "解决冲突"}
+              </button>
+              <button
+                type="button"
+                onClick={abandon}
+                disabled={busy}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-[var(--color-line)] text-[var(--color-fg-2)] hover:text-[var(--color-red)] hover:border-[var(--color-red)] transition disabled:opacity-50"
+              >
+                {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} 放弃
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

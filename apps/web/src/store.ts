@@ -232,6 +232,11 @@ type Store = {
 	setActiveConv: (id: string | null) => void;
 	setView: (v: "inbox" | "marketplace" | "archive" | "chat") => void;
 	setLang: (l: import("./lib/i18n").Lang) => void;
+	/** Active conversation's merge gate (auto = orchestrator resolves conflicts;
+	 * manual = user resolves). Mirrored from ChatPane's convSummary so deep parts
+	 * (ConflictPart) can show the right hint without prop-drilling. */
+	mergeMode: "auto" | "manual";
+	setMergeMode: (m: "auto" | "manual") => void;
 	/** Active reply target — set by MessageView "回复" action, consumed by
 	 * Composer. Cleared after send. Scoped per-conv via convId in the value. */
 	replyingTo: {
@@ -656,6 +661,8 @@ export const useStore = create<Store>((set, get) => ({
 	setReplyingTo: (value) => set({ replyingTo: value }),
 	setComposerDraft: (value) => set({ composerDraft: value }),
 	setView: (v) => set({ view: v }),
+	mergeMode: "auto",
+	setMergeMode: (m) => set({ mergeMode: m }),
 	setLang: (l) => {
 		if (typeof window !== "undefined") {
 			window.localStorage.setItem("polynoia.lang", l);

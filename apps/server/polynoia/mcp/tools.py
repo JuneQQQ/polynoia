@@ -1276,20 +1276,23 @@ _CONFLICT_MARKERS = ("<<<<<<<", ">>>>>>>", "|||||||")
 class _ResolveConflictTool(_ToolBase):
     name = "resolve_conflict"
     description = (
-        "Resolve an OPEN merge conflict on YOUR branch and land it in main. Call "
-        "this ONLY when you've been asked to fix a conflict (you'll be given the "
-        "conflict_id and the conflicting files' three sides). Provide a per-file "
-        "decision via ONE OR MORE of:\n"
+        "ORCHESTRATOR-ONLY. Resolve an OPEN merge conflict on a TEAMMATE's branch "
+        "and land it in main — you are the neutral arbiter (you hold the dispatch "
+        "contract + every member's intent), so YOU decide the merge, not the "
+        "member (who'd be judge-and-party). Call this in AUTO mode when a conflict "
+        "card appears (you'll be given the conflict_id + each file's three sides). "
+        "Decide per the batch contract first, then provide a per-file decision via "
+        "ONE OR MORE of:\n"
         "  • resolutions: {path: full_merged_text} — the complete file content with "
         "ALL conflict markers (<<<<<<< ======= >>>>>>>) removed. Use for text "
         "conflicts you can merge.\n"
         "  • sides: {path: 'ours'|'theirs'} — take one whole side verbatim. 'ours' = "
-        "main's version, 'theirs' = your branch's version. Use for binary files or "
-        "when one side wins outright.\n"
+        "main's version, 'theirs' = the member's branch version. Use for binary "
+        "files or when one side wins outright.\n"
         "  • deletions: [path] — remove the file (for modify/delete conflicts where "
         "deletion is correct).\n"
-        "Cover EVERY conflicting file or the merge will abort. If you cannot safely "
-        "resolve a conflict, do NOT guess — leave it and the user will decide."
+        "Cover EVERY conflicting file or the merge will abort. If two intents truly "
+        "can't be reconciled, do NOT guess — leave it for the user's manual panel."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -1442,8 +1445,11 @@ _ASK      = {"ask_user"}                           # block + ask the user a ques
 _MUTATE   = {"write"}                              # the SOLE file-mutation tool → one audit entry
 _SHELL    = {"bash"}                               # run a shell command
 _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
-_RESOLVE  = {"resolve_conflict"}                   # land a merge conflict on the builder's OWN branch
-_ORCHESTRATE = {"dispatch", "discuss", "present"}  # delegate + present — orchestrator ONLY
+# delegate + present + resolve merge conflicts. resolve_conflict is ORCHESTRATOR-
+# ONLY (the neutral arbiter that holds the contract + every member's intent) — a
+# worker self-resolving its own branch is judge-and-party (biased toward whoever
+# merged later). In AUTO mode the orchestrator resolves; in MANUAL the user does.
+_ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}
 # Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
 # self-report); `present` is orchestrator-only (workers `report`, the
 # orchestrator bundles + presents from main at summary). The removed
@@ -1452,9 +1458,10 @@ _ORCHESTRATE = {"dispatch", "discuss", "present"}  # delegate + present — orch
 
 # ── Functional tiers (role names map onto these) ────────────────
 _TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE
-# Builders own a branch, so they (and only they) can `resolve_conflict` to land
-# the auto-fix of a conflict on it — see the conflict closed-loop auto-fix round.
-_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE
+# Builders do NOT resolve conflicts — that's the orchestrator's call (neutral
+# arbiter). Workers just build + report; a conflict on their branch is escalated
+# to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER
 _TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
 _TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
 _TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write
