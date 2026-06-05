@@ -754,3 +754,17 @@ body.polynoia-resizing * {
 @media (prefers-reduced-motion: reduce) {
   .pn-rise, .pn-ember { animation: none; }
 }
+
+/* iOS input-focus zoom guard. iOS Safari / WKWebView auto-zoom into any focused
+   field whose font-size is < 16px, and since iOS 10 they IGNORE the viewport
+   maximum-scale / user-scalable=no hints — so the zoom sticks after the field
+   unmounts (e.g. closing NewContactModal), leaving the whole UI enlarged.
+   Forcing >=16px on touch devices is the only reliable fix; desktop (fine
+   pointer) keeps its compact field sizes. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

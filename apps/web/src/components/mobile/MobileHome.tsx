@@ -768,8 +768,6 @@ function ContactsScreen({ onSelectConv }: Props) {
 			<LargeHeader title={t.contactsTitle} count={contacts.length} showAdd />
 			<div style={scrollStyle}>
 				<SearchInput value={q} onChange={setQ} placeholder={t.searchAgent} />
-				<Divider pal={pal} indent={16} margin />
-				<ActionRow icon={<Users size={22} color="#fff" strokeWidth={2} />} label={t.newContact} onClick={onNewContact} />
 				{groups.length === 0 && <Empty text={t.noResult} />}
 				{groups.map((g) => (
 					<div key={g.engine}>
