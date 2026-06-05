@@ -15,6 +15,7 @@ import { Download, FileX2, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { isMobile } from "../../lib/platform";
+import { assetUrl } from "../../lib/runtime-config";
 import { useStore } from "../../store";
 import { DocPreviewPane, docKind } from "./DocPreviewPane";
 import { MobileMarkdownView } from "./MobileMarkdownView";
@@ -44,6 +45,11 @@ export function RightPreviewFile({
 	const _k = docKind(path, "");
 	const isSlides = _k === "slides";
 	const isBinary = _k === "workbook" || _k === "word";
+	// Mobile renders images directly (<img>) and never needs the text fetch for
+	// them — the raw text endpoint would 415 on binary image bytes.
+	const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path);
+	const mobile = isMobile();
+	const skipImageFetch = isImage && mobile;
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is the reload trigger.
 	useEffect(() => {
@@ -51,7 +57,7 @@ export function RightPreviewFile({
 		// themselves). MUST stay after all hook calls — early-returning before
 		// this effect when isSlides flipped (file switch from .py to .pptx)
 		// caused "rendered fewer hooks than expected".
-		if (isBinary || isSlides) return;
+		if (isBinary || isSlides || skipImageFetch) return;
 		let alive = true;
 		setContent(null);
 		setError(null);
@@ -70,7 +76,7 @@ export function RightPreviewFile({
 		return () => {
 			alive = false;
 		};
-	}, [workspaceId, path, filesTick, isBinary, isSlides]);
+	}, [workspaceId, path, filesTick, isBinary, isSlides, skipImageFetch]);
 
 	// Routing — order matters: pptx + binary docs render WITHOUT a text fetch
 	// (their previewers fetch bytes themselves), so route them before the
@@ -82,6 +88,19 @@ export function RightPreviewFile({
 		// DocPreviewPane → WorkbookPreview fetches the .xlsx bytes itself.
 		return <DocPreviewPane workspaceId={workspaceId} path={path} content="" />;
 	}
+	// Mobile image preview — render the bytes directly via <img> (same-origin
+	// /files/blob through the Vite proxy; assetUrl honors any server override).
+	if (mobile && isImage) {
+		const src = assetUrl(
+			`/api/workspaces/${encodeURIComponent(workspaceId)}/files/blob?path=${encodeURIComponent(path)}`,
+		);
+		return (
+			<div className="h-full w-full overflow-auto bg-[var(--color-surface-2)] grid place-items-center p-3">
+				{/* biome-ignore lint/a11y/useAltText: filename alt below */}
+				<img src={src} alt={path} className="max-w-full h-auto object-contain" />
+			</div>
+		);
+	}
 	if (loading || content === null) {
 		if (error)
 			return <ErrorCard path={path} workspaceId={workspaceId} reason={error} />;
@@ -91,11 +110,30 @@ export function RightPreviewFile({
 			</div>
 		);
 	}
-	// Mobile: render Markdown read-only via react-markdown instead of the heavy
-	// editable CrepeEditor (Milkdown), which can crash / fail to lazy-load in the
-	// Android WebView. Desktop keeps the rich editor.
-	if (isMobile() && /\.(md|markdown|mdx|marp)$/i.test(path)) {
-		return <MobileMarkdownView content={content} />;
+	// Mobile: robust read-only path that avoids the heavy/editable desktop
+	// renderers (CrepeEditor/Milkdown, CodeMirror SourcePreview) which can crash
+	// or fail to lazy-load in the Android WebView. Every text file shows its
+	// content; desktop keeps the rich renderers untouched.
+	if (mobile) {
+		// Markdown (incl. Marp source) → lightweight react-markdown.
+		if (/\.(md|markdown|mdx|marp)$/i.test(path)) {
+			return <MobileMarkdownView content={content} />;
+		}
+		// csv/tsv (table) + html (rendered) — these DocPreviewPane renderers are
+		// light and work fine in the WebView.
+		if (/\.(csv|tsv|html?)$/i.test(path)) {
+			return (
+				<DocPreviewPane workspaceId={workspaceId} path={path} content={content} />
+			);
+		}
+		// Everything else that's UTF-8 text (code / json / yaml / txt / logs / …)
+		// → show the raw content. Binary-unknown files fail the text fetch above
+		// and land on ErrorCard instead.
+		return (
+			<pre className="h-full w-full overflow-auto bg-[var(--color-surface-2)] m-0 p-3 text-[12px] leading-relaxed font-mono whitespace-pre text-[var(--color-fg-2)]">
+				{content}
+			</pre>
+		);
 	}
 	return (
 		<DocPreviewPane workspaceId={workspaceId} path={path} content={content} />
