@@ -6,7 +6,6 @@
   "workspaces": [
     "apps/web",
     "apps/desktop",
-    "apps/mobile",
     "packages/*"
   ],
   "scripts": {
@@ -16,9 +15,6 @@
     "lint:web": "pnpm --filter @polynoia/web lint",
     "dev:desktop": "pnpm --filter @polynoia/desktop dev",
     "build:desktop": "pnpm --filter @polynoia/desktop build",
-    "sync:mobile": "pnpm --filter @polynoia/mobile sync",
-    "run:mobile-ios": "pnpm --filter @polynoia/mobile run:ios",
-    "run:mobile-android": "pnpm --filter @polynoia/mobile run:android",
     "format": "biome format --write ."
   },
   "devDependencies": {

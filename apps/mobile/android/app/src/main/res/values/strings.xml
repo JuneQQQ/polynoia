@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='utf-8'?>
-<resources>
-    <string name="app_name">Polynoia</string>
-    <string name="title_activity_main">Polynoia</string>
-    <string name="package_name">com.polynoia.mobile</string>
-    <string name="custom_url_scheme">com.polynoia.mobile</string>
-</resources>

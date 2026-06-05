@@ -1,5 +1,4 @@
 packages:
   - "apps/web"
   - "apps/desktop"
-  - "apps/mobile"
   - "packages/*"
