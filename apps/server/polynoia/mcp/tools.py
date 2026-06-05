@@ -677,18 +677,32 @@ async def _callback_server(
     base = os.environ.get("POLYNOIA_API_BASE")
     if not base:
         return {"kind": "error", "error": f"{label} unavailable (no API base in this context)"}
-    try:
-        async with httpx.AsyncClient(base_url=base, timeout=30.0, trust_env=False) as client:
-            r = await client.request(method, path, json=json, params=params)
-            if r.status_code != 200:
+    # Retry TRANSIENT failures (transport error / 5xx) a few times with backoff —
+    # a momentary blip on the localhost callback shouldn't surface to the LLM as a
+    # hard tool failure it can't fix by changing inputs (e.g. a `report` that
+    # transiently 500s once stalled a whole burst). A 4xx is a REAL client error
+    # (bad inputs) → return immediately so the model corrects rather than looping.
+    last_err = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                base_url=base, timeout=30.0, trust_env=False
+            ) as client:
+                r = await client.request(method, path, json=json, params=params)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code < 500:
                 return {
                     "kind": "error",
                     "error": f"{label} endpoint returned {r.status_code}",
                     "detail": r.text[:300],
                 }
-            return r.json()
-    except (httpx.RequestError, httpx.HTTPError) as e:
-        return {"kind": "error", "error": f"{label} transport failure: {e}"}
+            last_err = f"{label} endpoint returned {r.status_code}: {r.text[:200]}"
+        except (httpx.RequestError, httpx.HTTPError) as e:
+            last_err = f"{label} transport failure: {e}"
+        if attempt < 2:
+            await asyncio.sleep(0.5 * (attempt + 1))
+    return {"kind": "error", "error": last_err or f"{label} failed after retries"}
 
 
 def _compute_unified_diff(old: str, new: str, rel_path: str) -> tuple[str, int, int]:
