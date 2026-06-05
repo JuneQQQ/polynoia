@@ -10,7 +10,6 @@ import {
   Plug,
   Plus,
   Search,
-  Server,
   Settings,
   Sparkles,
   Trash2,
@@ -34,8 +33,6 @@ import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { isMobile as _isMobile } from "../lib/platform";
 import { OnboardingModal } from "./OnboardingModal";
-import { ServerSettingsModal } from "./ServerSettingsModal";
-import { getServerOverride } from "../lib/runtime-config";
 
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -138,7 +135,6 @@ export function Sidebar({
   }, []);
   // 适配器管理(原 OnboardingModal)— 二级,从 NewContactModal footer / 联系人空状态进入
   const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [serverOpen, setServerOpen] = useState(false);
 
   // 顶级 sidebar 两个 section 的折叠状态(默认都展开)
   const [projectsOpen, setProjectsOpen] = useState(true);
@@ -584,7 +580,7 @@ export function Sidebar({
           ))}
         </div>
 
-        <Footer onOpenAdapters={() => setOnboardingOpen(true)} onOpenServer={() => setServerOpen(true)} adapterStatus={adapterStatus} />
+        <Footer onOpenAdapters={() => setOnboardingOpen(true)} adapterStatus={adapterStatus} />
         {onboardingOpen && (
           <OnboardingModal
             onClose={() => setOnboardingOpen(false)}
@@ -1206,7 +1202,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <Footer onOpenAdapters={() => setOnboardingOpen(true)} onOpenServer={() => setServerOpen(true)} adapterStatus={adapterStatus} />
+      <Footer onOpenAdapters={() => setOnboardingOpen(true)} adapterStatus={adapterStatus} />
       {!mobile && newProjectOpen && (
         <NewProjectModal
           editing={editingWorkspace}
@@ -1275,9 +1271,6 @@ export function Sidebar({
             }
           }}
         />
-      )}
-      {serverOpen && (
-        <ServerSettingsModal lang={lang} onClose={() => setServerOpen(false)} />
       )}
     </aside>
   );
@@ -1504,11 +1497,9 @@ function SectionHeader({
 
 function Footer({
   onOpenAdapters,
-  onOpenServer,
   adapterStatus,
 }: {
   onOpenAdapters: () => void;
-  onOpenServer: () => void;
   adapterStatus?: { enabled: number; total: number };
 }) {
   const lang = useStore((s) => s.lang);
@@ -1573,15 +1564,6 @@ function Footer({
             />
           </button>
         </div>
-        <button
-          type="button"
-          onClick={onOpenServer}
-          title={`${lang === "zh" ? "服务器" : "Server"}: ${getServerOverride() || (lang === "zh" ? "本机" : "local")}`}
-          className="press-down p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-sm text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] transition-all duration-150"
-          aria-label={lang === "zh" ? "服务器" : "Server"}
-        >
-          <Server size={13} />
-        </button>
         <ThemeToggle />
         <button
           type="button"
