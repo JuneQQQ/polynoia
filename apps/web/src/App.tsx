@@ -4,8 +4,10 @@ import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
+import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
 import { RightDrawer } from "./components/RightDrawer";
 import { Sidebar } from "./components/Sidebar";
+import { MobileHome } from "./components/mobile/MobileHome";
 import { PreviewPane } from "./components/preview/PreviewPane";
 import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
@@ -221,19 +223,20 @@ export function App() {
 							title={activeConv.title}
 						/>
 					</div>
+					{/* Full-screen read-only artifact preview, opened from chat file
+					    cards (FilePart/FilesPanelPart). Self-gates on preview state. */}
+					<MobilePreviewSheet />
 				</div>
 			);
 		}
-		// Home = the contacts + projects list (Sidebar), shown directly as the
-		// full screen. No welcome card, no drawer, no swipe — tapping a contact /
-		// conversation pushes into the chat above.
+		// Home = WeChat-style 4-tab home (消息/联系人/项目/我). Tapping a contact /
+		// conversation pushes the chat over it (back button returns).
 		return (
 			<div
 				className="pn-m-atmos h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{ paddingTop: "env(safe-area-inset-top)" }}
 			>
-				<Sidebar
-					activeConvId={activeConv?.id ?? null}
+				<MobileHome
 					onSelectConv={(id, members, title) => {
 						setActiveConv({ id, members, title });
 						setView("chat");
