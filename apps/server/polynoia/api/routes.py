@@ -80,6 +80,14 @@ _conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = {}
 # `tasks` are raw `{agent, label, note}` dicts — resolution happens at drain.
 _pending_dispatches: dict[str, list[dict]] = {}
 
+# Multi-phase auto-advance budget. When a dispatch sets need_continue=true, the
+# post-burst turn is allowed to dispatch the NEXT phase (instead of the default
+# terminal verify-and-summarize). This counts consecutive continue-phases per
+# conv so a stuck "always continue" can't loop forever; reset on each new user
+# message. Replaces the old blanket suppress_dispatch=True with an opt-in cap.
+_MAX_CONTINUE_PHASES = 8
+_conv_continue_phases: dict[str, int] = {}
+
 # Pending DISCUSSION batches recorded by the orchestrator-only `discuss` MCP tool
 # during an in-flight turn (parallels `_pending_dispatches`). Drained at the
 # orchestrator turn-end on a SEPARATE, non-burst path: it posts a framing @
@@ -1459,6 +1467,9 @@ async def record_dispatch(conv_id: str, body: dict):
     _pending_dispatches.setdefault(conv_id, []).append({
         "title": (body.get("title") or "").strip(),
         "contract": (body.get("contract") or "").strip(),
+        # True ⇒ orchestrator intends to keep going after this burst → its
+        # post-burst turn is allowed to dispatch the next phase.
+        "need_continue": bool(body.get("need_continue")),
         "tasks": raw_tasks,
         "task_ids": task_ids,
         # Who called dispatch. Recorded here so attribution doesn't depend on
@@ -2068,6 +2079,43 @@ async def post_diff_card(conv_id: str, body: dict):
     )
     await _broadcast_to_conv(conv_id, frame)
     return {"ok": True, "id": mid, "truncated": truncated}
+
+
+@router.post("/api/conversations/{conv_id}/terminal-card")
+async def post_terminal_card(conv_id: str, body: dict):
+    """Live terminal card for a `bash` tool run. The MCP bash tool POSTs
+    throttled snapshots under one stable ``term_id`` as output streams; we
+    upsert a single message + re-emit the ``data-terminal`` chunk so the card
+    updates IN PLACE (same pattern as the BurstCard). UI-only — touches no
+    merge/branch state. Output is capped so a chatty command can't bloat chat.
+    """
+    term_id = body.get("term_id")
+    if not term_id:
+        return {"ok": False, "error": "term_id required"}
+    sender_id = body.get("sender_id") or "you"
+    _MAX = 16000
+    output = str(body.get("output") or "")
+    truncated = len(output) > _MAX
+    exit_code = body.get("exit_code")
+    payload = {
+        "kind": "terminal",
+        "command": str(body.get("command") or ""),
+        "output": output[-_MAX:],
+        "running": bool(body.get("running", True)),
+        "exit_code": int(exit_code) if isinstance(exit_code, int) else None,
+        "truncated": truncated,
+    }
+    async with SessionLocal() as session:
+        await storage_repo.upsert_message(
+            session, conv_id=conv_id, sender_id=sender_id,
+            payload=payload, msg_id=term_id,
+        )
+        await session.commit()
+    frame = encode_polynoia_card(
+        "terminal", payload, term_id, sender_id=sender_id, sender_label=sender_id
+    )
+    await _broadcast_to_conv(conv_id, frame)
+    return {"ok": True, "id": term_id}
 
 
 @router.post("/api/messages/{message_id}/pin")
@@ -3566,17 +3614,28 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             orch_id = reg["orch"]
             done_n = sum(1 for t in payload["tasks"] if t["state"] == "done")
             failed_n = sum(1 for t in payload["tasks"] if t["state"] == "failed")
-            # Unified gating (user's rule): summon the orchestrator's wrap-up ONLY
-            # when there's something to do — a presentable deliverable, a merge
-            # conflict, a failed sub-task, or a merge error. A clean burst that
-            # produced nothing to SHOW ends silently (no summary turn).
+            # Multi-phase auto-advance: the orchestrator declared (need_continue at
+            # dispatch time) that more phases follow, so this post-burst turn is
+            # allowed to dispatch the NEXT phase — bounded by _MAX_CONTINUE_PHASES
+            # so a stuck "always continue" can't loop forever (the cap replaces the
+            # old blanket suppress_dispatch=True).
+            _need_continue = bool(reg.get("need_continue"))
+            _phase_n = _conv_continue_phases.get(conv_id, 0)
+            _allow_dispatch = _need_continue and _phase_n < _MAX_CONTINUE_PHASES
+            # Unified gating: summon the orchestrator's wrap-up when there's
+            # something to do — a presentable deliverable, a merge conflict, a
+            # failed sub-task, a merge error, OR an unfinished multi-phase plan.
             if not (
-                drain.deliverables or drain.conflicted or failed_n or merge_failed
+                drain.deliverables or drain.conflicted or failed_n
+                or merge_failed or _allow_dispatch
             ):
                 log.info(
-                    "burst %s: clean, nothing to present/resolve → no summary", tp_id
+                    "burst %s: clean, nothing to present/resolve/continue → no summary",
+                    tp_id,
                 )
                 return
+            if _allow_dispatch:
+                _conv_continue_phases[conv_id] = _phase_n + 1
             # No need to evict the orchestrator's pooled session here anymore:
             # its summary turn runs through run_adapter_turn, whose TURN-START
             # sync hard-resets the orchestrator's worktree to the just-merged
@@ -3619,25 +3678,45 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 "合并进 main,present 会从 main 读取最终版本。一次性传全部、不要逐个分多次调用;"
                 "一个产物只展示一次;失败/未交付/未通过核对的**不要** present。"
             )
-            nudge = (
-                "上面这批并行子任务已全部结束"
-                f"({done_n} 成功" + (f"、{failed_n} 失败" if failed_n else "") + ")"
-                "。请用 1-3 句话向用户收尾汇总:" + _escalation
-                + "不要重复实现细节,**不要再调 dispatch 派活**,只汇报。"
-                + _verify_clause
-                + _present_clause
-                + _contract_clause
+            if _allow_dispatch:
+                # Verify-AND-advance turn: the plan isn't done, so this turn may
+                # dispatch the next phase (suppress_dispatch lifted below).
+                nudge = (
+                    "上面这批并行子任务已结束"
+                    f"({done_n} 成功" + (f"、{failed_n} 失败" if failed_n else "") + ")。"
+                    "这是**验收+推进轮**(你 dispatch 时声明了 need_continue):"
+                    "① 先核对本阶段产物是否符合契约;"
+                    "② **整体计划若还有后续阶段,现在就用 `dispatch` 把下一阶段派出去**"
+                    "(若下一阶段仍不是最后一步,继续带 need_continue=true);任何失败/未达标项,"
+                    "把返工 re-dispatch 回去;"
+                    "③ **只有整体计划全部完成时**,才改为 present + 向用户收尾并停止——"
+                    "现在别 present 尚未完成的整体成果。"
+                    + _verify_clause
+                    + _contract_clause
+                )
+            else:
+                nudge = (
+                    "上面这批并行子任务已全部结束"
+                    f"({done_n} 成功" + (f"、{failed_n} 失败" if failed_n else "") + ")"
+                    "。请用 1-3 句话向用户收尾汇总:" + _escalation
+                    + "不要重复实现细节,**不要再调 dispatch 派活**,只汇报。"
+                    + _verify_clause
+                    + _present_clause
+                    + _contract_clause
+                )
+            log.info(
+                "burst %s: spawning %s turn for orchestrator %s",
+                tp_id, "advance" if _allow_dispatch else "summary", orch_id,
             )
-            log.info("burst %s: spawning summary turn for orchestrator %s", tp_id, orch_id)
             _spawn_turn(
                 conv_id, orch_id,
                 run_adapter_turn(
                     orch_id, nudge, depth=1, parent_agent_id=None,
                     inject_history=True,
-                    # Terminal turn: no new dispatch, no @mention chain — a
-                    # summary must not kick off another round (which caused
-                    # the burst cascade + chain-depth-5 loop).
-                    suppress_dispatch=True,
+                    # need_continue ⇒ this turn MAY dispatch the next phase;
+                    # otherwise terminal (summary only — prevents the old burst
+                    # cascade / chain-depth-5 loop). Bounded by _MAX_CONTINUE_PHASES.
+                    suppress_dispatch=not _allow_dispatch,
                 ),
             )
 
@@ -4613,6 +4692,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 _m_tasks: list = []
                 _m_contracts: list[str] = []
                 _m_title = ""
+                _m_need_continue = False
                 for _b in _raw_batches:
                     _m_tasks.extend(_b.get("tasks") or [])
                     _c = (_b.get("contract") or "").strip()
@@ -4620,10 +4700,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         _m_contracts.append(_c)
                     if not _m_title:
                         _m_title = (_b.get("title") or "").strip()
+                    if _b.get("need_continue"):
+                        _m_need_continue = True
                 _merged_batches = [{
                     "title": _m_title,
                     "contract": "\n\n".join(_m_contracts),
                     "tasks": _m_tasks,
+                    "need_continue": _m_need_continue,
                     "author_agent_id": _raw_batches[0].get("author_agent_id", ""),
                 }]
                 # A real burst is being built → its completion (_merge_burst_to_main)
@@ -4710,6 +4793,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     "orch": batch_author,
                     "workspace_id": _ws_id,
                     "contract": contract,
+                    # True ⇒ post-burst turn may dispatch the next phase (bounded
+                    # by _MAX_CONTINUE_PHASES). See the is_last gating below.
+                    "need_continue": bool(batch.get("need_continue")),
                 }
                 # Fire-and-forget spawn: each worker gets its full `note` as
                 # the prompt (with conv history prepended by the assembler).
@@ -5056,6 +5142,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         groups are not supported. Direct (1:1) convs have no orchestrator and use
         the simple per-member fan-out path below.
         """
+        # A fresh user message starts a new plan → reset the multi-phase
+        # auto-advance budget (need_continue counter).
+        _conv_continue_phases.pop(conv_id, None)
         async with SessionLocal() as session:
             conv = await storage_repo.get_conversation(session, conv_id)
         orch_id = conv.orchestrator_member_id if conv else None

@@ -693,6 +693,15 @@ class Sandbox:
         await scratch._run(["git", "config", "core.autocrlf", "false"])
         await scratch._run(["git", "config", "user.email", "agent@polynoia.local"])
         await scratch._run(["git", "config", "user.name", "polynoia-agent"])
+        # Ignore Polynoia-internal state (.polynoia/ = audit log, npm-cache,
+        # worktrees, credentials) + heavy vendored deps via .git/info/exclude —
+        # an UN-CLOBBERABLE local ignore. The committed .gitignore below is a
+        # convenience default, but an agent will often `write .gitignore` with
+        # the PROJECT's own ignores and overwrite it; if `.polynoia/` lived only
+        # there it would stop being ignored and `git add -A` would commit the
+        # audit log + npm cache → every agent branch diverges on .polynoia/audit
+        # .jsonl → spurious merge conflicts. info/exclude survives that.
+        await cls._exclude_polynoia(ws_root)
         (ws_root / ".gitignore").write_text(
             ".polynoia/\n"
             "worktrees/\n"

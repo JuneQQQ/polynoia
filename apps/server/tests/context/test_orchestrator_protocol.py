@@ -65,7 +65,8 @@ def test_protocol_layer_content() -> None:
     assert "dispatch" in c
     # @提及 / bash「宣布」都不是真派活 — the load-bearing @≠dispatch invariant.
     assert "@" in c and "不算数" in c
-    assert "不写实现代码" in c
+    # Orchestrator may now do hands-on work itself (not dispatch-only).
+    assert "亲自动手" in c
     assert "阿码" in c and "阿写" in c
     # The user-assigned role is surfaced + labelled as the user's assignment;
     # a teammate with no configured role is shown as 未指定.

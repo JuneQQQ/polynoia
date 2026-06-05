@@ -20,6 +20,7 @@ import json as _json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -418,11 +419,41 @@ class _WriteTool(_ToolBase):
             }
 
 
+# Best-effort host-safety guard for `bash`. P0 has NO process/namespace isolation
+# (CLAUDE.md §6.2), so name-pattern / broadcast process kills escape the sandbox
+# and hit HOST processes — an agent's `pkill -f vite` once killed the desktop's
+# own dev server. We block those footguns; killing a specific PID the agent
+# itself spawned still works. NOT a security boundary, just a footgun guard.
+_BASH_DENY: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bpkill\b"), "pkill — kills host processes by name"),
+    (re.compile(r"\bkillall\b"), "killall — kills host processes by name"),
+    (re.compile(r"\b(shutdown|reboot|halt|poweroff)\b"), "shutdown/reboot/halt"),
+    # `kill` whose TARGET (last arg) is a negative number → -1 = every process,
+    # -<pgid> = a whole group. `kill -1 1234` (SIGHUP to a pid) stays allowed
+    # because the last token there is positive.
+    (re.compile(r"\bkill\b[^|;&\n]*\s-\d+\s*(?:$|[|;&\n])"), "kill of -1 / a process group (broadcast)"),
+]
+
+
+def _bash_safety_block(cmd: str) -> str | None:
+    """Return a reason string if the command matches a host-unsafe pattern, else
+    None. Best-effort substring match on the raw command (obfuscation can evade
+    it; the real fix is UID/namespace isolation — out of scope at P0)."""
+    for pat, why in _BASH_DENY:
+        if pat.search(cmd):
+            return why
+    return None
+
+
 class _BashTool(_ToolBase):
     name = "bash"
     description = (
         "Run a shell command in the sandbox working directory. Returns stdout, "
-        "stderr, and exit code. Default timeout: 30 seconds. No git commit."
+        "stderr, and exit code. Default timeout: 30 seconds. No git commit.\n\n"
+        "Do NOT use pkill/killall or `kill -1` / `kill -<pgid>` — the sandbox "
+        "shares the host process space, so name-pattern/broadcast kills hit the "
+        "host (they're blocked). To stop something you started, save its PID "
+        "(`mycmd & PID=$!`) and `kill \"$PID\"`."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -435,24 +466,130 @@ class _BashTool(_ToolBase):
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         cmd = args["command"]
+        blocked = _bash_safety_block(cmd)
+        if blocked:
+            return {
+                "kind": "blocked",
+                "command": cmd,
+                "reason": (
+                    f"Refused — host-unsafe command ({blocked}). The sandbox "
+                    "shares the host process space (no isolation at P0), so this "
+                    "would hit processes outside the sandbox. To stop something "
+                    "you started, save its PID and kill that: "
+                    '`mycmd & PID=$!; ...; kill "$PID"`.'
+                ),
+            }
         timeout = float(args.get("timeout", 30))
+        base = os.environ.get("POLYNOIA_API_BASE")
+        sender_id = ctx.turn_agent_id or ctx.agent_id
+        term_id = "term-" + uuid.uuid4().hex
+
         proc = await asyncio.create_subprocess_shell(
             cmd,
             cwd=str(ctx.sandbox.root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+        out_parts: list[str] = []
+        err_parts: list[str] = []
+        combined: list[str] = []  # interleaved stdout+stderr → live terminal card
+        lock = asyncio.Lock()
+        dirty = asyncio.Event()
+
+        async def _pump(stream: asyncio.StreamReader | None, sink: list[str]) -> None:
+            if stream is None:
+                return
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", "replace")
+                async with lock:
+                    sink.append(text)
+                    combined.append(text)
+                dirty.set()
+
+        async def _post_card(*, running: bool, exit_code: int | None) -> None:
+            # Best-effort live terminal card. NEVER fail the tool on a UI post.
+            if not base:
+                return
+            async with lock:
+                output = "".join(combined)[-16000:]
+            try:
+                async with httpx.AsyncClient(
+                    base_url=base, timeout=10.0, trust_env=False
+                ) as client:
+                    await client.post(
+                        f"/api/conversations/{ctx.conv_id}/terminal-card",
+                        json={
+                            "term_id": term_id,
+                            "command": cmd,
+                            "sender_id": sender_id,
+                            "output": output,
+                            "running": running,
+                            "exit_code": exit_code,
+                        },
+                    )
+            except Exception:
+                pass
+
+        async def _throttle() -> None:
+            # Push a snapshot at most ~2×/sec while output is flowing.
+            try:
+                while True:
+                    await asyncio.sleep(0.5)
+                    if dirty.is_set():
+                        dirty.clear()
+                        await _post_card(running=True, exit_code=None)
+            except asyncio.CancelledError:
+                pass
+
+        # Card appears immediately (empty + running), then updates live.
+        await _post_card(running=True, exit_code=None)
+        pumps = [
+            asyncio.create_task(_pump(proc.stdout, out_parts)),
+            asyncio.create_task(_pump(proc.stderr, err_parts)),
+        ]
+        throttle = asyncio.create_task(_throttle())
+
+        timed_out = False
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except TimeoutError:
+            timed_out = True
             proc.kill()
-            return {"kind": "timeout", "command": cmd, "timeout_s": timeout}
+            with contextlib.suppress(Exception):
+                await proc.wait()
+
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+        throttle.cancel()
+        with contextlib.suppress(Exception):
+            await throttle
+
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        # Final card snapshot — running=False so the card stops pulsing.
+        await _post_card(
+            running=False, exit_code=(None if timed_out else exit_code)
+        )
+
+        out = "".join(out_parts)
+        err = "".join(err_parts)
+        if timed_out:
+            return {
+                "kind": "timeout",
+                "command": cmd,
+                "timeout_s": timeout,
+                "stdout": out[-4096:],
+                "stderr": err[-4096:],
+            }
         return {
             "kind": "completed",
             "command": cmd,
-            "exit_code": proc.returncode or 0,
-            "stdout": out.decode("utf-8", "replace")[-4096:],
-            "stderr": err.decode("utf-8", "replace")[-4096:],
+            "exit_code": exit_code or 0,
+            "stdout": out[-4096:],
+            "stderr": err[-4096:],
         }
 
 
@@ -602,8 +739,11 @@ async def _emit_diff_card(
 class _DispatchTool(_ToolBase):
     name = "dispatch"
     description = (
-        "Dispatch parallel sub-tasks to your teammates. This is how an "
-        "orchestrator delegates — you do NOT do the work yourself.\n\n"
+        "Dispatch parallel sub-tasks to your teammates — this is how you "
+        "delegate work that should run in parallel (each teammate executes "
+        "their task in their own worktree, merged back to main). For small or "
+        "foundational work you may also just do it yourself with write/bash; "
+        "dispatch is for what's worth parallelizing or has a clear owner.\n\n"
         "Each task is {agent, label, note}:\n"
         "  · agent — teammate's display name (e.g. 顾屿 / 沈昭 / 苏念)\n"
         "  · label — ≤20-char card label shown in the UI lane header\n"
@@ -612,8 +752,12 @@ class _DispatchTool(_ToolBase):
         "All tasks run CONCURRENTLY. This call returns immediately with "
         "task_ids (fire-and-forget) — do NOT wait for results; the "
         "teammates' work streams into the conversation as parallel lanes. "
-        "After you dispatch, just stop and let them work; you'll verify "
-        "their output in a later turn.\n\n"
+        "After you dispatch, stop and let them work; you'll get a follow-up "
+        "turn to verify. For a MULTI-PHASE plan set `need_continue: true` on "
+        "every non-final batch — then that follow-up turn lets you dispatch the "
+        "next phase (otherwise the follow-up is terminal: verify + present + "
+        "summarize, no further dispatch). This is what makes a plan auto-advance "
+        "instead of stalling after one phase.\n\n"
         "When the sub-tasks must interoperate (shared API, field names, file "
         "paths, ports, data shapes), put that shared spec in `contract` — it "
         "is handed to EVERY teammate verbatim and is what you verify their "
@@ -664,6 +808,17 @@ class _DispatchTool(_ToolBase):
                     "required": ["agent", "note"],
                 },
             },
+            "need_continue": {
+                "type": "boolean",
+                "description": (
+                    "Set TRUE when this batch is NOT the final phase — i.e. after "
+                    "it lands you intend to keep working (dispatch the next phase, "
+                    "re-dispatch rework, or integrate). The platform then gives you "
+                    "a follow-up turn in which you ARE allowed to dispatch again. "
+                    "Leave FALSE/omit for the last phase: that follow-up turn is "
+                    "terminal (verify + present + summarize, no dispatch)."
+                ),
+            },
         },
         "required": ["tasks"],
     }
@@ -683,6 +838,9 @@ class _DispatchTool(_ToolBase):
                 "title": args.get("title") or "",
                 "contract": args.get("contract") or "",
                 "tasks": tasks,
+                # True ⇒ this isn't the final phase; the post-burst turn should be
+                # allowed to dispatch again (multi-phase auto-advance).
+                "need_continue": bool(args.get("need_continue")),
                 # Carry the dispatcher identity explicitly so the drain attributes
                 # the batch to whoever actually called this tool — not to whichever
                 # agent's turn happens to drain the per-conv queue (ADR-014).

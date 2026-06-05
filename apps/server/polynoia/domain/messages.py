@@ -241,6 +241,19 @@ class LogsPayload(BaseModel):
     lines: list[LogLine]
 
 
+class TerminalPayload(BaseModel):
+    """Live terminal card — streamed stdout/stderr of a `bash` tool run. Updated
+    in place (same message id) as output arrives; ``running`` flips to False and
+    ``exit_code`` is set when the command finishes."""
+
+    kind: Literal["terminal"] = "terminal"
+    command: str
+    output: str = ""
+    running: bool = True
+    exit_code: int | None = None
+    truncated: bool = False
+
+
 class ApiParam(BaseModel):
     name: str
     in_: Literal["path", "query", "header", "body"] = Field(alias="in")
@@ -474,6 +487,7 @@ MessagePayload = Annotated[
         SqlPayload,
         SchemaPayload,
         LogsPayload,
+        TerminalPayload,
         ApiPayload,
         TypingPayload,
         ToolCallPayload,
