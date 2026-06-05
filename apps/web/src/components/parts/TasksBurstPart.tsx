@@ -18,10 +18,52 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Check, Loader2, Square, X } from "lucide-react";
 import { memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
-import type { DiffPayload, TasksPayload } from "../../lib/types";
+import { classifyFoldable } from "../../lib/toolFold";
+import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
 import { useStore } from "../../store";
 import { MessageView } from "../MessageView";
 import { DiffPart } from "./DiffPart";
+import { ToolCallGroup } from "./ToolCallGroup";
+
+/** Fold a burst lane's messages the same way the main timeline does: reasoning /
+ * non-write tool-calls / terminal collapse into a ToolCallGroup; only file-edit
+ * (diff/write) stays standalone; the raw bash tool-call is dropped. Single
+ * sender (the lane's agent), so no sender-break logic. */
+function computeLaneFold(
+	byId: Map<string, Message>,
+	ids: readonly string[],
+): { firsts: Map<string, string[]>; skip: Set<string> } {
+	const firsts = new Map<string, string[]>();
+	const skip = new Set<string>();
+	let run: string[] = [];
+	let runHasTool = false;
+	const flush = () => {
+		if (runHasTool && run.length) {
+			firsts.set(run[0], [...run]);
+			for (let j = 1; j < run.length; j++) skip.add(run[j]);
+		}
+		run = [];
+		runHasTool = false;
+	};
+	for (const mid of ids) {
+		const pl = byId.get(mid)?.payload as
+			| { kind?: string; name?: string }
+			| undefined;
+		const cl = classifyFoldable(pl?.kind, pl?.name);
+		if (cl.drop) {
+			skip.add(mid);
+			continue;
+		}
+		if (cl.foldable) {
+			run.push(mid);
+			if (cl.isTool) runHasTool = true;
+		} else {
+			flush();
+		}
+	}
+	flush();
+	return { firsts, skip };
+}
 
 const STATE_BADGE = {
 	pending: {
@@ -292,15 +334,37 @@ function TasksBurstPartInner({
 													: "等待开始…"}
 									</div>
 								) : (
-									lane.map((mid, i) => (
-										<MessageView
-											key={mid}
-											convId={convId}
-											msgId={mid}
-											compact
-											isGrouped={i > 0}
-										/>
-									))
+									(() => {
+										// Fold tool calls into a compact ToolCallGroup; only
+										// file-edit (diff/write) cards render standalone — same
+										// rule as the main timeline.
+										const byId =
+											useStore.getState().convs.get(convId)?.msgById ??
+											new Map<string, Message>();
+										const { firsts, skip } = computeLaneFold(byId, lane);
+										return lane.map((mid, i) => {
+											if (skip.has(mid)) return null;
+											const grp = firsts.get(mid);
+											if (grp)
+												return (
+													<ToolCallGroup
+														key={mid}
+														convId={convId}
+														msgIds={grp}
+														compact
+													/>
+												);
+											return (
+												<MessageView
+													key={mid}
+													convId={convId}
+													msgId={mid}
+													compact
+													isGrouped={i > 0}
+												/>
+											);
+										});
+									})()
 								)}
 							</div>
 						</motion.div>

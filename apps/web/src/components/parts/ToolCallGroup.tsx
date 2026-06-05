@@ -24,10 +24,14 @@ export function ToolCallGroup({
 	convId,
 	msgIds,
 	showAvatar = false,
+	compact = false,
 }: {
 	convId: string;
 	msgIds: string[];
 	showAvatar?: boolean;
+	/** Inside a burst lane: no avatar column, full-width, tight padding so the
+	 * fold block lines up with the lane's other (file-edit) cards. */
+	compact?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	// While any member message is still streaming, force the group OPEN so live
@@ -85,6 +89,46 @@ export function ToolCallGroup({
 	// running — so the user watches the live output; it auto-collapses once done.
 	const expanded = open || anyStreaming || running;
 
+	const inner = (
+		<>
+			<button
+				type="button"
+				onClick={() => setOpen((v) => !v)}
+				className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)]/50 hover:bg-[var(--color-surface-2)] text-[11.5px] text-[var(--color-fg-2)] transition-colors"
+			>
+				<Wrench size={12} className="text-[var(--color-fg-3)] flex-shrink-0" />
+				<span className="font-medium flex-shrink-0">
+					{toolCount} 步工具调用
+				</span>
+				<span className="text-[var(--color-fg-3)] truncate font-mono text-[10.5px]">
+					{summary}
+				</span>
+				<span className="ml-auto text-[10px] text-[var(--color-fg-4)] flex-shrink-0">
+					{expanded ? "收起 ▾" : "展开 ▸"}
+				</span>
+			</button>
+			{expanded && (
+				<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
+					{/* Natural stream order — reasoning and tool calls interleaved as
+					    they actually happened. No reordering. */}
+					{msgIds.map((id, i) => (
+						<MessageView
+							key={id}
+							convId={convId}
+							msgId={id}
+							isGrouped={i > 0}
+							compact
+						/>
+					))}
+				</div>
+			)}
+		</>
+	);
+
+	// Compact (inside a burst lane): no avatar column / page padding — the fold
+	// block spans the lane width, lining up with the lane's file-edit cards.
+	if (compact) return <div className="my-1">{inner}</div>;
+
 	return (
 		<div className="flex gap-3 px-6 my-1">
 			{/* Avatar column — populated only when this fold starts the run; empty
@@ -102,42 +146,7 @@ export function ToolCallGroup({
 					</button>
 				)}
 			</div>
-			<div className="flex-1 min-w-0">
-				<button
-					type="button"
-					onClick={() => setOpen((v) => !v)}
-					className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)]/50 hover:bg-[var(--color-surface-2)] text-[11.5px] text-[var(--color-fg-2)] transition-colors"
-				>
-					<Wrench
-						size={12}
-						className="text-[var(--color-fg-3)] flex-shrink-0"
-					/>
-					<span className="font-medium flex-shrink-0">
-						{toolCount} 步工具调用
-					</span>
-					<span className="text-[var(--color-fg-3)] truncate font-mono text-[10.5px]">
-						{summary}
-					</span>
-					<span className="ml-auto text-[10px] text-[var(--color-fg-4)] flex-shrink-0">
-						{expanded ? "收起 ▾" : "展开 ▸"}
-					</span>
-				</button>
-				{expanded && (
-					<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
-						{/* Natural stream order — reasoning and tool calls interleaved as
-						    they actually happened. No reordering. */}
-						{msgIds.map((id, i) => (
-							<MessageView
-								key={id}
-								convId={convId}
-								msgId={id}
-								isGrouped={i > 0}
-								compact
-							/>
-						))}
-					</div>
-				)}
-			</div>
+			<div className="flex-1 min-w-0">{inner}</div>
 		</div>
 	);
 }
