@@ -261,6 +261,9 @@ export const api = {
 			source,
 			name,
 		}),
+	/** Uninstall an installed skill package by name (removes its folder). */
+	deleteSkill: (name: string) =>
+		deleteJSON<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`),
 	/** Validate a custom-workspace directory before creating (UI 校验 button). */
 	validateWorkspacePath: (path: string) =>
 		postJSON<{

@@ -3,18 +3,19 @@
 
 A HARD reset (drop_all + create_all + bootstrap), then seed a single team where
 EVERY agent is the Claude Code adapter, with models ALTERNATING (交叉) between
-Claude Opus 4.7 and Claude Sonnet 4.6 by roster position:
+Claude Opus 4.7 and Claude Sonnet 4.6 by roster position. Names are deliberately
+distinct from any other deployment's roster so the two never get confused:
 
-    林知夏  opus 4.7    技术总监 / Orchestrator
-    顾屿    sonnet 4.6  游戏逻辑 / 引擎(世界生成·区块·方块·物理·射线拾取)
-    沈昭    opus 4.7    渲染 / Three.js 前端(场景·网格·贴图·光照·指针锁相机)
-    苏念    sonnet 4.6  UI / HUD / 交互 + 中文文档(物品栏·准星·菜单·README)
-    周野    opus 4.7    全栈 / 构建 / 测试 / 补位(vite·打包·性能·把模块接起来)
+    秦越  opus 4.7    技术总监 / Orchestrator
+    陆衡  sonnet 4.6  游戏逻辑 / 引擎(世界生成·区块·方块·物理·射线拾取)
+    韩霜  opus 4.7    渲染 / Three.js 前端(场景·网格·贴图·光照·指针锁相机)
+    温叙  sonnet 4.6  UI / HUD / 交互 + 中文文档(物品栏·准星·菜单·README)
+    程野  opus 4.7    全栈 / 构建 / 测试 / 补位(vite·打包·性能·把模块接起来)
 
 Plus 1 workspace「我的世界 · Web」(全部 5 个 agent 为成员) and 1 group conv
-「我的世界网页游戏 · 开发」(merge_mode=auto, orchestrator=林知夏), zero messages.
+「我的世界网页游戏 · 开发」(merge_mode=auto, orchestrator=秦越), zero messages.
 
-Stack the team targets: 原生 JS/TS + Three.js (WebGL) + vite,体素 (Minecraft 风)。
+Stack the team targets: 原生 TS + Three.js (WebGL) + vite,体素 (Minecraft 风)。
 
 Usage (self-bootstraps into apps/server's uv env, so bare python3 works):
     python3 scripts/init_minecraft_team.py
@@ -72,16 +73,16 @@ async def _wipe_and_bootstrap() -> None:
     await bootstrap_db()
 
 
-LIN = """你是林知夏,技术总监,本项目的 Orchestrator。
+QIN = """你是秦越,技术总监,本项目的 Orchestrator。
 
-我们要做一个「我的世界」风格的网页体素游戏:原生 JS/TS + Three.js (WebGL) + vite,
+我们要做一个「我的世界」风格的网页体素游戏:原生 TS + Three.js (WebGL) + vite,
 跑在浏览器里。你不写实现代码,只做拆解、派活、验收、集成。
 
 # 派活路由(谁擅长什么)
-- 世界生成 / 区块 / 方块系统 / 物理碰撞 / 射线拾取(放置·破坏)/ 存档 → 顾屿
-- Three.js 渲染 / 区块网格 (greedy meshing) / 贴图图集 / 光照 / 指针锁 FPS 相机 / 天空盒 → 沈昭
-- HUD / 物品栏 / 准星 / 热键栏 / 暂停菜单 / FPS 计数 + 中文 README → 苏念
-- vite 工程 / 资源管线 / 性能剖析 / 把前后模块接起来跑通 / 测试 / 补位 → 周野
+- 世界生成 / 区块 / 方块系统 / 物理碰撞 / 射线拾取(放置·破坏)/ 存档 → 陆衡
+- Three.js 渲染 / 区块网格 (greedy meshing) / 贴图图集 / 光照 / 指针锁 FPS 相机 / 天空盒 → 韩霜
+- HUD / 物品栏 / 准星 / 热键栏 / 暂停菜单 / FPS 计数 + 中文 README → 温叙
+- vite 工程 / 资源管线 / 性能剖析 / 把前后模块接起来跑通 / 测试 / 补位 → 程野
 - 子任务尽量互不依赖,能并行就一并发出;每个子任务规格写全(接口名、字段、文件路径),
   对方看不到你的拆解理由。先定好模块边界(World / Chunk / Mesher / Renderer / Player / HUD)。
 
@@ -91,9 +92,9 @@ LIN = """你是林知夏,技术总监,本项目的 Orchestrator。
 
 语气:克制、直接、精炼。中文沟通,代码注释英文。"""
 
-GU = """你是顾屿,游戏逻辑 / 引擎工程师。
+LU = """你是陆衡,游戏逻辑 / 引擎工程师。
 
-负责「我的世界」网页游戏的核心逻辑(不碰渲染、不碰 UID 样式):
+负责「我的世界」网页游戏的核心逻辑(不碰渲染、不碰 UI 样式):
 - 世界生成:用值噪声/Perlin 生成地形高度图,分区块 (Chunk, 16×16×N) 管理
 - 方块系统:方块类型枚举、区块数据结构 (Uint8Array)、读写 API
 - 物理:重力、AABB 碰撞、玩家移动 (WASD + 跳跃)
@@ -104,19 +105,19 @@ GU = """你是顾屿,游戏逻辑 / 引擎工程师。
 完成报告一句话:"写了 world.ts / chunk.ts(N 行),导出 X/Y/Z 接口"。
 不要碰 Three.js 渲染细节 / HTML / CSS。语气简洁、技术中立。"""
 
-SHEN = """你是沈昭,渲染 / 前端工程师 (Three.js)。
+HAN = """你是韩霜,渲染 / 前端工程师 (Three.js)。
 
-负责把顾屿的世界数据渲染成可玩的 3D 画面:
+负责把陆衡的世界数据渲染成可玩的 3D 画面:
 - Three.js 场景 / 渲染循环 / 相机(指针锁 PointerLock 的 FPS 控制)
 - 区块网格化:greedy meshing 把区块体素合并成 mesh,只画暴露面
 - 贴图图集 (texture atlas) + 正确 UV;方向光 + 环境光;简单天空盒 / 雾
 - 选中方块的高亮线框
 
-约束:消费顾屿导出的 Chunk/World 接口,不自己造世界逻辑;性能优先(避免每帧重建全部网格)。
+约束:消费陆衡导出的 Chunk/World 接口,不自己造世界逻辑;性能优先(避免每帧重建全部网格)。
 完成报告一句话:"写了 renderer.ts / mesher.ts,N 个区块稳定 60fps"。
 不要碰世界生成逻辑 / README。语气温和但有立场。"""
 
-SU = """你是苏念,UI / HUD / 交互 + 中文文档 specialist。
+WEN = """你是温叙,UI / HUD / 交互 + 中文文档 specialist。
 
 负责玩家看得见、点得到的那层 + 文档:
 - HUD:准星、底部热键栏 (hotbar)、当前手持方块、FPS 计数
@@ -128,7 +129,7 @@ SU = """你是苏念,UI / HUD / 交互 + 中文文档 specialist。
 完成报告一句话:"写了 hud.ts + README.md,N 个控件"。
 不要碰世界生成 / 渲染核心。语气克制、信息密度高。"""
 
-ZHOU = """你是周野,全栈 / 构建 / 测试 / 补位工程师。
+CHENG = """你是程野,全栈 / 构建 / 测试 / 补位工程师。
 
 把大家的模块接成一个能 `npm run dev` 跑起来的游戏:
 - vite 工程脚手架、入口 index.html + main.ts、模块装配 (World→Mesher→Renderer→Player→HUD)
@@ -142,28 +143,28 @@ ZHOU = """你是周野,全栈 / 构建 / 测试 / 补位工程师。
 
 CONTACTS_SPEC = [
     {
-        "adapter_id": "claudeCode", "name": "林知夏", "model": OPUS,
-        "system_prompt": LIN, "color": "#7A5AE0", "initials": "Lx",
+        "adapter_id": "claudeCode", "name": "秦越", "model": OPUS,
+        "system_prompt": QIN, "color": "#7A5AE0", "initials": "Qy",
         "tagline": "技术总监 · 拆任务 + 验收", "tool_role": "orchestrator",
     },
     {
-        "adapter_id": "claudeCode", "name": "顾屿", "model": SONNET,
-        "system_prompt": GU, "color": "#D2691E", "initials": "Gy",
+        "adapter_id": "claudeCode", "name": "陆衡", "model": SONNET,
+        "system_prompt": LU, "color": "#D2691E", "initials": "Lh",
         "tagline": "游戏逻辑 · 世界/区块/物理", "tool_role": "coder",
     },
     {
-        "adapter_id": "claudeCode", "name": "沈昭", "model": OPUS,
-        "system_prompt": SHEN, "color": "#3D7FD1", "initials": "Sz",
+        "adapter_id": "claudeCode", "name": "韩霜", "model": OPUS,
+        "system_prompt": HAN, "color": "#3D7FD1", "initials": "Hs",
         "tagline": "渲染 · Three.js / WebGL", "tool_role": "designer",
     },
     {
-        "adapter_id": "claudeCode", "name": "苏念", "model": SONNET,
-        "system_prompt": SU, "color": "#2E9F73", "initials": "Sn",
+        "adapter_id": "claudeCode", "name": "温叙", "model": SONNET,
+        "system_prompt": WEN, "color": "#2E9F73", "initials": "Wx",
         "tagline": "UI · HUD / 物品栏 + 文档", "tool_role": "writer",
     },
     {
-        "adapter_id": "claudeCode", "name": "周野", "model": OPUS,
-        "system_prompt": ZHOU, "color": "#C77D3A", "initials": "Zy",
+        "adapter_id": "claudeCode", "name": "程野", "model": OPUS,
+        "system_prompt": CHENG, "color": "#C77D3A", "initials": "Cy",
         "tagline": "全栈 · 构建/测试/补位", "tool_role": "generalist",
     },
 ]
@@ -211,8 +212,8 @@ def seed_via_api() -> int:
         ids[spec["name"]] = cid
         print(f"  {cid}  {spec['name']:6s}  claudeCode/{spec['model']}")
 
-    lin, gu, shen, su, zhou = (
-        ids["林知夏"], ids["顾屿"], ids["沈昭"], ids["苏念"], ids["周野"],
+    orch, logic, render, ui, full = (
+        ids["秦越"], ids["陆衡"], ids["韩霜"], ids["温叙"], ids["程野"],
     )
 
     # Workspace.
@@ -223,10 +224,10 @@ def seed_via_api() -> int:
         "desc": (
             "浏览器里的「我的世界」风格体素游戏。栈:原生 TS + Three.js (WebGL) + vite。"
             "模块边界:World / Chunk / Mesher / Renderer / Player / HUD。"
-            "每个 agent 在自己分支干 → Orchestrator(林知夏)合到 main → 用户审。"
+            "每个 agent 在自己分支干 → Orchestrator(秦越)合到 main → 用户审。"
             "语言:中文沟通,代码注释英文。"
         ),
-        "members": [lin, gu, shen, su, zhou],
+        "members": [orch, logic, render, ui, full],
         "color": "#5BA86B",
     })["workspace"]["id"]
     print(f"  {ws_id}  {ws_name}")
@@ -236,22 +237,22 @@ def seed_via_api() -> int:
     conv = post("/api/conversations", {
         "workspace_id": ws_id,
         "title": "我的世界网页游戏 · 开发",
-        "members": ["you", lin, gu, shen, su, zhou],
+        "members": ["you", orch, logic, render, ui, full],
         "group": True,
         "direct": False,
         "member_roles": {
-            lin: "任务拆解 + 验收集成",
-            gu: "世界生成 / 区块 / 方块 / 物理 / 射线拾取",
-            shen: "Three.js 渲染 / 网格 / 贴图 / 光照 / 相机",
-            su: "HUD / 物品栏 / 菜单 + 中文 README",
-            zhou: "vite 工程 / 装配 / 性能 / 测试 / 补位",
+            orch: "任务拆解 + 验收集成",
+            logic: "世界生成 / 区块 / 方块 / 物理 / 射线拾取",
+            render: "Three.js 渲染 / 网格 / 贴图 / 光照 / 相机",
+            ui: "HUD / 物品栏 / 菜单 + 中文 README",
+            full: "vite 工程 / 装配 / 性能 / 测试 / 补位",
         },
-        "orchestrator_member_id": lin,
+        "orchestrator_member_id": orch,
     })
     print(f"  {conv['id']}  {conv['title']}  · merge={conv['merge_mode']}")
 
     print("\n=== ready ===")
-    print("  打开桌面端 →「我的世界网页游戏 · 开发」→ @林知夏 发出第一条需求。")
+    print("  打开桌面端 →「我的世界网页游戏 · 开发」→ @秦越 发出第一条需求。")
     return 0
 
 

@@ -7,7 +7,7 @@
  * 入口:Sidebar 顶部 "+ 新建联系人"。
  * 底部 footer 链接 → 打开 AdapterManager(原 OnboardingModal)。
  */
-import { Sparkles, Wrench, X } from "lucide-react";
+import { Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent } from "../lib/types";
@@ -147,6 +147,22 @@ export function NewContactModal({
 			}
 			setSkillSrc("");
 			setSkillBusy("idle");
+		} catch (e) {
+			setSkillBusy("err");
+			setSkillErr(String(e));
+		}
+	};
+	// Uninstall a skill package globally (removes its folder), and drop it from
+	// this contact's binding if it was bound.
+	const removeSkill = async (name: string) => {
+		try {
+			await api.deleteSkill(name);
+			setInstalledSkills((arr) => arr.filter((x) => x.name !== name));
+			setBoundSkills((b) => {
+				const n = new Set(b);
+				n.delete(name);
+				return n;
+			});
 		} catch (e) {
 			setSkillBusy("err");
 			setSkillErr(String(e));
@@ -477,34 +493,47 @@ export function NewContactModal({
 											{installedSkills.map((s) => {
 												const on = boundSkills.has(s.name);
 												return (
-													<button
+													<div
 														key={s.name}
-														type="button"
-														onClick={() =>
-															setBoundSkills((b) => {
-																const n = new Set(b);
-																n.has(s.name) ? n.delete(s.name) : n.add(s.name);
-																return n;
-															})
-														}
-														className={`w-full text-left flex items-start gap-2 px-2.5 py-1.5 rounded border transition-colors ${
+														className={`group w-full flex items-stretch gap-1 rounded border transition-colors ${
 															on
 																? "border-[var(--color-accent)] bg-[var(--color-accent)]/10"
 																: "border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
 														}`}
 													>
-														<span className="text-[12px] mt-px">{on ? "✓" : "+"}</span>
-														<span className="min-w-0">
-															<span className="text-[12.5px] font-mono text-[var(--color-fg)]">
-																{s.name}
-															</span>
-															{s.description && (
-																<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
-																	{s.description}
+														<button
+															type="button"
+															onClick={() =>
+																setBoundSkills((b) => {
+																	const n = new Set(b);
+																	n.has(s.name) ? n.delete(s.name) : n.add(s.name);
+																	return n;
+																})
+															}
+															className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-1.5"
+														>
+															<span className="text-[12px] mt-px">{on ? "✓" : "+"}</span>
+															<span className="min-w-0">
+																<span className="text-[12.5px] font-mono text-[var(--color-fg)]">
+																	{s.name}
 																</span>
-															)}
-														</span>
-													</button>
+																{s.description && (
+																	<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
+																		{s.description}
+																	</span>
+																)}
+															</span>
+														</button>
+														<button
+															type="button"
+															onClick={() => removeSkill(s.name)}
+															title={`卸载 skill「${s.name}」`}
+															aria-label={`卸载 ${s.name}`}
+															className="px-2 grid place-items-center rounded-r text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
+														>
+															<Trash2 size={13} />
+														</button>
+													</div>
 												);
 											})}
 										</div>
