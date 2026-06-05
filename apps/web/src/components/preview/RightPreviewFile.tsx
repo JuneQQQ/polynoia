@@ -62,10 +62,17 @@ export function RightPreviewFile({
 		setContent(null);
 		setError(null);
 		setLoading(true);
-		api
-			.workspaceFileRead(workspaceId, path)
-			.then((res) => {
-				if (alive) setContent(res.content);
+		// Mobile fetches text via /files/blob (in-memory Response) + decode, not
+		// /files/raw (PlainTextResponse) — the latter fails over the Vite proxy
+		// from a remote device ("Failed to fetch"), while blob works.
+		const fetchText = mobile
+			? api
+					.workspaceFileBytesRead(workspaceId, path)
+					.then((r) => new TextDecoder("utf-8").decode(r.data))
+			: api.workspaceFileRead(workspaceId, path).then((r) => r.content);
+		fetchText
+			.then((text) => {
+				if (alive) setContent(text);
 			})
 			.catch((e) => {
 				if (alive) setError(String(e?.message ?? e));
@@ -76,7 +83,7 @@ export function RightPreviewFile({
 		return () => {
 			alive = false;
 		};
-	}, [workspaceId, path, filesTick, isBinary, isSlides, skipImageFetch]);
+	}, [workspaceId, path, filesTick, isBinary, isSlides, skipImageFetch, mobile]);
 
 	// Routing — order matters: pptx + binary docs render WITHOUT a text fetch
 	// (their previewers fetch bytes themselves), so route them before the
@@ -196,8 +203,11 @@ function PptxRender({
 		let alive = true;
 		setBuf(null);
 		setErr(null);
+		// /files/blob (in-memory) not /files/download (streamed FileResponse):
+		// download fails over the Vite proxy from a remote device.
 		api
-			.workspaceFileBytes(workspaceId, path)
+			.workspaceFileBytesRead(workspaceId, path)
+			.then((r) => r.data)
 			.then((b) => {
 				if (alive) setBuf(b);
 			})

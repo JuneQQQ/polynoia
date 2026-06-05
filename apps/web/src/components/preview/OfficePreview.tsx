@@ -60,8 +60,13 @@ export function OfficePreview({
 		let alive = true;
 		setBuf(null);
 		setError(null);
+		// Fetch via /files/blob (in-memory Response) rather than /files/download
+		// (streamed FileResponse): the latter fails over the Vite proxy from a
+		// remote device ("Failed to fetch"), while blob works. 25MB cap is fine
+		// for office docs.
 		api
-			.workspaceFileBytes(workspaceId, path)
+			.workspaceFileBytesRead(workspaceId, path)
+			.then((r) => r.data)
 			.then((b) => {
 				if (!alive) return;
 				if (!isZip(b)) {
