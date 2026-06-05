@@ -95,17 +95,23 @@ async def build_context_for_turn(
         # orchestrator as a dispatch target list, everyone else as people they
         # can @mention to DISCUSS). Gated on conv.group so out-of-project DMs
         # never get a roster (R1).
-        roster = [
-            a.name
+        # (name, user-assigned role) for every teammate — fed to BOTH the
+        # orchestrator-protocol layer and the regular group-members layer, so
+        # EVERY member (not just the orchestrator) knows who is responsible for
+        # what, per the conversation's user-configured member_roles.
+        roster_roles = [
+            (a.name, member_role_for(conv, a.id))
             for a in rows
             if a.id in (conv.members or []) and a.id not in (agent_id, "you")
         ]
         if conv.orchestrator_member_id == agent_id:
             layers.append(
-                build_orchestrator_protocol_layer(agent_id=agent_id, roster=roster)
+                build_orchestrator_protocol_layer(
+                    agent_id=agent_id, roster=roster_roles
+                )
             )
         else:
-            gm = build_group_members_layer(agent_id=agent_id, roster=roster)
+            gm = build_group_members_layer(agent_id=agent_id, roster=roster_roles)
             if gm is not None:
                 layers.append(gm)
 

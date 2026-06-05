@@ -57,7 +57,9 @@ async def _agent(name: str, tool_role: str = "generalist") -> Agent:
 
 
 def test_protocol_layer_content() -> None:
-    layer = build_orchestrator_protocol_layer(agent_id="x", roster=["阿码", "阿写"])
+    layer = build_orchestrator_protocol_layer(
+        agent_id="x", roster=[("阿码", "写代码"), ("阿写", None)]
+    )
     c = layer.content
     assert "协调器" in c
     assert "dispatch" in c
@@ -65,6 +67,11 @@ def test_protocol_layer_content() -> None:
     assert "@" in c and "不算数" in c
     assert "不写实现代码" in c
     assert "阿码" in c and "阿写" in c
+    # The user-assigned role is surfaced + labelled as the user's assignment;
+    # a teammate with no configured role is shown as 未指定.
+    assert "写代码" in c
+    assert "用户" in c
+    assert "未指定" in c
     assert layer.hard is True
 
 

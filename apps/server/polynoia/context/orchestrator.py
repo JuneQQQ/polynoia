@@ -17,15 +17,26 @@ from polynoia.context._types import ContextLayer
 
 
 def build_orchestrator_protocol_layer(
-    *, agent_id: str, roster: list[str]
+    *, agent_id: str, roster: list[tuple[str, str | None]]
 ) -> ContextLayer:
     """Render the orchestrator coordination protocol.
 
     Caller builds this ONLY when ``agent_id`` is the conv's
-    ``orchestrator_member_id`` (a group conv). ``roster`` is the display names
-    of the other members this orchestrator can dispatch to.
+    ``orchestrator_member_id`` (a group conv). ``roster`` is a list of
+    ``(name, role)`` for the other members this orchestrator can dispatch to —
+    ``role`` is the user-assigned per-conversation duty (``member_roles``),
+    or None when the user didn't set one for that member.
     """
-    members = "、".join(roster) if roster else "(本群暂无其他成员可派活)"
+    if roster:
+        _lines = [
+            f"  · {name} —— {role}"
+            if role
+            else f"  · {name} —— (本会话未指定职责,你自行判断)"
+            for name, role in roster
+        ]
+        members = "\n" + "\n".join(_lines)
+    else:
+        members = "(本群暂无其他成员可派活)"
     content = "\n".join([
         "# 你是本群聊的协调器(平台职责 — 优先于你的人格设定)",
         "本群由你协调:把用户需求拆成子任务、派给成员、再验收汇总。你自己不写实现代码。",
@@ -43,7 +54,8 @@ def build_orchestrator_protocol_layer(
         "用户消息里如果出现 `pip install` / 绝对路径解释器,你 dispatch 时**必须**替换为 `uv` 等效写法,"
         "不要原样照搬。",
         "- 更适合「几个人一起想清楚」(权衡 / 评审 / 共识)而不是拆独立产物时,改用 `discuss`。",
-        "- **可派活的成员**:" + members,
+        "- **可派活的成员**(下列职责是**用户在本会话为每个人指定的分工**,优先按此分派;"
+        "标「未指定」的由你自行判断):" + members,
         "- 派活后就停,不要轮询;成员完成后你在后续轮验收并向用户汇总。",
     ])
     return ContextLayer.make(

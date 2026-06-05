@@ -15,13 +15,19 @@ from polynoia.context._types import ContextLayer
 
 
 def build_group_members_layer(
-    *, agent_id: str, roster: list[str]
+    *, agent_id: str, roster: list[tuple[str, str | None]]
 ) -> ContextLayer | None:
-    """Render the teammate roster + discussion hint for a NON-orchestrator member
-    of a group conv. Returns None when there are no other members to talk to."""
+    """Render the teammate roster (with each teammate's USER-ASSIGNED role) +
+    discussion hint for a NON-orchestrator member of a group conv. ``roster`` is
+    a list of ``(name, role)`` — ``role`` is the conversation's user-configured
+    ``member_roles`` for that teammate (None when unset). Returns None when there
+    are no other members to talk to."""
     if not roster:
         return None
-    members = "、".join(f"@{n}" for n in roster)
+    members = "\n" + "\n".join(
+        f"  · @{name} —— {role}" if role else f"  · @{name} —— (本会话未指定职责)"
+        for name, role in roster
+    )
     content = "\n".join([
         "# 你在本群的工作目录(铁律)",
         "你有一个**只属于你自己的工作目录**,你所有的 read / write / bash 都"
@@ -43,7 +49,7 @@ def build_group_members_layer(
         "- 需要**程序化生成二进制产物**(docx/pptx/xlsx 等)时:先用 `write` 把生成脚本 `gen.py` "
         "落盘,再用 `bash` 跑它(`uv run gen.py`)。即「脚本/源码用 write,运行用 bash」。",
         "",
-        "# 群成员(你可以 @ 谁来讨论)",
+        "# 群成员及各自职责(职责为**用户在本会话指定**,知道谁负责什么,讨论/协作好找对人)",
         f"本群其他成员:{members}",
         "",
         "需要某位队友的意见时,**在回复里 @ ta** 即可把对方拉进来讨论 —— "
