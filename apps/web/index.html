@@ -3,9 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- maximum-scale=1 + user-scalable=no: stop iOS WebView from auto-zooming
+         when a <16px input is focused (modals like NewContactModal use 13px
+         fields); without it the zoom sticks after the field unmounts on cancel,
+         leaving the whole UI enlarged. Desktop browsers ignore these. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Polynoia · 多 Agent 协作平台</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />

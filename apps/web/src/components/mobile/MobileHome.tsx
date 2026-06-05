@@ -15,6 +15,7 @@
  */
 import {
 	Check,
+	ArrowUpDown,
 	ChevronLeft,
 	ChevronRight,
 	Cpu,
@@ -30,6 +31,7 @@ import {
 } from "lucide-react";
 import {
 	createContext,
+	type ReactNode,
 	useContext,
 	useEffect,
 	useMemo,
@@ -84,16 +86,20 @@ const STR = {
 	zh: {
 		brand: "Polynoia",
 		searchConv: "搜索会话",
+		sortLabel: "排序",
+		sortRecent: "最近",
+		sortGroup: "群聊优先",
+		sortUnread: "未读优先",
 		tabChat: "消息",
 		tabContacts: "联系人",
-		tabFolder: "项目",
+		tabFolder: "协作项目",
 		tabMe: "我",
 		contactsTitle: "联系人",
 		searchAgent: "搜索联系人",
 		newContact: "新建联系人",
 		online: "在线",
 		offline: "离线",
-		projectsTitle: "项目",
+		projectsTitle: "协作项目",
 		searchProject: "搜索项目",
 		owner: "Owner",
 		local: "本机",
@@ -118,6 +124,10 @@ const STR = {
 	en: {
 		brand: "Polynoia",
 		searchConv: "Search chats",
+		sortLabel: "Sort",
+		sortRecent: "Recent",
+		sortGroup: "Groups first",
+		sortUnread: "Unread first",
 		tabChat: "Chats",
 		tabContacts: "Agents",
 		tabFolder: "Projects",
@@ -328,11 +338,13 @@ function LargeHeader({
 	count,
 	dot,
 	showAdd,
+	rightSlot,
 }: {
 	title: string;
 	count?: number;
 	dot?: boolean;
 	showAdd?: boolean;
+	rightSlot?: ReactNode;
 }) {
 	const { pal, onNewContact } = useApp();
 	return (
@@ -388,21 +400,25 @@ function LargeHeader({
 						{count}
 					</span>
 				)}
-				{showAdd && (
-					<button
-						type="button"
-						onClick={onNewContact}
-						style={{
-							marginLeft: "auto",
-							border: "none",
-							background: "none",
-							padding: 6,
-							cursor: "pointer",
-						}}
-						aria-label="新建联系人"
-					>
-						<Plus size={23} color={pal.ink2} />
-					</button>
+				{rightSlot ? (
+					<div style={{ marginLeft: "auto" }}>{rightSlot}</div>
+				) : (
+					showAdd && (
+						<button
+							type="button"
+							onClick={onNewContact}
+							style={{
+								marginLeft: "auto",
+								border: "none",
+								background: "none",
+								padding: 6,
+								cursor: "pointer",
+							}}
+							aria-label="新建联系人"
+						>
+							<Plus size={23} color={pal.ink2} />
+						</button>
+					)
 				)}
 			</div>
 		</div>
@@ -509,11 +525,117 @@ const scrollStyle: React.CSSProperties = {
 
 /* ─────────────────── 消息 ─────────────────── */
 
+type SortMode = "recent" | "group" | "unread";
+
+/** 会话列表排序下拉:替换右上角「+」。最近 / 群聊优先 / 未读优先。 */
+function SortMenu({
+	mode,
+	setMode,
+}: {
+	mode: SortMode;
+	setMode: (m: SortMode) => void;
+}) {
+	const { pal, t } = useApp();
+	const [open, setOpen] = useState(false);
+	const opts: { id: SortMode; label: string }[] = [
+		{ id: "recent", label: t.sortRecent },
+		{ id: "group", label: t.sortGroup },
+		{ id: "unread", label: t.sortUnread },
+	];
+	return (
+		<div style={{ position: "relative" }}>
+			<button
+				type="button"
+				onClick={() => setOpen((o) => !o)}
+				style={{
+					border: "none",
+					background: "none",
+					padding: 6,
+					cursor: "pointer",
+					display: "flex",
+					alignItems: "center",
+				}}
+				aria-label={t.sortLabel}
+			>
+				<ArrowUpDown size={21} color={pal.ink2} />
+			</button>
+			{open && (
+				<>
+					{/* 点空白处关闭 */}
+					<button
+						type="button"
+						aria-hidden
+						tabIndex={-1}
+						onClick={() => setOpen(false)}
+						style={{
+							position: "fixed",
+							inset: 0,
+							zIndex: 40,
+							border: "none",
+							background: "transparent",
+							cursor: "default",
+						}}
+					/>
+					<div
+						style={{
+							position: "absolute",
+							top: "calc(100% + 4px)",
+							right: 0,
+							zIndex: 41,
+							minWidth: 148,
+							background: pal.bgTop,
+							border: `0.5px solid ${pal.line}`,
+							borderRadius: 12,
+							boxShadow: "0 8px 28px rgba(0,0,0,0.28)",
+							overflow: "hidden",
+							padding: 4,
+						}}
+					>
+						{opts.map((o) => (
+							<button
+								key={o.id}
+								type="button"
+								onClick={() => {
+									setMode(o.id);
+									setOpen(false);
+								}}
+								style={{
+									display: "flex",
+									alignItems: "center",
+									gap: 8,
+									width: "100%",
+									padding: "9px 10px",
+									border: "none",
+									background:
+										o.id === mode ? pal.chip : "transparent",
+									borderRadius: 8,
+									cursor: "pointer",
+									color: pal.ink,
+									fontSize: 14.5,
+									textAlign: "left",
+								}}
+							>
+								<span style={{ width: 16, display: "flex" }}>
+									{o.id === mode && (
+										<Check size={15} color={pal.accent} />
+									)}
+								</span>
+								{o.label}
+							</button>
+						))}
+					</div>
+				</>
+			)}
+		</div>
+	);
+}
+
 function ChatListScreen({ onSelectConv }: Props) {
 	const { pal, t } = useApp();
 	const agents = useStore((st) => st.agents);
 	const [convs, setConvs] = useState<ConversationSummary[]>([]);
 	const [q, setQ] = useState("");
+	const [sort, setSort] = useState<SortMode>("recent");
 
 	useEffect(() => {
 		api
@@ -539,14 +661,31 @@ function ChatListScreen({ onSelectConv }: Props) {
 
 	const shown = useMemo(() => {
 		const k = q.trim().toLowerCase();
-		if (!k) return convs;
-		return convs.filter((c) => titleFor(c).toLowerCase().includes(k));
+		const base = k
+			? convs.filter((c) => titleFor(c).toLowerCase().includes(k))
+			: convs;
+		// convs 已按最近排序;group/unread 在其上做稳定的优先级置顶。
+		if (sort === "group") {
+			return [...base].sort(
+				(a, b) => Number(!!b.group) - Number(!!a.group),
+			);
+		}
+		if (sort === "unread") {
+			return [...base].sort(
+				(a, b) => Number(b.unread > 0) - Number(a.unread > 0),
+			);
+		}
+		return base;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [convs, q, agents]);
+	}, [convs, q, agents, sort]);
 
 	return (
 		<>
-			<LargeHeader title={t.brand} dot showAdd />
+			<LargeHeader
+				title={t.brand}
+				dot
+				rightSlot={<SortMenu mode={sort} setMode={setSort} />}
+			/>
 			<div style={scrollStyle}>
 				<SearchInput value={q} onChange={setQ} placeholder={t.searchConv} />
 				{shown.length === 0 && (
@@ -902,16 +1041,6 @@ function MeScreen() {
 				</div>
 			</div>
 			<div style={{ ...scrollStyle, paddingTop: 16 }}>
-				<Card>
-					<div style={{ display: "flex", alignItems: "center", gap: 15, padding: "18px 16px" }}>
-						<Avatar initials="P" color="#4E7C8B" size={60} radius={18} />
-						<div style={{ flex: 1, minWidth: 0 }}>
-							<div style={{ fontSize: 20, fontWeight: 600, color: pal.ink }}>Polynoia</div>
-						</div>
-						<ChevronRight size={17} color={pal.ink3} />
-					</div>
-				</Card>
-
 				<Card title={t.secAdapter}>
 					<div style={{ padding: "13px 16px 6px" }}>
 						<div style={{ fontSize: 15.5, color: pal.ink, fontWeight: 500 }}>{t.adapter}</div>

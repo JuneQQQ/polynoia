@@ -9,7 +9,7 @@ const STR = {
   adaptersConnectedSuffix: { zh: "个适配器已接入", en: "adapters connected" },
   noAdaptersShort: { zh: "未接入适配器", en: "No adapters" },
   searchSession: { zh: "搜索会话", en: "Search" },
-  projects: { zh: "项目", en: "Projects" },
+  projects: { zh: "协作项目", en: "Collaborations" },
   contacts: { zh: "联系人", en: "Contacts" },
   newProject: { zh: "新建项目", en: "New Project" },
   newContact: { zh: "新建联系人", en: "New Contact" },
