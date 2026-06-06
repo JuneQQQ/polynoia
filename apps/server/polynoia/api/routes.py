@@ -59,6 +59,14 @@ _DISCUSSION_FANOUT_CAP = 2
 # dead model backend, wedged CLI session) → fail the turn instead of freezing
 # the burst lane forever. Idle-based (not total) so productive long turns live.
 _AGENT_IDLE_TIMEOUT = 120.0
+# Once a turn has STARTED streaming, a silent gap means the model is reasoning
+# between steps — a hard step (after a big tool result like `npm install`) can
+# legitimately think for minutes. Killing it at the 120s cold-start window
+# false-flags that reasoning as a "hung backend" and dumps a manual「再发一次」on
+# the user. So mid-turn (output already started) we wait far longer before
+# declaring a hang. Cold start keeps the short window: total silence from the
+# start is usually a stale pooled session, which is cheap to evict + retry.
+_AGENT_IDLE_TIMEOUT_MIDTURN = 300.0
 # When a turn produces NO output (hung backend), auto-retry up to N times with
 # INCREASING backoff between tries, surfacing each retry to the user (not silent).
 # Each retry also gives the model MORE idle patience (a merely-slow start isn't
@@ -151,6 +159,12 @@ _conv_discussions: dict[str, dict] = {}
 # GC-cancelled mid-run ("Task was destroyed but it is pending"). This set keeps
 # all of them alive until they actually finish.
 _conv_inflight: dict[str, set[asyncio.Task]] = {}            # conv_id → {live turn tasks}
+# conv_id → loop.time() of the last bash/tool terminal-card activity (output OR
+# heartbeat). The model-idle watchdog consults this so a long-running `bash`
+# (which streams to /terminal-card, NOT to the adapter chunk stream) is NOT
+# mistaken for a hung model and killed mid-command (that abort closed the MCP
+# session → "Connection closed" on the next call).
+_conv_tool_activity: dict[str, float] = {}
 # In-flight dispatcher tasks (the not-yet-awaited `dispatch_user_message`). The
 # disconnect-prune must not free a conv's dicts while a dispatcher is still in
 # its pre-registration await window (get_conversation / append user msg), or it
@@ -276,6 +290,7 @@ def _maybe_prune_conv(conv_id: str) -> None:
         return
     _conv_agent_tasks.pop(conv_id, None)
     _conv_agent_locks.pop(conv_id, None)
+    _conv_tool_activity.pop(conv_id, None)
     _conv_bursts.pop(conv_id, None)
     _conv_inflight.pop(conv_id, None)
     _conv_dispatchers.pop(conv_id, None)
@@ -2092,6 +2107,10 @@ async def post_terminal_card(conv_id: str, body: dict):
     term_id = body.get("term_id")
     if not term_id:
         return {"ok": False, "error": "term_id required"}
+    # Mark tool activity for this conv so the model-idle watchdog knows a bash is
+    # alive (it streams here, not to the adapter chunk stream it watches).
+    with suppress(Exception):
+        _conv_tool_activity[conv_id] = asyncio.get_event_loop().time()
     sender_id = body.get("sender_id") or "you"
     _MAX = 16000
     output = str(body.get("output") or "")
@@ -4331,11 +4350,47 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         pool = get_pool()
         # Serialize concurrent user-messages to the SAME agent
         lock = agent_locks.setdefault(agent_id, asyncio.Lock())
+        # lock_id correlates ENTER↔DONE for the SAME lock object across turns —
+        # if two same-agent turns ever log different lock_ids, the per-agent
+        # serialization was bypassed (a real concurrency bug). locked=True here
+        # means this turn will WAIT below until the agent's current turn finishes.
         log.info(
-            "run_adapter_turn ENTER agent=%s depth=%s suppress_dispatch=%s burst=%s locked=%s",
-            agent_id, depth, suppress_dispatch, burst_card_id, lock.locked(),
+            "run_adapter_turn ENTER agent=%s depth=%s suppress_dispatch=%s burst=%s locked=%s lock_id=%s",
+            agent_id, depth, suppress_dispatch, burst_card_id, lock.locked(), id(lock),
         )
+        # Queued-message feedback: if the agent is already mid-turn, THIS turn
+        # blocks on the lock below until that one ends. For a user-typed message
+        # (depth 0, not a burst worker) that silent wait reads as「消息没发出去/
+        # 对方没收到」— so surface a LIVE「已收到 · 排队中」notice now and remove it
+        # the instant the turn actually starts. Live-only, stable id, self-clearing
+        # (mirrors the retry notice). Burst workers / advance turns (depth>0) skip
+        # it — a "排队中" pill in a work lane would just be noise.
+        _queued_notice_id = f"queued-{conv_id}-{agent_id}-d{depth}"
+        _queued_shown = False
+        if depth == 0 and burst_task_id is None and lock.locked():
+            _queued_shown = True
+            with suppress(Exception):
+                await emit(
+                    'data: {"type":"data-error","data":'
+                    + json.dumps({
+                        "kind": "error",
+                        "message": "⏳ 已收到 · 排队中(对方正在处理上一条)…",
+                        "agent_id": agent_id,
+                        "reason": "queued",
+                        "retryable": False,
+                    })
+                    + ',"id":' + json.dumps(_queued_notice_id)
+                    + ',"sender_id":' + json.dumps(agent_id)
+                    + "}\n\n"
+                )
         async with lock:
+            # Turn is starting now → drop the「排队中」notice if we showed one.
+            if _queued_shown:
+                with suppress(Exception):
+                    await emit(
+                        'data: {"type":"data-message-removed","data":{"id":'
+                        + json.dumps(_queued_notice_id) + "}}\n\n"
+                    )
             # ── Turn-start worktree sync (disposable-branch model) ──────────
             # Hard-reset this agent's worktree to the latest workspace `main` so
             # the turn sees teammates' already-merged work — on EVERY turn,
@@ -4467,10 +4522,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # response arrives (or the turn ends), so it never lingers.
                 _retry_notice_id = f"retry-{conv_id}-{agent_id}-d{depth}"
                 _retry_shown = False
+                _retry_cleared = False
 
                 async def _clear_retry_notice() -> None:
-                    if not _retry_shown:
+                    nonlocal _retry_cleared
+                    if not _retry_shown or _retry_cleared:
                         return
+                    _retry_cleared = True
                     with suppress(Exception):
                         await emit(
                             'data: {"type":"data-message-removed","data":{"id":'
@@ -4535,8 +4593,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         while True:
                             if anext_task is None:
                                 anext_task = asyncio.ensure_future(agen.__anext__())
+                            # Cold start (nothing streamed yet) → short window so a
+                            # stale session fails fast + retries. Mid-turn (output
+                            # already flowing) → be patient: a silent gap is the
+                            # model reasoning between steps, not a dead backend.
+                            _idle_window = (
+                                idle_to
+                                if not emitted_any
+                                else max(
+                                    idle_to,
+                                    _AGENT_IDLE_TIMEOUT_MIDTURN + attempt * 60.0,
+                                )
+                            )
                             _done, _ = await asyncio.wait(
-                                {anext_task}, timeout=idle_to
+                                {anext_task}, timeout=_idle_window
                             )
                             if not _done:
                                 # Idle window elapsed; the __anext__() task is
@@ -4568,13 +4638,27 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                                 _wd_sess, conv_id
                                             )
                                         )
+                                # A long-running bash streams to /terminal-card (not
+                                # the adapter chunk stream this watchdog sees) and
+                                # heartbeats every ~5s. If that activity is fresh, the
+                                # agent is NOT hung — a tool is working. Keep waiting,
+                                # else we'd kill the turn mid-command (which closed the
+                                # MCP session → "Connection closed" on the next call).
+                                if not waiting:
+                                    _tool_ts = _conv_tool_activity.get(conv_id)
+                                    if (
+                                        _tool_ts is not None
+                                        and asyncio.get_event_loop().time() - _tool_ts
+                                        < _idle_window
+                                    ):
+                                        waiting = True
                                 if waiting:
                                     continue
                                 anext_task.cancel()
                                 with contextlib.suppress(BaseException):
                                     await anext_task
                                 raise RuntimeError(
-                                    f"{agent_id} 无响应:{int(idle_to)}s "
+                                    f"{agent_id} 无响应:{int(_idle_window)}s "
                                     "内无任何输出(疑似模型后端挂起)"
                                 )
                             try:
@@ -4583,6 +4667,15 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 break
                             finally:
                                 anext_task = None
+                            # First chunk of this (re)try arrived → the backend is
+                            # demonstrably no longer hung, so the "无响应,自动重试中"
+                            # notice is stale. Drop it NOW, not at turn-end: an
+                            # orchestrator that 派活 (dispatches sub-agents) keeps its
+                            # OWN stream open until sub-agents finish, so the old
+                            # clear-on-StopAsyncIteration left the red card lingering
+                            # above a full, already-streamed reply. Idempotent.
+                            if not emitted_any:
+                                await _clear_retry_notice()
                             emitted_any = True
                             # A terminal error chunk (from a TurnFailedEvent —
                             # 401/429/upstream) means this turn FAILED even though
@@ -5107,8 +5200,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 depth=depth,
             )
             log.info(
-                "run_adapter_turn DONE agent=%s depth=%s text_len=%d tool_parts=%d",
-                agent_id, depth, len(full_text), len(tool_parts),
+                "run_adapter_turn DONE agent=%s depth=%s text_len=%d tool_parts=%d lock_id=%s",
+                agent_id, depth, len(full_text), len(tool_parts), id(lock),
             )
             # (Turn text + tool-call rows were already persisted ABOVE, before
             # any tasks card / worker spawn — so on reload the orchestrator's
@@ -5614,6 +5707,27 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 # history silently loses them.
 _PERSIST_PART_KINDS = frozenset({"tool-call", "diff", "reasoning"})
 
+# Write/edit tool-call cards are EPHEMERAL: the frontend streams the file content
+# into a "写入中" card live, then once the write commits the durable `diff` card
+# (post_diff_card) takes over. Their streamed content is LIVE-ONLY, so persisting
+# the tool-call row would resurrect an EMPTY "写入中" shell on refresh (the bug:
+# "刷新后 write 内容没了 + 冒出空块"). We skip persisting these — the committed
+# diff card is the durable record. The live card still shows via the emit path.
+_EPHEMERAL_EDIT_TOOLS = frozenset(
+    {"write", "edit", "filewrite", "multiedit", "apply_patch", "str_replace", "str_replace_editor"}
+)
+
+
+def _clean_tool_name(raw: str) -> str:
+    """Strip adapter MCP prefixes (mcp__polynoia__write / polynoia::write) → write.
+    Mirrors the frontend cleanToolName so the persist filter matches the UI."""
+    n = (raw or "").strip()
+    if "__" in n:
+        n = n.rsplit("__", 1)[-1]
+    if "::" in n:
+        n = n.rsplit("::", 1)[-1]
+    return n.lower()
+
 
 async def _persist_and_emit_error(
     emit,
@@ -5747,6 +5861,16 @@ async def _tap_text_into(
                 # persist upserts by the same id.
                 with suppress(Exception):
                     dump = part.model_dump(mode="json")
+                    # Ephemeral write/edit tool-call cards: don't persist (the
+                    # committed diff card is the durable record). Persisting them
+                    # resurrects an empty "写入中" shell on refresh. The LIVE card
+                    # still streams via the emit path; we just skip the DB write.
+                    if (
+                        kind == "tool-call"
+                        and _clean_tool_name(dump.get("name", "")) in _EPHEMERAL_EDIT_TOOLS
+                    ):
+                        yield ev
+                        continue
                     pid = getattr(ev, "part_id", None) or dump.get("tool_call_id")
                     if pid is None:
                         _anon += 1
