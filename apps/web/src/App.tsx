@@ -14,7 +14,7 @@ import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { api } from "./lib/api";
 import { isMobile } from "./lib/platform";
-import { getServerOverride, isCapacitor } from "./lib/runtime-config";
+import { getServerOverride } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
@@ -184,10 +184,12 @@ export function App() {
 
 	// ── Mobile layout (Capacitor iOS/Android or narrow viewport) ─────
 	if (mobile) {
-		// First-run gate: a phone has no local backend, so it must be pointed at a
-		// remote Polynoia server before anything else. (Browser/desktop have a
-		// same-origin / local default and skip this.)
-		if (isCapacitor() && !getServerOverride()) {
+		// First-run gate: any mobile context with no server URL is forced through the
+		// connect screen — phones have no local backend, and "I can chat without
+		// connecting" is the wrong product story. Browser/mobile-viewport dev still
+		// hits this; bypass via `?server=http://localhost:5173` (applyServerQueryOverride
+		// in runtime-config.ts) when you want to skip past the gate during testing.
+		if (!getServerOverride()) {
 			return <ConnectServerScreen />;
 		}
 		// Chat open → full-screen chat pushed over the list, with a back button.

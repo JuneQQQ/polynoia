@@ -52,6 +52,14 @@ export function setServerUrl(url: string): void {
   else storage.removeItem(LS_KEY);
 }
 
+/** Resolve once all in-flight native Preferences writes have settled. Pair with
+ * `setServerUrl` before `window.location.reload()` so a too-fast reload doesn't
+ * race the async write — otherwise `prefetchStorage()` on next boot may revive
+ * the old override (or silently drop the new one). No-op off-Capacitor. */
+export function flushServerConfig(): Promise<void> {
+  return storage.flush();
+}
+
 /** HTTP base for REST calls (no trailing slash). "" = same-origin (dev/web proxy). */
 export function getServerHttpBase(): string {
   const override = getServerOverride();

@@ -7,7 +7,11 @@
  */
 import { useState } from "react";
 import { Server, X } from "lucide-react";
-import { getServerOverride, setServerUrl } from "../lib/runtime-config";
+import {
+  flushServerConfig,
+  getServerOverride,
+  setServerUrl,
+} from "../lib/runtime-config";
 
 type TestState = { kind: "idle" | "ok" | "err" | "testing"; msg: string };
 
@@ -47,8 +51,10 @@ export function ServerSettingsModal({
     }
   }
 
-  function save() {
+  async function save() {
     setServerUrl(mode === "remote" ? effectiveBase() : "");
+    // Await native Preferences write so the new URL survives the reload race.
+    await flushServerConfig();
     // Reload so api.ts/ws.ts re-read the base and the WS reconnects to the new server.
     window.location.reload();
   }

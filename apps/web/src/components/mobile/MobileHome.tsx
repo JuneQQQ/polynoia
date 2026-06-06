@@ -35,6 +35,7 @@ import {
 	Sun,
 	User,
 	Users,
+	X,
 } from "lucide-react";
 import {
 	createContext,
@@ -50,8 +51,12 @@ import {
 	type ConversationSummary,
 	type EnabledAdapter,
 } from "../../lib/api";
-import { getServerOverride } from "../../lib/runtime-config";
 import { type Lang, saveLang } from "../../lib/i18n";
+import {
+	flushServerConfig,
+	getServerOverride,
+	setServerUrl,
+} from "../../lib/runtime-config";
 import type { Agent, Workspace } from "../../lib/types";
 import { useStore } from "../../store";
 import { NewContactModal } from "../NewContactModal";
@@ -122,6 +127,7 @@ const STR = {
 		profileSub: "本机用户",
 		secAdapter: "适配器",
 		secGeneral: "通用",
+		secServer: "服务器",
 		adapter: "默认适配器",
 		adapterHint: "新建联系人默认使用的引擎",
 		adapterEmpty: "暂无可用适配器 · 请在网页端添加",
@@ -129,6 +135,15 @@ const STR = {
 		light: "浅色",
 		dark: "深色",
 		language: "语言",
+		serverTitle: "远程工作区",
+		serverHint: "手机端没有本机后端 · 这里指定要同步的 Polynoia 服务器",
+		serverNotSet: "未连接",
+		serverTest: "测试连接",
+		serverSave: "保存并重连",
+		serverConnecting: "连接中…",
+		serverOk: (n: number | string) => `已连通 · ${n} 位 Agent`,
+		serverErr: "连接失败",
+		serverDisconnect: "断开并重新选择",
 	},
 	en: {
 		brand: "Polynoia",
@@ -160,6 +175,7 @@ const STR = {
 		profileSub: "Local user",
 		secAdapter: "ADAPTER",
 		secGeneral: "GENERAL",
+		secServer: "SERVER",
 		adapter: "Default adapter",
 		adapterHint: "Engine used for new agents",
 		adapterEmpty: "No adapters yet · add one on the web app",
@@ -167,6 +183,15 @@ const STR = {
 		light: "Light",
 		dark: "Dark",
 		language: "Language",
+		serverTitle: "Remote workspace",
+		serverHint: "Point this app at a Polynoia server (the phone has no local backend)",
+		serverNotSet: "Not connected",
+		serverTest: "Test",
+		serverSave: "Save & reconnect",
+		serverConnecting: "Connecting…",
+		serverOk: (n: number | string) => `Connected · ${n} agents`,
+		serverErr: "Failed",
+		serverDisconnect: "Disconnect & reselect",
 	},
 };
 
@@ -642,6 +667,7 @@ function SortMenu({
 function ChatListScreen({ onSelectConv }: Props) {
 	const { pal, t } = useApp();
 	const agents = useStore((st) => st.agents);
+	const workspaces = useStore((st) => st.workspaces);
 	const [convs, setConvs] = useState<ConversationSummary[]>([]);
 	const [q, setQ] = useState("");
 	const [sort, setSort] = useState<SortMode>("recent");
@@ -667,6 +693,8 @@ function ChatListScreen({ onSelectConv }: Props) {
 		agents.find((a) => a.id === c.members.find((m) => m !== "you"));
 	const titleFor = (c: ConversationSummary) =>
 		c.title || agentFor(c)?.name || "对话";
+	const wsFor = (c: ConversationSummary) =>
+		c.workspace_id ? workspaces.find((w) => w.id === c.workspace_id) : undefined;
 
 	const shown = useMemo(() => {
 		const k = q.trim().toLowerCase();
@@ -702,11 +730,25 @@ function ChatListScreen({ onSelectConv }: Props) {
 				)}
 				{shown.map((c, i) => {
 					const a = agentFor(c);
+					const ws = wsFor(c);
 					return (
 						<div key={c.id}>
 							<button
 								type="button"
-								onClick={() => onSelectConv(c.id, c.members, titleFor(c))}
+								onClick={() => {
+									// Clear the unread badge on tap: tell the server (so the next
+									// fetch comes back clean) AND optimistically zero the local
+									// count, so the dot disappears the moment you return to the
+									// list instead of waiting for a refetch. Mirrors the desktop
+									// InboxView flow.
+									if (c.unread > 0) {
+										api.markConvRead(c.id).catch(() => undefined);
+										setConvs((cur) =>
+											cur.map((x) => (x.id === c.id ? { ...x, unread: 0 } : x)),
+										);
+									}
+									onSelectConv(c.id, c.members, titleFor(c));
+								}}
 								style={rowBtn}
 							>
 								<div style={{ position: "relative", flexShrink: 0 }}>
@@ -724,7 +766,8 @@ function ChatListScreen({ onSelectConv }: Props) {
 											{fmtTime(c.last_message_at)}
 										</span>
 									</div>
-									<div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+									<div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+										{ws && <ProjectChip pal={pal} ws={ws} />}
 										<span style={subStyle(pal)}>
 											{a?.tagline ?? a?.role ?? t.members(c.members.length)}
 										</span>
@@ -1267,7 +1310,10 @@ function MeScreen() {
 			<div style={{ ...scrollStyle, paddingTop: 16 }}>
 				<AdapterManager />
 
-					<Card title={t.secGeneral}>
+				<ServerCard />
+
+				<Card title={t.secGeneral}>
+
 					<SettingRow
 						icon={dark ? <Moon size={18} color={pal.ink2} /> : <Sun size={18} color={pal.ink2} />}
 						label={t.appearance}
@@ -1301,6 +1347,287 @@ function MeScreen() {
 				<div style={{ height: 16 }} />
 			</div>
 		</>
+	);
+}
+
+/* ─────────────────── 服务器(Me 子卡) ───────────────────
+ * 切换/重测当前连接的 Polynoia 后端。手机端没有本机后端,首次进入靠
+ * App.tsx 的 <ConnectServerScreen /> 强制配置一次;装好后想换地址或排查
+ * 连接,从「我」页这里改。保存后重载,以便 api.ts/ws.ts 重新读取 base
+ * 并重连 WS。
+ */
+function ServerCard() {
+	const { pal, t, lang } = useApp();
+	const current = getServerOverride();
+	const [url, setUrl] = useState(current || "http://10.2.255.109:7780");
+	const [editing, setEditing] = useState(false);
+	const [test, setTest] = useState<{
+		kind: "idle" | "testing" | "ok" | "err";
+		msg: string;
+	}>({ kind: "idle", msg: "" });
+	const [saving, setSaving] = useState(false);
+
+	const base = () => url.trim().replace(/\/+$/, "");
+
+	async function runTest() {
+		const b = base();
+		if (!b) return;
+		setTest({ kind: "testing", msg: t.serverConnecting });
+		try {
+			const res = await fetch(`${b}/api/agents`);
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const agents = await res.json();
+			const n = Array.isArray(agents) ? agents.length : "?";
+			setTest({ kind: "ok", msg: t.serverOk(n) });
+		} catch (e) {
+			setTest({
+				kind: "err",
+				msg: `${t.serverErr}: ${String((e as Error).message || e)}`,
+			});
+		}
+	}
+
+	async function save() {
+		const b = base();
+		if (!b) return;
+		setSaving(true);
+		setServerUrl(b);
+		// Wait for native Preferences write to land before reload — otherwise the
+		// URL can race and be lost on the next boot's prefetchStorage().
+		await flushServerConfig();
+		setTimeout(() => window.location.reload(), 350);
+	}
+
+	return (
+		<Card title={t.secServer}>
+			<div style={{ padding: "13px 16px 6px" }}>
+				<div style={{ fontSize: 15.5, color: pal.ink, fontWeight: 500 }}>
+					{t.serverTitle}
+				</div>
+				<div style={{ fontSize: 12, color: pal.ink3, marginTop: 1 }}>
+					{t.serverHint}
+				</div>
+			</div>
+
+			{!editing ? (
+				<button
+					type="button"
+					onClick={() => {
+						setEditing(true);
+						setTest({ kind: "idle", msg: "" });
+					}}
+					style={{
+						width: "100%",
+						textAlign: "left",
+						display: "flex",
+						alignItems: "center",
+						gap: 12,
+						padding: "12px 16px",
+						cursor: "pointer",
+						border: "none",
+						borderTop: `0.5px solid ${pal.line}`,
+						background: "transparent",
+					}}
+				>
+					<div
+						style={{
+							width: 30,
+							height: 30,
+							borderRadius: 9,
+							flexShrink: 0,
+							background: current ? pal.accent : pal.chip,
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+						}}
+					>
+						<Server size={17} color={current ? "#fff" : pal.ink2} />
+					</div>
+					<div style={{ flex: 1, minWidth: 0 }}>
+						<div
+							style={{
+								fontSize: 13.5,
+								color: current ? pal.ink : pal.ink3,
+								fontFamily:
+									"ui-monospace, SFMono-Regular, Menlo, monospace",
+								overflow: "hidden",
+								textOverflow: "ellipsis",
+								whiteSpace: "nowrap",
+							}}
+						>
+							{current || t.serverNotSet}
+						</div>
+					</div>
+					<ChevronRight size={18} color={pal.ink3} />
+				</button>
+			) : (
+				<div
+					style={{
+						borderTop: `0.5px solid ${pal.line}`,
+						padding: "12px 16px",
+						display: "flex",
+						flexDirection: "column",
+						gap: 10,
+						opacity: saving ? 0.5 : 1,
+						pointerEvents: saving ? "none" : "auto",
+					}}
+				>
+					<input
+						type="url"
+						inputMode="url"
+						autoCapitalize="off"
+						autoCorrect="off"
+						spellCheck={false}
+						value={url}
+						onChange={(e) => {
+							setUrl(e.target.value);
+							setTest({ kind: "idle", msg: "" });
+						}}
+						placeholder="http://10.2.255.109:7780"
+						style={{
+							width: "100%",
+							border: "none",
+							outline: "none",
+							background: pal.segBg,
+							borderRadius: 10,
+							padding: "10px 12px",
+							fontSize: 14,
+							color: pal.ink,
+							fontFamily:
+								"ui-monospace, SFMono-Regular, Menlo, monospace",
+						}}
+					/>
+					{test.kind !== "idle" && (
+						<div
+							style={{
+								display: "flex",
+								alignItems: "center",
+								gap: 6,
+								fontSize: 12,
+								padding: "6px 10px",
+								borderRadius: 8,
+								color:
+									test.kind === "ok"
+										? pal.accent
+										: test.kind === "err"
+											? "#D94B4B"
+											: pal.ink3,
+								background:
+									test.kind === "ok"
+										? pal.accentSoft
+										: test.kind === "err"
+											? "rgba(217,75,75,0.08)"
+											: pal.segBg,
+							}}
+						>
+							{test.kind === "testing" && (
+								<Loader2 size={12} className="animate-spin" />
+							)}
+							{test.kind === "ok" && <Check size={12} />}
+							{test.kind === "err" && <X size={12} />}
+							<span
+								style={{
+									overflow: "hidden",
+									textOverflow: "ellipsis",
+									whiteSpace: "nowrap",
+								}}
+							>
+								{test.msg}
+							</span>
+						</div>
+					)}
+					<div style={{ display: "flex", gap: 8, paddingTop: 2 }}>
+						<button
+							type="button"
+							onClick={() => {
+								setEditing(false);
+								setUrl(current || "http://10.2.255.109:7780");
+								setTest({ kind: "idle", msg: "" });
+							}}
+							disabled={saving}
+							style={{
+								flexShrink: 0,
+								border: "none",
+								background: "transparent",
+								color: pal.ink3,
+								padding: "8px 12px",
+								borderRadius: 8,
+								fontSize: 13,
+								cursor: "pointer",
+							}}
+						>
+							{lang === "zh" ? "取消" : "Cancel"}
+						</button>
+						<button
+							type="button"
+							onClick={runTest}
+							disabled={!url.trim() || test.kind === "testing" || saving}
+							style={{
+								flexShrink: 0,
+								border: `0.5px solid ${pal.line}`,
+								background: "transparent",
+								color: pal.ink2,
+								padding: "8px 14px",
+								borderRadius: 8,
+								fontSize: 13,
+								cursor: "pointer",
+							}}
+						>
+							{t.serverTest}
+						</button>
+						<button
+							type="button"
+							onClick={save}
+							disabled={!url.trim() || saving}
+							style={{
+								marginLeft: "auto",
+								border: "none",
+								background: pal.accent,
+								color: "#fff",
+								padding: "8px 14px",
+								borderRadius: 8,
+								fontSize: 13,
+								fontWeight: 500,
+								cursor: "pointer",
+								display: "inline-flex",
+								alignItems: "center",
+								gap: 6,
+							}}
+						>
+							{saving && <Loader2 size={12} className="animate-spin" />}
+							{t.serverSave}
+						</button>
+					</div>
+					{current && (
+						<button
+							type="button"
+							onClick={async () => {
+								setSaving(true);
+								setServerUrl("");
+								// Native Preferences remove is async — await it so prefetchStorage()
+								// on next boot doesn't revive the old URL and skip the connect gate.
+								await flushServerConfig();
+								setTimeout(() => window.location.reload(), 350);
+							}}
+							disabled={saving}
+							style={{
+								alignSelf: "flex-start",
+								border: "none",
+								background: "transparent",
+								color: pal.ink3,
+								fontSize: 12,
+								padding: "4px 2px",
+								cursor: "pointer",
+								textDecoration: "underline",
+								textUnderlineOffset: 3,
+							}}
+						>
+							{t.serverDisconnect}
+						</button>
+					)}
+				</div>
+			)}
+		</Card>
 	);
 }
 
@@ -1540,6 +1867,48 @@ function EngineChip({ pal, text }: { pal: Pal; text: string }) {
 			}}
 		>
 			{text}
+		</span>
+	);
+}
+
+/** Tiny project tag for chat-list rows. Color dot uses the workspace color so
+ * different projects are distinguishable at a glance even without reading; name
+ * truncates so a long project label doesn't push the unread badge off-row. */
+function ProjectChip({ pal, ws }: { pal: Pal; ws: Workspace }) {
+	return (
+		<span
+			style={{
+				flexShrink: 0,
+				display: "inline-flex",
+				alignItems: "center",
+				gap: 4,
+				maxWidth: 120,
+				fontSize: 11,
+				color: pal.ink2,
+				background: `${ws.color}1A`,
+				padding: "1.5px 7px 1.5px 6px",
+				borderRadius: 5,
+				whiteSpace: "nowrap",
+			}}
+		>
+			<span
+				aria-hidden
+				style={{
+					width: 6,
+					height: 6,
+					borderRadius: 6,
+					background: ws.color,
+					flexShrink: 0,
+				}}
+			/>
+			<span
+				style={{
+					overflow: "hidden",
+					textOverflow: "ellipsis",
+				}}
+			>
+				{ws.name}
+			</span>
 		</span>
 	);
 }
