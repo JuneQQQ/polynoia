@@ -3,267 +3,334 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Polynoia · Agent 手里有哪些工具</title>
+<title>Polynoia · 工具调用设计(当前)</title>
 <style>
-  :root {
-    --bg: #F8F7F4;
-    --card: #FFFFFF;
-    --border: #E8E5DD;
-    --border-light: #F0EDE5;
-    --text: #1C1917;
-    --text-muted: #78716C;
-    --text-dim: #A8A29E;
-    --read: #4B7FE5;   /* 只读检索 */
-    --mut:  #E08530;   /* 改文件 */
-    --exec: #8B47B0;   /* 跑命令 */
-    --collab:#1D9E54;  /* 多 agent 协作 */
-    --mem:  #7C6340;   /* 共享记忆 */
-    --loop: #C2410C;   /* 闭环 & 用户 */
-    --shadow-sm: 0 1px 2px rgba(28,25,23,0.06);
-    --shadow-md: 0 4px 12px rgba(28,25,23,0.08);
-    --radius: 10px;
-    --radius-sm: 6px;
+  :root{
+    --bg:#FAF8F4; --surface:#fff; --line:#ECE7DE; --line2:#E0D9CC;
+    --fg:#1F2937; --fg2:#4B5563; --fg3:#8A8170; --fg4:#A9A294;
+    --blue:#5B8FF9; --orange:#F2994A; --green:#27AE60; --red:#E05A4E; --purple:#8B5CF6; --teal:#0EA5A5;
+    --blue-s:#EAF1FE; --orange-s:#FDF1E6; --green-s:#E7F6EE; --red-s:#FBEAE8; --purple-s:#F1ECFE; --teal-s:#E3F5F5;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
   }
-  @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
-  body { margin:0; background:var(--bg); color:var(--text);
-    font-family: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    line-height:1.65; font-size:15px; -webkit-font-smoothing:antialiased; }
-  .wrap { max-width:1080px; margin:0 auto; padding:48px 32px 120px; }
-  h1 { font-size:30px; margin:0 0 6px; font-weight:700; letter-spacing:-0.02em; animation:fadeUp .5s ease-out; }
-  .sub { color:var(--text-muted); margin-bottom:36px; font-size:14px; animation:fadeUp .5s ease-out .05s both; }
-  h2 { font-size:20px; margin:52px 0 20px; border-bottom:1px solid var(--border); padding-bottom:10px;
-       font-weight:650; letter-spacing:-0.01em; animation:fadeUp .4s ease-out; }
-  code { font-family: ui-monospace, Menlo, "JetBrains Mono", monospace; font-size:12.5px;
-         background:var(--border-light); padding:2px 6px; border-radius:4px; color:var(--text); }
-
-  /* tool groups */
-  .groups { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .grp { background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
-         padding:0; overflow:hidden; box-shadow:var(--shadow-sm); animation:fadeUp .4s ease-out both; }
-  .grp-h { padding:11px 16px; color:#fff; font-weight:650; font-size:13.5px; letter-spacing:.01em;
-           display:flex; align-items:center; justify-content:space-between; }
-  .grp-h .n { font-family:ui-monospace,monospace; font-size:11.5px; opacity:.8; font-weight:600; }
-  .tool { display:grid; grid-template-columns:148px 1fr; gap:10px; padding:9px 16px;
-          border-top:1px solid var(--border-light); align-items:baseline; }
-  .tool .tn { font-family:ui-monospace,monospace; font-size:13px; font-weight:600; color:var(--text); }
-  .tool .td { font-size:12.5px; color:var(--text-muted); line-height:1.45; }
-  .tool .badge { font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:999px;
-                 margin-left:6px; vertical-align:middle; letter-spacing:.03em; }
-  .b-orch   { background:#FEF3C7; color:#92400E; }
-  .b-worker { background:#DCFCE7; color:#166534; }
-
-  .g-read .grp-h{background:linear-gradient(135deg,var(--read),#6B9AF9)}
-  .g-mut  .grp-h{background:linear-gradient(135deg,var(--mut),#F5AD5C)}
-  .g-exec .grp-h{background:linear-gradient(135deg,var(--exec),#B06FD0)}
-  .g-collab .grp-h{background:linear-gradient(135deg,var(--collab),#3DBF72)}
-  .g-mem  .grp-h{background:linear-gradient(135deg,var(--mem),#9A7E58)}
-  .g-loop .grp-h{background:linear-gradient(135deg,var(--loop),#EA6A2E)}
-
-  /* matrix */
-  table { width:100%; border-collapse:collapse; background:var(--card);
-          border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;
-          font-size:13px; box-shadow:var(--shadow-sm); }
-  th,td { padding:9px 8px; text-align:center; border-bottom:1px solid var(--border-light); }
-  thead th { background:#F5F3EC; font-size:11px; color:var(--text-muted); font-weight:650;
-             text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0; }
-  th.tool-col, td.tool-col { text-align:left; font-family:ui-monospace,monospace; font-weight:600;
-             background:#FAF9F5; width:150px; white-space:nowrap; }
-  tbody tr:hover { background:#FAFAF7; }
-  .yes { color:#16A34A; font-weight:700; }
-  .no  { color:#E5E0D6; }
-  td.dim { color:var(--text-dim); }
-  .grp-row td { background:#F0EDE5; font-weight:700; font-size:11px; color:var(--text-muted);
-                text-align:left; letter-spacing:.06em; text-transform:uppercase; }
-
-  /* gate flow */
-  .flow { display:flex; flex-direction:column; gap:8px; max-width:760px; }
-  .step { display:grid; grid-template-columns:40px 1fr; gap:14px; align-items:start;
-          background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
-          padding:13px 16px; box-shadow:var(--shadow-sm); }
-  .step .num { width:28px; height:28px; border-radius:999px; background:var(--text); color:#fff;
-               display:grid; place-items:center; font-weight:700; font-size:13px;
-               font-family:ui-monospace,monospace; }
-  .step .st { font-size:13.5px; }
-  .step .st b { font-weight:650; }
-  .step .src { font-family:ui-monospace,monospace; font-size:11px; color:var(--text-dim); }
-  .branch { display:grid; grid-template-columns:1fr 1fr; gap:8px; max-width:760px; margin-top:2px; }
-  .br { border-radius:var(--radius-sm); padding:10px 14px; font-size:12.5px; }
-  .br.ok { background:#F0FDF4; border:1px solid #BBF7D0; }
-  .br.no { background:#FEF2F2; border:1px solid #FECACA; }
-
-  .callout { background:linear-gradient(135deg,#FFF8E7,#FFF3D6); border-left:4px solid var(--mut);
-    padding:14px 18px; border-radius:0 var(--radius-sm) var(--radius-sm) 0; font-size:14px; margin:16px 0;
-    box-shadow:var(--shadow-sm); }
-  .callout strong { color:#A16207; }
-  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--text-muted); margin:10px 0 18px; }
-  .legend span { display:inline-flex; align-items:center; gap:6px; }
-  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; }
-
-  @media (max-width:760px){ .wrap{padding:28px 16px 80px} .groups{grid-template-columns:1fr} .branch{grid-template-columns:1fr} table{font-size:11px} th,td{padding:7px 4px} }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14.5px/1.65 -apple-system,"PingFang SC","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;padding:0 0 90px}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  header{padding:46px 0 26px;border-bottom:1px solid var(--line)}
+  h1{font-size:29px;letter-spacing:-.02em;margin:0 0 8px;font-weight:700}
+  .sub{color:var(--fg2);font-size:15px;max-width:780px}
+  .tag{display:inline-block;font:600 11px/1 var(--mono);text-transform:uppercase;
+    letter-spacing:.14em;color:var(--orange);background:var(--orange-s);padding:6px 10px;border-radius:6px;margin-bottom:16px}
+  h2{font-size:20px;margin:44px 0 6px;letter-spacing:-.01em;scroll-margin-top:16px}
+  h2 .n{font:700 12px/1 var(--mono);color:var(--blue);background:var(--blue-s);padding:4px 8px;border-radius:6px;margin-right:10px;vertical-align:2px}
+  h3{font-size:15.5px;margin:22px 0 6px}
+  p{margin:9px 0;color:var(--fg2)}
+  code{font-family:var(--mono);font-size:.88em;background:#F3EFE8;padding:1px 5px;border-radius:4px;color:#7A5C2E}
+  b{color:var(--fg)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#F5F1EA;font-weight:600;font-size:12px;color:var(--fg)}
+  tr:last-child td{border-bottom:0}
+  td.k{font-family:var(--mono);font-size:12px;color:#7A5C2E;white-space:nowrap}
+  td.t{font-family:var(--mono);font-size:11.5px;color:var(--teal)}
+  .req{color:var(--red);font-weight:700} .opt{color:var(--fg4)}
+  .pill{display:inline-block;font:600 10.5px/1.5 var(--mono);padding:2px 7px;border-radius:5px;margin:0 4px 4px 0}
+  .p-blue{color:var(--blue);background:var(--blue-s)} .p-or{color:var(--orange);background:var(--orange-s)}
+  .p-gr{color:var(--green);background:var(--green-s)} .p-rd{color:var(--red);background:var(--red-s)}
+  .p-pu{color:var(--purple);background:var(--purple-s)} .p-tl{color:var(--teal);background:var(--teal-s)}
+  .p-gy{color:var(--fg3);background:#F0ECE3}
+  pre{background:#FBF8F2;border:1px solid var(--line);border-left:3px solid var(--green);border-radius:8px;padding:11px 14px;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.55;color:#3A3326;margin:8px 0}
+  .tool{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .tool h3{margin:0 0 2px;font-size:16px}
+  .tool h3 code{background:none;padding:0;color:var(--orange);font-size:1em;font-weight:700}
+  .tool .d{font-size:13px;color:var(--fg2);margin:4px 0 10px}
+  .lbl{font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--fg4);margin:12px 0 4px}
+  ul{margin:8px 0;padding-left:20px;color:var(--fg2)} li{margin:4px 0}
+  .grp{font:700 12px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--purple);background:var(--purple-s);display:inline-block;padding:5px 9px;border-radius:6px;margin:34px 0 2px}
+  .toc{columns:2;column-gap:28px;font-size:13.5px;margin:14px 0}
+  @media(max-width:680px){.toc{columns:1}}
+  .toc a{color:var(--blue);text-decoration:none} .toc a:hover{text-decoration:underline}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px;margin:10px 0}
+  .flow .step{background:#F5F1EA;border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:11.5px}
+  .flow .ar{color:var(--fg4)}
+  footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);color:var(--fg3);font-size:12px}
 </style>
 </head>
 <body>
+<header><div class="wrap">
+  <div class="tag">Polynoia · Tool Spec · 当前实现</div>
+  <h1>Agent 工具调用设计</h1>
+  <p class="sub">Polynoia 经 MCP(stdio)暴露给每个 agent 的 14 个工具:它们的入参 / 出参、跨工具的执行超时与人审批机制、以及按角色的可见性。本页描述<b>当前实现</b>(源:<code>apps/server/polynoia/mcp/tools.py</code> + <code>server.py</code>)。</p>
+</div></header>
+
 <div class="wrap">
 
-  <h1>Agent 手里有哪些工具</h1>
-  <div class="sub">
-    Polynoia · MCP 工具设计 · 数据来自 <code>apps/server/polynoia/mcp/tools.py</code>
-    · 13 个工具,按角色裁剪暴露
-  </div>
+<h2><span class="n">00</span>一次工具调用怎么走</h2>
+<p>Adapter(Claude Code / Codex / OpenCode)在 agent 的 turn 里发出 tool_use → Polynoia 的 MCP server(每个 agent session 一个 stdio 子进程)收到 <code>call_tool(name, arguments)</code> → 修复参数 → 按角色校验 → <b>套执行超时</b>跑 <code>tool.execute(ctx, args)</code> → 返回结构化结果给模型。</p>
+<div class="flow">
+  <span class="step">adapter tool_use</span><span class="ar">→</span>
+  <span class="step">_repair_arguments</span><span class="ar">→</span>
+  <span class="step">role 校验 (ROLE_TOOLS)</span><span class="ar">→</span>
+  <span class="step">_execute_bounded(超时)</span><span class="ar">→</span>
+  <span class="step">execute → 结构化结果</span><span class="ar">→</span>
+  <span class="step">模型读到出参</span>
+</div>
+<p>所有出参都是一个 dict,常带 <code>kind</code> 判别字段;失败统一为 <code>{"kind":"error","error":...}</code>(或 <code>{"error":...}</code>)。沙箱在 <code>~/sandbox/&lt;conv&gt;/…/worktrees/&lt;agent&gt;</code>,文件类工具受沙箱限制 + 走 git。</p>
 
-  <h2>① 13 个工具,按用途分 6 组</h2>
-  <div class="legend">
-    <span><i class="dot" style="background:var(--read)"></i>只读检索</span>
-    <span><i class="dot" style="background:var(--mut)"></i>改文件</span>
-    <span><i class="dot" style="background:var(--exec)"></i>跑命令</span>
-    <span><i class="dot" style="background:var(--collab)"></i>多 Agent 协作</span>
-    <span><i class="dot" style="background:var(--mem)"></i>共享记忆</span>
-    <span><i class="dot" style="background:var(--loop)"></i>闭环 &amp; 用户</span>
-  </div>
+<h2><span class="n">01</span>跨工具机制(所有工具共享)</h2>
 
-  <div class="groups">
-    <div class="grp g-read">
-      <div class="grp-h"><span>只读检索</span><span class="n">3 暴露</span></div>
-      <div class="tool"><div class="tn">read</div><div class="td">读沙箱里的 UTF-8 文本文件,带行号,<code>offset/limit</code> 分页</div></div>
-      <div class="tool"><div class="tn">grep</div><div class="td">ripgrep 递归搜索,返回 <code>file:line</code></div></div>
-      <div class="tool"><div class="tn">glob</div><div class="td">按 glob 模式找文件</div></div>
-    </div>
+<h3>执行超时(<code>_execute_bounded</code> @ server.py)</h3>
+<ul>
+  <li><b>默认 60s</b>(<code>_DEFAULT_TOOL_TIMEOUT</code>):每个工具调用都有界,超时不再卡死整轮,而是<b>把超时结果反馈给 agent</b>,它可重试或换路。</li>
+  <li><b>agent 可覆盖</b>:任意调用传 <code>timeout</code>(秒)即可调整。</li>
+  <li><b>超时出参</b>:<code>{"error":"⏱ 工具 X 执行超过 Ns…","timed_out":true,"tool":X,"timeout_s":N}</code>。</li>
+  <li><b>两类豁免</b>:<span class="pill p-pu">human_wait</span> 等人工具(<code>ask_user</code> / <code>request_project_access</code> / <code>write</code>·<code>edit</code> 的审批门)不计时——它们在人侧已有上限;<span class="pill p-tl">self_timeout</span> 的 <code>bash</code> 自管超时(默认 30s)+ 优雅杀子进程,包装仅作宽限兜底。</li>
+</ul>
 
-    <div class="grp g-mut">
-      <div class="grp-h"><span>改文件</span><span class="n">1 个</span></div>
-      <div class="tool"><div class="tn">write</div><div class="td">写/覆盖整个文件,自动 commit 到沙箱 git。<b>唯一的文件写工具</b> —— 每次改动都是完整可审阅的内容,单一审计入口</div></div>
-    </div>
+<h3>人审批门(manual 合并模式 · <code>write</code>/<code>edit</code>)</h3>
+<p>manual 模式下,<code>write</code>/<code>edit</code> 先经 <code>_require_edit_approval</code> long-poll 等用户批准(审批卡渲染该次改动的 diff)。被拒 → 返回 <code>{"kind":"rejected","error":"rejected by user"}</code>,不落盘。auto 模式直接执行。</p>
 
-    <div class="grp g-exec">
-      <div class="grp-h"><span>跑命令</span><span class="n">1 暴露</span></div>
-      <div class="tool"><div class="tn">bash</div><div class="td">在沙箱工作目录跑 shell,返回 stdout/stderr/exit,默认 30s 超时,<b>不</b> commit</div></div>
-    </div>
+<h3>按角色可见(<code>ROLE_TOOLS</code>,能力轴组合)</h3>
+<table>
+  <tr><th>角色</th><th>可用工具</th></tr>
+  <tr><td class="k">orchestrator</td><td>全部读写 + <b>dispatch / discuss / present / resolve_conflict</b>(协调专属);无 report</td></tr>
+  <tr><td class="k">coder / generalist</td><td>read / write / <b>edit</b> / bash / grep / glob + recall/remember + ask_user + report + request_project_access</td></tr>
+  <tr><td class="k">designer / writer</td><td>同上但<b>无 bash</b>(强制走 write/edit)</td></tr>
+  <tr><td class="k">critic</td><td><b>只读</b>:read / grep / glob / recall + report</td></tr>
+  <tr><td class="k">advisory</td><td>只读 + ask_user / remember / request_project_access(<b>无 write/edit/bash</b>)</td></tr>
+</table>
+<p style="font-size:12.5px;color:var(--fg3)">能力轴:<code>_RETRIEVE</code>{read,grep,glob} · <code>_MUTATE</code>{write,edit} · <code>_SHELL</code>{bash} · <code>_ORCHESTRATE</code>{dispatch,discuss,present,resolve_conflict} · <code>_WORKER</code>{report,request_project_access} · <code>_RECALL</code>/<code>_REMEMBER</code>/<code>_ASK</code>。角色差异在系统提示,不在工具集 —— coder≡generalist、designer≡writer(同层)。</p>
 
-    <div class="grp g-collab">
-      <div class="grp-h"><span>多 Agent 协作</span><span class="n">2 个</span></div>
-      <div class="tool"><div class="tn">dispatch <span class="badge b-orch">编排者</span></div><div class="td">把并行子任务派给队友 + 下发共享 <code>contract</code>;fire-and-forget,后续轮验收</div></div>
-      <div class="tool"><div class="tn">discuss</div><div class="td">@ 队友开<b>自由讨论</b>(非并行派活),编排者最后给「讨论结论」</div></div>
-    </div>
+<h2><span class="n">02</span>逐个工具:入参 / 出参</h2>
+<div class="toc">
+  <a href="#read">read</a> · <a href="#write">write</a> · <a href="#edit">edit</a> · <a href="#bash">bash</a> · <a href="#grep">grep</a> · <a href="#glob">glob</a> ·
+  <a href="#dispatch">dispatch</a> · <a href="#discuss">discuss</a> · <a href="#present">present</a> · <a href="#resolve_conflict">resolve_conflict</a> ·
+  <a href="#remember">remember</a> · <a href="#recall">recall</a> · <a href="#report">report</a> · <a href="#ask_user">ask_user</a> · <a href="#request_project_access">request_project_access</a>
+</div>
 
-    <div class="grp g-mem">
-      <div class="grp-h"><span>共享记忆</span><span class="n">2 暴露 · 人人可用</span></div>
-      <div class="tool"><div class="tn">remember</div><div class="td">往本会话<b>共享记忆</b>写一条:<code>contract / decision / artifact</code></div></div>
-      <div class="tool"><div class="tn">recall</div><div class="td">读共享记忆(按 kind 取 contracts/decisions/artifacts),核对锁定的契约</div></div>
-    </div>
+<div class="grp">文件 · 读写编辑搜索</div>
 
-    <div class="grp g-loop">
-      <div class="grp-h"><span>闭环 &amp; 用户</span><span class="n">4 暴露</span></div>
-      <div class="tool"><div class="tn">report <span class="badge b-worker">worker</span></div><div class="td">闭环交付回执:<code>status + deliverables + contract_ok</code>;编排者读它来验收</div></div>
-      <div class="tool"><div class="tn">present <span class="badge b-orch">编排者</span></div><div class="td">把交付物文件作为<b>一个面板</b>展示给用户(合并后从 main 读)</div></div>
-      <div class="tool"><div class="tn">ask_user</div><div class="td">问用户并<b>阻塞</b>等回答(渲染成 ask-form 卡)</div></div>
-      <div class="tool"><div class="tn">request_project_access</div><div class="td">请求用户批准加入某个<b>项目</b>(工作区)</div></div>
-    </div>
-  </div>
-
-  <div class="callout">
-    <strong>删掉了 4 个工具 —— 为什么?</strong> <code>edit / apply_patch / revert</code> 曾注册但从不暴露,已删除:
-    <code>write</code> 作为<b>唯一</b>文件写工具,每次改动都是一份完整、可逐文件审阅的内容,<b>单一审计入口</b>(用户的审计要求),
-    部分编辑 / 打补丁 / revert 都会绕开这条审计线。<code>call_agent</code>(同步阻塞调另一个 agent)也已删除 ——
-    多 agent 协作统一走 <code>dispatch</code>(并行派活)+ <code>discuss</code>(自由讨论),不是阻塞式调用。
-  </div>
-
-  <h2>② 谁能用什么:角色不发明工具差异,只映射到几个「层」</h2>
-  <p>
-    关键设计:<b>角色的工具不是逐个手列的,而是从几条能力轴<u>组合</u>出来的</b>,角色名只是<b>映射到几个功能层</b>。
-    persona 的差异(码农 vs 设计 vs 文案)活在 <b>System Prompt</b> 里(它擅长什么),<b>不</b>在工具集里(它能碰什么)。
-    真正分化的轴只有 4 条:<code>能否改文件(write)</code> · <code>能否开 shell(bash)</code> ·
-    <code>编排者(dispatch/present)</code> · <code>worker(report)</code>。
-  </p>
-
-  <div class="callout" style="margin:10px 0 18px">
-    <strong>7 个角色名 → 5 个工具层</strong>(<code>coder≡generalist</code>、<code>designer≡writer</code> 逐字相同,差异全在 prompt):
-    <ul style="margin:6px 0 0;padding-left:22px;">
-      <li><b>orchestrator</b> —— 建造 + <code>dispatch/discuss/present</code>,<b>无</b> report(它读别人的 verdict,不自评)</li>
-      <li><b>builder</b>(coder · generalist)—— 全套建造:retrieve + 记忆 + ask + <code>write</code> + <code>bash</code> + worker(report/req_access)</li>
-      <li><b>builder−shell</b>(designer · writer)—— 同 builder 但<b>无 bash</b>(逼显式 <code>write</code> 落产物)</li>
-      <li><b>consult</b>(advisory)—— 只读 + 记忆 + ask + report;<b>无 write/bash</b>(只读咨询)</li>
-      <li><b>auditor</b>(critic)—— 最小只读:retrieve + recall + report 一个 verdict,连 remember 都没有</li>
-    </ul>
-  </div>
-
-  <div class="callout" style="margin:10px 0 18px;border-left:3px solid var(--mut,#F2994A)">
-    <strong>治理在「项目」,不在「联系人」</strong>(tool_policy.py)。上面这些层是<b>可选的限制档位</b>,不是默认强加:
-    <ul style="margin:6px 0 0;padding-left:22px;">
-      <li><b>项目外(普通 DM)</b> → 每个 agent 直接拿<b>全套 builder</b>。DM 是用户的私有空间,没什么好治理的。</li>
-      <li><b>项目内</b> → <b>默认也是全套 builder</b>;项目方(<code>Workspace.member_tool_roles</code>)<b>主动 opt-in</b> 才把某个 agent 收窄到 critic/consult 等档,会话可再覆盖。</li>
-      <li><b>编排者</b>始终被强制成 orchestrator 档(结构性,ADR-017)。</li>
-      <li>所以联系人自己的 <code>tool_role</code> <b>不再是工具闸门</b> —— 它只是 persona 标签;真正的优先级见 <code>effective_tool_role()</code>:编排者 › 会话覆盖 › 项目策略 › 默认全套。</li>
-    </ul>
-  </div>
-
-  <p style="margin-bottom:6px">下表是这 5 个层展开到工具的<b>真值</b>(子进程按 <code>POLYNOIA_AGENT_ROLE</code> 过滤)。注意 <b>coder 与 generalist 两列逐字相同</b>,<b>designer 与 writer 两列逐字相同</b> —— 它们是同一个层:</p>
-
-  <table>
-    <thead>
-      <tr>
-        <th class="tool-col">工具 \ 角色</th>
-        <th>orchestrator<br/>编排者</th>
-        <th>coder<br/>码农</th>
-        <th>designer<br/>设计</th>
-        <th>writer<br/>文案</th>
-        <th>critic<br/>审计</th>
-        <th>generalist<br/>通用</th>
-        <th>advisory<br/>只读咨询</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr class="grp-row"><td colspan="8">只读检索</td></tr>
-      <tr><td class="tool-col">read</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr><td class="tool-col">grep</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr><td class="tool-col">glob</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr class="grp-row"><td colspan="8">改文件 / 跑命令</td></tr>
-      <tr><td class="tool-col">write</td> <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="no">·</td></tr>
-      <tr><td class="tool-col">bash</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="yes">✓</td><td class="no">·</td></tr>
-      <tr class="grp-row"><td colspan="8">多 Agent 协作</td></tr>
-      <tr><td class="tool-col">dispatch</td><td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td></tr>
-      <tr><td class="tool-col">discuss</td> <td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td></tr>
-      <tr class="grp-row"><td colspan="8">共享记忆</td></tr>
-      <tr><td class="tool-col">remember</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr><td class="tool-col">recall</td>  <td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr class="grp-row"><td colspan="8">闭环 &amp; 用户</td></tr>
-      <tr><td class="tool-col">report</td>  <td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr><td class="tool-col">present</td> <td class="yes">✓</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td><td class="no">·</td></tr>
-      <tr><td class="tool-col">ask_user</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-      <tr><td class="tool-col">request_project_access</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">·</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-    </tbody>
+<div class="tool" id="read">
+  <h3><code>read</code></h3>
+  <div class="d">读沙箱内 UTF-8 文本文件,返回带行号的内容;<b>大文件加固</b>:逐行流式(不整读)、单行截断 2000 字、单次 ≤50KB、超出给续读游标。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">path <span class="req">*</span></td><td class="t">string</td><td>相对沙箱根或沙箱内绝对路径</td></tr>
+    <tr><td class="k">offset</td><td class="t">int ≥1</td><td>起始行(1-indexed),默认 1</td></tr>
+    <tr><td class="k">limit</td><td class="t">int ≥1</td><td>最多返回行数,默认 2000</td></tr>
   </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"file", path, content,            // content = 带行号 "  N→…"
+ total_lines, returned_lines,
+ next_offset?, hint?,                   // 还有更多内容时给续读游标
+ output_truncated?}                     // 因 50KB 上限截断
+{kind:"directory", entries:[…]}         // path 是目录时
+{error:"file not found: …"}</pre>
+</div>
 
-  <div class="callout">
-    为什么这样分(而不是「7 个角色 7 套工具」):
-    <ul style="margin:6px 0 0;padding-left:22px;">
-      <li><strong>建造型角色本就该<u>同一套宽工具</u></strong> —— coder/designer/writer/generalist 的差别全在 prompt(人设/技能),工具上只剩 <code>bash</code> 这一条轴(designer/writer 没有,逼显式 <code>write</code> 落产物)。所以它们塌缩成 2 个层,不是 4 套。</li>
-      <li><strong>工具该分化的只有「安全」和「结构」</strong> —— 安全 = 能不能写(只读的 critic/advisory vs 可写);结构 = 编排者(<code>dispatch/present</code>、无 report)vs worker(<code>report</code>、无 present)。这两条是承重的,其余都不该按角色硬分。</li>
-      <li><strong>per-agent 覆盖才是细粒度入口</strong> —— 用户在「高级」里勾的 <code>tools_whitelist</code> 会在角色层上<b>再收窄</b>(<code>role ∩ allow</code>,只减不增)。所以层是默认值,真正的「每 agent 工具集」(rule.md §自建 Agent)靠这层 whitelist。</li>
-      <li><strong>项目外 = 全套,治理下沉到项目</strong> —— 普通 DM 里 agent 直接拿全套 builder(私有空间无需治理);要限制,在<b>项目</b>(<code>Workspace.member_tool_roles</code>)里 opt-in,会话可再覆盖。<code>advisory</code> 不再是「非项目自动降级」,只是一个可选的只读档 + 未知 role 的兜底。</li>
-    </ul>
-  </div>
+<div class="tool" id="write">
+  <h3><code>write</code> <span class="pill p-pu">human_wait·审批</span></h3>
+  <div class="d">新建或<b>整体覆盖</b>文件,自动建父目录 + git 提交。改局部应优先 <code>edit</code>(整文件重写慢且易误删)。>10MB 拒绝。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">path <span class="req">*</span></td><td class="t">string</td><td>目标路径</td></tr>
+    <tr><td class="k">content <span class="req">*</span></td><td class="t">string</td><td>完整文件内容</td></tr>
+    <tr><td class="k">turn_id</td><td class="t">string</td><td>归属本轮(提交信息用)</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"wrote", path, created:bool, bytes, commit_sha}
+{kind:"error", error}            // 超 10MB 等
+{kind:"rejected", error}         // manual 模式被用户拒绝</pre>
+</div>
 
-  <h2>③ write 的「人在回路」门控(manual 模式)</h2>
-  <p>开了 <code>manual</code> 合并模式时,每次 <code>write</code> 不直接落盘,先挂一张 pending-edit 卡等用户点 ✓ / ✗:</p>
+<div class="tool" id="edit">
+  <h3><code>edit</code> <span class="pill p-or">★ 大文件主路径</span> <span class="pill p-pu">human_wait·审批</span></h3>
+  <div class="d">对已有文件做<b>定向 <code>old_string→new_string</code> 替换</b>(改动成本正比于改动量,不是文件大小)。<code>old_string</code> 须逐字匹配且<b>唯一</b>(否则失败要更多上下文),或 <code>replace_all</code> 全替。新建用 write。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">path <span class="req">*</span></td><td class="t">string</td><td>已有文件</td></tr>
+    <tr><td class="k">old_string <span class="req">*</span></td><td class="t">string</td><td>要替换的原文(逐字,含缩进;不要带行号前缀)</td></tr>
+    <tr><td class="k">new_string <span class="req">*</span></td><td class="t">string</td><td>替换为</td></tr>
+    <tr><td class="k">replace_all</td><td class="t">bool</td><td>替换全部匹配,默认 false</td></tr>
+    <tr><td class="k">turn_id</td><td class="t">string</td><td>归属本轮</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"edited", path, replacements:int, commit_sha}
+{kind:"error", error}     // 未找到 / 命中多处需 replace_all / 空串 / old==new / 文件不存在
+{kind:"rejected", error}  // manual 模式被拒</pre>
+  <p style="font-size:12px;color:var(--fg3);margin:6px 0 0">前端 <code>diffUnified.ts</code> 已原生支持 <code>kind:"edit"</code>,审批卡 / diff 评审直接渲染。</p>
+</div>
 
-  <div class="flow">
-    <div class="step"><div class="num">1</div><div><div class="st"><b>agent 调 write</b> → MCP 工具进程先查 <code>conv.merge_mode</code></div><div class="src">tools.py · _gate_via_pending_edit</div></div></div>
-    <div class="step"><div class="num">2</div><div><div class="st"><b>auto 模式</b> → 直接放行落盘(无门控)。<b>manual 模式</b> → POST <code>/api/pending-edits</code> 建一张待审卡 + WS 广播给前端</div></div></div>
-    <div class="step"><div class="num">3</div><div><div class="st"><b>阻塞轮询</b> <code>/pending-edits/{id}/wait</code>,直到用户在 UI 上拍板</div></div></div>
-  </div>
-  <div class="branch">
-    <div class="br ok"><b>✓ 接受</b> → write 真正落盘 + commit,工具返回成功,agent 继续</div>
-    <div class="br no"><b>✗ 拒绝</b> → 不落盘,工具返回「被拒」,agent 据此调整</div>
-  </div>
+<div class="tool" id="bash">
+  <h3><code>bash</code> <span class="pill p-tl">self_timeout</span></h3>
+  <div class="d">在沙箱工作目录跑 shell,流式输出到终端卡。<b>自带超时</b>(默认 30s,可传 <code>timeout</code>)+ 优雅杀子进程。禁 <code>pkill/killall</code>、<code>kill -1</code>/<code>-&lt;pgid&gt;</code>(共享宿主进程空间,会被拦)。不 git 提交。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">command <span class="req">*</span></td><td class="t">string</td><td>shell 命令</td></tr>
+    <tr><td class="k">timeout</td><td class="t">number</td><td>秒,默认 30</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"completed", stdout, stderr, exit_code}
+{kind:"timeout", timeout_s, …}          // 超自身 timeout
+{kind:"blocked", command, reason}        // 命中宿主安全护栏</pre>
+</div>
 
-  <div class="callout">
-    <strong>关键:</strong>门控在 <b>MCP 工具进程</b>里做(不是 adapter 层)—— 对模型透明,它只看到「write 成功 / 被拒」。
-    冲突闭环(<code>feature/diff_dev</code>)正逐一镜像这条 pending-edit 轨道做「合并冲突选边」。
-  </div>
+<div class="tool" id="grep">
+  <h3><code>grep</code></h3>
+  <div class="d">沙箱内递归 grep(ripgrep 语义),返回 file:line。命中超 200 截断。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">pattern <span class="req">*</span></td><td class="t">string</td><td>ripgrep 正则</td></tr>
+    <tr><td class="k">path</td><td class="t">string</td><td>子目录,默认 "."</td></tr>
+    <tr><td class="k">glob</td><td class="t">string</td><td>文件名 glob 过滤</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"results", matches:[ "file:line: …" ], total}
+{kind:"truncated", matches, total:200}     // 命中过多</pre>
+</div>
 
-  <p style="color:#9CA3AF;font-size:12px;margin-top:36px;">
-    配套阅读:<code>context-system.html</code>(Agent 说话前看到的多层 context)
-  </p>
+<div class="tool" id="glob">
+  <h3><code>glob</code></h3>
+  <div class="d">按 glob 找文件;超 500 截断并给标志。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">pattern <span class="req">*</span></td><td class="t">string</td><td>如 <code>**/*.py</code> / <code>src/**/*.ts</code></td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"results", paths:[…(≤500)], total, truncated:bool}</pre>
+</div>
+
+<div class="grp">协作 · 编排(orchestrator 专属)</div>
+
+<div class="tool" id="dispatch">
+  <h3><code>dispatch</code></h3>
+  <div class="d">把工作<b>并行</b>派给队友(各自 worktree 执行、合回 main)。立即返回(fire-and-forget),队友工作以并行泳道流入对话。多阶段计划在非末批设 <code>need_continue:true</code> 以自动推进。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">tasks <span class="req">*</span></td><td class="t">array</td><td>每项 <code>{agent, label?, note}</code>;note 是给队友的完整自包含 prompt(纯文本,勿嵌 JSON)</td></tr>
+    <tr><td class="k">contract</td><td class="t">string</td><td>所有子任务须遵守的共享契约(接口/字段/路由/端口),逐字注入每个队友并用于验收</td></tr>
+    <tr><td class="k">title</td><td class="t">string</td><td>批次标题(UI 卡头)</td></tr>
+    <tr><td class="k">need_continue</td><td class="t">bool</td><td>非末批设 true → 平台给后续轮可继续 dispatch;末批 false → 后续轮只验收+present</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>服务器 ack(经 /dispatch):批次 task_ids 等;失败 {kind:"error", error}</pre>
+</div>
+
+<div class="tool" id="discuss">
+  <h3><code>discuss</code></h3>
+  <div class="d">发起队友间<b>自由讨论</b>(非并行干活):权衡选项/评审设计/达成共识。≥2 名参与者,自动收敛并产出单条「讨论结论」。立即返回。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">topic <span class="req">*</span></td><td class="t">string</td><td>讨论什么(纯文本)</td></tr>
+    <tr><td class="k">participants <span class="req">*</span></td><td class="t">array</td><td>≥2 名队友显示名</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>服务器 ack;失败 {kind:"error", error}</pre>
+</div>
+
+<div class="tool" id="present">
+  <h3><code>present</code></h3>
+  <div class="d">把面向用户的<b>交付物</b>聚成一个面板(预览/下载)。只 present 用户真正消费的东西(可运行 HTML、文档、图片),<b>不要 present 代码源码树</b>(diff 卡已逐文件展示)。一次调用。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">paths</td><td class="t">array</td><td>多个工作区相对路径,聚成一个面板</td></tr>
+    <tr><td class="k">path</td><td class="t">string</td><td>单个路径(paths/path 二选一)</td></tr>
+    <tr><td class="k">message</td><td class="t">string</td><td>交付一句话说明(显示在文件上方)</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{presented:true, paths:[…]}
+{presented:false, deferred?/note?/error?}
+{error:"path or paths required" / "file not found: …"}</pre>
+</div>
+
+<div class="tool" id="resolve_conflict">
+  <h3><code>resolve_conflict</code> <span class="pill p-rd">orchestrator-only</span></h3>
+  <div class="d">auto 模式下,队友分支合并冲突出现时,由 orchestrator(中立仲裁者,握有契约+各方意图)逐文件决断并合入 main。须覆盖<b>每个</b>冲突文件,否则合并中止。</div>
+  <div class="lbl">入参(至少给一种决断)</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">conflict_id</td><td class="t">string</td><td>冲突 id(只有一个开放冲突时可省)</td></tr>
+    <tr><td class="k">resolutions</td><td class="t">{path→text}</td><td>完整合并后文件文本(去掉所有冲突标记)</td></tr>
+    <tr><td class="k">sides</td><td class="t">{path→'ours'|'theirs'}</td><td>整边采用(ours=main,theirs=队友分支)</td></tr>
+    <tr><td class="k">deletions</td><td class="t">[path]</td><td>删除该文件(改/删冲突)</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{resolved:true, sha, conflict_id}
+{resolved:false, error/note}</pre>
+</div>
+
+<div class="grp">共享记忆 (ADR-014)</div>
+
+<div class="tool" id="remember">
+  <h3><code>remember</code></h3>
+  <div class="d">把一条事实写入对话<b>共享记忆</b>(每个队友每轮都读到):decision / artifact / contract。每条 1-2 行,记决策或接口,别贴实现。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">content <span class="req">*</span></td><td class="t">string</td><td>事实,1-2 行</td></tr>
+    <tr><td class="k">kind</td><td class="t">enum</td><td>decision / artifact / contract</td></tr>
+  </table>
+  <div class="lbl">出参</div><pre>服务器 ack;失败 {kind:"error", error}</pre>
+</div>
+
+<div class="tool" id="recall">
+  <h3><code>recall</code></h3>
+  <div class="d">立刻读对话<b>共享记忆</b>(契约/决策/产物),可按 kind 过滤。用于任务中途核对契约是否变了 / 队友交了什么。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">kind</td><td class="t">enum</td><td>可选过滤:decision / artifact / contract;省略=全部</td></tr>
+  </table>
+  <div class="lbl">出参</div><pre>服务器返回记忆条目列表</pre>
+</div>
+
+<div class="grp">人在回路 / 汇报</div>
+
+<div class="tool" id="report">
+  <h3><code>report</code></h3>
+  <div class="d">子任务结束时向 orchestrator <b>闭环汇报</b>:交付了什么、是否符合契约、有何遗留。诚实给 ok/partial/failed,显示在泳道、抗刷新。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">status <span class="req">*</span></td><td class="t">enum</td><td>ok / partial / failed</td></tr>
+    <tr><td class="k">deliverables <span class="req">*</span></td><td class="t">string</td><td>实际产出:文件名 + 一行说明</td></tr>
+    <tr><td class="k">contract_ok</td><td class="t">bool</td><td>是否符合共享契约</td></tr>
+    <tr><td class="k">notes</td><td class="t">string</td><td>(可选)caveat / 风险 / 缺失</td></tr>
+  </table>
+  <div class="lbl">出参</div><pre>服务器 ack;失败 {kind:"error", error}</pre>
+</div>
+
+<div class="tool" id="ask_user">
+  <h3><code>ask_user</code> <span class="pill p-pu">human_wait</span></h3>
+  <div class="d">向用户提问并<b>挂起本轮直到回答</b>,在同一轮拿到决定继续(优于猜测或写"等用户指令")。≤4 题/次。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">questions <span class="req">*</span></td><td class="t">array</td><td>1-4 题,每题 <code>{id, label, kind:'single'|'multi'|'fill', options?, optional?, placeholder?}</code></td></tr>
+    <tr><td class="k">title</td><td class="t">string</td><td>问题卡标题</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"answered", answer:"…"}
+{kind:"error", error}</pre>
+</div>
+
+<div class="tool" id="request_project_access">
+  <h3><code>request_project_access</code> <span class="pill p-pu">human_wait</span></h3>
+  <div class="d">私聊 1:1 中,用户让你做某项目时申请其<b>项目访问</b>。挂起本轮 → 用户审批卡(选项目 + 批准/拒绝)。批准后下一轮挂载写权限。</div>
+  <div class="lbl">入参</div>
+  <table><tr><th>参数</th><th>类型</th><th>说明</th></tr>
+    <tr><td class="k">reason <span class="req">*</span></td><td class="t">string</td><td>为何需要访问 / 打算做什么</td></tr>
+  </table>
+  <div class="lbl">出参</div>
+<pre>{kind:"granted", workspace_id}
+{kind:"denied"}
+{kind:"error", error}</pre>
+</div>
+
+<h2><span class="n">03</span>并行工具调用</h2>
+<p>支持。Adapter 可在一条 assistant 消息里发出<b>多个 tool_use</b>;MCP server 的 <code>call_tool</code> 对每个独立处理,asyncio 下<b>并发执行</b>(无全局工具锁)。安全边界靠:同文件 <code>ctx.file_lock</code> 串行化、同 agent 同文件不会丢更新;不同工具/不同文件并发跑。所以一个 agent 可以同时跑两条 <code>bash</code>(例如一条 <code>npm i</code> + 一条看门狗),两张终端卡都显示运行中。</p>
+
+<footer>
+  Polynoia(AgentHub) · 工具调用设计(当前实现)· 源:<code>apps/server/polynoia/mcp/tools.py</code> · <code>mcp/server.py</code>(执行超时)· <code>ROLE_TOOLS</code>(角色可见性)。<br/>
+  <span class="req">*</span> = required。出参标"服务器 ack"的工具经 <code>_callback_server</code> 回调 FastAPI,返回该端点的 JSON。
+</footer>
 
 </div>
 </body>
