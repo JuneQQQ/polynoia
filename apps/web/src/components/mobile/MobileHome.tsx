@@ -16,15 +16,22 @@
 import {
 	Check,
 	ArrowUpDown,
+	CheckCircle2,
 	ChevronLeft,
 	ChevronRight,
 	Cpu,
+	FolderKey,
 	FolderTree,
 	Globe,
+	KeyRound,
+	Loader2,
 	MessageSquare,
 	Moon,
 	Plus,
+	RefreshCw,
 	Search,
+	Server,
+	Sparkles,
 	Sun,
 	User,
 	Users,
@@ -38,10 +45,12 @@ import {
 	useState,
 } from "react";
 import {
+	type AdapterProbe,
 	api,
 	type ConversationSummary,
 	type EnabledAdapter,
 } from "../../lib/api";
+import { getServerOverride } from "../../lib/runtime-config";
 import { type Lang, saveLang } from "../../lib/i18n";
 import type { Agent, Workspace } from "../../lib/types";
 import { useStore } from "../../store";
@@ -88,8 +97,8 @@ const STR = {
 		searchConv: "搜索会话",
 		sortLabel: "排序",
 		sortRecent: "最近",
-		sortGroup: "群聊优先",
 		sortUnread: "未读优先",
+		sortName: "名称",
 		tabChat: "消息",
 		tabContacts: "联系人",
 		tabFolder: "协作项目",
@@ -126,8 +135,8 @@ const STR = {
 		searchConv: "Search chats",
 		sortLabel: "Sort",
 		sortRecent: "Recent",
-		sortGroup: "Groups first",
 		sortUnread: "Unread first",
+		sortName: "Name A–Z",
 		tabChat: "Chats",
 		tabContacts: "Agents",
 		tabFolder: "Projects",
@@ -525,7 +534,7 @@ const scrollStyle: React.CSSProperties = {
 
 /* ─────────────────── 消息 ─────────────────── */
 
-type SortMode = "recent" | "group" | "unread";
+type SortMode = "recent" | "unread" | "name";
 
 /** 会话列表排序下拉:替换右上角「+」。最近 / 群聊优先 / 未读优先。 */
 function SortMenu({
@@ -539,8 +548,8 @@ function SortMenu({
 	const [open, setOpen] = useState(false);
 	const opts: { id: SortMode; label: string }[] = [
 		{ id: "recent", label: t.sortRecent },
-		{ id: "group", label: t.sortGroup },
 		{ id: "unread", label: t.sortUnread },
+		{ id: "name", label: t.sortName },
 	];
 	return (
 		<div style={{ position: "relative" }}>
@@ -664,15 +673,15 @@ function ChatListScreen({ onSelectConv }: Props) {
 		const base = k
 			? convs.filter((c) => titleFor(c).toLowerCase().includes(k))
 			: convs;
-		// convs 已按最近排序;group/unread 在其上做稳定的优先级置顶。
-		if (sort === "group") {
-			return [...base].sort(
-				(a, b) => Number(!!b.group) - Number(!!a.group),
-			);
-		}
+		// base 已按最近排序(useEffect 里 last_message_at DESC)。
+		// 未读优先:未读数降序;同未读数则保持「最近」次序(V8 sort 稳定)。
 		if (sort === "unread") {
-			return [...base].sort(
-				(a, b) => Number(b.unread > 0) - Number(a.unread > 0),
+			return [...base].sort((a, b) => b.unread - a.unread);
+		}
+		// 名称:按会话标题拼音 A→Z(localeCompare "zh" 处理中文拼音排序)。
+		if (sort === "name") {
+			return [...base].sort((a, b) =>
+				titleFor(a).localeCompare(titleFor(b), "zh"),
 			);
 		}
 		return base;
@@ -1028,6 +1037,223 @@ function ProjectConvsScreen({
 
 /* ─────────────────── 我 ─────────────────── */
 
+const MONO = "ui-monospace, Menlo, monospace";
+
+/** Mobile-native replica of the desktop「接入智能体」(OnboardingModal): probe the
+ * host CLIs, enable/disable each adapter, refresh creds / re-detect, show server. */
+function AdapterManager() {
+	const { pal } = useApp();
+	const [probes, setProbes] = useState<AdapterProbe[] | null>(null);
+	const [refreshing, setRefreshing] = useState(false);
+	const [busy, setBusy] = useState<string | null>(null);
+	const [cred, setCred] = useState<"idle" | "busy" | "done">("idle");
+	const [err, setErr] = useState<string | null>(null);
+
+	const refresh = async () => {
+		setRefreshing(true);
+		setErr(null);
+		try {
+			const [list, enabled] = await Promise.all([
+				api.probeAdapters(),
+				api.listEnabledAdapters(),
+			]);
+			const en = new Set(enabled.map((e) => e.id));
+			setProbes(list.map((p) => ({ ...p, enabled: en.has(p.id) })));
+		} catch (e) {
+			setErr(String(e));
+		} finally {
+			setRefreshing(false);
+		}
+	};
+	useEffect(() => {
+		refresh();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const toggle = async (id: string, on: boolean) => {
+		setBusy(id);
+		setErr(null);
+		try {
+			if (on) await api.enableAgent(id);
+			else await api.disableAgent(id);
+			await new Promise((r) => setTimeout(r, 450));
+			await refresh();
+		} catch (e) {
+			setErr(`${on ? "启用" : "禁用"}失败:${e}`);
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const refreshCreds = async () => {
+		if (cred === "busy") return;
+		setCred("busy");
+		setErr(null);
+		try {
+			await api.refreshAdapterCredentials();
+			await refresh();
+			setCred("done");
+			setTimeout(() => setCred("idle"), 2000);
+		} catch (e) {
+			setErr(`刷新凭证失败:${e}`);
+			setCred("idle");
+		}
+	};
+
+	const ghost: React.CSSProperties = {
+		display: "inline-flex",
+		alignItems: "center",
+		gap: 4,
+		fontSize: 12,
+		padding: "6px 10px",
+		borderRadius: 9,
+		border: `0.5px solid ${pal.line}`,
+		background: pal.chip,
+		color: pal.ink2,
+		cursor: "pointer",
+	};
+	const server = getServerOverride() || "local";
+
+	return (
+		<div style={{ margin: "0 12px 16px" }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 4px 9px" }}>
+				<Sparkles size={15} color={pal.accent} />
+				<span style={{ fontSize: 17, fontWeight: 600, color: pal.ink }}>接入智能体</span>
+				<div style={{ marginLeft: "auto", display: "flex", gap: 7 }}>
+					<button type="button" onClick={refreshCreds} disabled={cred === "busy"} style={ghost}>
+						{cred === "busy" ? (
+							<Loader2 size={12} className="animate-spin" />
+						) : cred === "done" ? (
+							<Check size={12} color="#1f9d57" />
+						) : (
+							<KeyRound size={12} />
+						)}
+						{cred === "busy" ? "刷新中" : cred === "done" ? "已刷新" : "刷新凭证"}
+					</button>
+					<button type="button" onClick={refresh} disabled={refreshing} style={ghost}>
+						<RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+						{refreshing ? "检测中" : "重新检测"}
+					</button>
+				</div>
+			</div>
+			<div style={{ fontSize: 12, color: pal.ink3, padding: "0 4px 12px", lineHeight: 1.5 }}>
+				自动复用本机已登录的 CLI 凭证(Claude Code Pro / Codex / OpenCode)。点「启用」后对应 agent 进入联系人。
+			</div>
+			{err && (
+				<div style={{ fontSize: 12, color: "#c0392b", background: "rgba(192,57,43,.08)", padding: "8px 12px", borderRadius: 10, marginBottom: 10 }}>
+					{err}
+				</div>
+			)}
+			{probes === null && !err && (
+				<div style={{ textAlign: "center", padding: 28, fontSize: 13, color: pal.ink3 }}>正在探测本机 CLI…</div>
+			)}
+			{probes?.map((p) => {
+				const ready = p.installed && p.authenticated;
+				const isBusy = busy === p.id;
+				return (
+					<div key={p.id} style={{ background: pal.card, border: `0.5px solid ${pal.line}`, borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
+						<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `0.5px solid ${pal.line}` }}>
+							<div style={{ flex: 1, minWidth: 0 }}>
+								<div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+									<span style={{ fontSize: 15, fontWeight: 600, color: pal.ink }}>{p.name}</span>
+									<span style={{ fontSize: 11, fontFamily: MONO, color: pal.ink3 }}>{p.cli}</span>
+									{p.enabled && (
+										<span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 5, background: "rgba(39,174,96,.15)", color: "#1f9d57", display: "inline-flex", alignItems: "center", gap: 3 }}>
+											<CheckCircle2 size={9} /> 已启用
+										</span>
+									)}
+								</div>
+								{p.tagline && <div style={{ fontSize: 11.5, color: pal.ink3, marginTop: 2 }}>{p.tagline}</div>}
+							</div>
+							<button
+								type="button"
+								onClick={() => toggle(p.id, !p.enabled)}
+								disabled={isBusy || (!p.enabled && !ready)}
+								style={{
+									display: "inline-flex",
+									alignItems: "center",
+									gap: 5,
+									fontSize: 12.5,
+									fontWeight: 500,
+									padding: "6px 14px",
+									borderRadius: 9,
+									cursor: isBusy || (!p.enabled && !ready) ? "default" : "pointer",
+									border: p.enabled ? `0.5px solid ${pal.line}` : "none",
+									background: p.enabled ? pal.chip : ready ? pal.accent : pal.chip,
+									color: p.enabled ? pal.ink2 : ready ? "#fff" : pal.ink3,
+									opacity: !p.enabled && !ready ? 0.5 : 1,
+								}}
+							>
+								{isBusy && <Loader2 size={11} className="animate-spin" />}
+								{isBusy ? "…" : p.enabled ? "禁用" : "启用"}
+							</button>
+						</div>
+						<div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+							<StatusLine
+								ok={p.installed}
+								label="安装"
+								value={p.installed ? `${p.cli_path ?? ""}${p.version ? ` · ${p.version}` : ""}` : "未在 PATH 找到"}
+							/>
+							<StatusLine
+								ok={p.authenticated}
+								label="登录"
+								value={p.authenticated && p.auth_path ? p.auth_path : "未检测到凭证"}
+								mono={!!(p.authenticated && p.auth_path)}
+								icon={p.authenticated && p.auth_path ? <FolderKey size={11} color={pal.ink3} /> : undefined}
+							/>
+							{!p.installed && p.install_hint && <CmdHint title="安装命令" cmd={p.install_hint} />}
+							{p.installed && !p.authenticated && p.login_cmd && <CmdHint title="登录命令" cmd={p.login_cmd} />}
+						</div>
+					</div>
+				);
+			})}
+			<div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", background: pal.card, border: `0.5px solid ${pal.line}`, borderRadius: 14, fontSize: 13, color: pal.ink2 }}>
+				<Server size={14} color={pal.ink3} />
+				<span>服务器</span>
+				<span style={{ marginLeft: "auto", fontFamily: MONO, color: pal.ink }}>{server}</span>
+			</div>
+		</div>
+	);
+}
+
+function StatusLine({
+	ok,
+	label,
+	value,
+	mono,
+	icon,
+}: {
+	ok: boolean;
+	label: string;
+	value: string;
+	mono?: boolean;
+	icon?: React.ReactNode;
+}) {
+	const { pal } = useApp();
+	return (
+		<div style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12 }}>
+			<span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, marginTop: 5, background: ok ? "#27ae60" : pal.ink3 }} />
+			<span style={{ width: 30, flexShrink: 0, color: pal.ink3 }}>{label}</span>
+			<span style={{ flex: 1, minWidth: 0, color: pal.ink2, display: "inline-flex", alignItems: "center", gap: 4, fontFamily: mono ? MONO : undefined, wordBreak: "break-all" }}>
+				{icon}
+				{value}
+			</span>
+		</div>
+	);
+}
+
+function CmdHint({ title, cmd }: { title: string; cmd: string }) {
+	const { pal } = useApp();
+	return (
+		<div style={{ marginTop: 2 }}>
+			<div style={{ fontSize: 10.5, color: pal.ink3, marginBottom: 3 }}>{title}</div>
+			<div style={{ fontSize: 11.5, fontFamily: MONO, color: pal.ink2, background: pal.chip, padding: "7px 10px", borderRadius: 8, wordBreak: "break-all" }}>
+				{cmd}
+			</div>
+		</div>
+	);
+}
+
 function MeScreen() {
 	const { pal, t, lang, setLang, dark, setDark, adapter, setAdapter, adapters } =
 		useApp();
@@ -1039,74 +1265,9 @@ function MeScreen() {
 				</div>
 			</div>
 			<div style={{ ...scrollStyle, paddingTop: 16 }}>
-				<Card title={t.secAdapter}>
-					<div style={{ padding: "13px 16px 6px" }}>
-						<div style={{ fontSize: 15.5, color: pal.ink, fontWeight: 500 }}>{t.adapter}</div>
-						<div style={{ fontSize: 12, color: pal.ink3, marginTop: 1 }}>{t.adapterHint}</div>
-					</div>
-					{adapters.length === 0 && (
-						<div
-							style={{
-								padding: "10px 16px 14px",
-								fontSize: 13,
-								color: pal.ink3,
-								borderTop: `0.5px solid ${pal.line}`,
-							}}
-						>
-							{t.adapterEmpty}
-						</div>
-					)}
-					{adapters.map((a) => {
-						const on = a.id === adapter;
-						return (
-							<button
-								key={a.id}
-								type="button"
-								onClick={() => setAdapter(a.id)}
-								style={{
-									width: "100%",
-									textAlign: "left",
-									display: "flex",
-									alignItems: "center",
-									gap: 12,
-									padding: "12px 16px",
-									cursor: "pointer",
-									border: "none",
-									borderTop: `0.5px solid ${pal.line}`,
-									background: on ? pal.accentSoft : "transparent",
-								}}
-							>
-								<div
-									style={{
-										width: 30,
-										height: 30,
-										borderRadius: 9,
-										flexShrink: 0,
-										background: on ? pal.accent : pal.chip,
-										display: "flex",
-										alignItems: "center",
-										justifyContent: "center",
-									}}
-								>
-									<Cpu size={18} color={on ? "#fff" : pal.ink2} />
-								</div>
-								<div style={{ flex: 1, minWidth: 0 }}>
-									<div style={{ fontSize: 15, color: pal.ink, fontWeight: on ? 600 : 500 }}>
-										{friendlyAdapter(a.id)}
-									</div>
-									{a.default_model && (
-										<div style={{ fontSize: 12, color: pal.ink3, marginTop: 1, fontFamily: "ui-monospace, Menlo, monospace" }}>
-											{a.default_model}
-										</div>
-									)}
-								</div>
-								{on && <Check size={20} color={pal.accent} />}
-							</button>
-						);
-					})}
-				</Card>
+				<AdapterManager />
 
-				<Card title={t.secGeneral}>
+					<Card title={t.secGeneral}>
 					<SettingRow
 						icon={dark ? <Moon size={18} color={pal.ink2} /> : <Sun size={18} color={pal.ink2} />}
 						label={t.appearance}

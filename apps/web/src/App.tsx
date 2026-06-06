@@ -194,8 +194,17 @@ export function App() {
 		if (view === "chat" && activeConv) {
 			return (
 				<div
-					className="pn-m-atmos h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
-					style={{ paddingTop: "env(safe-area-inset-top)" }}
+					className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
+					style={{
+						// 100dvh (NOT 100vh): iOS 100vh over-reports the viewport, so the
+						// container ran past the screen bottom → content pushed off-screen.
+						// Pad BOTH safe areas: top for the Dynamic Island, bottom for the
+						// home indicator (was missing → bottom bar/composer got clipped).
+						paddingTop: "env(safe-area-inset-top)",
+						paddingBottom:
+							"max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
+						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+					}}
 				>
 					{/* Single chat header — back (→ list) + title. Frosted over the
               ember glow, an ember hairline rule beneath. ChatPane drops its own
@@ -233,8 +242,12 @@ export function App() {
 		// conversation pushes the chat over it (back button returns).
 		return (
 			<div
-				className="pn-m-atmos h-screen flex flex-col overflow-hidden bg-[var(--color-bg)]"
-				style={{ paddingTop: "env(safe-area-inset-top)" }}
+				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
+				style={{
+					paddingTop: "env(safe-area-inset-top)",
+					paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
+					transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+				}}
 			>
 				<MobileHome
 					onSelectConv={(id, members, title) => {

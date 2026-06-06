@@ -47,7 +47,9 @@ const config: CapacitorConfig = {
       androidScaleType: "CENTER_CROP",
     },
     Keyboard: {
-      resize: "body",
+      // "none": we animate the composer up ourselves (CSS transition on
+      // --kb-h) for a smooth slide instead of the instant body-resize jump.
+      resize: "none",
       resizeOnFullScreen: true,
     },
   },

@@ -28,15 +28,29 @@ export async function initNative(): Promise<void> {
   const bg = cssVar("--color-bg", isDark ? "#14110c" : "#f6f2ea");
   await Promise.allSettled([
     import("@capacitor/status-bar").then(async ({ StatusBar, Style }) => {
+      // Overlay the WebView UNDER the status bar so the page owns the full screen
+      // and env(safe-area-inset-top) is the single source of top inset. Without
+      // this, iOS reserves the status-bar strip itself AND the app pads
+      // safe-area-inset-top → a doubled top gap ("程序整体偏下").
+      await StatusBar.setOverlaysWebView?.({ overlay: true }).catch(() => {});
       await StatusBar.setStyle({ style: isDark ? Style.Dark : Style.Light });
       // Android: tint the status bar background to match the app.
       await StatusBar.setBackgroundColor({ color: bg }).catch(() => {});
     }),
     import("@capacitor/splash-screen").then(({ SplashScreen }) => SplashScreen.hide()),
-    import("@capacitor/keyboard").then(({ Keyboard }) =>
-      // Keyboard resize mode is also set in capacitor.config.ts; this is belt-and-suspenders.
-      Keyboard.setResizeMode?.({ mode: "body" as never }).catch(() => {}),
-    ),
+    import("@capacitor/keyboard").then(({ Keyboard }) => {
+      // resize "none": do NOT let the WebView auto-resize on keyboard — that
+      // reflow is INSTANT (jarring). Instead expose the keyboard height as a CSS
+      // var and let the mobile root animate its padding-bottom via a transition,
+      // so the composer slides up SMOOTHLY in sync with the keyboard.
+      Keyboard.setResizeMode?.({ mode: "none" as never }).catch(() => {});
+      const setKb = (h: number) =>
+        document.documentElement.style.setProperty("--kb-h", `${h}px`);
+      Keyboard.addListener("keyboardWillShow", (info) =>
+        setKb(info.keyboardHeight),
+      ).catch(() => {});
+      Keyboard.addListener("keyboardWillHide", () => setKb(0)).catch(() => {});
+    }),
   ]).catch(() => {});
 }
 
