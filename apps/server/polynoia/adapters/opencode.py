@@ -46,6 +46,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -574,7 +575,12 @@ class OpenCodeSession:
         server_pkg_root = str(Path(__file__).parent.parent.parent)
         polynoia_mcp = {
             "name": "polynoia",
-            "command": "python",
+            # sys.executable, NOT bare "python": the MCP subprocess must run on
+            # the same venv interpreter as the server (has mcp/fastapi/polynoia).
+            # Bare "python" resolves via PATH → a pyenv shim / non-venv python can
+            # crash `python -m polynoia.mcp` on `import mcp` → zero tools loaded →
+            # the agent narrates tool calls as text instead of invoking them.
+            "command": sys.executable,
             "args": ["-m", "polynoia.mcp"],
             "env": [
                 {"name": "POLYNOIA_CONV_ID", "value": self._conv_id},

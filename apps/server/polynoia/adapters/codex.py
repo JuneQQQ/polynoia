@@ -76,6 +76,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
@@ -134,7 +135,7 @@ def _polynoia_mcp_block(
     return f'''
 # ── Injected by Polynoia CodexAdapter for conv {conv_id} (MCP only) ──
 {_MCP_BLOCK_MARKER}
-command = "python"
+command = "{sys.executable}"
 args = ["-m", "polynoia.mcp"]
 
 [mcp_servers.polynoia.env]

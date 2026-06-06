@@ -23,6 +23,7 @@ import contextlib
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -169,7 +170,15 @@ class ClaudeCodeAdapter:
         )
         polynoia_mcp = McpStdioServerConfig(
             type="stdio",
-            command="python",
+            # sys.executable, NOT bare "python": the MCP subprocess must run on
+            # the SAME interpreter as the server (the venv that has mcp/fastapi/
+            # polynoia installed). Bare "python" resolves via the spawning
+            # process's PATH — if the server wasn't launched with the venv's bin
+            # first on PATH (e.g. `./.venv/bin/uvicorn` without activation, or a
+            # pyenv shim shadowing it), `python -m polynoia.mcp` crashes on
+            # `import mcp` → the SDK loads ZERO tools → the agent, having no real
+            # tools, narrates tool calls as TEXT instead of invoking them.
+            command=sys.executable,
             args=["-m", "polynoia.mcp"],
             env={
                 "POLYNOIA_CONV_ID": conv_id,
