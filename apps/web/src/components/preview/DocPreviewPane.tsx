@@ -12,6 +12,7 @@
  */
 import { Suspense, lazy, useEffect, useState } from "react";
 import { HtmlPreview } from "./HtmlPreview";
+import { MarkdownDoc } from "./MarkdownDoc";
 import { OfficePreview } from "./OfficePreview";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { SheetPreview } from "./SheetPreview";
@@ -87,10 +88,16 @@ export function DocPreviewPane({
 	workspaceId,
 	path,
 	content,
+	embedded = false,
 }: {
 	workspaceId: string | null;
 	path: string;
 	content: string;
+	/** True when rendered inside a container that ALREADY provides chrome (the
+	 * center-tab CodeEditor: filename + 源码/预览 toggle + save). The .md read
+	 * view then drops its own header (filename + 编辑) to avoid a doubled bar;
+	 * editing in that context happens via the host's 源码 toggle. */
+	embedded?: boolean;
 }) {
 	// Debounce for the live-rendered previews (Marp/HTML) so source edits don't
 	// re-render every keystroke. Crepe owns its own state (no debounce).
@@ -100,21 +107,42 @@ export function DocPreviewPane({
 		return () => window.clearTimeout(t);
 	}, [content]);
 
+	// .md defaults to the polished read-only doc view; 「编辑」flips to the
+	// WYSIWYG CrepeEditor. Reset to read whenever the previewed file changes so a
+	// new file never opens straight into the heavier editor — done the
+	// React-idiomatic way (adjust state during render on prop change, no effect).
+	const [mdMode, setMdMode] = useState<"read" | "edit">("read");
+	const [mdModePath, setMdModePath] = useState(path);
+	if (path !== mdModePath) {
+		setMdModePath(path);
+		setMdMode("read");
+	}
+
 	const kind = docKind(path, content);
 	const name = basename(path);
 
 	if (kind === "doc") {
-		return workspaceId ? (
-			<Suspense fallback={_DocFallback}>
-				<CrepeEditor
-					key={path}
-					workspaceId={workspaceId}
-					path={path}
-					content={content}
-				/>
-			</Suspense>
-		) : (
-			<Empty text="文档编辑需要在项目对话(workspace)里。" />
+		// Embedded (inside CodeEditor's chrome): always the chrome-less read view;
+		// editing there is the host's 源码 toggle, so no inner header / 编辑 button.
+		if (!embedded && mdMode === "edit" && workspaceId) {
+			return (
+				<Suspense fallback={_DocFallback}>
+					<CrepeEditor
+						key={path}
+						workspaceId={workspaceId}
+						path={path}
+						content={content}
+						onExitEdit={() => setMdMode("read")}
+					/>
+				</Suspense>
+			);
+		}
+		return (
+			<MarkdownDoc
+				content={content}
+				path={embedded ? undefined : path}
+				onEdit={!embedded && workspaceId ? () => setMdMode("edit") : undefined}
+			/>
 		);
 	}
 	if (kind === "workbook") {

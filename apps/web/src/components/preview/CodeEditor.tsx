@@ -300,12 +300,18 @@ export function CodeEditor({
 						<Loader2 size={14} className="animate-spin" />
 					</div>
 				) : isWorkbook ? (
-					<DocPreviewPane workspaceId={workspaceId} path={path} content="" />
+					<DocPreviewPane
+						workspaceId={workspaceId}
+						path={path}
+						content=""
+						embedded
+					/>
 				) : isBinary || (isDoc && preview) ? (
 					<DocPreviewPane
 						workspaceId={workspaceId}
 						path={path}
 						content={content ?? ""}
+						embedded
 					/>
 				) : (
 					<CodeMirror

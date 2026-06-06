@@ -12,7 +12,7 @@
 import { Crepe } from "@milkdown/crepe";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/nord.css";
-import { Check, Download, FileText, Loader2, Save } from "lucide-react";
+import { BookOpen, Check, Download, FileText, Loader2, Save } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Markdown from "react-markdown";
@@ -37,10 +37,13 @@ export function CrepeEditor({
 	workspaceId,
 	path,
 	content,
+	onExitEdit,
 }: {
 	workspaceId: string;
 	path: string;
 	content: string;
+	/** When set, the toolbar shows a「← 阅读」button to return to the read view. */
+	onExitEdit?: () => void;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const crepeRef = useRef<Crepe | null>(null);
@@ -148,6 +151,16 @@ export function CrepeEditor({
 	return (
 		<div className="h-full flex flex-col bg-white">
 			<div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px] flex-shrink-0">
+				{onExitEdit && (
+					<button
+						type="button"
+						onClick={onExitEdit}
+						title="返回阅读视图"
+						className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:border-[var(--color-accent)] transition flex-shrink-0"
+					>
+						<BookOpen size={11} /> 阅读
+					</button>
+				)}
 				<FileText
 					size={12}
 					className="text-[var(--color-accent)] flex-shrink-0"
@@ -203,9 +216,17 @@ export function CrepeEditor({
 					.docx
 				</button>
 			</div>
-			{/* document-like canvas: centered, max-width, page margins */}
+			{/* document-like canvas: centered, max-width, page margins. The
+			    pn-crepe-root scope tightens Crepe's default `.ProseMirror`
+			    padding (60px 120px) — far too wide on a phone (120px each side
+			    leaves a thin column), and redundant with the max-width cap here. */}
+			<style>{`
+.pn-crepe-root .milkdown .ProseMirror { padding: 24px 16px; }
+@media (min-width: 768px) {
+  .pn-crepe-root .milkdown .ProseMirror { padding: 40px 56px; }
+}`}</style>
 			<div className="flex-1 min-h-0 overflow-auto bg-white">
-				<div ref={rootRef} className="mx-auto max-w-[860px] px-4 py-6" />
+				<div ref={rootRef} className="pn-crepe-root mx-auto max-w-[860px] px-4 py-6" />
 			</div>
 		</div>
 	);
