@@ -15,10 +15,31 @@
  * for the whole run, not one per element.
  */
 import { Wrench } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
 import { MessageView } from "../MessageView";
+
+/** A reasoning payload's body shape (mirrors ReasoningPart.bodyText). */
+type ReasoningBody = Array<{ c?: string | Array<{ text?: string }> }>;
+
+/** True iff a reasoning part has VISIBLE text — matches ReasoningPart's render
+ * gate (`!text && !isStreaming → null`). The fold summary uses this so it only
+ * claims "含思考" when there's actually a thinking block to show on expand. */
+function reasoningHasText(body?: ReasoningBody): boolean {
+	if (!Array.isArray(body)) return false;
+	for (const b of body) {
+		const c = b?.c;
+		if (typeof c === "string") {
+			if (c.trim()) return true;
+		} else if (Array.isArray(c)) {
+			for (const s of c) {
+				if (typeof s?.text === "string" && s.text.trim()) return true;
+			}
+		}
+	}
+	return false;
+}
 
 export function ToolCallGroup({
 	convId,
@@ -34,6 +55,12 @@ export function ToolCallGroup({
 	compact?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
+	// Once the user clicks the header, their open/closed choice WINS — even while a
+	// bash terminal is still 运行中. Without this, `running`/`anyStreaming` below
+	// keep forcing the group open, so the 收起 button looks dead (you click it and
+	// it springs back open on the next stream delta). After a manual toggle we stop
+	// honoring the auto-open and just track `open`.
+	const userTouched = useRef(false);
 	// While any member message is still streaming, force the group OPEN so live
 	// thinking / tool output stays visible — otherwise the run collapses the instant
 	// the first tool-call lands and hides reasoning the user was watching. Once
@@ -55,10 +82,12 @@ export function ToolCallGroup({
 			let thinking = false;
 			for (const id of msgIds) {
 				const p = cs?.msgById.get(id)?.payload as
-					| { kind?: string; name?: string; running?: boolean }
+					| { kind?: string; name?: string; running?: boolean; body?: ReasoningBody }
 					| undefined;
 				if (p?.kind === "reasoning") {
-					thinking = true;
+					// Only claim 含思考 when the thinking has VISIBLE text — an empty
+					// reasoning part renders nothing, so the badge had no block to show.
+					if (reasoningHasText(p.body)) thinking = true;
 				} else if (p?.kind === "terminal") {
 					nm.push("bash");
 					if (p.running) anyRunning = true;
@@ -87,13 +116,21 @@ export function ToolCallGroup({
 	);
 	// Keep the fold OPEN while a member is still streaming OR a bash terminal is
 	// running — so the user watches the live output; it auto-collapses once done.
-	const expanded = open || anyStreaming || running;
+	// But once the user has manually toggled, honor THAT (so 收起 actually sticks
+	// mid-run instead of being overridden by `running`/`anyStreaming`).
+	const expanded = userTouched.current ? open : open || anyStreaming || running;
 
 	const inner = (
 		<>
 			<button
 				type="button"
-				onClick={() => setOpen((v) => !v)}
+				// Toggle relative to what's CURRENTLY shown: if the auto-open made it
+				// look expanded while `open` is still false, the first click must
+				// collapse (setOpen(false)), not bump `open` true → still-expanded.
+				onClick={() => {
+					userTouched.current = true;
+					setOpen(!expanded);
+				}}
 				className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)]/50 hover:bg-[var(--color-surface-2)] text-[11.5px] text-[var(--color-fg-2)] transition-colors"
 			>
 				<Wrench size={12} className="text-[var(--color-fg-3)] flex-shrink-0" />
@@ -127,7 +164,7 @@ export function ToolCallGroup({
 
 	// Compact (inside a burst lane): no avatar column / page padding — the fold
 	// block spans the lane width, lining up with the lane's file-edit cards.
-	if (compact) return <div className="my-1">{inner}</div>;
+	if (compact) return <div className="my-1 max-w-[640px]">{inner}</div>;
 
 	return (
 		<div className="flex gap-3 px-6 my-1">
@@ -146,7 +183,9 @@ export function ToolCallGroup({
 					</button>
 				)}
 			</div>
-			<div className="flex-1 min-w-0">{inner}</div>
+			{/* max-w matches DiffPart (640) so a file-edit card and this fold block
+			    are EXACTLY the same width in the timeline (no wider flex-1 fold). */}
+			<div className="flex-1 min-w-0 max-w-[640px]">{inner}</div>
 		</div>
 	);
 }

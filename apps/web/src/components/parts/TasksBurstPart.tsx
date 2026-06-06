@@ -20,7 +20,7 @@ import { memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
 import { classifyFoldable } from "../../lib/toolFold";
 import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
-import { useStore } from "../../store";
+import { isInProgressCard, useStore } from "../../store";
 import { MessageView } from "../MessageView";
 import { DiffPart } from "./DiffPart";
 import { ToolCallGroup } from "./ToolCallGroup";
@@ -308,7 +308,10 @@ function TasksBurstPartInner({
 							    internal scroll so a long lane doesn't stretch the whole burst
 							    card (leaving sibling lanes with huge blank space). */}
 							<div
-								className={`flex flex-col py-2 min-h-[60px] max-h-[520px] overflow-y-auto ${isDone ? "anim-done-glow" : ""}`}
+								// px-3 matches the lane header/empty-state inset so the message
+								// text + fold blocks don't hug the lane's left edge (looked ugly
+								// glued to the border).
+								className={`flex flex-col px-3 py-2 min-h-[60px] max-h-[520px] overflow-y-auto ${isDone ? "anim-done-glow" : ""}`}
 								// scrollbar-gutter:stable reserves the vertical scrollbar's
 								// width always → the lane width never jumps when content
 								// streams in, so the parent grid's horizontal scrollbar
@@ -341,12 +344,32 @@ function TasksBurstPartInner({
 										const byId =
 											useStore.getState().convs.get(convId)?.msgById ??
 											new Map<string, Message>();
-										const { firsts, skip } = computeLaneFold(byId, lane);
+										// In-progress cards (a still-"写入中" write, a running bash)
+										// belong at the BOTTOM — they stream in BEFORE the tool runs,
+										// so a sibling file whose diff already committed must sort
+										// above them. Stable-partition the lane ids the same way the
+										// main timeline does (floatInProgressLast).
+										const ordered = (() => {
+											let anyLive = false;
+											for (const mid of lane) {
+												const m = byId.get(mid);
+												if (m && isInProgressCard(m)) { anyLive = true; break; }
+											}
+											if (!anyLive) return lane;
+											const done: string[] = [];
+											const live: string[] = [];
+											for (const mid of lane) {
+												const m = byId.get(mid);
+												(m && isInProgressCard(m) ? live : done).push(mid);
+											}
+											return [...done, ...live];
+										})();
+										const { firsts, skip } = computeLaneFold(byId, ordered);
 										// Track RENDERED position (not the raw array index): dropped
 										// (skipped) bash tool-calls don't count, so the first VISIBLE
 										// item gets isGrouped=false even if earlier items were dropped.
 										let shownAny = false;
-										return lane.map((mid) => {
+										return ordered.map((mid) => {
 											if (skip.has(mid)) return null;
 											const grouped = shownAny;
 											shownAny = true;

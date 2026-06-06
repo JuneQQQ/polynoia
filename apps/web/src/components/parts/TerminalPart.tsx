@@ -63,7 +63,7 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 
 	return (
 		<div
-			className="rounded-md overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[680px] text-[12px]"
+			className="rounded-lg overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[640px] text-[12px]"
 			style={{ borderLeft: `3px solid ${st.fg}` }}
 		>
 			<button
@@ -72,7 +72,7 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 					userTouched.current = true;
 					setOpen((v) => !v);
 				}}
-				className="flex items-center gap-2 w-full px-2.5 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
+				className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
 			>
 				{open ? (
 					<ChevronDown size={11} className="text-[var(--color-fg-4)] flex-shrink-0" />
@@ -109,9 +109,35 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 							…(输出过长,仅显示末尾)
 						</div>
 					)}
-					{payload.output || (payload.running ? "" : "(无输出)")}
-					{payload.running && (
-						<span className="inline-block w-[7px] h-[1.05em] align-text-bottom bg-[var(--color-fg-3)] animate-pulse ml-0.5" />
+					{payload.output ? (
+						<>
+							{payload.output}
+							{payload.running && (
+								// crisp accent caret while output streams (matches write card)
+								<span
+									className="caret-blink inline-block w-[6px] h-[1.05em] align-text-bottom rounded-[1px] ml-px"
+									style={{ background: "var(--color-accent)" }}
+								/>
+							)}
+						</>
+					) : payload.running ? (
+						// Running with NO output yet — a buffered command (e.g. `… | tail`)
+						// emits nothing until it exits. Echo the command + a spinner so the
+						// card reads as "executing", not a dead empty block.
+						<div className="flex flex-col gap-1.5">
+							<div>
+								<span className="text-[var(--color-fg-4)]">$</span> {payload.command}
+							</div>
+							<div className="inline-flex items-center gap-1.5" style={{ color: "var(--color-accent)" }}>
+								<Loader2 size={12} className="animate-spin" />
+								<span>
+									执行中…
+									<span className="text-[var(--color-fg-4)]">(有输出时即时显示)</span>
+								</span>
+							</div>
+						</div>
+					) : (
+						"(无输出)"
 					)}
 				</div>
 			)}

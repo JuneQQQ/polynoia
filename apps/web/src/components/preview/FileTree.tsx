@@ -377,6 +377,11 @@ function DirTree({
 							key={childPath}
 							onContextMenu={(ev) => {
 								ev.preventDefault();
+								// MUST stop bubbling: the tree's outer container has its own
+								// onContextMenu = setCtxMenu(null) (close-on-empty-space). Without
+								// this, the click bubbles up and clears the menu we just opened →
+								// right-click looked like it did nothing.
+								ev.stopPropagation();
 								onCtxMenu?.(ev.clientX, ev.clientY, childPath, "dir");
 							}}
 						>
@@ -451,6 +456,9 @@ function DirTree({
 						style={selectMode ? { paddingLeft: 6 + depth * 10 } : undefined}
 						onContextMenu={(ev) => {
 							ev.preventDefault();
+							// MUST stop bubbling — see the dir row above (outer container's
+							// onContextMenu would otherwise clear this menu immediately).
+							ev.stopPropagation();
 							onCtxMenu?.(ev.clientX, ev.clientY, childPath, "file");
 						}}
 					>

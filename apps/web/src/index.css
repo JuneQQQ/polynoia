@@ -626,6 +626,20 @@ body.polynoia-resizing * {
 }
 .anim-state-flip { animation: state-flip 280ms var(--ease-spring); }
 
+/* 写入光标:干脆的编辑器式闪烁(step,不是淡入淡出),比 animate-pulse 更像真光标 */
+@keyframes caret-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.caret-blink { animation: caret-blink 1.05s steps(1, end) infinite; }
+
+/* 写入中正文区的极淡“活着”呼吸底,信号正在落字 */
+@keyframes write-breath {
+  0%, 100% { background-color: color-mix(in srgb, var(--color-accent) 4%, transparent); }
+  50%      { background-color: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+}
+.anim-write-breath { animation: write-breath 2.2s ease-in-out infinite; }
+
 /* done 态泳道的一次性暖光确认 */
 @keyframes done-glow {
   0%   { box-shadow: 0 0 0 0 transparent; }

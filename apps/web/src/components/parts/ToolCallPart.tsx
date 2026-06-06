@@ -154,13 +154,13 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
   // write completes this card unmounts and the collapsed `diff` card takes over.
   return (
     <div
-      className="rounded-md overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[680px] text-[12px]"
+      className="rounded-lg overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[640px] text-[12px]"
       style={{ borderLeft: "3px solid var(--color-accent)" }}
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 w-full px-2.5 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
+        className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
       >
         {open ? (
           <ChevronDown size={11} className="text-[var(--color-fg-4)] flex-shrink-0" />
@@ -185,10 +185,17 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
       {open && (
         <div
           ref={bodyRef}
-          className="font-mono text-[11px] leading-[1.55] p-2.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all bg-[var(--color-surface)] text-[var(--color-fg-2)] border-t border-[var(--color-line)]"
+          className="anim-write-breath font-mono text-[11px] leading-[1.55] p-2.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all text-[var(--color-fg-2)] border-t border-[var(--color-line)]"
         >
-          {content}
-          <span className="inline-block w-[7px] h-[1.05em] align-text-bottom bg-[var(--color-fg-3)] animate-pulse ml-0.5" />
+          {content || (
+            <span className="text-[var(--color-fg-4)] italic">准备写入…</span>
+          )}
+          {/* Crisp accent caret (editor-style step blink) instead of a gray
+              opacity pulse — reads as a real "落字" cursor. */}
+          <span
+            className="caret-blink inline-block w-[6px] h-[1.05em] align-text-bottom rounded-[1px] ml-px"
+            style={{ background: "var(--color-accent)" }}
+          />
         </div>
       )}
     </div>
@@ -246,7 +253,7 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 
   return (
     <div
-      className="rounded-md overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[680px] text-[12px]"
+      className="rounded-lg overflow-hidden bg-[var(--color-surface)] border border-[var(--color-line)] max-w-[640px] text-[12px]"
       style={{ borderLeft: `3px solid ${ss.fg}` }}
     >
       {/* Header — clickable to toggle */}
@@ -256,7 +263,7 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
           userTouched.current = true;
           setExpanded((e) => !e);
         }}
-        className="flex items-center gap-2 w-full px-2.5 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
+        className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[var(--color-surface-2)] transition text-left"
       >
         {expanded ? (
           <ChevronDown size={11} className="text-[var(--color-fg-4)]" />

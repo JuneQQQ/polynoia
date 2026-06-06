@@ -130,7 +130,10 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 		<div
 			data-msg-id={msg.id}
 			className={`anim-fade-up group/msg flex gap-3 transition-colors duration-200 ${
-				compact ? "px-3" : "px-6"
+				// In a burst lane the lane BODY already supplies px-3; adding it again
+				// here double-indented diff/text cards relative to the fold block
+				// (ToolCallGroup compact, which has no px). No own px in compact.
+				compact ? "" : "px-6"
 			} ${
 				isGrouped ? "pt-0.5 pb-0.5" : compact ? "pt-2 pb-1" : "pt-3 pb-1.5"
 			} ${

@@ -317,12 +317,26 @@ export function ChatPane({ convId, members, title }: Props) {
 			timer = setTimeout(async () => {
 				timer = null;
 				if (!mounted || !ws.isDisconnected()) return;
+				const reconnectAt = Date.now();
 				await ws.reconnect();
 				if (mounted && ws.isDisconnected()) {
 					backoff = Math.min(backoff * 2, 15000);
 					schedule();
 				} else {
 					backoff = 800;
+					// Reconnected. Give stream-resume + the agent-status snapshot
+					// (queryAgentStatus fires inside reconnect()) a moment to land,
+					// then retire any write/edit card still stuck on「准备写入…」whose
+					// turn the server has forgotten — i.e. no fresh streaming status
+					// since this reconnect ⇒ the turn died (backend restart/crash) and
+					// its live-only card would otherwise spin forever. A turn that
+					// merely survived a blip reports streaming again → left untouched.
+					setTimeout(() => {
+						if (mounted)
+							useStore
+								.getState()
+								.markStuckWriteCardsInterrupted(convId, reconnectAt);
+					}, 3000);
 				}
 			}, backoff);
 		};

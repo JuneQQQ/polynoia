@@ -355,6 +355,13 @@ type Store = {
 	/** Remove ONE message by id (e.g. a live-only retry notice the server clears
 	 * via `data-message-removed` once a real response arrives). No-op if absent. */
 	removeMessage: (convId: string, msgId: string) => void;
+	/** After a reconnect, flip any write/edit tool-call card still stuck in
+	 * pending/running to a terminal「中断」state — UNLESS its agent was reported
+	 * streaming again at/after `since` (i.e. the turn survived the blip, so the
+	 * card will resolve on its own). Heals the orphaned "准备写入…" spinner left
+	 * when a turn dies server-side (backend restart / crash) and its live-only
+	 * tool-call card never receives a terminal signal. */
+	markStuckWriteCardsInterrupted: (convId: string, since: number) => void;
 
 	// Preview actions
 	openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
@@ -768,6 +775,53 @@ export const useStore = create<Store>((set, get) => ({
 		set({ convs });
 	},
 
+	markStuckWriteCardsInterrupted: (convId, since) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId);
+		if (!cur) return;
+		let patched: Map<string, Message> | null = null;
+		for (const mid of cur.messageOrder) {
+			const msg = cur.msgById.get(mid);
+			if (!msg) continue;
+			const p = msg.payload as {
+				kind?: string;
+				state?: string;
+				name?: string;
+			};
+			if (p?.kind !== "tool-call") continue;
+			if (p.state !== "pending" && p.state !== "running") continue;
+			const name = (p.name ?? "").toLowerCase();
+			if (
+				!name.includes("write") &&
+				!name.includes("edit") &&
+				!name.includes("apply_patch")
+			)
+				continue;
+			// Turn still alive? If this agent was reported streaming AT/AFTER the
+			// reconnect, the server still owns the turn — leave the card alone (it
+			// will resolve to a diff / error on its own). Only a turn the server
+			// has forgotten (no fresh status) gets its stuck card retired.
+			const st = msg.sender_id
+				? cur.agentStatus.get(msg.sender_id)
+				: undefined;
+			if (st && st.status === "streaming" && st.ts >= since) continue;
+			if (!patched) patched = new Map(cur.msgById);
+			patched.set(mid, {
+				...msg,
+				payload: {
+					...p,
+					state: "error",
+					is_error: true,
+					output_text:
+						"⚠️ 连接已中断,该写入可能未完成(刷新可清除此卡)",
+				} as Message["payload"],
+			});
+		}
+		if (!patched) return;
+		convs.set(convId, { ...cur, msgById: patched });
+		set({ convs });
+	},
+
 	// Shared local-append impl. Old `appendUserMessage / Image / File` were
 	// 95% identical (only payload differed) — consolidated here per Phase D.
 	// The three named actions remain for callsite ergonomics + wire each to
@@ -1138,6 +1192,42 @@ export function selectAgentStatuses(
 	return s.convs.get(convId)?.agentStatus ?? _EMPTY_AGENT_STATUS;
 }
 
+/** True iff this card is still IN PROGRESS — actively running / not yet committed.
+ * Live ordering is by ARRIVAL: a write tool-call card streams (and is appended)
+ * BEFORE the tool actually runs, so a still-"写入中" card can land in the list
+ * ahead of a sibling file whose diff card committed first → the writing card
+ * wrongly sorts above an already-done one. We float these to the BOTTOM (newest
+ * activity belongs last) — see floatInProgressLast. */
+export function isInProgressCard(m: Message): boolean {
+	const p = m.payload as
+		| { kind?: string; state?: string; commit_sha?: string | null; applied?: boolean; running?: boolean }
+		| undefined;
+	if (!p) return false;
+	if (p.kind === "tool-call") return p.state === "running" || p.state === "pending";
+	if (p.kind === "diff") return !p.commit_sha && p.applied !== true;
+	if (p.kind === "terminal") return p.running === true;
+	return false;
+}
+
+/** Stable-partition a display list so IN-PROGRESS cards sit at the END (newest
+ * activity last), while everything else keeps its existing order. Pure; returns
+ * the SAME array reference when nothing moves (no in-progress card), so callers'
+ * memoization isn't defeated in the common case. */
+export function floatInProgressLast(msgs: Message[]): Message[] {
+	let anyLive = false;
+	for (const m of msgs) {
+		if (isInProgressCard(m)) {
+			anyLive = true;
+			break;
+		}
+	}
+	if (!anyLive) return msgs;
+	const done: Message[] = [];
+	const live: Message[] = [];
+	for (const m of msgs) (isInProgressCard(m) ? live : done).push(m);
+	return [...done, ...live];
+}
+
 /** Selector helper: get an ordered messages array for a conv (memoized at call site). */
 export function selectMessages(s: Store, convId: string): Message[] {
 	const cs = s.convs.get(convId);
@@ -1147,7 +1237,9 @@ export function selectMessages(s: Store, convId: string): Message[] {
 		const m = cs.msgById.get(id);
 		if (m) out.push(m);
 	}
-	return out;
+	// In-progress cards (still "写入中" / running) belong at the bottom, even
+	// though they ARRIVED before a sibling's already-committed card.
+	return floatInProgressLast(out);
 }
 
 /** Selector helper: subscribe to a single message by id (component-level memo target). */
