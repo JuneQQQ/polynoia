@@ -186,6 +186,11 @@ export function ChatPane({ convId, members, title }: Props) {
 					} else if (chunk.type === "data-chain-link") {
 						// Transient meta — actual B bubble appears right after A in the
 						// stream; this link is redundant UI noise. Silently drop.
+					} else if (chunk.type === "data-message-removed") {
+						// A live-only card the server cleared (e.g. the retry notice once
+						// a real response arrived). Drop it so it doesn't linger.
+						const d = (chunk as any).data;
+						if (d?.id) useStore.getState().removeMessage(convId, d.id);
 					} else if (chunk.type === "data-conv-rewound") {
 						// Another tab (or our own POST that beat the response) rewound
 						// the conv: drop the msg at from_msg_id + all later. Idempotent —

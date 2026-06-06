@@ -3785,11 +3785,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # were blocked from presenting mid-burst (see /api/present gate), so the
             # coordinator surfaces every shipped deliverable exactly once, from main.
             _present_clause = (
-                "\n\n# 展示交付物(由你统一展示)\n"
-                "核对通过后,把所有**确认存在且符合契约**的最终交付物用**一次** "
-                "`present(paths=[...])` 调用一并展示给用户(传入相对路径列表)——这些文件已"
-                "合并进 main,present 会从 main 读取最终版本。一次性传全部、不要逐个分多次调用;"
-                "一个产物只展示一次;失败/未交付/未通过核对的**不要** present。"
+                "\n\n# 展示交付物(由你统一展示,要**精选**)\n"
+                "核对通过后,用**一次** `present(paths=[...])` 把**用户真正会打开看的**最终"
+                "交付物展示给用户(从 main 读取)。**只选可看/可下的成品**:可运行的 HTML 页、"
+                "文档(Markdown/PPTX/DOCX/XLSX/PDF/CSV)、图片/数据文件。\n"
+                "**如果产物是一个代码工程,不要把整棵源码树都 present**(用户在本地构建运行,"
+                "每个文件的改动 diff 卡已经展示过了)——至多 present README + 唯一可运行入口"
+                "(如打包出的 index.html),或干脆不 present、只用一句话说明怎么跑。罗列 20 个 "
+                ".ts/.py 源文件是噪音。一个产物只展示一次;失败/未交付的不要 present。"
             )
             if _allow_dispatch:
                 # Verify-AND-advance turn: the plan isn't done, so this turn may
@@ -4256,8 +4259,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             paths = list(dict.fromkeys(p for _a, p in drain.deliverables))
             parts.append(
                 "刚有交付物合并进 main:" + "、".join(paths)
-                + "。用**一次** `present(paths=[...])` 从 main 把它们作为一个面板展示给用户,"
-                "配一句一行说明(谁交付了什么)。"
+                + "。用**一次** `present(paths=[...])` 把其中**用户真正会打开看的成品**展示给"
+                "用户(可运行 HTML / 文档 / 图片;**代码工程别全列源码树**,至多 README + 可运行"
+                "入口,diff 卡已展示过改动),配一句一行说明。"
             )
         if drain.conflicted:
             # AUTO mode = hands-off: the orchestrator resolves the merge itself
@@ -4458,6 +4462,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # attempt fails BEFORE emitting anything, treat it as a stale
                 # session: evict + respawn once. (We only retry when nothing
                 # streamed yet, so there's no double-emit.)
+                # Retry notice = a LIVE-ONLY card (stable id, not persisted) that
+                # updates in place across retries and is REMOVED the moment a real
+                # response arrives (or the turn ends), so it never lingers.
+                _retry_notice_id = f"retry-{conv_id}-{agent_id}-d{depth}"
+                _retry_shown = False
+
+                async def _clear_retry_notice() -> None:
+                    if not _retry_shown:
+                        return
+                    with suppress(Exception):
+                        await emit(
+                            'data: {"type":"data-message-removed","data":{"id":'
+                            + json.dumps(_retry_notice_id)
+                            + "}}\n\n"
+                        )
+
                 for attempt in range(_TURN_RETRIES + 1):
                     # Later attempts wait longer for first output (a slow model
                     # start shouldn't be killed as "hung").
@@ -4615,6 +4635,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             with suppress(Exception):
                                 await pool.close_session(agent_id, conv_id)
                             continue
+                        await _clear_retry_notice()  # real response arrived → drop it
                         break  # success
                     except asyncio.CancelledError:
                         raise
@@ -4623,23 +4644,38 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # NOTHING streamed yet → auto-retry up to _TURN_RETRIES with
                         # INCREASING backoff, and SHOW each retry to the user from
                         # the first one (never silent). Safe to re-run: no output
-                        # was emitted, so there's no double-emit.
+                        # was emitted, so there's no double-emit. The notice is a
+                        # LIVE-ONLY card (stable id, re-emitted each retry → updates
+                        # in place); show only the progress, not the backoff seconds.
                         if attempt < _TURN_RETRIES and not emitted_any:
                             wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
-                            await _persist_and_emit_error(
-                                emit, conv_id=conv_id, sender_id=agent_id,
-                                message=(
-                                    f"⏳ {agent_id} 无响应,自动重试中"
-                                    f"({attempt + 1}/{_TURN_RETRIES})· {int(wait)}s 后再试…"
-                                ),
-                                reason="timeout", retryable=False,
-                            )
+                            with suppress(Exception):
+                                await emit(
+                                    'data: {"type":"data-error","data":'
+                                    + json.dumps(
+                                        {
+                                            "kind": "error",
+                                            "message": f"⏳ 无响应,自动重试中({attempt + 1}/{_TURN_RETRIES})",
+                                            "agent_id": agent_id,
+                                            "reason": "timeout",
+                                            "retryable": False,
+                                        }
+                                    )
+                                    + ',"id":'
+                                    + json.dumps(_retry_notice_id)
+                                    + ',"sender_id":'
+                                    + json.dumps(agent_id)
+                                    + "}\n\n"
+                                )
+                            _retry_shown = True
                             with suppress(Exception):
                                 await pool.close_session(agent_id, conv_id)
                             await asyncio.sleep(wait)
                             continue  # respawn fresh + retry
-                        raise
+                        await _clear_retry_notice()  # giving up → drop the notice;
+                        raise  # the outer handler emits the real (persisted) error
             except asyncio.CancelledError:
+                await _clear_retry_notice()  # aborted mid-retry → drop the notice
                 # Cancel cleanup needs THREE steps — interrupt was wrong on its own:
                 #   1. signal the live CLI subprocess to stop (interrupt)
                 #   2. close the underlying SDK client cleanly so its native

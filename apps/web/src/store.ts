@@ -352,6 +352,9 @@ type Store = {
 	/** Drop a message + every later one in this conv. Used by 「从此处重来」
 	 * (rewind) and by the cross-tab `data-conv-rewound` broadcast. */
 	truncateMessagesFrom: (convId: string, fromMsgId: string) => void;
+	/** Remove ONE message by id (e.g. a live-only retry notice the server clears
+	 * via `data-message-removed` once a real response arrives). No-op if absent. */
+	removeMessage: (convId: string, msgId: string) => void;
 
 	// Preview actions
 	openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
@@ -740,6 +743,25 @@ export const useStore = create<Store>((set, get) => ({
 		convs.set(convId, {
 			...cur,
 			messageOrder: kept,
+			msgById: nextById,
+			streamingTexts: newStreaming,
+		});
+		set({ convs });
+	},
+
+	removeMessage: (convId, msgId) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId);
+		if (!cur || !cur.msgById.has(msgId)) return;
+		const nextById = new Map(cur.msgById);
+		nextById.delete(msgId);
+		const newStreaming = new Map(cur.streamingTexts);
+		for (const [key, val] of cur.streamingTexts) {
+			if (val.messageId === msgId) newStreaming.delete(key);
+		}
+		convs.set(convId, {
+			...cur,
+			messageOrder: cur.messageOrder.filter((id) => id !== msgId),
 			msgById: nextById,
 			streamingTexts: newStreaming,
 		});

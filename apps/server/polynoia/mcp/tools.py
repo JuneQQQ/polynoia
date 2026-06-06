@@ -1198,12 +1198,21 @@ class _RequestProjectAccessTool(_ToolBase):
 class _PresentTool(_ToolBase):
     name = "present"
     description = (
-        "Show the files you produced to the user as ONE deliverable panel in the "
-        "chat — a one-line note plus the file list (each clickable to preview or "
-        "download). Pass `paths` (a list) to bundle several into a single panel, or "
-        "`path` for one; `message` is a one-line hand-off note shown above them. "
-        "Paths are relative to your working dir. Call this ONCE with ALL deliverables "
-        "— do NOT call it per file. Prefer this over pasting file contents into your reply."
+        "Show the user-facing DELIVERABLES you produced as ONE panel in the chat — "
+        "a one-line note plus a clickable file list (preview / download).\n\n"
+        "Present only what the USER actually opens to consume the result:\n"
+        "  · a runnable/standalone HTML page (a demo, a report, a slide deck)\n"
+        "  · documents — Markdown / PPTX / DOCX / XLSX / PDF / CSV\n"
+        "  · images / diagrams / generated data files\n"
+        "Do NOT present the SOURCE TREE of a code project — the user builds/runs "
+        "that locally, and the per-file diff cards already show every code change. "
+        "For a code deliverable, present AT MOST the README + the single runnable "
+        "entry (e.g. a built index.html), or skip `present` entirely and just say in "
+        "one line how to run it. Listing 20 .ts/.py source files is noise.\n\n"
+        "Pass `paths` (a list) to bundle the SELECTED deliverables into one panel, or "
+        "`path` for one; `message` is the one-line hand-off note. Paths are relative "
+        "to your working dir. Call this ONCE (not per file). Prefer it over pasting "
+        "file contents into your reply."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
