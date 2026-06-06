@@ -9,6 +9,7 @@ keeps designers off the shell, etc.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import suppress as _suppress
@@ -22,6 +23,72 @@ from polynoia.mcp.tools import ToolContext, tools_for_role
 
 # Audit-summary fields lifted from a tool's result dict into the `tool.end` trail.
 _SUMMARY_KEYS = ("kind", "commit_sha", "path", "error", "exit_code", "matches", "agent_id")
+
+# Per-tool EXECUTION timeout (seconds). Every tool call is bounded so a wedged
+# tool (hung network call, runaway loop, a stuck git/HTTP op — e.g. the `report`
+# call that once froze a whole turn) returns a timeout RESULT to the agent instead
+# of freezing the turn forever. Agent-overridable per call via a `timeout` arg.
+# Two carve-outs (below): tools that legitimately wait on a HUMAN are exempt, and
+# a tool that runs its OWN finer timeout (bash) gets headroom so its graceful path
+# wins over our hard cancel.
+_DEFAULT_TOOL_TIMEOUT = 60.0
+# Absolute backstop for self_timeout tools (bash). bash now uses an IDLE timeout
+# (kills only on N seconds of NO output), so a legitimately-long streaming command
+# (npm i, a build) MUST be allowed to run far past the `timeout` arg — we must NOT
+# cap it at arg+grace here or we'd cut the very commands bash was fixed to keep
+# alive. This is only a last-resort ceiling against a truly runaway tool.
+_SELF_TIMEOUT_BACKSTOP = 1800.0  # 30 min
+
+
+def _tool_timeout(arguments: dict[str, Any]) -> float:
+    """The agent-supplied `timeout` (seconds) for this call, else the default."""
+    raw = arguments.get("timeout") if isinstance(arguments, dict) else None
+    if raw is None:
+        return _DEFAULT_TOOL_TIMEOUT
+    try:
+        t = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_TOOL_TIMEOUT
+    return t if t > 0 else _DEFAULT_TOOL_TIMEOUT
+
+
+async def _execute_bounded(
+    impl: Any, ctx: ToolContext, arguments: dict[str, Any], name: str
+) -> dict[str, Any]:
+    """Run a tool's execute under an execution-phase timeout.
+
+    - ``human_wait`` tools (ask_user / request_project_access / write's approval
+      gate) are NOT bounded here: their wait is on the user and is already capped
+      on the human side; cancelling them would break human-in-the-loop.
+    - ``self_timeout`` tools (bash) manage their own finer timeout + graceful
+      subprocess cleanup, so we only wrap them with EXTRA headroom as a backstop.
+    - everything else: bounded at the agent's `timeout` arg, else the default
+      (``_DEFAULT_TOOL_TIMEOUT``).
+
+    On timeout we return a structured, retryable result so the agent SEES it and
+    can decide (retry with a bigger `timeout`, or take a faster path)."""
+    if getattr(impl, "human_wait", False):
+        return await impl.execute(ctx, arguments)
+    self_timed = getattr(impl, "self_timeout", False)
+    # self_timeout tools (bash) manage their own IDLE timeout — give them a large
+    # absolute backstop, NOT arg+grace, or a long streaming command gets cut. Other
+    # tools get the agent's `timeout` (or the 60s default) as a hard cap.
+    t = _tool_timeout(arguments)
+    wrap_t = _SELF_TIMEOUT_BACKSTOP if self_timed else t
+    try:
+        return await asyncio.wait_for(impl.execute(ctx, arguments), timeout=wrap_t)
+    except TimeoutError:
+        ctx.append_audit("tool.timeout", {"tool": name, "timeout_s": wrap_t})
+        return {
+            "error": (
+                f"⏱ 工具 `{name}` 执行超过 {int(wrap_t)}s 未返回,已自动中止本次调用"
+                "(可能是命令/操作卡住了)。如确需更长时间,请重试并传入更大的 "
+                "`timeout`(秒)参数;否则换一种更快的做法。"
+            ),
+            "timed_out": True,
+            "tool": name,
+            "timeout_s": wrap_t,
+        }
 
 
 def _repair_arguments(arguments: Any) -> dict[str, Any]:
@@ -154,7 +221,7 @@ async def run_server(
             "tool": name, "role": role, "args_preview": _arg_preview(arguments),
         })
         try:
-            result = await impl.execute(ctx, arguments)
+            result = await _execute_bounded(impl, ctx, arguments, name)
         except Exception as exc:
             ctx.append_audit("tool.error", {
                 "tool": name, "error": str(exc), "type": type(exc).__name__,

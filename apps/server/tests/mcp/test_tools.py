@@ -33,6 +33,72 @@ async def test_write_then_read(ctx):
 
 
 @pytest.mark.asyncio
+async def test_edit_targeted_replace(ctx):
+    await TOOL_REGISTRY["write"].execute(ctx, {
+        "path": "m.py", "content": "a = 1\nb = 2\nc = 3\n"
+    })
+    res = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "m.py", "old_string": "b = 2", "new_string": "b = 22"
+    })
+    assert res["kind"] == "edited"
+    assert res["replacements"] == 1
+    assert res["commit_sha"]
+    read_res = await TOOL_REGISTRY["read"].execute(ctx, {"path": "m.py"})
+    assert "b = 22" in read_res["content"]
+    assert "a = 1" in read_res["content"]  # untouched lines preserved
+
+
+@pytest.mark.asyncio
+async def test_edit_not_found(ctx):
+    await TOOL_REGISTRY["write"].execute(ctx, {"path": "m.py", "content": "x = 1\n"})
+    res = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "m.py", "old_string": "nope", "new_string": "y"
+    })
+    assert res["kind"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_edit_non_unique_requires_replace_all(ctx):
+    await TOOL_REGISTRY["write"].execute(ctx, {
+        "path": "m.py", "content": "v\nv\nv\n"
+    })
+    # Ambiguous match → fail loudly.
+    res = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "m.py", "old_string": "v", "new_string": "w"
+    })
+    assert res["kind"] == "error"
+    # replace_all → all occurrences replaced.
+    res2 = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "m.py", "old_string": "v", "new_string": "w", "replace_all": True
+    })
+    assert res2["kind"] == "edited"
+    assert res2["replacements"] == 3
+    read_res = await TOOL_REGISTRY["read"].execute(ctx, {"path": "m.py"})
+    assert "v" not in read_res["content"].replace("→", "")  # strip the line-num arrow
+
+
+@pytest.mark.asyncio
+async def test_edit_rejects_empty_and_identical(ctx):
+    await TOOL_REGISTRY["write"].execute(ctx, {"path": "m.py", "content": "k = 1\n"})
+    empty = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "m.py", "old_string": "", "new_string": "z"
+    })
+    assert empty["kind"] == "error"
+    same = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "m.py", "old_string": "k = 1", "new_string": "k = 1"
+    })
+    assert same["kind"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_edit_missing_file(ctx):
+    res = await TOOL_REGISTRY["edit"].execute(ctx, {
+        "path": "nope.py", "old_string": "a", "new_string": "b"
+    })
+    assert res["kind"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_bash(ctx):
     res = await TOOL_REGISTRY["bash"].execute(ctx, {"command": "echo hello"})
     assert res["kind"] == "completed"
@@ -145,13 +211,14 @@ def test_unknown_role_fails_closed_to_advisory():
     assert names == set(tools_for_role("advisory").keys())
 
 
-def test_designer_role_can_write():
-    """Sanity: a real persona role (designer) carries `write` — the sole
-    file-mutation tool. edit/apply_patch/revert are intentionally NOT exposed
-    (single audited write path); the location gate removes even write in a
-    homepage DM."""
+def test_designer_role_can_write_and_edit():
+    """Sanity: a real persona role (designer) carries the file-mutation tools —
+    both `write` (full create/overwrite) and `edit` (targeted old→new splice, the
+    large-file path). apply_patch/revert are still NOT exposed; the location gate
+    removes even these in a homepage DM."""
     from polynoia.mcp.tools import tools_for_role
 
     names = set(tools_for_role("designer").keys())
     assert "write" in names
-    assert not ({"edit", "apply_patch", "revert"} & names)
+    assert "edit" in names
+    assert not ({"apply_patch", "revert"} & names)

@@ -774,8 +774,11 @@ async def list_messages(
         except ValueError:
             pass  # malformed cursor → ignore, behave as fresh fetch
     # We fetch DESC + limit so we get the newest N below the cursor; then
-    # reverse for client-side chronological rendering.
-    stmt = stmt.order_by(MessageRow.created_at.desc()).limit(limit + 1)
+    # reverse for client-side chronological rendering. Tie-break by id so cards
+    # sharing a created_at (a tool-call card + the diff card it produced can land
+    # in the same instant) have a STABLE, deterministic order across refreshes
+    # instead of SQLite's arbitrary rowid order.
+    stmt = stmt.order_by(MessageRow.created_at.desc(), MessageRow.id.desc()).limit(limit + 1)
     result = await session.execute(stmt)
     rows = list(result.scalars().all())
     has_more = len(rows) > limit

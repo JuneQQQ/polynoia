@@ -20,6 +20,7 @@ import json as _json
 import logging
 import os
 import re
+import signal
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -318,6 +319,15 @@ class _ToolBase:
     name: ClassVar[str]
     description: ClassVar[str]
     input_schema: ClassVar[dict[str, Any]]
+    # Execution-timeout policy (enforced centrally in mcp/server.py):
+    #  human_wait  — this tool legitimately blocks on the USER (approval gate /
+    #                ask_user / project-access). Exempt from the timeout; its wait
+    #                is capped on the human side. A 120s cancel would break HITL.
+    #  self_timeout — this tool runs its OWN finer timeout + graceful cleanup
+    #                (bash kills its subprocess). The wrapper only adds headroom as
+    #                a backstop, so the tool's graceful path wins.
+    human_wait: ClassVar[bool] = False
+    self_timeout: ClassVar[bool] = False
 
     def spec(self) -> Tool:
         return Tool(
@@ -360,29 +370,75 @@ class _ReadTool(_ToolBase):
         if path.is_dir():
             entries = sorted(p.name + ("/" if p.is_dir() else "") for p in path.iterdir())
             return {"kind": "directory", "entries": entries}
-        offset = args.get("offset", 1)
-        limit = args.get("limit", 2000)
+        offset = max(1, int(args.get("offset") or 1))
+        limit = max(1, int(args.get("limit") or 2000))
+        # Stream line-by-line — NEVER f.readlines(): a huge file would load wholly
+        # into memory and OOM the agent subprocess. Materialize ONLY the requested
+        # window (offset..offset+limit), truncate over-long lines, and stop adding
+        # once the byte cap is hit — but keep iterating (cheap) to report total_lines.
+        chunk: list[str] = []
+        total = 0
+        bytes_used = 0
+        out_truncated = False  # window cut short by the byte cap (not the line limit)
         with path.open("r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-        chunk = all_lines[offset - 1 : offset - 1 + limit]
-        # Number each line, format "  N→content"
-        numbered = "".join(
-            f"{offset + i:6d}→{line}" for i, line in enumerate(chunk)
-        )
-        return {
+            for i, line in enumerate(f, start=1):
+                total = i
+                if i < offset or len(chunk) >= limit or out_truncated:
+                    continue
+                if len(line) > _MAX_READ_LINE_CHARS:
+                    line = line[:_MAX_READ_LINE_CHARS] + "… ⟪行过长已截断⟫\n"
+                prefixed = f"{i:6d}→{line}"
+                b = len(prefixed.encode("utf-8"))
+                if chunk and bytes_used + b > _MAX_READ_BYTES:
+                    out_truncated = True  # always return ≥1 line (the `chunk and`)
+                    continue
+                chunk.append(prefixed)
+                bytes_used += b
+        last = offset + len(chunk) - 1
+        next_offset = (last + 1) if last < total else None
+        result: dict[str, Any] = {
             "kind": "file",
             "path": str(path.relative_to(ctx.sandbox.root)),
-            "content": numbered,
-            "total_lines": len(all_lines),
+            "content": "".join(chunk),
+            "total_lines": total,
             "returned_lines": len(chunk),
         }
+        if next_offset is not None:
+            # Continue-cursor: page deterministically instead of dumping the file.
+            result["next_offset"] = next_offset
+            result["hint"] = (
+                f"还有更多内容(共 {total} 行)。用 offset={next_offset} 继续读,"
+                "或用 grep 直接定位目标行。"
+            )
+        if out_truncated:
+            result["output_truncated"] = True
+        return result
+
+
+# Soft ceiling for a single file body (write content / post-edit result). Guards
+# the agent subprocess from OOM/buffer blowups on a pathological huge file. A real
+# edit of a large file should go through `edit` (a small splice), never `write`.
+_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+# Read-window output bounds (large-file safety): cap each returned line and the
+# total returned body so one read can't blow the context budget; the agent pages
+# the rest via the next_offset cursor.
+_MAX_READ_LINE_CHARS = 2000   # truncate any single line past this
+_MAX_READ_BYTES = 50_000      # cap total returned content per read
 
 
 class _WriteTool(_ToolBase):
     name = "write"
+    # In MANUAL merge mode `execute` long-polls the pending-edit gate waiting for
+    # the user to approve/reject (capped at 300s in-tool) → don't let the central
+    # timeout cancel an edit the user is still deciding on.
+    human_wait = True
     description = (
-        "Write (or overwrite) a file with the given content. Creates parent dirs "
-        "as needed. Auto-commits to sandbox git."
+        "Create a NEW file, or fully REPLACE an existing one, with `content`. "
+        "Creates parent dirs; auto-commits to sandbox git. "
+        "For changing PART of an existing file, prefer `edit` (targeted "
+        "old_string→new_string replacement) — do NOT rewrite the whole file. "
+        "Rewriting a large file with write is slow and risks clobbering content "
+        "outside your intended change."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -395,6 +451,14 @@ class _WriteTool(_ToolBase):
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        if len(args.get("content", "").encode("utf-8")) > _MAX_FILE_BYTES:
+            return {
+                "kind": "error",
+                "error": (
+                    f"内容超过 {_MAX_FILE_BYTES // (1024 * 1024)}MB 单文件上限。"
+                    "大文件请用 edit 做定向修改,不要整文件写入。"
+                ),
+            }
         if rejected := await _require_edit_approval(
             ctx, kind="write", file_path=args["path"], args=args
         ):
@@ -421,6 +485,137 @@ class _WriteTool(_ToolBase):
                 "created": is_new,
                 "bytes": len(args["content"].encode("utf-8")),
                 "commit_sha": sha,
+            }
+
+
+class _EditTool(_ToolBase):
+    name = "edit"
+    # Same human approval long-poll as write (it goes through _require_edit_approval).
+    human_wait = True
+    description = (
+        "Targeted in-place edit of an EXISTING file: replace `old_string` with "
+        "`new_string`. PREFER THIS over `write` for changing part of a file — the "
+        "cost is proportional to the change, not the file size, so it's the right "
+        "tool for LARGE files (no whole-file rewrite). `old_string` must match the "
+        "file EXACTLY (including indentation/whitespace) and be UNIQUE; include "
+        "enough surrounding context to disambiguate, or set `replace_all=true` to "
+        "replace every occurrence (e.g. a rename). To create a new file, use write."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "old_string": {
+                "type": "string",
+                "description": "Exact text to find (must be unique unless replace_all). Copy it verbatim from a prior read — do NOT include the line-number prefix.",
+            },
+            "new_string": {"type": "string", "description": "Replacement text."},
+            "replace_all": {
+                "type": "boolean",
+                "default": False,
+                "description": "Replace ALL occurrences instead of requiring a unique match.",
+            },
+            "near_line": {
+                "type": "integer",
+                "description": "Optional tie-breaker for LARGE files: when old_string matches MULTIPLE places, edit the ONE nearest this line (e.g. the line grep gave you) instead of failing — saves widening old_string. Ignored when the match is already unique or replace_all is set.",
+            },
+            "turn_id": {"type": "string"},
+        },
+        "required": ["path", "old_string", "new_string"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        old_string = args.get("old_string", "")
+        new_string = args.get("new_string", "")
+        # Cheap pre-checks BEFORE asking the user to approve (don't surface an
+        # approval card for a malformed edit).
+        if old_string == "":
+            return {"kind": "error", "error": "old_string 不能为空;新建文件请用 write。"}
+        if old_string == new_string:
+            return {"kind": "error", "error": "old_string 与 new_string 相同,无需编辑。"}
+        # Same approval gate as write — args carry old_string/new_string so the
+        # review card renders the snippet diff (web editToUnified handles kind=edit).
+        if rejected := await _require_edit_approval(
+            ctx, kind="edit", file_path=args["path"], args=args
+        ):
+            return rejected
+        path = ctx._resolve(args["path"])  # write-confined (NOT _resolve_read)
+        async with ctx.file_lock(args["path"]):
+            if not path.exists():
+                return {"kind": "error", "error": f"文件不存在: {args['path']}(新建请用 write)。"}
+            if path.is_dir():
+                return {"kind": "error", "error": f"是目录,不能编辑: {args['path']}。"}
+            try:
+                old = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                return {"kind": "error", "error": "文件无法按 UTF-8 读取(可能是二进制),不能 edit。"}
+            # All occurrence start-offsets (non-overlapping), to support both the
+            # uniqueness check and near_line disambiguation.
+            occ: list[int] = []
+            _s = 0
+            while (_i := old.find(old_string, _s)) >= 0:
+                occ.append(_i)
+                _s = _i + len(old_string)
+            n = len(occ)
+            if n == 0:
+                return {
+                    "kind": "error",
+                    "error": "未找到 old_string(需逐字匹配,含缩进与空白)。先 read 确认原文。",
+                }
+            replace_all = bool(args.get("replace_all"))
+            near_line = args.get("near_line")
+            if replace_all:
+                new_content = old.replace(old_string, new_string)
+                first_idx = occ[0]
+                replacements = n
+            elif n == 1:
+                first_idx = occ[0]
+                new_content = old[:first_idx] + new_string + old[first_idx + len(old_string):]
+                replacements = 1
+            elif near_line is not None:
+                # Tie-breaker (NOT a relaxation of safety): match still required;
+                # among the N matches, edit the ONE on the line closest to near_line.
+                def _line_of(idx: int) -> int:
+                    return old.count("\n", 0, idx) + 1
+                first_idx = min(occ, key=lambda i: abs(_line_of(i) - int(near_line)))
+                new_content = old[:first_idx] + new_string + old[first_idx + len(old_string):]
+                replacements = 1
+            else:
+                lines = sorted(old.count("\n", 0, i) + 1 for i in occ)
+                return {
+                    "kind": "error",
+                    "error": (
+                        f"old_string 命中 {n} 处(行 {lines})。请增加上下文使其唯一,"
+                        "或传 near_line 选最近的一处,或设 replace_all=true 全部替换。"
+                    ),
+                }
+            if len(new_content.encode("utf-8")) > _MAX_FILE_BYTES:
+                return {
+                    "kind": "error",
+                    "error": f"编辑后文件超过 {_MAX_FILE_BYTES // (1024 * 1024)}MB 上限。",
+                }
+            path.write_text(new_content, encoding="utf-8")
+            rel = str(path.relative_to(ctx.sandbox.root))
+            sha = await ctx.git_commit(
+                turn_id=args.get("turn_id"), message_suffix=f"edit {rel}"
+            )
+            # Diff is computed on FULL old vs FULL new (so the card's +/- counts
+            # match write's), but only the small splice crossed the wire.
+            diff_text, adds, dels = _compute_unified_diff(old, new_content, rel)
+            await _emit_diff_card(ctx, rel, adds, dels, diff_text, sha)
+            # preview: the changed region ±5 lines WITH new line numbers — lets the
+            # agent confirm the edit landed right WITHOUT a follow-up read.
+            _ch_line = new_content.count("\n", 0, first_idx)  # 0-indexed line of change
+            _nl = new_content.split("\n")
+            _lo = max(0, _ch_line - 5)
+            _hi = min(len(_nl), _ch_line + new_string.count("\n") + 6)
+            preview = "\n".join(f"{i + 1:6d}→{_nl[i]}" for i in range(_lo, _hi))
+            return {
+                "kind": "edited",
+                "path": rel,
+                "replacements": replacements,
+                "commit_sha": sha,
+                "preview": preview,
             }
 
 
@@ -452,9 +647,20 @@ def _bash_safety_block(cmd: str) -> str | None:
 
 class _BashTool(_ToolBase):
     name = "bash"
+    # bash enforces its own per-command timeout (arg `timeout`, default 30s) and
+    # gracefully terminates the subprocess on hit → the central wrapper only backstops.
+    self_timeout = True
     description = (
         "Run a shell command in the sandbox working directory. Returns stdout, "
-        "stderr, and exit code. Default timeout: 30 seconds. No git commit.\n\n"
+        "stderr, and exit code. No git commit.\n\n"
+        "TIMEOUT IS IDLE-BASED: `timeout` (default 30s) is the max seconds of NO "
+        "OUTPUT before the command is killed — NOT a total wall-clock cap. A "
+        "command that keeps printing progress (e.g. `npm install`, a build) runs "
+        "as long as it's making progress and is NEVER killed for taking long; only "
+        "a genuinely wedged command (silent for `timeout`s) is killed. So DON'T "
+        "pipe a long install through `| tail` (that hides all progress → looks "
+        "idle); run it directly. For an INTENTIONALLY silent long command (e.g. a "
+        "`sleep`), raise `timeout` above its duration.\n\n"
         "Do NOT use pkill/killall or `kill -1` / `kill -<pgid>` — the sandbox "
         "shares the host process space, so name-pattern/broadcast kills hit the "
         "host (they're blocked). To stop something you started, save its PID "
@@ -464,7 +670,11 @@ class _BashTool(_ToolBase):
         "type": "object",
         "properties": {
             "command": {"type": "string"},
-            "timeout": {"type": "number", "default": 30},
+            "timeout": {
+                "type": "number",
+                "default": 30,
+                "description": "Max seconds of NO OUTPUT before kill (IDLE, not total). Streaming commands run as long as they're active; raise it for intentionally-silent long commands.",
+            },
         },
         "required": ["command"],
     }
@@ -489,11 +699,17 @@ class _BashTool(_ToolBase):
         sender_id = ctx.turn_agent_id or ctx.agent_id
         term_id = "term-" + uuid.uuid4().hex
 
+        loop = asyncio.get_event_loop()
+        last_activity = loop.time()  # reset on every output line → drives idle timeout
         proc = await asyncio.create_subprocess_shell(
             cmd,
             cwd=str(ctx.sandbox.root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # New session/process group so a kill takes down the WHOLE tree
+            # (shell + npm + its children) instead of orphaning them — the prior
+            # `proc.kill()` left runaway npm pids the agent had to hunt + kill.
+            start_new_session=True,
         )
 
         out_parts: list[str] = []
@@ -503,6 +719,7 @@ class _BashTool(_ToolBase):
         dirty = asyncio.Event()
 
         async def _pump(stream: asyncio.StreamReader | None, sink: list[str]) -> None:
+            nonlocal last_activity
             if stream is None:
                 return
             while True:
@@ -513,6 +730,7 @@ class _BashTool(_ToolBase):
                 async with lock:
                     sink.append(text)
                     combined.append(text)
+                last_activity = loop.time()  # output → reset the idle clock
                 dirty.set()
 
         async def _post_card(*, running: bool, exit_code: int | None) -> None:
@@ -558,14 +776,39 @@ class _BashTool(_ToolBase):
         ]
         throttle = asyncio.create_task(_throttle())
 
-        timed_out = False
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=timeout)
-        except TimeoutError:
-            timed_out = True
-            proc.kill()
+        def _kill_tree() -> None:
+            # Kill the whole process group (shell + npm + children), then the proc
+            # as fallback — no orphaned installs left behind.
             with contextlib.suppress(Exception):
-                await proc.wait()
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+        timed_out = False
+        wait_task = asyncio.ensure_future(proc.wait())
+        _HEARTBEAT = 5.0  # while quiet, refresh the card / show liveness this often
+        try:
+            while True:
+                done, _ = await asyncio.wait(
+                    {wait_task}, timeout=min(timeout, _HEARTBEAT)
+                )
+                if wait_task in done:
+                    break  # process finished on its own
+                # IDLE timeout: kill ONLY if no output for `timeout`s — a streaming
+                # command (npm i, a build) keeps last_activity fresh and runs as
+                # long as it's making progress, however long that takes.
+                if loop.time() - last_activity >= timeout:
+                    timed_out = True
+                    _kill_tree()
+                    with contextlib.suppress(Exception):
+                        await wait_task
+                    break
+                # Alive but quiet → heartbeat so the card + the connection show it's
+                # running (esp. low-output long commands), not a frozen blank block.
+                await _post_card(running=True, exit_code=None)
+        except asyncio.CancelledError:
+            _kill_tree()  # don't orphan the tree if the turn is aborted
+            raise
 
         with contextlib.suppress(Exception):
             await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
@@ -596,6 +839,128 @@ class _BashTool(_ToolBase):
             "stdout": out[-4096:],
             "stderr": err[-4096:],
         }
+
+
+# Background-job registry for this MCP session (one subprocess per agent session).
+# job_id → {pid, log}. Best-effort: `wait` is driven by the log's exit marker, so
+# it still works if this is lost on a session respawn (it just can't report pid).
+_BG_JOBS: dict[str, dict[str, Any]] = {}
+_BG_EXIT_MARK = "__POLYNOIA_EXIT__="
+
+
+class _RunBackgroundTool(_ToolBase):
+    name = "run_background"
+    description = (
+        "Start a long-running command in the BACKGROUND and return immediately "
+        "with a job_id — then poll it with `wait`. Use this for things that should "
+        "keep running while you do other work (a dev server, a long build/install "
+        "you don't want to block on). Stdout+stderr stream to a log file; `wait` "
+        "tails it and reports when the job exits. This REPLACES hand-rolled "
+        "`cmd & ... sleep N; kill -0 $PID` watchdogs — don't do those.\n\n"
+        "(For a normal command that finishes on its own, just use `bash` — its "
+        "timeout is idle-based, so a slow-but-streaming command isn't killed.)"
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "label": {"type": "string", "description": "Short label for logs/UI."},
+        },
+        "required": ["command"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        cmd = args["command"]
+        blocked = _bash_safety_block(cmd)
+        if blocked:
+            return {"kind": "blocked", "command": cmd, "reason": blocked}
+        job_id = "bg-" + uuid.uuid4().hex[:12]
+        # Log under .polynoia/ (gitignored) so it never pollutes the worktree/diff.
+        logdir = ctx.sandbox.root / ".polynoia" / "bg"
+        with contextlib.suppress(Exception):
+            logdir.mkdir(parents=True, exist_ok=True)
+        log = logdir / f"{job_id}.log"
+        rel_log = str(log.relative_to(ctx.sandbox.root))
+        # Wrap so the log ends with an exit marker `wait` can detect even though the
+        # job is detached (we can't waitpid a process in its own session).
+        wrapped = f"( {cmd} ) > {log!s} 2>&1; echo \"{_BG_EXIT_MARK}$?\" >> {log!s}"
+        proc = await asyncio.create_subprocess_shell(
+            wrapped,
+            cwd=str(ctx.sandbox.root),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL,
+            start_new_session=True,  # detach → survives this turn
+        )
+        _BG_JOBS[job_id] = {"pid": proc.pid, "log": str(log), "command": cmd}
+        return {
+            "kind": "started",
+            "job_id": job_id,
+            "pid": proc.pid,
+            "log": rel_log,
+            "hint": f"用 wait(job_id=\"{job_id}\") 等它结束(或继续干别的)。",
+        }
+
+
+class _WaitTool(_ToolBase):
+    name = "wait"
+    # Manages its own poll deadline (returns 'running' at `timeout`); the central
+    # wrapper must not cap it at the 60s default — give it the big backstop.
+    self_timeout = True
+    description = (
+        "Wait for a `run_background` job to finish, polling its log. Returns when "
+        "the job exits (with exit_code + log tail) OR when `timeout`s elapse while "
+        "it's still running (so you can decide to keep waiting or move on). Never "
+        "blocks the whole turn open-endedly."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "description": "The id returned by run_background."},
+            "timeout": {
+                "type": "number",
+                "default": 120,
+                "description": "Max seconds to wait this call before returning 'still running'.",
+            },
+        },
+        "required": ["job_id"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        job_id = args.get("job_id", "")
+        job = _BG_JOBS.get(job_id)
+        # Log path is deterministic, so we can recover it even if the registry was
+        # lost on a session respawn.
+        log = Path(job["log"]) if job else (ctx.sandbox.root / ".polynoia" / "bg" / f"{job_id}.log")
+        if not log.exists():
+            return {"kind": "error", "error": f"未找到后台任务 {job_id}(日志不存在)。"}
+        timeout = float(args.get("timeout", 120))
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while True:
+            try:
+                text = log.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            mark = text.rfind(_BG_EXIT_MARK)
+            if mark >= 0:
+                code_str = text[mark + len(_BG_EXIT_MARK):].splitlines()[0].strip()
+                with contextlib.suppress(ValueError):
+                    _BG_JOBS.pop(job_id, None)
+                    return {
+                        "kind": "done",
+                        "job_id": job_id,
+                        "exit_code": int(code_str),
+                        "output": text[:mark][-4096:],
+                    }
+            if loop.time() >= deadline:
+                return {
+                    "kind": "running",
+                    "job_id": job_id,
+                    "output": text[-2048:],
+                    "hint": "仍在运行;可再 wait 一次,或先干别的。",
+                }
+            await asyncio.sleep(min(2.0, max(0.2, deadline - loop.time())))
 
 
 class _GrepTool(_ToolBase):
@@ -656,7 +1021,14 @@ class _GlobTool(_ToolBase):
             for p in ctx.sandbox.root.glob(pattern)
             if ".git" not in p.parts and ".polynoia" not in p.parts
         )
-        return {"kind": "results", "paths": matches[:500], "total": len(matches)}
+        # Explicit truncated flag (like grep) so the agent KNOWS the list is partial
+        # and can narrow the pattern — silent slicing read as "complete".
+        return {
+            "kind": "results",
+            "paths": matches[:500],
+            "total": len(matches),
+            "truncated": len(matches) > 500,
+        }
 
 
 async def _callback_server(
@@ -1062,6 +1434,7 @@ def _short_id() -> str:
 
 class _AskUserTool(_ToolBase):
     name = "ask_user"
+    human_wait = True  # blocks waiting for the user's answer — never time it out
     description = (
         "Ask the human USER a question and BLOCK until they answer. Use this "
         "whenever you need a decision only the user can make (scope, a choice "
@@ -1136,6 +1509,7 @@ class _AskUserTool(_ToolBase):
 
 class _RequestProjectAccessTool(_ToolBase):
     name = "request_project_access"
+    human_wait = True  # blocks on the user granting access — never time it out
     description = (
         "Request the USER's approval to work inside one of their PROJECTS. Use "
         "this ONLY when you're in a private 1:1 (you have your own private "
@@ -1437,7 +1811,7 @@ class _ResolveConflictTool(_ToolBase):
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
-        _ReadTool, _WriteTool,
+        _ReadTool, _WriteTool, _EditTool, _RunBackgroundTool, _WaitTool,
         _BashTool, _GrepTool, _GlobTool,
         _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
         _AskUserTool, _RequestProjectAccessTool, _PresentTool,
@@ -1468,8 +1842,8 @@ _RETRIEVE = {"read", "grep", "glob"}              # look at the sandbox — ever
 _RECALL   = {"recall"}                            # READ shared memory — everyone
 _REMEMBER = {"remember"}                          # WRITE shared memory (ADR-014)
 _ASK      = {"ask_user"}                           # block + ask the user a question
-_MUTATE   = {"write"}                              # the SOLE file-mutation tool → one audit entry
-_SHELL    = {"bash"}                               # run a shell command
+_MUTATE   = {"write", "edit"}                      # file-mutation: full write + targeted edit
+_SHELL    = {"bash", "run_background", "wait"}     # shell: run + background jobs
 _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
 # delegate + present + resolve merge conflicts. resolve_conflict is ORCHESTRATOR-
 # ONLY (the neutral arbiter that holds the contract + every member's intent) — a
