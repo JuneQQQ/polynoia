@@ -176,6 +176,12 @@ type Store = {
 	servers: Server[];
 	workspaces: Workspace[];
 
+	/** Did the initial seed fetch reach the server? false → render the boot
+	 * "can't reach server" gate instead of an empty shell. */
+	serverReachable: boolean;
+	/** WS link state for the active conv, surfaced as the connection banner. */
+	connectionStatus: "connecting" | "online" | "reconnecting" | "offline";
+
 	// Active selection
 	activeWorkspaceId: string | null;
 	activeConvId: string | null;
@@ -228,6 +234,14 @@ type Store = {
 		servers: Server[];
 		workspaces: Workspace[];
 	}) => void;
+	setServerReachable: (v: boolean) => void;
+	setConnectionStatus: (
+		s: "connecting" | "online" | "reconnecting" | "offline",
+	) => void;
+	/** Re-fetch seed lists (providers/agents/servers/workspaces). Powers the
+	 * connection-banner retry + mobile resume/network-regain so lists don't go
+	 * stale. Sets serverReachable; throws on failure so callers can react. */
+	reloadSeed: () => Promise<void>;
 	setActiveWorkspace: (id: string | null) => void;
 	setActiveConv: (id: string | null) => void;
 	setView: (v: "inbox" | "marketplace" | "archive" | "chat") => void;
@@ -460,6 +474,8 @@ export const useStore = create<Store>((set, get) => ({
 	agents: [],
 	servers: [],
 	workspaces: [],
+	serverReachable: true,
+	connectionStatus: "connecting",
 	// Restored on boot so a refresh keeps you on the same project + conversation
 	// (the active conv object itself is persisted by App.tsx).
 	activeWorkspaceId:
@@ -664,6 +680,23 @@ export const useStore = create<Store>((set, get) => ({
 		set((s) => ({ workspaceFilesTick: s.workspaceFilesTick + 1 })),
 
 	setSeed: (s) => set(s),
+	setServerReachable: (v) => set({ serverReachable: v }),
+	setConnectionStatus: (s) => set({ connectionStatus: s }),
+	reloadSeed: async () => {
+		const { api } = await import("./lib/api");
+		try {
+			const [providers, agents, servers, workspaces] = await Promise.all([
+				api.providers(),
+				api.agents(),
+				api.servers(),
+				api.workspaces(),
+			]);
+			set({ providers, agents, servers, workspaces, serverReachable: true });
+		} catch (e) {
+			set({ serverReachable: false });
+			throw e;
+		}
+	},
 	setActiveWorkspace: (id) => {
 		try {
 			if (id) window.localStorage.setItem("polynoia:active-ws", id);

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polynoia.api.routes import refresh_adapter_credentials
+from polynoia.api.contacts_routes import refresh_adapter_credentials
 
 
 @pytest.fixture

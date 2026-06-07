@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from polynoia.api.routes import _resolve_safe_path
+from polynoia.api._fs_paths import _resolve_safe_path
 
 
 def test_resolve_safe_path_rejects_absolute(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@
  *   - 插入后光标位置正确;同一行可多次 @
  *   - picker 列表:本 conv 的 members + 所有 enabled adapter agents(全局可召唤)
  */
-import { ArrowUp, FileText, Paperclip, Reply, X } from "lucide-react";
+import { ArrowUp, FileText, Loader2, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { isMobile } from "../lib/platform";
@@ -118,6 +118,24 @@ export function Composer({
   const [pendingFileRefs, setPendingFileRefs] = useState<
     Array<{ wsId: string; path: string; name: string; size?: number | null }>
   >([]);
+  // Pasted / picked attachments (paperclip + paste). Staged as chips ABOVE the
+  // textarea — NOT sent on paste. The bytes upload immediately (so the chip can
+  // preview + the send is instant), but the message is emitted only on submit,
+  // BEFORE the text. `src` is null while uploading. This matches the user's ask:
+  // "截图先追加到聊天框上面,再发送 — 不要直接发出去".
+  const [pendingAtt, setPendingAtt] = useState<
+    Array<{
+      id: string;
+      kind: "image" | "file";
+      name: string;
+      media_type?: string;
+      size_bytes?: number;
+      previewUrl?: string; // object URL for an instant image thumbnail
+      src: string | null; // server URL once uploaded; null while uploading
+    }>
+  >([]);
+  const attSeq = useRef(0);
+  const anyUploading = pendingAtt.some((a) => a.src === null);
   // Lights up the composer outline while a drag is hovering it.
   const [isDragOver, setIsDragOver] = useState(false);
   const agents = useStore((s) => s.agents);
@@ -189,9 +207,34 @@ export function Composer({
 
   const submit = () => {
     const t = text.trim();
-    // Empty submit allowed ONLY when there are pending file refs to ship —
-    // matches paperclip behavior (each attachment is its own message).
-    if (!t && pendingFileRefs.length === 0) return;
+    // Don't ship while an attachment is still uploading (send button is also
+    // disabled, but Enter could reach here).
+    if (anyUploading) return;
+    const readyAtt = pendingAtt.filter((a) => a.src);
+    // Empty submit allowed ONLY when there are staged attachments to ship.
+    if (!t && readyAtt.length === 0 && pendingFileRefs.length === 0) return;
+    // Pasted / picked attachments: emit each (image or file) BEFORE the text so
+    // the agent sees them first, then clear the staged chips.
+    for (const a of readyAtt) {
+      if (a.kind === "image" && onAttachImage) {
+        onAttachImage({
+          kind: "image",
+          src: a.src as string,
+          name: a.name,
+          media_type: a.media_type,
+        });
+      } else if (onAttachFile) {
+        onAttachFile({
+          kind: "file",
+          src: a.src as string,
+          name: a.name,
+          media_type: a.media_type,
+          size_bytes: a.size_bytes,
+        });
+      }
+      if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+    }
+    if (readyAtt.length > 0) setPendingAtt([]);
     // Drag-dropped workspace files: emit each as its own file message FIRST,
     // so it lands in the timeline ahead of the text the agent gets routed.
     // Uses the same onAttachFile path the paperclip + paste flows already
@@ -272,39 +315,48 @@ export function Composer({
     setMention(detectMentionContext(v, caret));
   };
 
-  // Upload an attachment to the server and hand back a short URL (NOT a fat
-  // base64 data: URL). Keeps DB rows small + lets the attachment re-render
-  // after a refresh from /api/files/<id>/raw. Surfaces failures (no silent
-  // swallow). 25MB cap matches the server.
-  const dispatchAttachment = async (file: File) => {
+  // Stage an attachment: upload the bytes now (short URL, NOT a fat base64
+  // data: URL — keeps DB rows small + re-renders after refresh from
+  // /api/files/<id>/raw), but DON'T emit a message — push a pending chip the
+  // user reviews above the textarea and ships on submit. 25MB cap = server's.
+  const stageAttachment = async (file: File) => {
     if (file.size > 25 * 1024 * 1024) {
       window.alert(`${file.name} 超过 25MB,未上传`);
       return;
     }
-    let url: string;
-    try {
-      const res = await api.upload(file, file.name || "attachment", convId);
-      url = res.url;
-    } catch {
-      window.alert(`上传失败:${file.name}`);
-      return;
-    }
-    if (file.type.startsWith("image/") && onAttachImage) {
-      onAttachImage({
-        kind: "image",
-        src: url,
-        name: file.name || "pasted-image",
-        media_type: file.type,
-      });
-    } else if (onAttachFile) {
-      onAttachFile({
-        kind: "file",
-        src: url,
-        name: file.name || "attachment",
+    const id = `att-${attSeq.current++}`;
+    const isImg = file.type.startsWith("image/");
+    const previewUrl = isImg ? URL.createObjectURL(file) : undefined;
+    setPendingAtt((p) => [
+      ...p,
+      {
+        id,
+        kind: isImg ? "image" : "file",
+        name: file.name || (isImg ? "pasted-image" : "attachment"),
         media_type: file.type || undefined,
         size_bytes: file.size,
-      });
+        previewUrl,
+        src: null,
+      },
+    ]);
+    try {
+      const res = await api.upload(file, file.name || "attachment", convId);
+      setPendingAtt((p) =>
+        p.map((a) => (a.id === id ? { ...a, src: res.url } : a)),
+      );
+    } catch {
+      setPendingAtt((p) => p.filter((a) => a.id !== id));
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      window.alert(`上传失败:${file.name}`);
     }
+  };
+
+  const removePendingAtt = (id: string) => {
+    setPendingAtt((p) => {
+      const hit = p.find((a) => a.id === id);
+      if (hit?.previewUrl) URL.revokeObjectURL(hit.previewUrl);
+      return p.filter((a) => a.id !== id);
+    });
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -315,7 +367,7 @@ export function Composer({
     e.preventDefault();
     for (const item of fileItems) {
       const file = item.getAsFile();
-      if (file) dispatchAttachment(file);
+      if (file) stageAttachment(file);
     }
   };
 
@@ -323,7 +375,7 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : [];
-    for (const f of files) dispatchAttachment(f);
+    for (const f of files) stageAttachment(f);
     // Reset so picking the SAME file twice still triggers onChange.
     e.target.value = "";
   };
@@ -534,6 +586,55 @@ export function Composer({
           </div>
         )}
 
+        {/* Pasted / picked attachment chips — staged above the textarea, shipped
+            on send (BEFORE the text), NOT on paste. Image → thumbnail, other →
+            name; a spinner overlays while the bytes upload. */}
+        {pendingAtt.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {pendingAtt.map((a) => (
+              <div
+                key={a.id}
+                className="relative inline-flex items-center gap-1.5 rounded-md bg-[var(--color-surface-2)] border border-[var(--color-line)] anim-fade-up"
+                title={a.name}
+              >
+                {a.kind === "image" && (a.previewUrl || a.src) ? (
+                  <img
+                    src={a.previewUrl || (a.src as string)}
+                    alt={a.name}
+                    className="h-14 w-14 object-cover rounded-md"
+                  />
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-1.5 text-[11.5px]">
+                    <FileText
+                      size={11}
+                      className="text-[var(--color-fg-3)] flex-shrink-0"
+                    />
+                    <span className="font-mono text-[var(--color-fg-2)] truncate max-w-[160px]">
+                      {a.name}
+                    </span>
+                  </span>
+                )}
+                {a.src === null && (
+                  <span className="absolute inset-0 grid place-items-center rounded-md bg-[var(--color-surface)]/60">
+                    <Loader2
+                      size={16}
+                      className="animate-spin text-[var(--color-accent)]"
+                    />
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removePendingAtt(a.id)}
+                  className="absolute -top-1.5 -right-1.5 grid place-items-center w-4 h-4 rounded-full bg-[var(--color-fg-3)] text-white hover:bg-[var(--color-fg)] transition shadow"
+                  title="移除"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Live agent-running status — docked just above the input box (inside
             the composer chrome), so it rides with the composer instead of
             floating over / hiding message content. */}
@@ -633,17 +734,29 @@ export function Composer({
             <button
               type="button"
               onClick={submit}
-              disabled={!text.trim() && pendingFileRefs.length === 0}
-              title="发送 (Enter)"
+              disabled={
+                anyUploading ||
+                (!text.trim() &&
+                  pendingFileRefs.length === 0 &&
+                  pendingAtt.length === 0)
+              }
+              title={anyUploading ? "附件上传中…" : "发送 (Enter)"}
               className={`ml-auto grid place-items-center rounded-full transition-all duration-150 ${
                 mobile ? "w-10 h-10" : "w-8 h-8"
               } ${
-                text.trim() || pendingFileRefs.length > 0
+                !anyUploading &&
+                (text.trim() ||
+                  pendingFileRefs.length > 0 ||
+                  pendingAtt.length > 0)
                   ? "bg-[var(--color-accent)] text-white hover:brightness-110 press-down"
                   : "bg-[var(--color-surface-3)] text-[var(--color-fg-4)] cursor-not-allowed"
               }`}
             >
-              <ArrowUp size={mobile ? 20 : 17} strokeWidth={2.4} />
+              {anyUploading ? (
+                <Loader2 size={mobile ? 20 : 17} className="animate-spin" />
+              ) : (
+                <ArrowUp size={mobile ? 20 : 17} strokeWidth={2.4} />
+              )}
             </button>
           </div>
         </div>

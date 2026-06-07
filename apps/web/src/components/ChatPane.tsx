@@ -324,6 +324,7 @@ export function ChatPane({ convId, members, title }: Props) {
 					schedule();
 				} else {
 					backoff = 800;
+					useStore.getState().setConnectionStatus("online");
 					// Reconnected. Give stream-resume + the agent-status snapshot
 					// (queryAgentStatus fires inside reconnect()) a moment to land,
 					// then retire any write/edit card still stuck on「准备写入…」whose
@@ -341,32 +342,42 @@ export function ChatPane({ convId, members, title }: Props) {
 			}, backoff);
 		};
 		ws.onClose(() => {
-			if (mounted) schedule();
-		});
-		ws.connect().catch((e) => {
-			// Filter out the React 18 Strict-Mode double-mount false alarm:
-			// when the first mount's effect is unmounted before WS even opens, the
-			// promise rejects with an Event whose currentTarget is null. Real
-			// errors carry a useful message — log only those.
-			if (!e || (typeof e === "object" && (e as Event).currentTarget === null))
-				return;
-			console.error("ws connect failed", e);
-		});
-		const offResume = onResume(() => {
-			backoff = 800;
-			schedule();
-		});
-		const offNet = onNetworkChange((connected) => {
-			if (connected) {
-				backoff = 800;
+			if (mounted) {
+				useStore.getState().setConnectionStatus("reconnecting");
 				schedule();
 			}
 		});
+		ws.connect()
+			.then(() => {
+				if (mounted) useStore.getState().setConnectionStatus("online");
+			})
+			.catch((e) => {
+				// Filter out the React 18 Strict-Mode double-mount false alarm:
+				// when the first mount's effect is unmounted before WS even opens, the
+				// promise rejects with an Event whose currentTarget is null. Real
+				// errors carry a useful message — log only those.
+				if (!e || (typeof e === "object" && (e as Event).currentTarget === null))
+					return;
+				console.error("ws connect failed", e);
+			});
+		// On app resume / network regain (and the connection-banner's manual
+		// retry) reconnect this conv's live socket. Seed-list refresh on resume is
+		// handled app-wide in App.tsx so it also covers the mobile home/list view.
+		const refresh = () => {
+			backoff = 800;
+			schedule();
+		};
+		const offResume = onResume(refresh);
+		const offNet = onNetworkChange((connected) => {
+			if (connected) refresh();
+		});
+		window.addEventListener("polynoia:reconnect", refresh);
 		return () => {
 			mounted = false;
 			if (timer) clearTimeout(timer);
 			offResume();
 			offNet();
+			window.removeEventListener("polynoia:reconnect", refresh);
 			ws.close();
 		};
 	}, [convId, applyChunkToConv]);

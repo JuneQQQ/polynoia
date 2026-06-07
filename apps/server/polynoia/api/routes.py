@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import base64
 import json
 import logging
+import mimetypes
 import os
 import re
 import urllib.parse
@@ -15,13 +17,8 @@ from contextlib import suppress
 from datetime import datetime
 from typing import NamedTuple, cast
 
-from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import (
-    FileResponse,
-    PlainTextResponse,
-    Response,
-    StreamingResponse,
-)
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
@@ -378,690 +375,6 @@ async def _broadcast_to_conv(conv_id: str, frame: str) -> None:
 router = APIRouter()
 
 
-# ── Seed data endpoints (P0) ───────────────────────────────────
-
-
-@router.get("/api/providers")
-async def list_providers():
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_providers(session)
-        return [r.model_dump() for r in rows]
-
-
-@router.get("/api/agents")
-async def list_agents():
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_agents(session)
-        # Frontend expects "you" in the seed too (virtual sender)
-        from polynoia.api.seed import seed_agents
-        you = next((a for a in seed_agents() if a.id == "you"), None)
-        result = [r.model_dump() for r in rows]
-        if you:
-            result.insert(0, you.model_dump())
-        return result
-
-
-@router.post("/api/agents/{agent_id}/enable")
-async def enable_adapter(agent_id: str):
-    """Mark an adapter as onboarded.
-
-    Decoupled from contact creation: this only flips a flag saying the user
-    authorized Polynoia to use this CLI. No AgentRow is created here — the
-    user goes to "新建联系人" separately to create concrete contacts.
-    """
-    from polynoia.api.agent_templates import ADAPTER_AGENT_TEMPLATES
-
-    if agent_id not in ADAPTER_AGENT_TEMPLATES:
-        return {"error": f"unknown adapter id: {agent_id}"}, 404
-    async with SessionLocal() as session:
-        await storage_repo.add_onboarded_adapter(session, agent_id)
-        await session.commit()
-    return {"adapter_id": agent_id, "enabled": True}
-
-
-@router.post("/api/agents/{agent_id}/disable")
-async def disable_adapter(agent_id: str):
-    """Un-onboard an adapter.
-
-    Existing contacts using this adapter are NOT deleted — they remain in the
-    list as "soft offline" (heartbeat will show grey). User has to delete each
-    contact explicitly if they want a clean wipe.
-    """
-    async with SessionLocal() as session:
-        ok = await storage_repo.remove_onboarded_adapter(session, agent_id)
-        await session.commit()
-    return {"adapter_id": agent_id, "enabled": False, "removed": ok}
-
-
-_VALID_TOOL_ROLES = frozenset({
-    "orchestrator", "coder", "designer", "writer", "generalist",
-})
-
-
-def _validate_tool_role(raw: object) -> str:
-    """Validate REST input. Empty → generalist; unknown → 400 fail-closed."""
-    if raw is None or raw == "":
-        return "generalist"
-    if not isinstance(raw, str) or raw not in _VALID_TOOL_ROLES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"invalid tool_role: {raw!r}. Must be one of {sorted(_VALID_TOOL_ROLES)}",
-        )
-    return raw
-
-
-# Real tool names — a mirror of mcp.tools.TOOL_REGISTRY. Unknown names are
-# dropped (fail-safe). `write` is the SOLE file-mutation tool; the old
-# edit/apply_patch/revert/call_agent tools are gone for good (see mcp/tools.py),
-# so they are intentionally NOT listed here.
-_ALL_TOOL_NAMES = frozenset({
-    "read", "write", "bash", "grep", "glob",
-    "dispatch", "discuss", "remember", "recall", "report", "ask_user",
-    "request_project_access", "present",
-})
-
-
-def _validate_tools_whitelist(raw: object) -> list[str]:
-    """REST input → clean tool list. Non-list / unknown names dropped. Order
-    preserved, deduped. Empty = contact uses its tool_role's full set."""
-    if not isinstance(raw, list):
-        return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in raw:
-        if isinstance(t, str) and t in _ALL_TOOL_NAMES and t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
-
-
-def _caps_from_tools(tool_role: str, tools: list[str]) -> list[str]:
-    """Capability tags (能力标签) derived from the EFFECTIVE tool set, so the
-    contact card honestly reflects what it can do. rule.md: 能力标签."""
-    from polynoia.mcp.tools import tools_for_role
-    eff = set(tools_for_role(tool_role, set(tools) or None).keys())
-    caps: list[str] = []
-    if eff & {"write", "edit", "apply_patch"}:
-        caps.append("写代码")
-    if "bash" in eff:
-        caps.append("跑命令/测试")
-    if "dispatch" in eff:
-        caps.append("派活")
-    if "discuss" in eff:
-        caps.append("讨论")
-    if not (eff & {"write", "edit", "apply_patch", "bash"}) and (
-        eff & {"read", "grep", "glob"}
-    ):
-        caps.append("只读")
-    return caps
-
-
-# ── Contacts (user-created agents using an enabled adapter) ─────────
-
-
-@router.get("/api/adapters/enabled")
-async def list_enabled_adapters():
-    """List adapters the user has explicitly onboarded.
-
-    Source of truth is the ``onboarded_adapters`` table — separate from
-    AgentRow/contacts. New contact creation pulls this list to populate
-    the adapter dropdown.
-    """
-    from polynoia.adapters.pool import _ensure_base_adapters
-    from polynoia.api.agent_templates import (
-        ADAPTER_AGENT_TEMPLATES,
-        ADAPTER_DEFAULT_MODEL,
-        ADAPTER_MODEL_HINT,
-        ADAPTER_MODELS,
-    )
-
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_onboarded_adapter_rows(session)
-    ids = [r.adapter_id for r in rows]
-    proxy_by_id = {r.adapter_id: (r.proxy, r.proxy_kind) for r in rows}
-
-    adapters_map = _ensure_base_adapters()
-
-    async def _models_for(adapter_id: str) -> list[str]:
-        # Prefer a live probe of the adapter's backend so the dropdown
-        # reflects what the user's local credentials/proxy actually grant.
-        # Static ADAPTER_MODELS is the fallback when the adapter has no
-        # probe (claudeCode / opencoder) or the probe failed.
-        ad = adapters_map.get(adapter_id)
-        if ad is not None and hasattr(ad, "list_models"):
-            probed = await ad.list_models()
-            if probed:
-                return probed
-        return ADAPTER_MODELS.get(adapter_id, [])
-
-    return [
-        {
-            "id": adapter_id,
-            "models": await _models_for(adapter_id),
-            "default_model": ADAPTER_DEFAULT_MODEL.get(adapter_id),
-            "model_hint": ADAPTER_MODEL_HINT.get(adapter_id),
-            "proxy": proxy_by_id.get(adapter_id, (None, "system"))[0],
-            "proxy_kind": proxy_by_id.get(adapter_id, (None, "system"))[1],
-        }
-        for adapter_id in ids
-        if adapter_id in ADAPTER_AGENT_TEMPLATES
-    ]
-
-
-@router.put("/api/adapters/{adapter_id}/proxy")
-async def set_adapter_proxy(adapter_id: str, body: dict):
-    """Set an adapter's network egress (shared by all its contacts).
-
-    Body: {"proxy_kind": "system"|"direct"|"custom", "proxy": "http://..."}.
-    Egress follows the adapter's LLM endpoint (host/adapter-level), so this is
-    NOT a per-contact knob — all contacts backed by this adapter inherit it.
-    """
-    kind = body.get("proxy_kind") or "system"
-    if kind not in ("system", "direct", "custom"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"invalid proxy_kind: {kind!r}",
-        )
-    proxy = body.get("proxy") if kind == "custom" else None
-    async with SessionLocal() as session:
-        ok = await storage_repo.set_adapter_proxy(session, adapter_id, proxy, kind)
-        if not ok:
-            await session.rollback()
-            raise HTTPException(
-                status_code=404,
-                detail=f"adapter not onboarded: {adapter_id}",
-            )
-        await session.commit()
-    return {"adapter_id": adapter_id, "proxy": proxy, "proxy_kind": kind}
-
-
-@router.post("/api/contacts/suggest")
-async def suggest_contact(body: dict):
-    """对话式创建 (rule.md): infer a contact config from a free-text description.
-
-    Body: ``{ "description": "我要个会写前端、不能跑命令的设计师" }``
-    Returns ``{name, tool_role, tools_whitelist, system_prompt, tagline, caps,
-    color, adapter_id}`` to PREFILL the create form (user reviews + edits, then
-    POST /api/contacts). Deterministic keyword heuristics — no LLM round-trip, so
-    it's instant and free; the user gets the final say on every field."""
-    from polynoia.api.agent_templates import ADAPTER_VISUAL_DEFAULTS
-
-    desc = (body.get("description") or "").strip()
-    if not desc:
-        return {"error": "description required"}, 400
-    low = desc.lower()
-
-    def has(*kw: str) -> bool:
-        return any(k in desc or k.lower() in low for k in kw)
-
-    # Role: most-specific first. Read-only intent overrides write roles.
-    readonly = has("只读", "评审", "审查", "review", "不写", "不能改", "不改代码")
-    if has("协调", "编排", "拆解", "派活", "orchestr", "调度", "项目经理", "PM"):
-        role = "orchestrator"
-    elif has("前端", "界面", "ui", "样式", "css", "html", "设计", "视觉", "网页"):
-        role = "designer"
-    elif has("文档", "文案", "readme", "写作", "翻译", "doc", "markdown", "博客"):
-        role = "writer"
-    elif has("后端", "api", "python", "服务", "数据库", "脚本", "代码", "backend", "测试"):
-        role = "coder"
-    else:
-        role = "generalist"
-
-    # Tools: role default, narrowed if "不能跑命令 / 只读" intent is present.
-    from polynoia.mcp.tools import ROLE_TOOLS
-    role_tools = list(ROLE_TOOLS.get(role, ROLE_TOOLS["generalist"]))
-    no_bash = has("不能跑", "不跑命令", "无 bash", "no bash", "不执行命令")
-    tools = [t for t in role_tools if not (no_bash and t in ("bash", "apply_patch"))]
-    if readonly:
-        tools = [t for t in tools if t in ("read", "grep", "glob", "dispatch", "discuss")]
-    tools_whitelist = sorted({*tools, *_ALL_TOOL_NAMES.intersection({
-        "remember", "recall", "report", "ask_user", "request_project_access",
-    })})
-
-    # Pick adapter: prefer an onboarded one (claudeCode > codex > opencoder).
-    async with SessionLocal() as session:
-        onboarded = set(await storage_repo.list_onboarded_adapters(session))
-    adapter_id = next(
-        (a for a in ("claudeCode", "codex", "opencoder") if a in onboarded),
-        "claudeCode",
-    )
-    visuals = ADAPTER_VISUAL_DEFAULTS.get(adapter_id, {})
-
-    role_zh = {
-        "orchestrator": "协调者", "designer": "前端设计师", "writer": "文档写手",
-        "coder": "后端工程师", "generalist": "全能助手",
-    }[role]
-    # Name: a short word from the description, else the role label.
-    name = role_zh
-    tagline = f"由描述生成 · {role_zh}"
-    caps = _caps_from_tools(role, tools_whitelist)
-    system_prompt = (
-        f"你是一名{role_zh}。\n\n用户对你的期望:{desc}\n\n"
-        "按这个定位工作;具体的工具规则与协作纪律由平台自动注入,你专注做好本职。"
-    )
-    return {
-        "adapter_id": adapter_id,
-        "name": name,
-        "tool_role": role,
-        "tools_whitelist": tools_whitelist,
-        "system_prompt": system_prompt,
-        "tagline": tagline,
-        "caps": caps,
-        "color": visuals.get("color") or "#7A5AE0",
-    }
-
-
-def _parse_skills(raw) -> list:
-    """Validate contact-level skills from request input → [AgentSkill].
-
-    A skill is bound by NAME (referencing an installed skill package placed into
-    the agent's sandbox at spawn). ``instructions`` are optional — when present
-    they're also injected into the identity layer (inline-prompt fallback)."""
-    from polynoia.domain.entities import AgentSkill
-
-    out: list = []
-    for s in (raw or []):
-        if not isinstance(s, dict):
-            continue
-        nm = (s.get("name") or "").strip()
-        if not nm:
-            continue
-        instr = (s.get("instructions") or "").strip()
-        desc = (s.get("description") or "").strip() or None
-        out.append(AgentSkill(name=nm[:80], instructions=instr, description=desc))
-    return out
-
-
-@router.get("/api/skills")
-async def list_skills_endpoint():
-    """Installed skill packages: [{name, description, path}]."""
-    from polynoia import skills as _skills
-    return _skills.list_skills()
-
-
-@router.post("/api/skills")
-async def install_skill_endpoint(body: dict):
-    """Install a skill from a git URL or local path into the central skills dir.
-
-    Body: { "source": "https://…/foo-skill.git" | "/abs/local/skill", "name"? }
-    """
-    from polynoia import skills as _skills
-    try:
-        return await _skills.install_skill(body.get("source") or "", body.get("name"))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.delete("/api/skills/{name}")
-async def delete_skill_endpoint(name: str):
-    from polynoia import skills as _skills
-    return {"ok": _skills.remove_skill(name)}
-
-
-@router.post("/api/contacts")
-async def create_contact(body: dict):
-    """Create a new user-defined contact (agent) backed by an enabled adapter.
-
-    Body:
-        {
-          "adapter_id": "claudeCode" | "codex" | "opencoder",   # required
-          "name": "Claude-Fast",                                # required
-          "model": "claude-haiku-4-5",                          # required
-          "system_prompt": "...",                               # optional
-          "color": "#D2691E",                                   # optional, defaults from adapter
-          "initials": "Cf",                                     # optional, derived from name
-          "tagline": "...",                                     # optional
-        }
-    """
-    from polynoia.api.agent_templates import (
-        ADAPTER_AGENT_TEMPLATES,
-        ADAPTER_VISUAL_DEFAULTS,
-    )
-    from polynoia.domain.entities import Agent, AgentSetup, new_ulid
-
-    adapter_id = (body.get("adapter_id") or "").strip()
-    name = (body.get("name") or "").strip()
-    model = (body.get("model") or "").strip()
-    if not adapter_id or adapter_id not in ADAPTER_AGENT_TEMPLATES:
-        return {"error": f"unknown adapter_id: {adapter_id}"}, 400
-    if not name:
-        return {"error": "name required"}, 400
-    if not model:
-        return {"error": "model required"}, 400
-
-    tmpl = ADAPTER_AGENT_TEMPLATES[adapter_id]
-    visuals = ADAPTER_VISUAL_DEFAULTS.get(adapter_id, {})
-
-    initials = (body.get("initials") or "").strip() or _default_initials(name) or visuals.get("initials", "?")
-    color = body.get("color") or visuals.get("color") or "#7A5AE0"
-    bg = visuals.get("bg") or "#EFE9FB"
-    tagline = body.get("tagline") or tmpl.tagline
-
-    tool_role = _validate_tool_role(body.get("tool_role"))
-    tools_whitelist = _validate_tools_whitelist(body.get("tools_whitelist"))
-    # 能力标签 = adapter template's domain tags + derived capability tags from the
-    # effective tool set (deduped, order-preserving).
-    caps = list(dict.fromkeys([*tmpl.caps, *_caps_from_tools(tool_role, tools_whitelist)]))
-
-    contact = Agent(
-        skills=_parse_skills(body.get("skills")),
-        id=new_ulid(),
-        name=name,
-        role=tmpl.role,
-        provider=tmpl.provider,
-        handle=f"@{name}",
-        initials=initials[:3],
-        color=color,
-        bg=bg,
-        tagline=tagline,
-        caps=caps,
-        online=True,
-        enabled=True,
-        custom=True,
-        system_prompt=body.get("system_prompt") or tmpl.system_prompt,
-        tool_role=tool_role,
-        tools_whitelist=tools_whitelist,
-        setup=AgentSetup(
-            cli_command=tmpl.setup.cli_command if tmpl.setup else None,
-            detected=True,
-            auth_kinds=list(tmpl.setup.auth_kinds) if tmpl.setup else [],
-            docs=tmpl.setup.docs if tmpl.setup else None,
-            adapter_id=adapter_id,
-            model=model,
-            max_context_tokens=body.get("max_context_tokens"),
-        ),
-    )
-
-    async with SessionLocal() as session:
-        await storage_repo.upsert_agent(session, contact)
-        # Implicit onboarding: creating a contact on adapter X means the user
-        # is committing to using X — auto-mark it as onboarded so the sidebar
-        # first-run guide card disappears and footer pill flips to "connected".
-        # Idempotent — safe to call when already onboarded.
-        await storage_repo.add_onboarded_adapter(session, adapter_id)
-        await session.commit()
-    return {"contact": contact.model_dump()}
-
-
-@router.patch("/api/contacts/{contact_id}")
-async def update_contact(contact_id: str, body: dict):
-    """Update a contact: change model / name / system_prompt / color / initials.
-
-    Cannot change adapter_id (would invalidate session lineage).
-    The `you` builtin cannot be edited.
-    """
-    if contact_id == "you":
-        return {"error": f"cannot edit builtin: {contact_id}"}, 400
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_agents(session)
-        existing = next((r for r in rows if r.id == contact_id), None)
-        if existing is None:
-            return {"error": "not found"}, 404
-        # Mutate fields in-place
-        if (name := body.get("name")) is not None:
-            existing.name = name.strip()
-            existing.handle = f"@{existing.name}"
-        if (initials := body.get("initials")) is not None:
-            existing.initials = initials.strip()[:3]
-        if (color := body.get("color")) is not None:
-            existing.color = color
-        if (tagline := body.get("tagline")) is not None:
-            existing.tagline = tagline
-        if (sp := body.get("system_prompt")) is not None:
-            existing.system_prompt = sp
-        if (tr := body.get("tool_role")) is not None:
-            existing.tool_role = _validate_tool_role(tr)
-        if "tools_whitelist" in body:
-            existing.tools_whitelist = _validate_tools_whitelist(
-                body["tools_whitelist"]
-            )
-        if "skills" in body:
-            existing.skills = _parse_skills(body["skills"])
-        # Re-derive capability tags whenever the tool set / role may have changed,
-        # so the contact card stays honest. Keep any non-derived (domain) tags.
-        if "tool_role" in body or "tools_whitelist" in body:
-            _derived = set(_caps_from_tools(
-                existing.tool_role, existing.tools_whitelist
-            ))
-            _all_derived = {"写代码", "跑命令/测试", "派活", "讨论", "只读"}
-            kept = [c for c in (existing.caps or []) if c not in _all_derived]
-            existing.caps = list(dict.fromkeys([*kept, *sorted(_derived)]))
-        if (model := body.get("model")) is not None:
-            if existing.setup is None:
-                from polynoia.domain.entities import AgentSetup
-                existing.setup = AgentSetup(model=model)
-            else:
-                existing.setup.model = model
-        # max_context_tokens — allow setting (int) or clearing (null/None)
-        if "max_context_tokens" in body:
-            from polynoia.domain.entities import AgentSetup
-            if existing.setup is None:
-                existing.setup = AgentSetup()
-            existing.setup.max_context_tokens = body["max_context_tokens"]
-        await storage_repo.upsert_agent(session, existing)
-        await session.commit()
-    # Invalidate cached sessions so the next turn re-spawns with new model/prompt.
-    from polynoia.adapters.pool import get_pool
-    await get_pool().close_sessions_for_agent(contact_id)
-    return {"contact": existing.model_dump()}
-
-
-@router.delete("/api/contacts/{contact_id}")
-async def delete_contact(contact_id: str):
-    """Delete a contact. The `you` builtin cannot be removed. A contact that's
-    still a member of any PROJECT (workspace) cannot be deleted either — the
-    user must delete those projects first (referential guard)."""
-    if contact_id == "you":
-        return {"ok": False, "error": f"cannot delete builtin: {contact_id}"}
-    async with SessionLocal() as session:
-        workspaces = await storage_repo.list_workspaces(session)
-        in_ws = [w.name for w in workspaces if contact_id in (w.members or [])]
-        if in_ws:
-            names = "」「".join(in_ws)
-            return {
-                "ok": False,
-                "kind": "in_workspace",
-                "workspaces": in_ws,
-                "error": (
-                    f"该联系人还在项目「{names}」里,得先删掉这些项目,再删联系人。"
-                ),
-            }
-        ok = await storage_repo.delete_agent(session, contact_id)
-        await session.commit()
-    from polynoia.adapters.pool import get_pool
-    await get_pool().close_sessions_for_agent(contact_id)
-    return {"ok": ok}
-
-
-@router.post("/api/adapters/refresh-credentials")
-async def refresh_adapter_credentials():
-    """Re-read the host's current CLI logins (~/.claude, ~/.codex, opencode …)
-    into every existing sandbox AND evict all cached adapter sessions.
-
-    Why this is needed: each sandbox holds a SNAPSHOT of the host credentials
-    taken at spawn time, and the adapter pool caches live sessions. So after the
-    user switches their `claude` / `codex` login (e.g. an account ran out of
-    quota), already-spawned sessions keep using the OLD token until something
-    forces a refresh. This button is that force — the next turn respawns with
-    the new login. (Workspace sandboxes already re-copy per spawn; per-conv
-    sandboxes don't, so we refresh both here.)"""
-    refreshed = 0
-    root = settings.sandbox_root
-    if root.exists():
-        # Per-conv sandboxes: <sandbox_root>/<conv_id>/ (each has .git). Skip the
-        # `workspaces` container dir and any dotfiles.
-        for d in root.iterdir():
-            if not d.is_dir() or d.name.startswith(".") or d.name == "workspaces":
-                continue
-            if not (d / ".git").exists():
-                continue
-            with contextlib.suppress(Exception):
-                await Sandbox(root=d, conv_id=d.name)._copy_host_credentials()
-                refreshed += 1
-        # Workspace-shared sandboxes: <sandbox_root>/workspaces/<ws_id>/.
-        ws_dir = root / "workspaces"
-        if ws_dir.exists():
-            for d in ws_dir.iterdir():
-                if not d.is_dir() or not (d / ".git").exists():
-                    continue
-                with contextlib.suppress(Exception):
-                    await Sandbox(
-                        root=d, conv_id=f"_workspace_{d.name}", workspace_root=d
-                    )._copy_host_credentials()
-                    refreshed += 1
-
-    from polynoia.adapters.pool import get_pool
-    pool = get_pool()
-    evicted = len(pool._sessions)  # count before clearing (for UI feedback)
-    await pool.close_all()
-    return {"ok": True, "sandboxes_refreshed": refreshed, "sessions_evicted": evicted}
-
-
-def _default_initials(name: str) -> str | None:
-    """Pick 1-2 initials from a contact name.
-
-    For ASCII names use the first letter of each word ("Claude Fast" → "Cf").
-    For CJK or mixed names, use the first non-space char.
-    """
-    if not name:
-        return None
-    parts = [p for p in name.split() if p]
-    if len(parts) >= 2 and parts[0][0].isascii() and parts[1][0].isascii():
-        return (parts[0][0] + parts[1][0]).title()
-    return name[0]
-
-
-@router.get("/api/servers")
-async def list_servers():
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_servers(session)
-        return [r.model_dump() for r in rows]
-
-
-@router.get("/api/workspaces")
-async def list_workspaces():
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_workspaces(session)
-        return [r.model_dump() for r in rows]
-
-
-def _inspect_workspace_path(raw: str) -> dict:
-    """Validate a custom-workspace directory on THIS server's filesystem.
-
-    Returns {ok, error?, path, exists, is_git, branch?}. Used by both the
-    create endpoint and the UI's 校验 button. Paths resolve on whichever server
-    the client is connected to (local or remote) — we never reach across hosts.
-    """
-    p = (raw or "").strip()
-    if not p:
-        return {"ok": False, "error": "path required"}
-    if not os.path.isabs(p):
-        return {"ok": False, "error": "需要绝对路径 (absolute path required)"}
-    ap = os.path.abspath(p)
-    if ap in ("/", os.path.expanduser("~")):
-        return {"ok": False, "error": "不允许把整个根目录/家目录作为工作区"}
-    if not os.path.exists(ap):
-        return {"ok": False, "error": f"目录不存在: {ap}", "exists": False}
-    if not os.path.isdir(ap):
-        return {"ok": False, "error": f"不是目录: {ap}", "exists": True}
-    is_git = os.path.isdir(os.path.join(ap, ".git"))
-    info: dict = {"ok": True, "path": ap, "exists": True, "is_git": is_git}
-    if is_git:
-        import subprocess
-        try:
-            r = subprocess.run(
-                ["git", "-C", ap, "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=8,
-            )
-            br = r.stdout.strip()
-            info["branch"] = br if (r.returncode == 0 and br and br != "HEAD") else "main"
-        except Exception:  # noqa: BLE001
-            info["branch"] = "main"
-    else:
-        info["branch"] = "main"  # will be created on init
-    return info
-
-
-@router.post("/api/workspaces/validate-path")
-async def validate_workspace_path(body: dict):
-    """Check a custom-workspace path before creating it (UI 校验 button)."""
-    # Offload the blocking git subprocess off the event loop.
-    return await asyncio.to_thread(_inspect_workspace_path, body.get("path") or "")
-
-
-@router.post("/api/workspaces")
-async def create_workspace(body: dict):
-    """Create a new project (workspace). User-driven from "+ 新建项目" entry.
-
-    Body: { name, desc?, repo?, server_id?, members, color?,
-            path? }  ← path = absolute dir on THIS server; agents work on the
-                       real code in place (sub-agents on sub-branches → merge
-                       into its integration branch). None = auto sandbox.
-    """
-    from polynoia.domain.entities import Workspace, new_ulid
-    from polynoia.sandbox import register_workspace_location, integration_branch_for
-
-    name = (body.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name required")
-    members = body.get("members") or []
-    # Always include "you" as a member
-    if "you" not in members:
-        members = ["you", *members]
-    server_id = body.get("server_id") or "local"
-    color = body.get("color") or "#E07A3C"
-
-    # Custom workspace: validate the real dir up-front so creation fails loudly.
-    raw_path = (body.get("path") or "").strip()
-    resolved_path: str | None = None
-    if raw_path:
-        chk = await asyncio.to_thread(_inspect_workspace_path, raw_path)
-        if not chk.get("ok"):
-            raise HTTPException(status_code=400, detail=chk.get("error") or "invalid path")
-        resolved_path = chk["path"]
-        # Reject binding two workspaces to the same real directory — they would
-        # share one repo HEAD + .polynoia/worktrees and corrupt each other.
-        async with SessionLocal() as _s:
-            for _w in await storage_repo.list_workspaces(_s):
-                if _w.path and os.path.abspath(_w.path) == resolved_path:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"该目录已绑定到项目「{_w.name}」,不能重复绑定: {resolved_path}",
-                    )
-
-    ws = Workspace(
-        id=new_ulid(),
-        server_id=server_id,
-        name=name,
-        desc=body.get("desc"),
-        repo=body.get("repo"),
-        path=resolved_path,
-        color=color,
-        role="Owner",
-        members=members,
-    )
-
-    # For a custom path, materialize the workspace git now (adopt existing repo /
-    # init a non-repo dir), capture the resolved integration branch, persist it.
-    if resolved_path:
-        register_workspace_location(ws.id, path=resolved_path)
-        try:
-            await Sandbox.ensure_workspace(ws.id)
-        except Exception as e:  # noqa: BLE001 — surface setup failure to the user
-            raise HTTPException(status_code=400, detail=f"工作区初始化失败: {e}") from e
-        ws.integration_branch = integration_branch_for(ws.id)
-
-    async with SessionLocal() as session:
-        await storage_repo.upsert_workspace(session, ws)
-        await session.commit()
-        # Conversations are user-driven (no auto "主对话") — empty workspace
-        # surface in the sidebar shows a guide card prompting "+ 新建对话".
-        return {
-            "workspace": ws.model_dump(),
-            "main_conv_id": None,
-        }
-
-
 @router.patch("/api/workspaces/{ws_id}")
 async def update_workspace(ws_id: str, body: dict):
     """Edit a project's name / desc / color / members — the「编辑项目」path from
@@ -1165,33 +478,6 @@ async def update_workspace(ws_id: str, body: dict):
                     + json.dumps({"conv_id": conv_id}) + "}\n\n",
                 )
     return {"workspace": result}
-
-
-@router.delete("/api/workspaces/{ws_id}")
-async def delete_workspace(ws_id: str):
-    """Delete a project: its conversations (+ their messages/pins) and the
-    workspace row, then evict cached adapter sessions and best-effort remove
-    the on-disk sandbox worktree. The「删除项目」path from the sidebar ⋮ menu."""
-    async with SessionLocal() as session:
-        # Snapshot the conv ids before deletion so we can evict their sessions.
-        convs = await storage_repo.list_conversations(session, workspace_id=ws_id)
-        conv_ids = [c.id for c in convs]
-        ok = await storage_repo.delete_workspace(session, ws_id)
-        await session.commit()
-    if not ok:
-        return {"ok": False, "error": f"workspace not found: {ws_id}"}
-    from polynoia.adapters.pool import get_pool
-    pool = get_pool()
-    for conv_id in conv_ids:
-        await pool.close_sessions_for_conv(conv_id)
-    # Best-effort sandbox worktree cleanup — DB delete already succeeded, so a
-    # leftover dir is non-fatal (the next same-id workspace would reuse it).
-    with contextlib.suppress(Exception):
-        import shutil
-        ws_dir = workspace_root_for(ws_id).resolve()
-        if ws_dir.is_dir():
-            shutil.rmtree(ws_dir)
-    return {"ok": True}
 
 
 @router.post("/api/conversations")
@@ -1299,18 +585,6 @@ async def list_conversations(
         return [r.model_dump(mode="json") for r in rows]
 
 
-@router.get("/api/conversations/{conv_id}")
-async def get_conversation(conv_id: str):
-    async with SessionLocal() as session:
-        c = await storage_repo.get_conversation(session, conv_id)
-        if not c:
-            # NB: `return {...}, 404` does NOT set the status in FastAPI — it
-            # serializes the tuple as a 200 JSON array, which downstream JSON
-            # consumers (e.g. the MCP write-gate) then choke on. Raise instead.
-            raise HTTPException(status_code=404, detail="conversation not found")
-        return c.model_dump(mode="json")
-
-
 @router.get("/api/conversations/{conv_id}/messages")
 async def list_conv_messages(
     conv_id: str,
@@ -1363,13 +637,6 @@ async def list_conv_messages(
     return {"messages": msgs, "has_more": has_more}
 
 
-@router.get("/api/conversations/{conv_id}/pins")
-async def list_conv_pins(conv_id: str):
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_pins(session, conv_id)
-        return [r.model_dump(mode="json") for r in rows]
-
-
 @router.delete("/api/conversations/{conv_id}")
 async def delete_conv(conv_id: str):
     """Hard-delete a conversation + its messages and pins."""
@@ -1377,46 +644,6 @@ async def delete_conv(conv_id: str):
         ok = await storage_repo.delete_conversation(session, conv_id)
         await session.commit()
     return {"ok": ok}
-
-
-@router.post("/api/conversations/{conv_id}/archive")
-async def archive_conv(conv_id: str):
-    async with SessionLocal() as session:
-        await storage_repo.set_archived(session, conv_id, True)
-        await session.commit()
-    return {"ok": True}
-
-
-@router.post("/api/conversations/{conv_id}/unarchive")
-async def unarchive_conv(conv_id: str):
-    async with SessionLocal() as session:
-        await storage_repo.set_archived(session, conv_id, False)
-        await session.commit()
-    return {"ok": True}
-
-
-@router.post("/api/conversations/{conv_id}/pin")
-async def pin_conv(conv_id: str):
-    async with SessionLocal() as session:
-        await storage_repo.set_pinned(session, conv_id, True)
-        await session.commit()
-    return {"ok": True}
-
-
-@router.post("/api/conversations/{conv_id}/unpin")
-async def unpin_conv(conv_id: str):
-    async with SessionLocal() as session:
-        await storage_repo.set_pinned(session, conv_id, False)
-        await session.commit()
-    return {"ok": True}
-
-
-@router.post("/api/conversations/{conv_id}/read")
-async def mark_conv_read(conv_id: str):
-    async with SessionLocal() as session:
-        await storage_repo.reset_unread(session, conv_id)
-        await session.commit()
-    return {"ok": True}
 
 
 @router.post("/api/conversations/{conv_id}/clear")
@@ -1611,75 +838,6 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
     return {"ok": True}
 
 
-@router.post("/api/conversations/{conv_id}/memory")
-async def record_conv_memory(conv_id: str, body: dict):
-    """Persist one shared-memory entry (ADR-014).
-
-    Called by the `remember` MCP tool (agents recording a decision/artifact)
-    and by the dispatch drain auto-seeding the locked contract. The entry is
-    injected into every subsequent turn's prompt via the shared-memory layer.
-    """
-    content = (body.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="content required")
-    kind = (body.get("kind") or "decision").strip()
-    author = (body.get("author_agent_id") or "").strip() or "agent"
-    async with SessionLocal() as session:
-        mid = await storage_repo.add_conv_memory(
-            session, conv_id=conv_id, author_agent_id=author,
-            kind=kind, content=content,
-        )
-        await session.commit()
-    return {"kind": "remembered", "id": mid}
-
-
-@router.get("/api/conversations/{conv_id}/memory")
-async def get_conv_memory(conv_id: str, kind: str | None = None):
-    """Read shared memory (ADR-014) — backs the `recall` MCP tool so an agent can
-    consult the locked contract / teammates' decisions+artifacts MID-task without
-    waiting for its next turn. Optional ?kind= filter (contract/decision/artifact)."""
-    async with SessionLocal() as session:
-        rows = await storage_repo.list_conv_memory(session, conv_id, limit=100)
-    entries = [
-        {"id": r.id, "kind": r.kind, "content": r.content, "author_agent_id": r.author_agent_id}
-        for r in rows
-        if not kind or r.kind == kind
-    ]
-    return {"conv_id": conv_id, "entries": entries, "count": len(entries)}
-
-
-@router.get("/api/conversations/{conv_id}/ask-forms")
-async def get_open_ask_forms(conv_id: str):
-    """Re-hydrate still-OPEN ask-forms after a refresh.
-
-    An ask-form is "open" until the user replies — so we return ask-form
-    messages that appear AFTER the last user ("you") message (any user reply
-    is treated as having answered the prior questions, matching the live
-    dequeue-on-answer behavior). Shape matches the frontend AskFormEntry.
-    """
-    async with SessionLocal() as session:
-        msgs, _more = await storage_repo.list_messages(session, conv_id, limit=200)
-    last_user_idx = -1
-    for i, m in enumerate(msgs):
-        if m.get("sender_id") == "you":
-            last_user_idx = i
-    open_forms = []
-    for i, m in enumerate(msgs):
-        payload = m.get("payload") or {}
-        if payload.get("kind") == "ask-form" and i > last_user_idx:
-            open_forms.append({
-                "id": m.get("id"),
-                "agent_id": m.get("sender_id"),
-                "kind": "ask-form",
-                "title": payload.get("title", ""),
-                "blocking": bool(payload.get("blocking", True)),
-                "questions": payload.get("questions", []),
-                # ⑥ preserve so a re-hydrated blocking ask still resolves the tool
-                "blocking_tool": bool(payload.get("blocking_tool", False)),
-            })
-    return {"ask_forms": open_forms}
-
-
 @router.post("/api/conversations/{conv_id}/report")
 async def record_handoff_report(conv_id: str, body: dict):
     """Worker's closed-loop completion ACK + self-verdict (RuFlo handoff).
@@ -1857,6 +1015,83 @@ async def serve_uploaded_file(file_id: str):
     target = matches[0]
     media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
     return Response(content=target.read_bytes(), media_type=media_type)
+
+
+# ── Vision input: decode user image attachments into model content blocks ──
+# History stays text-only ("[图片: …]" placeholder via ledger); this adds the
+# ACTUAL pixels so the model can SEE what the user shared. Capped in count+size.
+_VISION_MEDIA_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+_MAX_TURN_IMAGES = 5
+_MAX_VISION_BYTES = 5 * 1024 * 1024  # Claude's per-image ceiling
+
+
+async def _attachment_file_path(src: str, conv_id: str):
+    """Resolve an image message's `src` URL to its on-disk path, or None.
+
+    Handles the two upload shapes: per-conv `/api/files/raw?conv=&name=` and the
+    global `/api/files/<id>/raw`. Workspace/external srcs return None (skipped)."""
+    try:
+        u = urllib.parse.urlparse(src)
+    except Exception:
+        return None
+    if u.path == "/api/files/raw":
+        qs = urllib.parse.parse_qs(u.query)
+        conv = (qs.get("conv") or [conv_id])[0]
+        name = (qs.get("name") or [""])[0]
+        if not name:
+            return None
+        updir = await _conv_upload_dir(conv, create=False)
+        target = updir / os.path.basename(name)
+        return target if target.is_file() else None
+    m = re.match(r"^/api/files/([0-9a-zA-Z]+)/raw$", u.path)
+    if m:
+        fid = m.group(1)
+        for d in (settings.files_dir, settings.sandbox_root / "uploads"):
+            hits = list(d.glob(f"{fid}.*")) + list(d.glob(fid))
+            if hits:
+                return hits[0]
+    return None
+
+
+async def _gather_turn_images(conv_id: str) -> list[dict]:
+    """Collect the user's UNANSWERED image attachments (sent since the agent last
+    spoke) as base64 blocks for the model. Newest-first scan stops at the first
+    non-`you` message, so only the current batch of user images is attached."""
+    async with SessionLocal() as _s:
+        msgs, _ = await storage_repo.list_messages(_s, conv_id, limit=30)
+    payloads: list[dict] = []
+    for m in msgs:  # newest first
+        if m.get("sender_id") != "you":
+            break  # reached the agent's last turn — only unanswered user images
+        p = m.get("payload") or {}
+        if isinstance(p, dict) and p.get("kind") == "image":
+            payloads.append(p)
+    payloads.reverse()  # chronological
+    out: list[dict] = []
+    for p in payloads:
+        if len(out) >= _MAX_TURN_IMAGES:
+            break
+        path = await _attachment_file_path(p.get("src") or "", conv_id)
+        if path is None:
+            continue
+        try:
+            raw = path.read_bytes()
+        except Exception:
+            continue
+        mt = p.get("media_type") or mimetypes.guess_type(str(path))[0] or ""
+        if mt not in _VISION_MEDIA_TYPES:
+            continue
+        if len(raw) > _MAX_VISION_BYTES:
+            log.info("vision: skip oversized image %s (%dB)", path.name, len(raw))
+            continue
+        out.append(
+            {
+                "media_type": mt,
+                "data": base64.b64encode(raw).decode("ascii"),
+                "name": p.get("name") or path.name,
+            }
+        )
+    return out
 
 
 @router.post("/api/diff/apply")
@@ -2135,29 +1370,6 @@ async def post_terminal_card(conv_id: str, body: dict):
     )
     await _broadcast_to_conv(conv_id, frame)
     return {"ok": True, "id": term_id}
-
-
-@router.post("/api/messages/{message_id}/pin")
-async def pin_message(message_id: str):
-    """Mark one message as pinned. Surfaces it in L3 ledger / future
-    pinned-messages list. Idempotent."""
-    async with SessionLocal() as session:
-        ok = await storage_repo.set_message_pinned(session, message_id, True)
-        if not ok:
-            return {"error": "message not found"}, 404
-        await session.commit()
-    return {"ok": True, "pinned": True}
-
-
-@router.delete("/api/messages/{message_id}/pin")
-async def unpin_message(message_id: str):
-    """Remove pin from a message."""
-    async with SessionLocal() as session:
-        ok = await storage_repo.set_message_pinned(session, message_id, False)
-        if not ok:
-            return {"error": "message not found"}, 404
-        await session.commit()
-    return {"ok": True, "pinned": False}
 
 
 # ── Manual-mode Pending Edits (Phase A) ──────────────────────────────
@@ -2796,111 +2008,13 @@ async def abandon_conflict_endpoint(conflict_id: str):
 
 
 # ── Workspace files (Phase B + C) ──────────────────────────────────────
-
-
-_SKIP_DIRS = {".git", ".polynoia", "worktrees", "node_modules", "__pycache__",
-              ".venv", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
-
-
-def _workspace_root(ws_id: str) -> "Path":
-    """Resolve the sandbox root for ``ws_id``.
-
-    Two address forms:
-      - ``<ws_id>``        → project workspace: ``<sandbox>/workspaces/<ws_id>/``
-      - ``conv:<conv_id>`` → a contact's PRIVATE per-conv sandbox (ADR-020), i.e.
-        ``<sandbox>/<conv_id>/`` — what a DM's「工作区」browses (its own artifacts,
-        physically isolated from any project).
-
-    Raises 404 if not bootstrapped (no .git yet).
-    """
-    from polynoia.settings import settings
-    if ws_id.startswith("conv:"):
-        root = (settings.sandbox_root / ws_id[len("conv:"):]).resolve()
-    else:
-        root = workspace_root_for(ws_id).resolve()
-    if not (root / ".git").exists():
-        raise HTTPException(404, f"workspace {ws_id} not bootstrapped")
-    return root
-
-
-def _resolve_safe_path(workspace_root: "Path", rel_path: str) -> "Path":
-    """Resolve ``rel_path`` against ``workspace_root`` with traversal protection.
-
-    Rejects:
-      - Absolute paths
-      - ``..`` segments that escape the workspace root
-      - Symlinks pointing outside
-    Returns the resolved absolute path. Raises 400 on violation.
-    """
-    from pathlib import Path
-
-    if not rel_path:
-        return workspace_root
-    if Path(rel_path).is_absolute():
-        raise HTTPException(400, "absolute path not allowed")
-    target = (workspace_root / rel_path).resolve()
-    try:
-        target.relative_to(workspace_root)
-    except ValueError:
-        raise HTTPException(400, "path escapes workspace root")
-    return target
-
-
-def _resolve_present_path(ws_id: str, rel_path: str) -> "Path":
-    """Resolve a single file for read / preview / download: prefer the workspace
-    root (main), else fall back to an agent WORKTREE that has it.
-
-    A file an agent ``present()``s is committed to that agent's branch and may not
-    be merged into main yet — without this fallback its card 404s until the burst
-    merge lands. Main stays the source of truth (checked first); only when main
-    lacks the file do we serve the worktree copy (the same bytes that will merge
-    to main), picking the most-recently-modified match. Directory LISTING stays
-    main-only — this is for explicit single-file requests, where a main miss is
-    the present-before-merge case.
-    """
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, rel_path)  # also the traversal guard
-    if target.is_file():
-        return target
-    wt_dir = root / "worktrees"
-    if rel_path and wt_dir.is_dir():
-        best: "Path | None" = None
-        best_mtime = -1.0
-        for wt in wt_dir.iterdir():
-            if not wt.is_dir():
-                continue
-            cand = (wt / rel_path).resolve()
-            if cand.is_file() and cand.stat().st_mtime > best_mtime:
-                best, best_mtime = cand, cand.stat().st_mtime
-        if best is not None:
-            return best
-    return target  # not found anywhere → the caller's .exists() check 404s
-
-
-# Commit SHAs and branch refs reach git as argv — constrain to safe charsets so
-# a crafted ``sha``/``ref`` can't smuggle a git option or arbitrary revspec.
-# ``ref`` must START with a word char (no leading dash) so it can never look like
-# an option; the helper additionally passes it after ``--end-of-options``.
-_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
-_REF_RE = re.compile(r"^\w[\w./-]{0,199}$")
-
-
-@router.post("/api/workspaces/{ws_id}/reset-sandbox")
-async def reset_workspace_sandbox(ws_id: str):
-    """TEST/dev: wipe a workspace's shared git (all committed work + every agent
-    worktree) back to an empty main. Used by scenario re-seed so a fresh run
-    doesn't add-add-conflict against files the previous run left in main. Evicts
-    pooled adapter sessions first (their cwd worktrees are about to be deleted).
-    DESTRUCTIVE — wipes committed work in this workspace only."""
-    async with SessionLocal() as session:
-        ws = await session.get(WorkspaceRow, ws_id)
-    if ws is None:
-        raise HTTPException(404, f"unknown workspace: {ws_id}")
-    # Cached sessions hold subprocesses whose cwd is a worktree we're deleting —
-    # evict so the next turn respawns against the fresh main.
-    await get_pool().close_all()
-    await Sandbox.reset_workspace(ws_id)
-    return {"ok": True, "workspace_id": ws_id}
+#
+# The file/commit/preview/download/archive browse endpoints for
+# /api/workspaces/{ws_id}/... now live in api/workspace_files.py (its own
+# router, included in main.py). Workspace filesystem path helpers (_SKIP_DIRS /
+# _workspace_root / _resolve_safe_path / _resolve_present_path) live in
+# api/_fs_paths.py. The endpoints below (reset-sandbox / restore / rewind) stay
+# here because they touch burst/merge/conv state.
 
 
 def _conv_has_running_agent(conv_id: str) -> bool:
@@ -3032,455 +2146,6 @@ async def rewind_conversation(conv_id: str, body: dict):
     }
 
 
-@router.get("/api/workspaces/{ws_id}/files")
-async def list_workspace_files(ws_id: str, path: str = ""):
-    """List one directory level inside a workspace.
-
-    Skips noise dirs (.git, .polynoia, node_modules, worktrees, etc).
-    Recursive listing is the client's responsibility — fetch per-dir on
-    demand to avoid serializing thousands of files.
-    """
-    # A contact's private workspace (conv:<conv_id>) is created lazily on the
-    # first agent turn. Bootstrap it on first BROWSE too, so opening a DM's 工作区
-    # before any artifact exists shows an empty tree, not "无工作区" / 404.
-    if ws_id.startswith("conv:"):
-        await Sandbox.create(ws_id[len("conv:"):])
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, path)
-    if not target.exists() or not target.is_dir():
-        raise HTTPException(404, "directory not found")
-    entries = []
-    for child in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
-        if child.name in _SKIP_DIRS or child.name.startswith("."):
-            # Hide dot-files + skipped dirs from the editor tree.
-            # User can still reach via direct path if needed.
-            continue
-        stat = child.stat()
-        entries.append({
-            "name": child.name,
-            "type": "dir" if child.is_dir() else "file",
-            "size": stat.st_size if child.is_file() else None,
-            "modified": stat.st_mtime,
-        })
-    return {"path": path, "entries": entries}
-
-
-@router.get("/api/workspaces/{ws_id}/files/raw")
-async def read_workspace_file(ws_id: str, path: str):
-    """Return raw text content. Rejects binary (>1MB or non-UTF-8 decode)."""
-    if not path:
-        raise HTTPException(400, "path required")
-    target = _resolve_present_path(ws_id, path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(404, "file not found")
-    try:
-        raw = target.read_bytes()
-        if len(raw) > 1_000_000:
-            raise HTTPException(413, "file too large (> 1MB)")
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(415, "binary file (not UTF-8)")
-    return PlainTextResponse(
-        text,
-        # X-Modified for client-side staleness checks; Cache-Control=no-store
-        # to bypass browser heuristic cache (workspace files are mutable, the
-        # same URL routinely serves different content).
-        headers={
-            "X-Modified": str(target.stat().st_mtime),
-            "Cache-Control": "no-store",
-        },
-    )
-
-
-@router.get("/api/workspaces/{ws_id}/files/blob")
-async def read_workspace_file_blob(ws_id: str, path: str):
-    """Return raw bytes for binary-capable previews such as .xlsx."""
-    if not path:
-        raise HTTPException(400, "path required")
-    target = _resolve_present_path(ws_id, path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(404, "file not found")
-    raw = target.read_bytes()
-    if len(raw) > 25_000_000:
-        raise HTTPException(413, "file too large (> 25MB)")
-    return Response(
-        content=raw,
-        media_type="application/octet-stream",
-        headers={
-            "X-Modified": str(target.stat().st_mtime),
-            "Cache-Control": "no-store",
-        },
-    )
-
-
-@router.get("/api/workspaces/{ws_id}/commits")
-async def list_workspace_commits(
-    ws_id: str, ref: str = "main", limit: int = 80, skip: int = 0,
-    graph: bool = False,
-):
-    """List commits on ``ref`` (newest first) for the commit-history browser.
-
-    ``graph=true`` returns the FULL set (incl. merge wrappers + plumbing) with
-    parent SHAs so the client can draw the commit tree; the default flat list
-    hides those for readability.
-
-    Read-only: takes NO ``workspace_merge_lock`` (pure object reads never touch
-    HEAD/index, so locking would needlessly serialize browsing behind merges).
-    """
-    _workspace_root(ws_id)  # 404 if the workspace was never bootstrapped
-    if not _REF_RE.match(ref):
-        raise HTTPException(400, "invalid ref")
-    sandbox = Sandbox.open_workspace_if_exists(ws_id)  # sync classmethod — no await
-    if sandbox is None:
-        return {"commits": []}
-    commits = await sandbox.workspace_commits(
-        ref=ref, limit=max(1, min(limit, 500)), skip=max(0, skip),
-        include_all=graph,
-    )
-    return {"commits": commits}
-
-
-@router.get("/api/workspaces/{ws_id}/commits/{sha}/diff")
-async def get_workspace_commit_diff(ws_id: str, sha: str, path: str | None = None):
-    """Structured per-file diff of a commit vs its parent. Read-only, no lock."""
-    root = _workspace_root(ws_id)
-    if not _SHA_RE.match(sha):
-        raise HTTPException(400, "invalid commit sha")
-    if path:
-        _resolve_safe_path(root, path)  # traversal guard (raises 400)
-    sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    if sandbox is None:
-        raise HTTPException(404, "workspace not found")
-    return await sandbox.commit_diff(sha, path=path)
-
-
-@router.get("/api/workspaces/{ws_id}/working-diff")
-async def get_workspace_working_diff(ws_id: str):
-    """Uncommitted working-tree changes vs HEAD on the workspace root. No lock."""
-    _workspace_root(ws_id)
-    sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    if sandbox is None:
-        return {"sha": "__working__", "parent": "HEAD", "files": [], "truncated": False}
-    return await sandbox.working_tree_diff()
-
-
-@router.put("/api/workspaces/{ws_id}/files/raw")
-async def write_workspace_file(ws_id: str, path: str, request: Request):
-    """Overwrite a workspace file + auto-commit on workspace's main branch.
-
-    Body: raw text/plain content. Returns new short HEAD sha + mtime.
-    """
-    if not path:
-        raise HTTPException(400, "path required")
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, path)
-    content_bytes = await request.body()
-    try:
-        content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "content must be valid UTF-8")
-
-    # Serialize the write + git add/commit against burst merges / conflict
-    # resolves on the SAME workspace (shared single HEAD/index). Otherwise this
-    # edit can interleave with a probe/conclude merge (corrupt index, mix into
-    # the merge commit) or get discarded by `_abort_stray_merge`'s reset --hard.
-    # Same lock + key (workspace_id) as resolve/abandon/burst-merge.
-    from polynoia.sandbox import Sandbox, workspace_merge_lock
-
-    ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    async with workspace_merge_lock(ws_id):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content_bytes)
-        if ws_sandbox is None:
-            return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
-        rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
-        if rc != 0:
-            return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
-        rc, _o, _e = await ws_sandbox._workspace_run([
-            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
-        ])
-        sha = await ws_sandbox.main_head_sha() if rc == 0 else None
-    return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
-
-
-@router.put("/api/workspaces/{ws_id}/files/blob")
-async def write_workspace_file_blob(ws_id: str, path: str, request: Request):
-    """Overwrite a workspace file with raw bytes + auto-commit on main."""
-    if not path:
-        raise HTTPException(400, "path required")
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, path)
-    content_bytes = await request.body()
-    if len(content_bytes) > 25_000_000:
-        raise HTTPException(413, "file too large (> 25MB)")
-
-    # Same lock/key as text writes: the workspace has one shared git HEAD/index.
-    ws_sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    async with workspace_merge_lock(ws_id):
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content_bytes)
-        if ws_sandbox is None:
-            return {"ok": True, "sha": None, "note": "file written but workspace not git-tracked"}
-        rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
-        if rc != 0:
-            return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
-        rc, _o, _e = await ws_sandbox._workspace_run([
-            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
-        ])
-        sha = await ws_sandbox.main_head_sha() if rc == 0 else None
-    return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
-
-
-@router.get("/api/workspaces/{ws_id}/preview")
-async def preview_workspace_html(ws_id: str, file: str = "index.html"):
-    """Serve a workspace HTML file as text/html for the WebTab iframe.
-
-    Sandbox CSP prevents the iframe from breaking out into the parent
-    Polynoia window. Only `.html` (and `.htm`) suffixes are served — for
-    other types use ``/files/raw``.
-    """
-    if not file:
-        raise HTTPException(400, "file param required")
-    suffix = file.lower().rsplit(".", 1)[-1] if "." in file else ""
-    if suffix not in ("html", "htm"):
-        raise HTTPException(415, "only .html / .htm is served via /preview")
-    root = _workspace_root(ws_id)
-    target = _resolve_safe_path(root, file)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(404, "html file not found")
-    try:
-        text = target.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(415, "html file not UTF-8")
-    return Response(
-        content=text,
-        media_type="text/html",
-        # `sandbox` keyword in CSP locks iframe down (no top-frame navigation,
-        # no scripts, no popups unless explicitly allowed)
-        headers={
-            "Content-Security-Policy": "sandbox allow-scripts allow-same-origin",
-            "X-Frame-Options": "SAMEORIGIN",
-        },
-    )
-
-
-# ── Workspace download / archive ───────────────────────────────────────
-#
-# /files/raw is for the editor (UTF-8 only, ≤1MB) — the endpoints below are
-# the download path: byte-faithful for any single file, plus zip for whole
-# or selected paths. .git history is intentionally INCLUDED in the zip
-# (migration/backup use case). Only regenerable cache dirs are pruned.
-
-
-_ARCHIVE_SKIP_DIRS = {
-    "node_modules", "__pycache__", ".venv",
-    ".pytest_cache", ".ruff_cache", ".mypy_cache",
-    "worktrees",  # per-agent branches — recreated on demand
-}
-
-
-@router.get("/api/workspaces/{ws_id}/files/download")
-async def download_workspace_file(ws_id: str, path: str):
-    """Stream a single workspace file as a downloadable attachment.
-
-    Byte-faithful (any binary, any size), unlike ``/files/raw`` which is
-    text-only for the editor. Same path-traversal protection.
-    """
-    if not path:
-        raise HTTPException(400, "path required")
-    target = _resolve_present_path(ws_id, path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(404, "file not found")
-    return FileResponse(
-        path=target,
-        filename=target.name,
-        media_type="application/octet-stream",
-        # Workspace files are live — an agent rewriting a same-name file
-        # (regenerate pptx, edit .md) must show fresh content on the next
-        # fetch. Browser heuristic cache would otherwise serve the previous
-        # bytes from memory cache because the URL is unchanged.
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-def _iter_archive_files(workspace_root, selected_paths):
-    """Yield ``(absolute_path, arcname)`` for every file to include.
-
-    ``selected_paths=None`` → walk the whole workspace. Otherwise each path
-    is added directly (file) or walked recursively (dir). Cache dirs are
-    pruned in both modes; .git is preserved.
-    """
-    from pathlib import Path
-
-    def walk(start, arc_prefix):
-        if start.is_file():
-            yield start, arc_prefix or start.name
-            return
-        for dirpath, dirnames, filenames in os.walk(start):
-            dirnames[:] = [d for d in dirnames if d not in _ARCHIVE_SKIP_DIRS]
-            for fn in filenames:
-                abs_path = Path(dirpath) / fn
-                rel = abs_path.relative_to(workspace_root).as_posix()
-                yield abs_path, rel
-
-    if selected_paths is None:
-        yield from walk(workspace_root, "")
-        return
-    for raw in selected_paths:
-        if not raw:
-            continue
-        target = _resolve_safe_path(workspace_root, raw)
-        if not target.exists():
-            continue
-        if target.is_file():
-            yield target, target.relative_to(workspace_root).as_posix()
-        else:
-            yield from walk(target, target.relative_to(workspace_root).as_posix())
-
-
-def _build_workspace_zip(workspace_root, selected_paths=None):
-    """Build the archive into a spooled tempfile (in-memory up to 8MB then
-    spills to disk). Caller streams from the returned, rewound buffer."""
-    import tempfile
-    import zipfile
-
-    buf = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for abs_path, arcname in _iter_archive_files(workspace_root, selected_paths):
-            try:
-                zf.write(abs_path, arcname)
-            except (OSError, ValueError):
-                # Skip unreadable files (broken symlinks, perms) — partial
-                # archive beats a 500.
-                continue
-    buf.seek(0)
-    return buf
-
-
-def _stream_spooled(buf, chunk: int = 65536):
-    try:
-        while True:
-            data = buf.read(chunk)
-            if not data:
-                break
-            yield data
-    finally:
-        buf.close()
-
-
-def _zip_response(buf, display_name: str) -> StreamingResponse:
-    from urllib.parse import quote
-    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", display_name).strip("._-") or "workspace"
-    utf8_name = quote(display_name + ".zip")
-    return StreamingResponse(
-        _stream_spooled(buf),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="{ascii_name}.zip"; '
-                f"filename*=UTF-8''{utf8_name}"
-            ),
-        },
-    )
-
-
-async def _workspace_display_name(ws_id: str) -> str:
-    from sqlalchemy import select as _select
-    async with SessionLocal() as session:
-        row = (await session.execute(
-            _select(WorkspaceRow).where(WorkspaceRow.id == ws_id)
-        )).scalar_one_or_none()
-        if row and row.name:
-            return row.name
-    return ws_id
-
-
-@router.get("/api/workspaces/{ws_id}/archive")
-async def archive_workspace(ws_id: str):
-    """Stream a zip of the entire workspace (incl. .git history).
-
-    Excludes only regenerable cache dirs (``node_modules``, ``__pycache__``,
-    venvs, ``worktrees``). Use the POST variant for partial archives.
-    """
-    root = _workspace_root(ws_id)
-    display = await _workspace_display_name(ws_id)
-    buf = await asyncio.to_thread(_build_workspace_zip, root, None)
-    return _zip_response(buf, display)
-
-
-@router.post("/api/workspaces/{ws_id}/archive")
-async def archive_workspace_paths(ws_id: str, body: dict = Body(...)):
-    """Stream a zip of selected paths (files and/or directories).
-
-    Body: ``{"paths": ["src/main.py", "docs/"]}``. Dirs are walked
-    recursively (still pruning cache dirs).
-    """
-    raw_paths = body.get("paths") or []
-    if not isinstance(raw_paths, list) or not raw_paths:
-        raise HTTPException(400, "paths must be a non-empty list")
-    paths = [str(p) for p in raw_paths if p]
-    if not paths:
-        raise HTTPException(400, "paths must be a non-empty list")
-    root = _workspace_root(ws_id)
-    display = await _workspace_display_name(ws_id)
-    if len(paths) == 1:
-        leaf = paths[0].rstrip("/").rsplit("/", 1)[-1]
-        if leaf:
-            display = f"{display}-{leaf}"
-    else:
-        display = f"{display}-selection"
-    buf = await asyncio.to_thread(_build_workspace_zip, root, paths)
-    return _zip_response(buf, display)
-
-
-@router.patch("/api/conversations/{conv_id}/member_roles")
-async def set_conv_member_roles(conv_id: str, body: dict):
-    """Replace per-member role assignments for a group conv.
-
-    Body: ``{ "roles": { "<agent_id>": "<role text>", ... } }``
-
-    On change, a synthetic ``sender_id="system"`` text message is appended to
-    the conv timeline summarizing the diff. This event lands in MessageRow,
-    so on the next turn the L4 context layer surfaces "role updated" to
-    every agent's prompt — no special context-layer plumbing needed.
-    """
-    raw_roles = body.get("roles") or {}
-    if not isinstance(raw_roles, dict):
-        return {"error": "roles must be an object"}, 400
-    roles = {str(k): str(v) for k, v in raw_roles.items()}
-    async with SessionLocal() as session:
-        ok, before, after = await storage_repo.set_member_roles(
-            session, conv_id, roles,
-        )
-        if not ok:
-            return {"error": "conversation not found"}, 404
-        # Diff for the system-event message
-        agents_lookup = {a.id: a for a in await storage_repo.list_agents(session)}
-        changed = []
-        for aid in set(before) | set(after):
-            b, a = before.get(aid, ""), after.get(aid, "")
-            if b == a:
-                continue
-            display = agents_lookup[aid].name if aid in agents_lookup else aid
-            if not b:
-                changed.append(f"@{display}:{a}")
-            elif not a:
-                changed.append(f"@{display}:(已移除)")
-            else:
-                changed.append(f"@{display}:{b} → {a}")
-        if changed:
-            event_text = "🎭 角色更新 — " + " · ".join(changed)
-            await storage_repo.append_message(
-                session,
-                conv_id=conv_id,
-                sender_id="system",
-                payload={"kind": "text", "body": [{"t": "p", "c": event_text}]},
-            )
-        await session.commit()
-        conv = await storage_repo.get_conversation(session, conv_id)
-        return conv.model_dump(mode="json") if conv else {"ok": True}
-
-
 @router.patch("/api/conversations/{conv_id}/members")
 async def set_conv_members(conv_id: str, body: dict):
     """Add/remove members of a group conv.
@@ -3535,30 +2200,6 @@ async def set_conv_members(conv_id: str, body: dict):
                 'data: {"type":"data-conv-updated","data":' + json.dumps({"conv_id": conv_id}) + "}\n\n",
             )
     return conv.model_dump(mode="json") if conv else {"ok": True}
-
-
-@router.patch("/api/conversations/{conv_id}/merge_mode")
-async def set_conv_merge_mode(conv_id: str, body: dict):
-    """Flip a conversation's merge gate.
-
-    Body: ``{ "mode": "auto" | "manual" }``
-
-    - ``auto``   → orchestrator runs git_merge after sub-tasks finish
-    - ``manual`` → per-edit user approval (Cursor-style)
-
-    Only affects FUTURE edits/merges — in-flight pending edits or already-
-    merged branches are not retroactively re-gated.
-    """
-    mode = body.get("mode")
-    if mode not in ("auto", "manual"):
-        return {"error": "mode must be 'auto' or 'manual'"}, 400
-    async with SessionLocal() as session:
-        ok = await storage_repo.set_merge_mode(session, conv_id, mode)
-        if not ok:
-            return {"error": "conversation not found"}, 404
-        await session.commit()
-        conv = await storage_repo.get_conversation(session, conv_id)
-        return conv.model_dump(mode="json") if conv else {"ok": True}
 
 
 @router.get("/api/health")
@@ -4441,6 +3082,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             else:
                 prompt = text
 
+            # Vision: attach the user's unanswered image attachments as real
+            # image blocks so the agent SEES them (history only carries the
+            # "[图片: …]" text). Only on a direct user turn (depth 0) — dispatched
+            # sub-turns get the orchestrator's task text, not raw user images.
+            turn_images = await _gather_turn_images(conv_id) if depth == 0 else []
+
             # Buffer the agent's text response so we can persist it +
             # detect @-mentions after the turn completes. tool_parts captures
             # completed tool-call/diff parts so the work trace is persisted too
@@ -4564,7 +3211,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     try:
                         events_iter = cast(
                             "AsyncIterator[AdapterEvent]",
-                            sess.send(task_id=task_id, text=prompt),
+                            sess.send(
+                                task_id=task_id,
+                                text=prompt,
+                                attachments=turn_images or None,
+                            ),
                         )
                         # Tap the adapter event stream to capture text for the
                         # timeline while forwarding chunks unchanged to the WS.

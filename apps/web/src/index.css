@@ -392,6 +392,10 @@ button:disabled,
 }
 .anim-modal-in { animation: modal-in 220ms var(--ease-out-soft); }
 
+/* Connection banner: slide down from the top edge. */
+@keyframes conn-in { from { transform: translateY(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
+.anim-conn-in { animation: conn-in 280ms var(--ease-out-soft); }
+
 @keyframes backdrop-in {
   from { opacity: 0; }
   to   { opacity: 1; }

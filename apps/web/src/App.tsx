@@ -4,6 +4,7 @@ import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
+import { ServerUnreachable } from "./components/ServerUnreachable";
 import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
 import { RightDrawer } from "./components/RightDrawer";
 import { Sidebar } from "./components/Sidebar";
@@ -12,13 +13,15 @@ import { PreviewPane } from "./components/preview/PreviewPane";
 import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
-import { api } from "./lib/api";
+import { onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
 import { getServerOverride, isCapacitor } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
-	const setSeed = useStore((s) => s.setSeed);
+	const reloadSeed = useStore((s) => s.reloadSeed);
+	const serverReachable = useStore((s) => s.serverReachable);
+	const providers = useStore((s) => s.providers);
 	const view = useStore((s) => s.view);
 	const setView = useStore((s) => s.setView);
 	const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -48,17 +51,30 @@ export function App() {
 	const mobile = isMobile();
 
 	useEffect(() => {
-		Promise.all([
-			api.providers(),
-			api.agents(),
-			api.servers(),
-			api.workspaces(),
-		])
-			.then(([providers, agents, servers, workspaces]) =>
-				setSeed({ providers, agents, servers, workspaces }),
-			)
-			.catch((e) => console.error("seed fetch failed", e));
-	}, [setSeed]);
+		// On a Capacitor first run there's no server yet — ConnectServerScreen
+		// gates that below; don't fetch (and don't trip the unreachable gate).
+		if (mobile && isCapacitor() && !getServerOverride()) return;
+		// reloadSeed sets serverReachable; failure surfaces via the boot gate.
+		reloadSeed().catch(() => {});
+	}, [reloadSeed, mobile]);
+
+	// Mobile real-time refresh: re-pull seed lists whenever the app returns to the
+	// foreground or the network recovers — keeping the sidebar/agents/projects
+	// fresh regardless of which view is open (the active conv's live socket is
+	// reconnected in ChatPane). No-op off-Capacitor.
+	useEffect(() => {
+		const refresh = () => {
+			reloadSeed().catch(() => {});
+		};
+		const offResume = onResume(refresh);
+		const offNet = onNetworkChange((connected) => {
+			if (connected) refresh();
+		});
+		return () => {
+			offResume();
+			offNet();
+		};
+	}, [reloadSeed]);
 
 	// VS Code idiom: Cmd/Ctrl+B toggles the left sidebar (desktop only).
 	useEffect(() => {
@@ -181,6 +197,14 @@ export function App() {
 			</main>
 		);
 	};
+
+	// Boot gate: the initial seed couldn't reach the server and nothing loaded →
+	// a clear retry screen instead of an empty shell. Capacitor first-run has its
+	// own ConnectServerScreen (below), so exclude it here.
+	const capacitorFirstRun = mobile && isCapacitor() && !getServerOverride();
+	if (!capacitorFirstRun && !serverReachable && providers.length === 0) {
+		return <ServerUnreachable />;
+	}
 
 	// ── Mobile layout (Capacitor iOS/Android or narrow viewport) ─────
 	if (mobile) {

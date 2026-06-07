@@ -14,6 +14,7 @@
 
 | 脚本 | 作用 |
 |---|---|
+| **`reset.sh`** | **一键重置**:停服 → 整库清空+重建 schema → 重启服务器 → 重种 6 个用例。幂等。`bash scripts/testkit/reset.sh` |
 | `_more_seed.py` | 造一批综合测试会话(办公/编程/数据/多agent协作),每个建独立 workspace + 会话,任务预填为首条消息。**只持久化、不自动跑 agent。** |
 | `_drive.py <关键词\|id>` | 把某个已种子的会话**真跑起来**:从 DB 找到会话→读出预填任务→经 WS 发给 agent→实时打印关键帧(diff/bash/tasks/present/error),turn 空闲即停。 |
 | `_office_seed.py` | 早先的办公 4 件套(PPT/Excel/Word/落地页),打印 manifest。 |

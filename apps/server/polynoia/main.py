@@ -6,9 +6,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from polynoia.api.contacts_routes import router as contacts_router
+from polynoia.api.conversations_routes import router as conversations_router
 from polynoia.api.onboarding import router as onboarding_router
 from polynoia.api.routes import router
 from polynoia.api.terminal import router as terminal_router
+from polynoia.api.workspace_files import router as workspace_files_router
+from polynoia.api.workspaces_routes import router as workspaces_router
 from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import SessionLocal, dispose_engine
@@ -95,6 +99,10 @@ def create_app() -> FastAPI:
     app.include_router(router)
     app.include_router(onboarding_router)
     app.include_router(terminal_router)
+    app.include_router(workspace_files_router)
+    app.include_router(workspaces_router)
+    app.include_router(contacts_router)
+    app.include_router(conversations_router)
     return app
 
 

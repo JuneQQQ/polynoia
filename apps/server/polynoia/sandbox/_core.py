@@ -19,6 +19,26 @@ _IS_WINDOWS = os.name == "nt"
 _IS_DARWIN = sys.platform == "darwin"
 log = logging.getLogger(__name__)
 
+
+def _use_direct_creds() -> bool:
+    """Whether agent subprocesses should use the host's REAL credentials directly
+    (no sandbox copy, no HOME rewrite) instead of the isolated-copy model.
+
+    Why: macOS stores the `claude` OAuth token in the **Keychain**, NOT in
+    ``~/.claude/.credentials.json``. The copy-to-sandbox model (built for the
+    Linux multi-tenant server) therefore can't carry it — the spawned claude
+    lands "Not logged in · Please run /login". On a local single-user desktop the
+    isolation the copy buys is unnecessary, so default to direct use on macOS
+    (non-root): the agent reads ~/.claude + the Keychain exactly like a hand-run
+    ``claude -p``. The Linux server keeps the isolated copy (default off there).
+
+    Override explicitly with ``POLYNOIA_DIRECT_CREDS=1`` / ``0``.
+    """
+    v = os.environ.get("POLYNOIA_DIRECT_CREDS")
+    if v is not None:
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return _IS_DARWIN and os.geteuid() != 0
+
 # ── Custom-workspace registries ──────────────────────────────────────────
 # Keep the sandbox layer storage-agnostic (it never reads the DB). routes.py —
 # which DOES have DB access — hydrates these at startup + on workspace create:
@@ -879,6 +899,12 @@ class Sandbox:
 
         Missing sources or allowlisted entries are skipped silently.
         """
+        if _use_direct_creds():
+            # desktop: agents read the host's real ~/.claude + Keychain — skip the
+            # credential COPY, but still create .polynoia/ (downstream
+            # _write_manifest + audit log write into it; the copy used to mkdir it).
+            (self.root / ".polynoia").mkdir(parents=True, exist_ok=True)
+            return
         cred_root = self.root / ".polynoia" / "credentials"
         cred_root.mkdir(parents=True, exist_ok=True)
 
@@ -970,6 +996,7 @@ class Sandbox:
 
     def _write_manifest(self) -> None:
         """Write ``.polynoia/manifest.json`` with conv metadata."""
+        (self.root / ".polynoia").mkdir(parents=True, exist_ok=True)  # self-sufficient
         manifest = {
             "conv_id": self.conv_id,
             "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -1887,12 +1914,22 @@ class Sandbox:
             v = os.environ.get(k)
             if v is not None:
                 env[k] = v
+        # Direct-creds mode (macOS desktop): DON'T rewrite HOME — let the agent
+        # read the host's real ~/.claude + Keychain (the copy model can't carry
+        # the macOS Keychain token). Isolated-copy mode rewrites HOME → sandbox.
+        _direct = _use_direct_creds()
+        _home = os.path.expanduser("~") if _direct else cred_home
         env.update({
-            # ★ The trick: rewrite HOME (POSIX) so ~/.claude resolves into sandbox.
-            "HOME": cred_home,
+            # ★ The trick (isolated mode): rewrite HOME so ~/.claude resolves into
+            # the sandbox copy. Direct mode keeps the real HOME.
+            "HOME": _home,
             "USER": os.environ.get("USER", os.environ.get("USERNAME", "polynoia")),
-            # Codex respects CODEX_HOME explicitly — also point it inside sandbox
-            "CODEX_HOME": str(self.credentials_home / ".codex"),
+            # Codex respects CODEX_HOME explicitly — sandbox copy, or real ~/.codex.
+            "CODEX_HOME": (
+                os.path.join(_home, ".codex")
+                if _direct
+                else str(self.credentials_home / ".codex")
+            ),
             # Polynoia identifier so spawned process can detect it's sandboxed.
             # POLYNOIA_SANDBOX_ROOT is the *parent* directory under which all
             # per-conv sandboxes live — i.e. the same value as the host's

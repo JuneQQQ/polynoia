@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from polynoia.api.routes import delete_contact
+from polynoia.api.contacts_routes import delete_contact
 from polynoia.domain.entities import Agent, Workspace, new_ulid
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.bootstrap import bootstrap_db
