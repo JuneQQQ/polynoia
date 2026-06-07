@@ -28,7 +28,11 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { type AdapterProbe, api } from "../lib/api";
 import type { ProxyKind } from "../lib/types";
-import { getServerOverride, setServerUrl } from "../lib/runtime-config";
+import {
+	flushServerConfig,
+	getServerOverride,
+	setServerUrl,
+} from "../lib/runtime-config";
 
 type ProxyCfg = { proxy: string | null; proxy_kind: ProxyKind };
 
@@ -416,9 +420,12 @@ function ServerSection() {
 		}
 	}
 
-	function save() {
+	async function save() {
 		setSaving(true);
 		setServerUrl(mode === "remote" ? effectiveBase() : "");
+		// Await native Preferences write before reload — otherwise the URL can be
+		// lost on Capacitor due to the async write racing window.location.reload.
+		await flushServerConfig();
 		setTimeout(() => window.location.reload(), 400);
 	}
 
