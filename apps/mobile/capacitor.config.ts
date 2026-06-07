@@ -70,6 +70,10 @@ const config: CapacitorConfig = {
   ios: {
     backgroundColor: "#14110c",
     contentInset: "automatic",
+    // Disable the WKWebView's own scroll: inner overflow:auto / 100dvh shells
+    // still scroll, but dragging the page edge no longer rubber-bands the whole
+    // document down. Pairs with overscroll-behavior:none in index.css.
+    scrollEnabled: false,
   },
 };
 
