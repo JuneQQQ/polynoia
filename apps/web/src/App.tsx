@@ -211,11 +211,12 @@ export function App() {
 					style={{
 						// 100dvh (NOT 100vh): iOS 100vh over-reports the viewport, so the
 						// container ran past the screen bottom → content pushed off-screen.
-						// Pad BOTH safe areas: top for the Dynamic Island, bottom for the
-						// home indicator (was missing → bottom bar/composer got clipped).
+						// Pad top safe area for the Dynamic Island. Bottom safe-area is
+						// owned by the leaf ChatPane composer so its background can paint
+						// to the physical screen edge (was double-padded → strip of bg
+						// below the composer). Padding here only rises with the keyboard.
 						paddingTop: "env(safe-area-inset-top)",
-						paddingBottom:
-							"max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
+						paddingBottom: "var(--kb-h, 0px)",
 						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
 					}}
 				>
@@ -258,7 +259,10 @@ export function App() {
 				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{
 					paddingTop: "env(safe-area-inset-top)",
-					paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
+					// Bottom safe-area is owned by the leaf TabBar (MobileHome.tsx) so its
+					// background can paint to the physical screen edge. Padding here only
+					// rises with the keyboard.
+					paddingBottom: "var(--kb-h, 0px)",
 					transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
 				}}
 			>
