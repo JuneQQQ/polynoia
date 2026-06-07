@@ -15,7 +15,7 @@ import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
-import { getServerOverride, isCapacitor } from "./lib/runtime-config";
+import { getServerOverride } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
@@ -131,16 +131,27 @@ export function App() {
 	useEffect(() => {
 		resetCenterTabs();
 		// Sync the STORE's activeConvId AND move the right-rail file column to the
-		// selected conv's workspace: a project conv → that project's files; a DM
-		// (dm-… id, no workspace) → empty. Also drop any file the right rail had
-		// open from the previous conv. So switching conv / project / clicking a
-		// contact actually changes the middle + right columns instead of leaving
-		// them parked on the last one. (activeConvId also drives PreviewPane's
-		// conflict / pending-edit panes — keep it in sync.)
-		const isDm = activeConv?.id?.startsWith("dm-") ?? true;
-		const wsForConv = activeConv?.id && !isDm ? activeWorkspaceId : null;
+		// selected conv's workspace:
+		//   - project conv → that project's shared workspace (activeWorkspaceId)
+		//   - DM (dm-… id) → the contact's PRIVATE per-conv sandbox `conv:<convId>`
+		//     (ADR-020). Earlier this set null → "无工作区" even though a private
+		//     sandbox exists; ChatPane re-seeds the right value but its child effect
+		//     fires BEFORE this parent effect on mount, so the parent was clobbering
+		//     ChatPane's seed back to null. Keep the two in sync here.
+		// Also drop any file the right rail had open from the previous conv so
+		// switching conv / project / clicking a contact actually changes the middle
+		// + right columns instead of leaving them parked on the last one.
+		// (activeConvId also drives PreviewPane's conflict / pending-edit panes —
+		// keep it in sync.)
+		const convId = activeConv?.id ?? null;
+		const isDm = convId?.startsWith("dm-") ?? false;
+		const wsForConv = !convId
+			? null
+			: isDm
+				? `conv:${convId}`
+				: activeWorkspaceId;
 		useStore.setState((s) => ({
-			activeConvId: activeConv?.id ?? null,
+			activeConvId: convId,
 			preview: {
 				...s.preview,
 				previewFile: null,
@@ -208,10 +219,12 @@ export function App() {
 
 	// ── Mobile layout (Capacitor iOS/Android or narrow viewport) ─────
 	if (mobile) {
-		// First-run gate: a phone has no local backend, so it must be pointed at a
-		// remote Polynoia server before anything else. (Browser/desktop have a
-		// same-origin / local default and skip this.)
-		if (isCapacitor() && !getServerOverride()) {
+		// First-run gate: any mobile context with no server URL is forced through the
+		// connect screen — phones have no local backend, and "I can chat without
+		// connecting" is the wrong product story. Browser/mobile-viewport dev still
+		// hits this; bypass via `?server=http://localhost:5173` (applyServerQueryOverride
+		// in runtime-config.ts) when you want to skip past the gate during testing.
+		if (!getServerOverride()) {
 			return <ConnectServerScreen />;
 		}
 		// Chat open → full-screen chat pushed over the list, with a back button.

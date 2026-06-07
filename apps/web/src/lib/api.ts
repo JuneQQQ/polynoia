@@ -342,8 +342,17 @@ export const api = {
 				size_bytes: number;
 			}>;
 		}),
-	getConv: (convId: string) =>
-		getJSON<ConversationSummary>(`/api/conversations/${convId}`),
+	getConv: (convId: string) => {
+		// Synthetic DM conv (`dm-<agentId>`) has no DB row until the first user
+		// message — the server is designed to 404 these. Short-circuit before
+		// fetching so the inevitable 404 doesn't spam the devtools Console.
+		// Callers (`ChatPane` / `MembersListView` / `AgentDetailView`) already
+		// `.catch(() => {})` this, so reject keeps the existing fallback path.
+		if (convId.startsWith("dm-")) {
+			return Promise.reject(new Error("synthetic dm conv"));
+		}
+		return getJSON<ConversationSummary>(`/api/conversations/${convId}`);
+	},
 	/** Still-open ask-forms (agent questions awaiting an answer) — used to
 	 * re-hydrate the floating panel after a refresh. */
 	openAskForms: (convId: string) =>
