@@ -15,7 +15,7 @@ import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
-import { getServerOverride } from "./lib/runtime-config";
+import { getServerOverride, isCapacitor } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
