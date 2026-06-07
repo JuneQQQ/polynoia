@@ -115,16 +115,27 @@ export function App() {
 	useEffect(() => {
 		resetCenterTabs();
 		// Sync the STORE's activeConvId AND move the right-rail file column to the
-		// selected conv's workspace: a project conv → that project's files; a DM
-		// (dm-… id, no workspace) → empty. Also drop any file the right rail had
-		// open from the previous conv. So switching conv / project / clicking a
-		// contact actually changes the middle + right columns instead of leaving
-		// them parked on the last one. (activeConvId also drives PreviewPane's
-		// conflict / pending-edit panes — keep it in sync.)
-		const isDm = activeConv?.id?.startsWith("dm-") ?? true;
-		const wsForConv = activeConv?.id && !isDm ? activeWorkspaceId : null;
+		// selected conv's workspace:
+		//   - project conv → that project's shared workspace (activeWorkspaceId)
+		//   - DM (dm-… id) → the contact's PRIVATE per-conv sandbox `conv:<convId>`
+		//     (ADR-020). Earlier this set null → "无工作区" even though a private
+		//     sandbox exists; ChatPane re-seeds the right value but its child effect
+		//     fires BEFORE this parent effect on mount, so the parent was clobbering
+		//     ChatPane's seed back to null. Keep the two in sync here.
+		// Also drop any file the right rail had open from the previous conv so
+		// switching conv / project / clicking a contact actually changes the middle
+		// + right columns instead of leaving them parked on the last one.
+		// (activeConvId also drives PreviewPane's conflict / pending-edit panes —
+		// keep it in sync.)
+		const convId = activeConv?.id ?? null;
+		const isDm = convId?.startsWith("dm-") ?? false;
+		const wsForConv = !convId
+			? null
+			: isDm
+				? `conv:${convId}`
+				: activeWorkspaceId;
 		useStore.setState((s) => ({
-			activeConvId: activeConv?.id ?? null,
+			activeConvId: convId,
 			preview: {
 				...s.preview,
 				previewFile: null,
