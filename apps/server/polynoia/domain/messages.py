@@ -390,16 +390,34 @@ class FilesPanelItem(BaseModel):
     size_bytes: int | None = None
 
 
+class LinkItem(BaseModel):
+    """One external link inside a FilesPayload panel — covers both web URLs
+    (e.g. a preview server, container, deployed static site) and download URLs
+    (e.g. a source zip). Same panel surface as files; rendering branches on
+    ``kind``."""
+
+    url: str
+    label: str | None = None
+    # web → clickable, opens in new tab (default).
+    # download → triggers a download with the `label` as the suggested filename.
+    kind: Literal["web", "download"] = "web"
+    bytes: int | None = None
+    # Free-form note (e.g. "临时·30 分钟后过期", "container · port 8080").
+    note: str | None = None
+
+
 class FilesPayload(BaseModel):
-    """A panel bundling several files an agent presented in ONE `present` call
-    (the orchestrator's deliverable bundle). Rendered as a single card: a
-    one-line `message` to the user + a list of clickable files (preview +
-    download), instead of one separate card per file."""
+    """A panel bundling deliverables an agent presented in ONE `present` call
+    (the orchestrator's hand-off). Two parallel lists — produced FILES (preview
+    + download from the sandbox) and external LINKS (a deployed URL, a download
+    of a built zip). Either list may be empty; at least one entry total. Rendered
+    as a single card: a one-line ``message`` to the user + the entry list."""
 
     kind: Literal["files"] = "files"
-    # One-line feedback shown above the file list (the agent's hand-off note).
+    # One-line feedback shown above the entry list (the agent's hand-off note).
     message: str | None = None
-    files: list[FilesPanelItem]
+    files: list[FilesPanelItem] = []
+    links: list[LinkItem] = []
 
 
 class ImagePayload(BaseModel):

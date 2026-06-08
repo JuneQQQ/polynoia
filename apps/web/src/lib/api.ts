@@ -123,6 +123,26 @@ export type CommitDiff = {
 	truncated: boolean;
 };
 
+/** One running deploy/expose service. The 4 kinds share fields loosely — UI
+ * branches on `kind` for the right icon + secondary action (open / download /
+ * copy URL). `alive=false` happens for preview servers whose subprocess died.
+ */
+export type ServiceItem = {
+	token: string;
+	kind: "preview" | "static" | "container" | "source";
+	conv_id?: string | null;
+	url?: string | null;
+	download_url?: string | null;
+	name?: string | null;
+	port?: number | null;
+	size?: number | null;
+	container_id?: string | null;
+	image?: string | null;
+	alive: boolean;
+	created_at?: string | null;
+	ttl_seconds?: number | null;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
 	const res = await fetch(BASE + path);
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -554,6 +574,21 @@ export const api = {
 
 	health: () =>
 		getJSON<{ status: string; version: string; time: string }>("/api/health"),
+
+	/** List live services (preview servers / static mounts / containers /
+	 * source zips) owned by this conv. Drives the Services view in the right
+	 * rail. Each service has a `token` (the kill switch) + the kind-specific
+	 * fields (url / download_url / port / image / etc.). */
+	listServices: (convId: string) =>
+		getJSON<{ services: ServiceItem[] }>(
+			`/api/conversations/${convId}/services`,
+		),
+
+	/** Stop + forget a service. Token prefix decides the kind (prev-/stat-/
+	 * ctn-/src-) — server picks the right cleanup (terminate proc, rmtree,
+	 * docker rm -f + rmi, unlink zip). */
+	stopService: (token: string) =>
+		deleteJSON<{ ok: boolean; kind: string }>(`/api/services/${token}`),
 
 	/** Apply a Diff card to the conv's sandbox. Server reconstructs unified
 	 * diff from hunks + git apply + commit. Returns new short sha on success.

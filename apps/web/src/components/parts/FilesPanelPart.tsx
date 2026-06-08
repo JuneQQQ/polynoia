@@ -6,10 +6,10 @@
  * Reuses FilePart's helpers (parseWorkspaceFileSrc / variantFor / formatBytes)
  * so the icon + preview/download routing stay identical to the single-file card.
  */
-import { Download } from "lucide-react";
+import { Download, ExternalLink, Globe } from "lucide-react";
 import { api } from "../../lib/api";
 import { assetUrl } from "../../lib/runtime-config";
-import type { FilesPayload } from "../../lib/types";
+import type { FilesPayload, LinkItem } from "../../lib/types";
 import { useStore } from "../../store";
 import { formatBytes, parseWorkspaceFileSrc, variantFor } from "./FilePart";
 
@@ -99,8 +99,72 @@ function FileRow({
 	);
 }
 
+function LinkRow({ link }: { link: LinkItem }) {
+	const kind = link.kind ?? "web";
+	const label = link.label || link.url;
+	const Icon = kind === "download" ? Download : Globe;
+	const accent = kind === "download" ? "var(--color-amber)" : "var(--color-blue)";
+	const bg = kind === "download"
+		? "color-mix(in oklab, var(--color-amber) 14%, transparent)"
+		: "color-mix(in oklab, var(--color-blue) 14%, transparent)";
+	const size = formatBytes(link.bytes);
+	const isExternal = /^https?:\/\//i.test(link.url);
+	// Resolved href: `assetUrl` rewrites bare `/api/...` paths through the
+	// runtime API base so the link works in the Capacitor build (where the
+	// frontend isn't hosted on the same origin as the server).
+	const href = isExternal ? link.url : assetUrl(link.url);
+
+	const onClick = (e: React.MouseEvent) => {
+		if (kind !== "download") return;
+		e.preventDefault();
+		const a = document.createElement("a");
+		a.href = href;
+		if (label) a.download = label;
+		a.rel = "noopener noreferrer";
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+	};
+
+	return (
+		<div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[var(--color-surface-2)] transition group">
+			<a
+				href={href}
+				target={kind === "web" ? "_blank" : undefined}
+				rel="noopener noreferrer"
+				onClick={onClick}
+				className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+				title={link.url}
+			>
+				<div
+					className="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0"
+					style={{ background: bg, color: accent }}
+				>
+					<Icon size={15} />
+				</div>
+				<div className="flex-1 min-w-0">
+					<div className="text-[12.5px] font-medium text-[var(--color-fg)] truncate leading-snug flex items-center gap-1">
+						{label}
+						{kind === "web" && (
+							<ExternalLink size={10} className="text-[var(--color-fg-3)] flex-shrink-0" />
+						)}
+					</div>
+					{(link.note || size) && (
+						<div className="text-[10.5px] text-[var(--color-fg-3)] truncate mt-0.5">
+							{link.note}
+							{link.note && size ? " · " : ""}
+							{size}
+						</div>
+					)}
+				</div>
+			</a>
+		</div>
+	);
+}
+
 export function FilesPanelPart({ payload }: { payload: FilesPayload }) {
-	const { message, files } = payload;
+	const { message, files, links } = payload;
+	const linkList = links ?? [];
 	return (
 		<div className="w-full max-w-[520px] rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] overflow-hidden">
 			{message && (
@@ -111,11 +175,14 @@ export function FilesPanelPart({ payload }: { payload: FilesPayload }) {
 			<div className="flex flex-col p-1">
 				{files.map((f, i) => (
 					<FileRow
-						key={`${f.name}-${i}`}
+						key={`f-${f.name}-${i}`}
 						src={f.src}
 						name={f.name}
 						sizeBytes={f.size_bytes}
 					/>
+				))}
+				{linkList.map((l, i) => (
+					<LinkRow key={`l-${l.url}-${i}`} link={l} />
 				))}
 			</div>
 		</div>

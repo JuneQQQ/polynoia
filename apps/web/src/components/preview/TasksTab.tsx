@@ -1,9 +1,9 @@
-/** Tasks tab — orchestrator Gantt + event stream + cost stats + deploy card.
+/** Tasks tab — orchestrator Gantt + event stream + cost stats.
  *
  * Reads `tasks` payload from store.preview.data.tasks; computes lane positions
  * from task ordering for P0 (no real start/end timestamps yet).
  */
-import { AlertCircle, Check, CircleDot, Info, Loader2, Rocket } from "lucide-react";
+import { AlertCircle, Check, CircleDot, Info, Loader2 } from "lucide-react";
 import { useMemo } from "react";
 import type { TasksPayload } from "../../lib/types";
 import { useStore } from "../../store";
@@ -208,46 +208,6 @@ export function TasksTab({ payload }: { payload?: TasksPayload | null }) {
         ))}
       </div>
 
-      {/* Deploy card */}
-      <h4 className="text-[11px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold mb-2">
-        部署
-      </h4>
-      <div className="border border-[var(--color-line)] rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[60px_1fr_auto] items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] text-[11.5px]">
-          <span className="text-[var(--color-fg-3)]">状态</span>
-          <span className="mono">preview · r4-3f9c</span>
-          <span
-            className="text-[9.5px] px-1.5 py-0.5 rounded font-bold"
-            style={{ background: "var(--color-green-soft)", color: "var(--color-green)" }}
-          >
-            LIVE
-          </span>
-        </div>
-        <div className="grid grid-cols-[60px_1fr_auto] items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] text-[11.5px]">
-          <span className="text-[var(--color-fg-3)]">URL</span>
-          <span className="mono truncate">ainotes-lp.polynoia.app</span>
-        </div>
-        <div className="grid grid-cols-[60px_1fr_auto] items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] text-[11.5px]">
-          <span className="text-[var(--color-fg-3)]">分支</span>
-          <span className="mono">claude/landing-v4</span>
-          <span
-            className="text-[9.5px] px-1.5 py-0.5 rounded font-medium"
-            style={{ background: "var(--color-green-soft)", color: "var(--color-green)" }}
-          >
-            构建通过
-          </span>
-        </div>
-        <div className="grid grid-cols-[60px_1fr_auto] items-center gap-2 px-3 py-2 text-[11.5px]">
-          <span className="text-[var(--color-fg-3)]">下一步</span>
-          <span className="text-[var(--color-fg-2)]">等你 approve 后合并到 main</span>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 px-3 py-1 text-[11px] rounded bg-[var(--color-accent)] text-white"
-          >
-            <Rocket size={11} /> 合并
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -220,13 +220,24 @@ export type FilesPanelItem = {
 	size_bytes?: number | null;
 };
 
-/** A panel bundling several files an agent presented in ONE `present` call (the
- * orchestrator's deliverable bundle): a one-line `message` + a clickable file
- * list (preview + download), instead of one card per file. */
+/** External link inside a deliverable panel — a deployed/exposed URL or a
+ * download URL. `web` opens in a new tab; `download` triggers a download with
+ * `label` as the suggested filename. */
+export type LinkItem = {
+	url: string;
+	label?: string | null;
+	kind?: "web" | "download";
+	bytes?: number | null;
+	note?: string | null;
+};
+
+/** A panel bundling deliverables an agent presented in ONE `present` call —
+ * sandbox files and/or external links. One-line `message` + entry list. */
 export type FilesPayload = {
 	kind: "files";
 	message?: string | null;
 	files: FilesPanelItem[];
+	links?: LinkItem[] | null;
 };
 
 /** A turn/conversation-level failure, persisted so it 回显 survives a refresh.
