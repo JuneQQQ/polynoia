@@ -12,6 +12,7 @@
  */
 import { Suspense, lazy, useEffect, useState } from "react";
 import { HtmlPreview } from "./HtmlPreview";
+import { assetUrl } from "../../lib/runtime-config";
 import { MarkdownDoc } from "./MarkdownDoc";
 import { OfficePreview } from "./OfficePreview";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
@@ -50,7 +51,9 @@ function downloadHref(
 	path: string,
 ): string | undefined {
 	if (!workspaceId) return undefined;
-	return `/api/workspaces/${encodeURIComponent(workspaceId)}/files/download?path=${encodeURIComponent(path)}`;
+	return assetUrl(
+		`/api/workspaces/${encodeURIComponent(workspaceId)}/files/download?path=${encodeURIComponent(path)}`,
+	);
 }
 
 function isMarp(content: string): boolean {

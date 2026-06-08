@@ -81,10 +81,9 @@ export function RightPreviewFile({
 				const ep = mobile ? "blob" : "raw";
 				const base = (() => {
 					try {
-						return new URL(
-							`/api/workspaces/${workspaceId}/files/${ep}`,
-							window.location.href,
-						).href;
+						return assetUrl(
+							`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${ep}?path=${encodeURIComponent(path)}`,
+						);
 					} catch {
 						return `/files/${ep}`;
 					}

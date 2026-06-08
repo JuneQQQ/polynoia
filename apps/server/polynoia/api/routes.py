@@ -107,6 +107,10 @@ _pending_asks: dict[str, str | None] = {}
 # blocked on an ask_user (per-chunk silence is expected while the user thinks).
 # Set at register, dropped when poll_ask delivers the answer.
 _ask_conv: dict[str, str] = {}
+# ask_id → the registered ask-form payload, so answering can stamp the answer
+# back ONTO that card (in place) instead of appending a separate `you` bubble
+# that would split the agent's suspended-then-resumed output. Dropped on answer.
+_ask_forms: dict[str, dict] = {}
 
 
 def _conv_has_open_ask(conv_id: str) -> bool:
@@ -786,6 +790,7 @@ async def register_ask(conv_id: str, body: dict):
         "title": title, "blocking": True, "questions": questions,
         "blocking_tool": True,
     }
+    _ask_forms[ask_id] = af
     frame = (
         'data: {"type":"data-ask-form","data":'
         + json.dumps(af, ensure_ascii=False)
@@ -821,19 +826,35 @@ async def poll_ask(conv_id: str, ask_id: str):
 async def answer_ask(conv_id: str, ask_id: str, body: dict):
     """Resolve a blocking `ask_user` — the panel POSTs the user's formatted answer.
 
-    Also persists the answer as a `you` message so it survives refresh AND marks
-    the ask-form answered for re-hydration. Does NOT broadcast / spawn a turn —
-    the suspended `ask_user` tool resumes the CURRENT turn with this answer.
+    The answer is stamped ONTO the ask-form card (its own message, in place) +
+    re-broadcast, NOT appended as a separate `you` message. A blocking ask
+    suspends then RESUMES the same agent turn, so a `you` bubble would land
+    between the agent's pre-ask and post-ask output and break its continuity.
+    Showing the answer inside the card keeps the reply contiguous + survives a
+    refresh. Does NOT spawn a turn — the suspended tool resumes the current one.
     """
     answer = (body.get("answer") or "").strip() or "(用户未填写)"
-    _pending_asks[ask_id] = answer
-    with suppress(Exception):
-        async with SessionLocal() as _db:
-            await storage_repo.append_message(
-                _db, conv_id=conv_id, sender_id="you",
-                payload={"kind": "text", "body": [{"c": answer}]},
-            )
-            await _db.commit()
+    _pending_asks[ask_id] = answer  # resolves the polling ask_user tool
+    af = _ask_forms.pop(ask_id, None)
+    # Stamp the answer onto the ask-form card's own message (in place) so it
+    # re-hydrates as "已回复 · <answer>" on refresh — no separate `you` bubble.
+    if af is not None:
+        with suppress(Exception):
+            async with SessionLocal() as _db:
+                await storage_repo.update_message_payload(
+                    _db,
+                    ask_id,
+                    {
+                        "kind": "ask-form",
+                        "title": af.get("title", ""),
+                        "blocking": True,
+                        "blocking_tool": True,
+                        "questions": af.get("questions", []),
+                        "answer": answer,
+                        "answered": True,
+                    },
+                )
+                await _db.commit()
     return {"ok": True}
 
 
