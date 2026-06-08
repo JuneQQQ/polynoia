@@ -41,10 +41,14 @@ const _DocFallback = (
  * CodeMirror. Aligned with CodeEditor's langExtForPath: anything that has
  * syntax highlighting is recognized as code (.py first per user ask, then the
  * common companions). Excludes .md/.html — they have richer rendered kinds. */
-const CODE_EXT = /\.(py|pyi|ts|tsx|js|jsx|mjs|cjs|rs|go|java|kt|swift|c|h|cc|cpp|hpp|rb|php|sh|bash|zsh|json|yaml|yml|toml|css|scss|less|sql|xml|svg)$/i;
+const CODE_EXT =
+	/\.(py|pyi|ts|tsx|js|jsx|mjs|cjs|rs|go|java|kt|swift|c|h|cc|cpp|hpp|rb|php|sh|bash|zsh|json|yaml|yml|toml|css|scss|less|sql|xml|svg)$/i;
 
 /** Download URL for a workspace file (fallback when binary preview fails). */
-function downloadHref(workspaceId: string | null, path: string): string | undefined {
+function downloadHref(
+	workspaceId: string | null,
+	path: string,
+): string | undefined {
 	if (!workspaceId) return undefined;
 	return `/api/workspaces/${encodeURIComponent(workspaceId)}/files/download?path=${encodeURIComponent(path)}`;
 }
@@ -141,6 +145,8 @@ export function DocPreviewPane({
 			<MarkdownDoc
 				content={content}
 				path={embedded ? undefined : path}
+				imgBasePath={path}
+				workspaceId={workspaceId ?? undefined}
 				onEdit={!embedded && workspaceId ? () => setMdMode("edit") : undefined}
 			/>
 		);

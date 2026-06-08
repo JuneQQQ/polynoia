@@ -14,6 +14,7 @@ defines ``router = APIRouter()``; ``main.py`` includes it.
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import os
 import re
 
@@ -121,9 +122,13 @@ async def read_workspace_file_blob(ws_id: str, path: str):
     raw = target.read_bytes()
     if len(raw) > 25_000_000:
         raise HTTPException(413, "file too large (> 25MB)")
+    # Serve the REAL media type (image/png, image/svg+xml, …) so the bytes render
+    # inline in an <img>/iframe — octet-stream would force a download or fail to
+    # render. Falls back to octet-stream for unknown/opaque types (.xlsx, etc.).
+    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return Response(
         content=raw,
-        media_type="application/octet-stream",
+        media_type=media_type,
         headers={
             "X-Modified": str(target.stat().st_mtime),
             "Cache-Control": "no-store",
