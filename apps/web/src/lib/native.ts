@@ -69,8 +69,17 @@ export async function initNative(): Promise<void> {
 			// var and let the mobile root animate its padding-bottom via a transition,
 			// so the composer slides up SMOOTHLY in sync with the keyboard.
 			Keyboard.setResizeMode?.({ mode: "none" as never }).catch(() => {});
+			// UNITS: @capacitor/keyboard reports `keyboardHeight` in DEVICE pixels on
+			// Android (CSS points on iOS). The composer offset (--kb-h) is CSS px, so
+			// on Android we must divide by devicePixelRatio — otherwise --kb-h is ~dpr×
+			// too tall and the composer is flung to the top with a huge black gap.
+			const cap = (globalThis as { Capacitor?: { getPlatform?: () => string } })
+				.Capacitor;
+			const isAndroid = cap?.getPlatform?.() === "android";
+			const toCss = (h: number) =>
+				isAndroid ? Math.round(h / (window.devicePixelRatio || 1)) : h;
 			const setKb = (h: number) =>
-				document.documentElement.style.setProperty("--kb-h", `${h}px`);
+				document.documentElement.style.setProperty("--kb-h", `${toCss(h)}px`);
 			Keyboard.addListener("keyboardWillShow", (info) =>
 				setKb(info.keyboardHeight),
 			).catch(() => {});
