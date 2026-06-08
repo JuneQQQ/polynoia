@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { api } from "../lib/api";
+import { isMobile } from "../lib/platform";
 import {
 	selectIsMessageStreaming,
 	selectMessageById,
@@ -129,11 +130,13 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 	return (
 		<div
 			data-msg-id={msg.id}
-			className={`anim-fade-up group/msg flex gap-3 transition-colors duration-200 ${
+			className={`anim-fade-up group/msg flex ${isMobile() && !compact ? "gap-2" : "gap-3"} transition-colors duration-200 ${
 				// In a burst lane the lane BODY already supplies px-3; adding it again
 				// here double-indented diff/text cards relative to the fold block
 				// (ToolCallGroup compact, which has no px). No own px in compact.
-				compact ? "" : "px-6"
+				// Mobile shrinks the desktop px-6 to px-3 — saves 24px of horizontal
+				// budget so wide cards (BurstCard lanes, DiffPart) actually fit.
+				compact ? "" : isMobile() ? "px-3" : "px-6"
 			} ${
 				isGrouped ? "pt-0.5 pb-0.5" : compact ? "pt-2 pb-1" : "pt-3 pb-1.5"
 			} ${

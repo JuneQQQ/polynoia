@@ -19,6 +19,7 @@ import { Check, Loader2, Square, X } from "lucide-react";
 import { memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
 import { classifyFoldable } from "../../lib/toolFold";
+import { isMobile } from "../../lib/platform";
 import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
 import { isInProgressCard, useStore } from "../../store";
 import { MessageView } from "../MessageView";
@@ -143,7 +144,11 @@ function TasksBurstPartInner({
 		// Width matches the message TEXT column exactly: left at 68px (px-6 +
 		// avatar w-8 + gap-3) and right at mr-6 (= px-6). No max-w — the card is
 		// flush with the text on both edges; lanes that don't fit scroll inside.
-		<div className="relative ml-[68px] mr-6 my-3 border border-[var(--color-line)] rounded-xl overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)]">
+		// Mobile: drop the avatar-aligned offset — the screen (~360px) can't afford
+		// 92px of structural indent + the lane's own padding. `mx-1` keeps a 4px
+		// breathing room from the ChatPane outer px-2; lanes scroll horizontally
+		// inside as before when there are too many to fit.
+		<div className={`relative ${isMobile() ? "mx-1" : "ml-[68px] mr-6"} my-3 border border-[var(--color-line)] rounded-xl overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)]`}>
 			{/* Accent top-rule — signals "this is orchestrator-dispatched work" */}
 			<span
 				aria-hidden
@@ -190,8 +195,10 @@ function TasksBurstPartInner({
 					// Lanes keep a comfortable min width (don't compress too hard); if
 					// they don't fit the text-width card, the grid scrolls horizontally
 					// INSIDE the card (slide right to reveal the rest) rather than
-					// bleeding past the card's right edge.
-					gridTemplateColumns: `repeat(${Math.max(1, totalCount)}, minmax(280px, 1fr))`,
+					// bleeding past the card's right edge. Mobile tightens the floor
+					// to 240px so a single lane fits cleanly inside the now-edge-flush
+					// burst card on ~360px viewports.
+					gridTemplateColumns: `repeat(${Math.max(1, totalCount)}, minmax(${isMobile() ? "240px" : "280px"}, 1fr))`,
 					overflowX: "auto",
 				}}
 				initial={reduce ? false : "hidden"}

@@ -886,7 +886,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						style={{ paddingBottom: composerH + 24 }}
 					>
 						<div
-							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-4" : ""}`}
+							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-2" : ""}`}
 						>
 							{/* Lazy-load top sentinel — visible spinner while older messages
             are being fetched. Shown only if we have more to fetch. */}
