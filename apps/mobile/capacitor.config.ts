@@ -42,7 +42,14 @@ const config: CapacitorConfig = {
   },
   plugins: {
     SplashScreen: {
+      // launchAutoHide false → the splash stays up until initNative() calls
+      // SplashScreen.hide() AFTER React's first paint, eliminating the white
+      // flash between an 800ms auto-hide and the app actually rendering on a cold
+      // start. backgroundColor matches android.backgroundColor + the app bg so
+      // the splash→app handoff has no color jump; fade-out softens it.
       launchShowDuration: 800,
+      launchAutoHide: false,
+      launchFadeOutDuration: 200,
       backgroundColor: "#14110c",
       androidScaleType: "CENTER_CROP",
     },

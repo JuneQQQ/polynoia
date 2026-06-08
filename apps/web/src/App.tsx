@@ -14,7 +14,7 @@ import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { api } from "./lib/api";
-import { onNetworkChange, onResume } from "./lib/native";
+import { onBackButton, onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
 import { getServerOverride, isCapacitor } from "./lib/runtime-config";
 import { useStore } from "./store";
@@ -111,6 +111,35 @@ export function App() {
 			stop();
 		};
 	}, []);
+
+	// Android hardware/gesture back button: step BACK through the UI instead of
+	// killing the app (the default backButton action is exitApp — a single back
+	// press from the chat would otherwise quit). Priority: open preview sheet →
+	// close it; open right drawer → close it; in a chat → back to the list; at
+	// the list/home root → background the app (exitApp). Mobile only.
+	useEffect(() => {
+		if (!mobile) return;
+		return onBackButton(() => {
+			const st = useStore.getState();
+			if (st.preview.open) {
+				st.closePreview();
+				return;
+			}
+			if (st.rightDrawer.kind !== null) {
+				st.closeRightDrawer();
+				return;
+			}
+			if (activeConv) {
+				setActiveConv(null);
+				setView("inbox");
+				return;
+			}
+			// At the root list → let the OS background the app.
+			void import("@capacitor/app")
+				.then(({ App: CapApp }) => CapApp.exitApp())
+				.catch(() => {});
+		});
+	}, [mobile, activeConv, setView]);
 
 	// VS Code idiom: Cmd/Ctrl+B toggles the left sidebar (desktop only).
 	useEffect(() => {
