@@ -207,10 +207,19 @@ body,
 html {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
+	--pn-status-safe-top: env(safe-area-inset-top);
+	--pn-status-safe-bottom: env(safe-area-inset-bottom);
 }
 html[data-capacitor="1"],
 html[data-capacitor="1"] body {
 	overscroll-behavior: none;
+}
+html[data-capacitor="1"] {
+	/* Android WebView often reports env(safe-area-inset-top) as 0 even while the
+	   status bar overlays the WebView. Keep banners and mobile headers below the
+	   system chrome; iOS notches still win via the larger env() value. */
+	--pn-status-safe-top: max(env(safe-area-inset-top), 24px);
+	--pn-status-safe-bottom: env(safe-area-inset-bottom);
 }
 html[data-capacitor="1"] * {
 	-webkit-tap-highlight-color: transparent;

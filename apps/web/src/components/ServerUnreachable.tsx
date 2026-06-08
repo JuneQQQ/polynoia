@@ -42,7 +42,14 @@ export function ServerUnreachable() {
 	};
 
 	return (
-		<div className="pn-m-atmos min-h-[100dvh] grid place-items-center px-6 bg-[var(--color-bg)]">
+		<div
+			className="pn-m-atmos min-h-[100dvh] grid place-items-center px-6 bg-[var(--color-bg)]"
+			style={{
+				paddingTop: "var(--pn-status-safe-top, env(safe-area-inset-top))",
+				paddingBottom:
+					"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
+			}}
+		>
 			<div className="modal-card anim-modal-in relative w-full max-w-[420px] px-7 py-8 text-center">
 				<div
 					className="mx-auto mb-4 grid place-items-center w-12 h-12 rounded-full"

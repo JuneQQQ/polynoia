@@ -96,8 +96,9 @@ export function ConnectServerScreen() {
 		<div
 			className="pn-m-atmos fixed inset-0 z-50 flex flex-col bg-[var(--color-bg)] text-[var(--color-fg)] overflow-hidden"
 			style={{
-				paddingTop: "env(safe-area-inset-top)",
-				paddingBottom: "env(safe-area-inset-bottom)",
+				paddingTop: "var(--pn-status-safe-top, env(safe-area-inset-top))",
+				paddingBottom:
+					"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 			}}
 		>
 			<div className="flex-1 flex flex-col px-8 w-full max-w-[480px] mx-auto">

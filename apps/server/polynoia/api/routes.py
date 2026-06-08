@@ -2430,6 +2430,20 @@ async def _tap_text_into(
                     ):
                         yield ev
                         continue
+                    # Skip EMPTY reasoning (e.g. opus emits redacted / zero-content
+                    # thinking blocks). Persisting them resurrects blank "思考 N 秒"
+                    # strips on reload — sometimes several per turn (the "两个思考块"
+                    # bug). Nothing to show → don't store.
+                    if kind == "reasoning":
+                        _rbody = dump.get("body") or []
+                        _rtxt = "".join(
+                            b.get("c", "")
+                            for b in _rbody
+                            if isinstance(b, dict) and isinstance(b.get("c"), str)
+                        ).strip()
+                        if not _rtxt:
+                            yield ev
+                            continue
                     pid = getattr(ev, "part_id", None) or dump.get("tool_call_id")
                     if pid is None:
                         _anon += 1

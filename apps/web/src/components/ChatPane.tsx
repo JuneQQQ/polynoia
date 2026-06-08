@@ -1019,7 +1019,8 @@ export function ChatPane({ convId, members, title }: Props) {
 				className="absolute inset-x-0 z-10"
 				style={{
 					bottom: mobile ? "var(--kb-h, 0px)" : 0,
-					paddingBottom: "env(safe-area-inset-bottom)",
+					paddingBottom:
+						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 					transition: mobile
 						? "bottom 0.24s cubic-bezier(0.17, 0.59, 0.4, 1)"
 						: undefined,

@@ -2108,7 +2108,8 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 				borderTop: `0.5px solid ${pal.line}`,
 				background: pal.bgTop,
 				paddingTop: 8,
-				paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+				paddingBottom:
+					"calc(var(--pn-status-safe-bottom, env(safe-area-inset-bottom)) + 10px)",
 			}}
 		>
 			{tabs.map(({ id, label, Icon }) => {

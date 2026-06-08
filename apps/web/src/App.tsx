@@ -313,7 +313,8 @@ export function App() {
 						// max(safe-area, --conn-h): when the connection banner is showing it
 						// publishes its height as --conn-h, so the chat header (back arrow)
 						// drops below the fixed banner instead of being covered by it.
-						paddingTop: "max(env(safe-area-inset-top), var(--conn-h, 0px))",
+						paddingTop:
+							"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
 					}}
 				>
 					{/* Single chat header — back (→ list) + title. Frosted over the
@@ -359,13 +360,15 @@ export function App() {
 				style={{
 					// max(safe-area, --conn-h) so the connection banner never covers the
 					// home's top bar (see chat view note).
-					paddingTop: "max(env(safe-area-inset-top), var(--conn-h, 0px))",
+					paddingTop:
+						"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
 					// Home does NOT pad for the keyboard (unlike the chat view, whose
 					// composer must slide above it): its inputs (server field, search)
 					// sit near the top, so the keyboard simply overlays the bottom. The
 					// old `--kb-h` padding shoved the whole home up on focus → a big black
 					// gap between the tab bar and the keyboard ("中间一大片黑屏").
-					paddingBottom: "env(safe-area-inset-bottom)",
+					paddingBottom:
+						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 				}}
 			>
 				<MobileHome

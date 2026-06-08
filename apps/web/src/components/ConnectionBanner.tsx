@@ -54,8 +54,10 @@ export function ConnectionBanner() {
 			aria-live="polite"
 			className="anim-conn-in fixed inset-x-0 top-0 z-[70] flex items-center gap-2 px-4 border-b"
 			style={{
-				// safe-area aware on mobile (Dynamic Island / notch)
-				paddingTop: "max(0.375rem, env(safe-area-inset-top))",
+				// Safe-area aware on mobile. Use the project variable instead of raw
+				// env() because Android WebView can report 0 while the status bar still
+				// overlays the page.
+				paddingTop: "max(0.375rem, var(--pn-status-safe-top, 0px))",
 				paddingBottom: "0.375rem",
 				borderColor: tone,
 				background: offline
