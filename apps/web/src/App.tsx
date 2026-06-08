@@ -4,9 +4,9 @@ import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
-import { ServerUnreachable } from "./components/ServerUnreachable";
 import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
 import { RightDrawer } from "./components/RightDrawer";
+import { ServerUnreachable } from "./components/ServerUnreachable";
 import { Sidebar } from "./components/Sidebar";
 import { MobileHome } from "./components/mobile/MobileHome";
 import { PreviewPane } from "./components/preview/PreviewPane";
@@ -59,23 +59,58 @@ export function App() {
 		reloadSeed().catch(() => {});
 	}, [reloadSeed, mobile]);
 
-	// Mobile real-time refresh: re-pull seed lists whenever the app returns to the
-	// foreground or the network recovers — keeping the sidebar/agents/projects
-	// fresh regardless of which view is open (the active conv's live socket is
-	// reconnected in ChatPane). No-op off-Capacitor.
+	// FULL resync on app resume / network regain. Background→foreground MUST force
+	// a hard refresh: the WS was dead while backgrounded, so beyond re-pulling the
+	// seed lists we fire `polynoia:resync` — ChatPane re-hydrates the open conv's
+	// messages + reconnects its socket, and the sidebar/home reload their conv
+	// lists. Covers every view (chat / home / list). No-op off-Capacitor for the
+	// resume hook; the network hook + event also work in the browser.
 	useEffect(() => {
-		const refresh = () => {
+		const resync = () => {
 			reloadSeed().catch(() => {});
+			window.dispatchEvent(new Event("polynoia:resync"));
 		};
-		const offResume = onResume(refresh);
+		const offResume = onResume(resync);
 		const offNet = onNetworkChange((connected) => {
-			if (connected) refresh();
+			if (connected) resync();
 		});
 		return () => {
 			offResume();
 			offNet();
 		};
 	}, [reloadSeed]);
+
+	// Near-realtime cross-device sync (秒级). While the app is foregrounded, poll
+	// the lightweight LIST state every few seconds so changes made on another
+	// device (new conversations, unread bumps, last-message) show up within
+	// seconds. The OPEN conversation already syncs live over its WebSocket, so the
+	// poll only refreshes lists (`polynoia:resync-lists`) — it never re-hydrates
+	// the active chat, which would clobber an in-flight stream. Paused while
+	// backgrounded (Page Visibility) to spare battery/network.
+	useEffect(() => {
+		let timer: number | null = null;
+		const tick = () => {
+			if (document.visibilityState !== "visible") return;
+			window.dispatchEvent(new Event("polynoia:resync-lists"));
+		};
+		const start = () => {
+			if (timer === null) timer = window.setInterval(tick, 5000);
+		};
+		const stop = () => {
+			if (timer !== null) {
+				window.clearInterval(timer);
+				timer = null;
+			}
+		};
+		const onVis = () =>
+			document.visibilityState === "visible" ? start() : stop();
+		document.addEventListener("visibilitychange", onVis);
+		start();
+		return () => {
+			document.removeEventListener("visibilitychange", onVis);
+			stop();
+		};
+	}, []);
 
 	// VS Code idiom: Cmd/Ctrl+B toggles the left sidebar (desktop only).
 	useEffect(() => {
@@ -246,8 +281,7 @@ export function App() {
 						// Pad BOTH safe areas: top for the Dynamic Island, bottom for the
 						// home indicator (was missing → bottom bar/composer got clipped).
 						paddingTop: "env(safe-area-inset-top)",
-						paddingBottom:
-							"max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
+						paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
 						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
 					}}
 				>
@@ -255,7 +289,10 @@ export function App() {
               ember glow, an ember hairline rule beneath. ChatPane drops its own
               masthead on mobile, so this is the only header. */}
 					<div className="relative flex items-center gap-1 px-1.5 py-2.5 bg-[var(--color-surface)]/70 backdrop-blur-md">
-						<span aria-hidden className="pn-m-rule absolute inset-x-0 bottom-0" />
+						<span
+							aria-hidden
+							className="pn-m-rule absolute inset-x-0 bottom-0"
+						/>
 						<button
 							type="button"
 							onClick={() => setActiveConv(null)}

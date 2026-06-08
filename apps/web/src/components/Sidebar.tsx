@@ -241,6 +241,18 @@ export function Sidebar({
 	useEffect(() => {
 		refreshWsConvs();
 	}, [refreshWsConvs]);
+	// Cross-device + resume sync: refresh the conv list (unread / last-message /
+	// new convs) on the foreground poll (`polynoia:resync-lists`, ~5s) and on app
+	// resume (`polynoia:resync`). Keeps the sidebar 秒级-fresh with other devices.
+	useEffect(() => {
+		const onSync = () => refreshWsConvs();
+		window.addEventListener("polynoia:resync", onSync);
+		window.addEventListener("polynoia:resync-lists", onSync);
+		return () => {
+			window.removeEventListener("polynoia:resync", onSync);
+			window.removeEventListener("polynoia:resync-lists", onSync);
+		};
+	}, [refreshWsConvs]);
 
 	// Heartbeat for adapter-backed contacts — every 30s probe the underlying
 	// CLI to refresh online/offline status (CLI uninstalled / credential
