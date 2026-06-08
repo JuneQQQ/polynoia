@@ -1295,7 +1295,6 @@ function AdapterManager() {
 		color: pal.ink2,
 		cursor: "pointer",
 	};
-	const server = getServerOverride() || "local";
 
 	return (
 		<div style={{ margin: "0 12px 16px" }}>
@@ -1514,25 +1513,6 @@ function AdapterManager() {
 					</div>
 				);
 			})}
-			<div
-				style={{
-					display: "flex",
-					alignItems: "center",
-					gap: 8,
-					padding: "11px 14px",
-					background: pal.card,
-					border: `0.5px solid ${pal.line}`,
-					borderRadius: 14,
-					fontSize: 13,
-					color: pal.ink2,
-				}}
-			>
-				<Server size={14} color={pal.ink3} />
-				<span>服务器</span>
-				<span style={{ marginLeft: "auto", fontFamily: MONO, color: pal.ink }}>
-					{server}
-				</span>
-			</div>
 		</div>
 	);
 }
@@ -1698,7 +1678,7 @@ function MeScreen() {
 function ServerCard() {
 	const { pal, t, lang } = useApp();
 	const current = getServerOverride();
-	const [url, setUrl] = useState(current || "http://10.2.255.109:7780");
+	const [url, setUrl] = useState(current || "http://127.0.0.1:7780");
 	const [editing, setEditing] = useState(false);
 	const [test, setTest] = useState<{
 		kind: "idle" | "testing" | "ok" | "err";
@@ -1821,7 +1801,7 @@ function ServerCard() {
 							setUrl(e.target.value);
 							setTest({ kind: "idle", msg: "" });
 						}}
-						placeholder="http://10.2.255.109:7780"
+						placeholder="http://127.0.0.1:7780"
 						style={{
 							width: "100%",
 							border: "none",
@@ -1878,7 +1858,7 @@ function ServerCard() {
 							type="button"
 							onClick={() => {
 								setEditing(false);
-								setUrl(current || "http://10.2.255.109:7780");
+								setUrl(current || "http://127.0.0.1:7780");
 								setTest({ kind: "idle", msg: "" });
 							}}
 							disabled={saving}

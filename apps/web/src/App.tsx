@@ -356,8 +356,12 @@ export function App() {
 				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{
 					paddingTop: "env(safe-area-inset-top)",
-					paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
-					transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+					// Home does NOT pad for the keyboard (unlike the chat view, whose
+					// composer must slide above it): its inputs (server field, search)
+					// sit near the top, so the keyboard simply overlays the bottom. The
+					// old `--kb-h` padding shoved the whole home up on focus → a big black
+					// gap between the tab bar and the keyboard ("中间一大片黑屏").
+					paddingBottom: "env(safe-area-inset-bottom)",
 				}}
 			>
 				<MobileHome
