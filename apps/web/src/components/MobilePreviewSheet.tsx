@@ -30,7 +30,9 @@ export function MobilePreviewSheet() {
 	return (
 		<div
 			className="fixed inset-0 z-[60] flex flex-col bg-[var(--color-bg)] anim-fade-up"
-			style={{ paddingTop: "env(safe-area-inset-top)" }}
+			style={{
+				paddingTop: "var(--pn-status-safe-top, env(safe-area-inset-top))",
+			}}
 		>
 			<header className="flex items-center gap-2 px-3 py-2.5 border-b border-[var(--color-line)] bg-[var(--color-surface)]">
 				<div className="flex-1 min-w-0">

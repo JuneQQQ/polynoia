@@ -6,6 +6,7 @@ import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
 import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
 import { RightDrawer } from "./components/RightDrawer";
+import { ServerUnreachable } from "./components/ServerUnreachable";
 import { Sidebar } from "./components/Sidebar";
 import { MobileHome } from "./components/mobile/MobileHome";
 import { PreviewPane } from "./components/preview/PreviewPane";
@@ -13,12 +14,15 @@ import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { api } from "./lib/api";
+import { onBackButton, onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
-import { getServerOverride } from "./lib/runtime-config";
+import { getServerOverride, isCapacitor } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
-	const setSeed = useStore((s) => s.setSeed);
+	const reloadSeed = useStore((s) => s.reloadSeed);
+	const serverReachable = useStore((s) => s.serverReachable);
+	const providers = useStore((s) => s.providers);
 	const view = useStore((s) => s.view);
 	const setView = useStore((s) => s.setView);
 	const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -48,17 +52,94 @@ export function App() {
 	const mobile = isMobile();
 
 	useEffect(() => {
-		Promise.all([
-			api.providers(),
-			api.agents(),
-			api.servers(),
-			api.workspaces(),
-		])
-			.then(([providers, agents, servers, workspaces]) =>
-				setSeed({ providers, agents, servers, workspaces }),
-			)
-			.catch((e) => console.error("seed fetch failed", e));
-	}, [setSeed]);
+		// On a Capacitor first run there's no server yet — ConnectServerScreen
+		// gates that below; don't fetch (and don't trip the unreachable gate).
+		if (mobile && isCapacitor() && !getServerOverride()) return;
+		// reloadSeed sets serverReachable; failure surfaces via the boot gate.
+		reloadSeed().catch(() => {});
+	}, [reloadSeed, mobile]);
+
+	// FULL resync on app resume / network regain. Background→foreground MUST force
+	// a hard refresh: the WS was dead while backgrounded, so beyond re-pulling the
+	// seed lists we fire `polynoia:resync` — ChatPane re-hydrates the open conv's
+	// messages + reconnects its socket, and the sidebar/home reload their conv
+	// lists. Covers every view (chat / home / list). No-op off-Capacitor for the
+	// resume hook; the network hook + event also work in the browser.
+	useEffect(() => {
+		const resync = () => {
+			reloadSeed().catch(() => {});
+			window.dispatchEvent(new Event("polynoia:resync"));
+		};
+		const offResume = onResume(resync);
+		const offNet = onNetworkChange((connected) => {
+			if (connected) resync();
+		});
+		return () => {
+			offResume();
+			offNet();
+		};
+	}, [reloadSeed]);
+
+	// Near-realtime cross-device sync (秒级). While the app is foregrounded, poll
+	// the lightweight LIST state every few seconds so changes made on another
+	// device (new conversations, unread bumps, last-message) show up within
+	// seconds. The OPEN conversation already syncs live over its WebSocket, so the
+	// poll only refreshes lists (`polynoia:resync-lists`) — it never re-hydrates
+	// the active chat, which would clobber an in-flight stream. Paused while
+	// backgrounded (Page Visibility) to spare battery/network.
+	useEffect(() => {
+		let timer: number | null = null;
+		const tick = () => {
+			if (document.visibilityState !== "visible") return;
+			window.dispatchEvent(new Event("polynoia:resync-lists"));
+		};
+		const start = () => {
+			if (timer === null) timer = window.setInterval(tick, 5000);
+		};
+		const stop = () => {
+			if (timer !== null) {
+				window.clearInterval(timer);
+				timer = null;
+			}
+		};
+		const onVis = () =>
+			document.visibilityState === "visible" ? start() : stop();
+		document.addEventListener("visibilitychange", onVis);
+		start();
+		return () => {
+			document.removeEventListener("visibilitychange", onVis);
+			stop();
+		};
+	}, []);
+
+	// Android hardware/gesture back button: step BACK through the UI instead of
+	// killing the app (the default backButton action is exitApp — a single back
+	// press from the chat would otherwise quit). Priority: open preview sheet →
+	// close it; open right drawer → close it; in a chat → back to the list; at
+	// the list/home root → background the app (exitApp). Mobile only.
+	useEffect(() => {
+		if (!mobile) return;
+		return onBackButton(() => {
+			const st = useStore.getState();
+			if (st.preview.open) {
+				st.closePreview();
+				return;
+			}
+			if (st.rightDrawer.kind !== null) {
+				st.closeRightDrawer();
+				return;
+			}
+			if (activeConv) {
+				setActiveConv(null);
+				setView("inbox");
+				return;
+			}
+			// At the root list → let the OS background the app.
+			void import("@capacitor/app")
+				.then(({ App: CapApp }) => CapApp.exitApp())
+				.catch(() => {});
+		});
+	}, [mobile, activeConv, setView]);
 
 	// VS Code idiom: Cmd/Ctrl+B toggles the left sidebar (desktop only).
 	useEffect(() => {
@@ -142,6 +223,13 @@ export function App() {
 				data: { ...s.preview.data, workspaceId: wsForConv },
 			},
 		}));
+		// Opening a conversation marks it read so the unread badge clears (desktop
+		// had no read-marking — it stayed unread even while you watched it). Skip
+		// synthetic dm- ids (no server row yet). Fire-and-forget; the badge also
+		// hides immediately because the active conv suppresses its own count.
+		if (convId && !isDm) {
+			api.markConvRead(convId).catch(() => undefined);
+		}
 	}, [activeConv?.id, activeWorkspaceId, resetCenterTabs]);
 
 	// Members changed in the drawer (add/remove) → keep the active conv's member
@@ -193,6 +281,14 @@ export function App() {
 		);
 	};
 
+	// Boot gate: the initial seed couldn't reach the server and nothing loaded →
+	// a clear retry screen instead of an empty shell. Capacitor first-run has its
+	// own ConnectServerScreen (below), so exclude it here.
+	const capacitorFirstRun = mobile && isCapacitor() && !getServerOverride();
+	if (!capacitorFirstRun && !serverReachable && providers.length === 0) {
+		return <ServerUnreachable />;
+	}
+
 	// ── Mobile layout (Capacitor iOS/Android or narrow viewport) ─────
 	if (mobile) {
 		// First-run gate: any mobile context with no server URL is forced through the
@@ -218,13 +314,24 @@ export function App() {
 						paddingTop: "env(safe-area-inset-top)",
 						paddingBottom: "var(--kb-h, 0px)",
 						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+						// Top safe area stays on the page root. Bottom/keyboard insets are
+						// owned by ChatPane's floating composer; padding the whole root by
+						// --kb-h makes Android leave a large blank band above the keyboard.
+						// max(safe-area, --conn-h): when the connection banner is showing it
+						// publishes its height as --conn-h, so the chat header (back arrow)
+						// drops below the fixed banner instead of being covered by it.
+						paddingTop:
+							"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
 					}}
 				>
 					{/* Single chat header — back (→ list) + title. Frosted over the
               ember glow, an ember hairline rule beneath. ChatPane drops its own
               masthead on mobile, so this is the only header. */}
 					<div className="relative flex items-center gap-1 px-1.5 py-2.5 bg-[var(--color-surface)]/70 backdrop-blur-md">
-						<span aria-hidden className="pn-m-rule absolute inset-x-0 bottom-0" />
+						<span
+							aria-hidden
+							className="pn-m-rule absolute inset-x-0 bottom-0"
+						/>
 						<button
 							type="button"
 							onClick={() => setActiveConv(null)}
@@ -258,12 +365,17 @@ export function App() {
 			<div
 				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{
-					paddingTop: "env(safe-area-inset-top)",
-					// Bottom safe-area is owned by the leaf TabBar (MobileHome.tsx) so its
-					// background can paint to the physical screen edge. Padding here only
-					// rises with the keyboard.
-					paddingBottom: "var(--kb-h, 0px)",
-					transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+					// max(safe-area, --conn-h) so the connection banner never covers the
+					// home's top bar (see chat view note).
+					paddingTop:
+						"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
+					// Home does NOT pad for the keyboard (unlike the chat view, whose
+					// composer must slide above it): its inputs (server field, search)
+					// sit near the top, so the keyboard simply overlays the bottom. The
+					// old `--kb-h` padding shoved the whole home up on focus → a big black
+					// gap between the tab bar and the keyboard ("中间一大片黑屏").
+					paddingBottom:
+						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 				}}
 			>
 				<MobileHome
@@ -278,7 +390,15 @@ export function App() {
 
 	// ── Desktop / browser layout (Tauri or normal browser) ───────────
 	return (
-		<div className="h-screen flex overflow-hidden">
+		<div
+			className="flex overflow-hidden"
+			style={{
+				// Sit below the connection banner (it publishes --conn-h when shown)
+				// so it never covers the sidebar/header. 0 when online → full height.
+				marginTop: "var(--conn-h, 0px)",
+				height: "calc(100dvh - var(--conn-h, 0px))",
+			}}
+		>
 			{/* Sidebar self-manages full vs collapsed icon-rail (reads
           sidebarCollapsed internally) — always mounted. */}
 			<Sidebar

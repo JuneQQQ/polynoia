@@ -113,18 +113,36 @@ export function cleanToolName(raw: string): string {
  * Unknown tools fall back to the cleaned English key (rule: English → just the
  * last key name; known → Chinese). Never shows an mcp__polynoia__ prefix. */
 const _TOOL_ZH: Record<string, string> = {
-	read: "读取", write: "写入", edit: "编辑", apply_patch: "打补丁",
-	bash: "执行命令", grep: "搜索", glob: "查找文件", revert: "回滚",
-	dispatch: "派活", discuss: "讨论", remember: "记录", recall: "回忆",
-	report: "汇报", ask_user: "询问", request_project_access: "申请项目权限",
-	present: "展示文件", task: "子任务", todowrite: "更新待办",
-	webfetch: "抓取网页", websearch: "联网搜索", multiedit: "批量编辑",
+	read: "读取",
+	write: "写入",
+	edit: "编辑",
+	apply_patch: "打补丁",
+	bash: "执行命令",
+	grep: "搜索",
+	glob: "查找文件",
+	revert: "回滚",
+	dispatch: "派活",
+	discuss: "讨论",
+	remember: "记录",
+	recall: "回忆",
+	report: "汇报",
+	ask_user: "询问",
+	request_project_access: "申请项目权限",
+	present: "展示文件",
+	task: "子任务",
+	todowrite: "更新待办",
+	webfetch: "抓取网页",
+	websearch: "联网搜索",
+	multiedit: "批量编辑",
 };
 
 /** Display name for a tool in the status pill: cleaned key (no mcp__polynoia__
  * prefix). In zh, known tools are translated (read→读取, dispatch→派活); in en,
  * just the cleaned key (read, dispatch). Unknown tools → cleaned key in both. */
-export function toolDisplayName(raw?: string, lang: import("./lib/i18n").Lang = "zh"): string {
+export function toolDisplayName(
+	raw?: string,
+	lang: import("./lib/i18n").Lang = "zh",
+): string {
 	if (!raw) return "";
 	const key = cleanToolName(raw);
 	if (lang === "en") return key;
@@ -175,6 +193,12 @@ type Store = {
 	agents: Agent[];
 	servers: Server[];
 	workspaces: Workspace[];
+
+	/** Did the initial seed fetch reach the server? false → render the boot
+	 * "can't reach server" gate instead of an empty shell. */
+	serverReachable: boolean;
+	/** WS link state for the active conv, surfaced as the connection banner. */
+	connectionStatus: "connecting" | "online" | "reconnecting" | "offline";
 
 	// Active selection
 	activeWorkspaceId: string | null;
@@ -228,6 +252,14 @@ type Store = {
 		servers: Server[];
 		workspaces: Workspace[];
 	}) => void;
+	setServerReachable: (v: boolean) => void;
+	setConnectionStatus: (
+		s: "connecting" | "online" | "reconnecting" | "offline",
+	) => void;
+	/** Re-fetch seed lists (providers/agents/servers/workspaces). Powers the
+	 * connection-banner retry + mobile resume/network-regain so lists don't go
+	 * stale. Sets serverReachable; throws on failure so callers can react. */
+	reloadSeed: () => Promise<void>;
 	setActiveWorkspace: (id: string | null) => void;
 	setActiveConv: (id: string | null) => void;
 	setView: (v: "inbox" | "marketplace" | "archive" | "chat") => void;
@@ -263,9 +295,7 @@ type Store = {
 	 * switches. Composer consumes it once on mount/change and clears it
 	 * (passes ``null``) to avoid re-applying on every re-render. */
 	composerDraft: { convId: string; text: string } | null;
-	setComposerDraft: (
-		value: { convId: string; text: string } | null,
-	) => void;
+	setComposerDraft: (value: { convId: string; text: string } | null) => void;
 	/** Upsert a pending edit (WS chunk handler) — also flips existing entries
 	 * when the server pushes a status change. */
 	upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
@@ -467,6 +497,8 @@ export const useStore = create<Store>((set, get) => ({
 	agents: [],
 	servers: [],
 	workspaces: [],
+	serverReachable: true,
+	connectionStatus: "connecting",
 	// Restored on boot so a refresh keeps you on the same project + conversation
 	// (the active conv object itself is persisted by App.tsx).
 	activeWorkspaceId:
@@ -675,6 +707,23 @@ export const useStore = create<Store>((set, get) => ({
 		set((s) => ({ workspaceFilesTick: s.workspaceFilesTick + 1 })),
 
 	setSeed: (s) => set(s),
+	setServerReachable: (v) => set({ serverReachable: v }),
+	setConnectionStatus: (s) => set({ connectionStatus: s }),
+	reloadSeed: async () => {
+		const { api } = await import("./lib/api");
+		try {
+			const [providers, agents, servers, workspaces] = await Promise.all([
+				api.providers(),
+				api.agents(),
+				api.servers(),
+				api.workspaces(),
+			]);
+			set({ providers, agents, servers, workspaces, serverReachable: true });
+		} catch (e) {
+			set({ serverReachable: false });
+			throw e;
+		}
+	},
 	setActiveWorkspace: (id) => {
 		try {
 			if (id) window.localStorage.setItem("polynoia:active-ws", id);
@@ -682,7 +731,17 @@ export const useStore = create<Store>((set, get) => ({
 		} catch {}
 		set({ activeWorkspaceId: id });
 	},
-	setActiveConv: (id) => set({ activeConvId: id, view: "chat" }),
+	setActiveConv: (id) => {
+		set({ activeConvId: id, view: "chat" });
+		// Opening a conversation marks it read (desktop had no read-marking — the
+		// unread badge never cleared even while you watched it). Skip synthetic
+		// `dm-<agent>` ids (no server row yet → 404). Fire-and-forget.
+		if (id && !id.startsWith("dm-")) {
+			import("./lib/api").then(({ api }) =>
+				api.markConvRead(id).catch(() => undefined),
+			);
+		}
+	},
 	setReplyingTo: (value) => set({ replyingTo: value }),
 	setComposerDraft: (value) => set({ composerDraft: value }),
 	setView: (v) => set({ view: v }),
@@ -812,9 +871,7 @@ export const useStore = create<Store>((set, get) => ({
 			// reconnect, the server still owns the turn — leave the card alone (it
 			// will resolve to a diff / error on its own). Only a turn the server
 			// has forgotten (no fresh status) gets its stuck card retired.
-			const st = msg.sender_id
-				? cur.agentStatus.get(msg.sender_id)
-				: undefined;
+			const st = msg.sender_id ? cur.agentStatus.get(msg.sender_id) : undefined;
 			if (st && st.status === "streaming" && st.ts >= since) continue;
 			if (!patched) patched = new Map(cur.msgById);
 			patched.set(mid, {
@@ -823,8 +880,7 @@ export const useStore = create<Store>((set, get) => ({
 					...p,
 					state: "error",
 					is_error: true,
-					output_text:
-						"⚠️ 连接已中断,该写入可能未完成(刷新可清除此卡)",
+					output_text: "⚠️ 连接已中断,该写入可能未完成(刷新可清除此卡)",
 				} as Message["payload"],
 			});
 		}
@@ -1211,10 +1267,17 @@ export function selectAgentStatuses(
  * activity belongs last) — see floatInProgressLast. */
 export function isInProgressCard(m: Message): boolean {
 	const p = m.payload as
-		| { kind?: string; state?: string; commit_sha?: string | null; applied?: boolean; running?: boolean }
+		| {
+				kind?: string;
+				state?: string;
+				commit_sha?: string | null;
+				applied?: boolean;
+				running?: boolean;
+		  }
 		| undefined;
 	if (!p) return false;
-	if (p.kind === "tool-call") return p.state === "running" || p.state === "pending";
+	if (p.kind === "tool-call")
+		return p.state === "running" || p.state === "pending";
 	if (p.kind === "diff") return !p.commit_sha && p.applied !== true;
 	if (p.kind === "terminal") return p.running === true;
 	return false;

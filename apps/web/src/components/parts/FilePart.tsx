@@ -131,7 +131,7 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 
 	return (
 		<div
-			className="flex items-center gap-3 w-full max-w-[520px] p-2.5 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] hover:border-[var(--color-accent)] transition group"
+			className="flex items-center gap-3 w-full max-w-[360px] p-2.5 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] hover:border-[var(--color-accent)] transition group"
 			role="group"
 			aria-label={`文件 ${payload.name}`}
 		>

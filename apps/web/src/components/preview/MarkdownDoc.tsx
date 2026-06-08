@@ -10,11 +10,41 @@
  * highlight.js 主题。错误边界兜底:渲染抛错时退化成纯文本源码,绝不空白。
  */
 import { FileText, Pencil } from "lucide-react";
-import { Component, type ReactNode } from "react";
+import { Component, type ReactNode, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { assetUrl } from "../../lib/runtime-config";
 import { fixCjkMarkdown } from "../parts/TextPart";
+
+/** Resolve a markdown image `src` to something the browser can load.
+ *
+ * Agent reports embed images by RELATIVE path (`chart_category.png`,
+ * `imgs/x.png`, `../a.png`) — those live in the same workspace as the .md, so we
+ * rewrite them to the workspace blob endpoint (which now serves the real image
+ * media-type). Absolute/external/data URLs are left untouched. Paths are
+ * normalized against the doc's own directory so `../` works. */
+function resolveDocImageSrc(
+	src: string | undefined,
+	workspaceId: string | undefined,
+	docPath: string | undefined,
+): string | undefined {
+	if (!src || !workspaceId) return src;
+	if (/^([a-z]+:|\/\/|\/|#)/i.test(src)) return src; // http(s)/data/blob/abs/anchor
+	const docDir = docPath?.includes("/")
+		? docPath.slice(0, docPath.lastIndexOf("/"))
+		: "";
+	const parts: string[] = [];
+	for (const seg of `${docDir}/${src}`.split("/")) {
+		if (seg === "" || seg === ".") continue;
+		if (seg === "..") parts.pop();
+		else parts.push(seg);
+	}
+	const norm = parts.join("/");
+	return assetUrl(
+		`/api/workspaces/${encodeURIComponent(workspaceId)}/files/blob?path=${encodeURIComponent(norm)}`,
+	);
+}
 
 const DOC_STYLE = `
 .pn-md-doc{font-family:var(--font-ui);color:var(--color-fg);font-size:15px;line-height:1.75;word-break:break-word}
@@ -75,30 +105,52 @@ class MdBoundary extends Component<
 	}
 }
 
-// Links open in a new tab (read-only doc); strip react-markdown's `node` prop.
-const MD_COMPONENTS = {
-	a({ node: _node, ...props }: { node?: unknown; [k: string]: unknown }) {
-		return (
-			<a {...props} target="_blank" rel="noopener noreferrer nofollow" />
-		);
-	},
-};
-
 export function MarkdownDoc({
 	content,
 	path,
+	workspaceId,
+	imgBasePath,
 	onEdit,
 }: {
 	content: string;
 	path?: string;
+	workspaceId?: string;
+	/** Doc path used ONLY to resolve relative image src (decoupled from `path`,
+	 *  which also drives the header — mobile passes this but no `path`). */
+	imgBasePath?: string;
 	onEdit?: () => void;
 }) {
 	const name = path ? (path.split("/").pop() ?? path) : undefined;
+	const imgDocPath = imgBasePath ?? path;
+	// Links open in a new tab (read-only doc); embedded relative images resolve to
+	// the workspace blob endpoint. Memoized over the resolution inputs.
+	const components = useMemo(
+		() => ({
+			a({ node: _node, ...props }: { node?: unknown; [k: string]: unknown }) {
+				return (
+					<a {...props} target="_blank" rel="noopener noreferrer nofollow" />
+				);
+			},
+			img({
+				node: _node,
+				src,
+				...props
+			}: { node?: unknown; src?: string; [k: string]: unknown }) {
+				const resolved = resolveDocImageSrc(src, workspaceId, imgDocPath);
+				// biome-ignore lint/a11y/useAltText: alt comes through ...props from md
+				return <img src={resolved} {...props} />;
+			},
+		}),
+		[workspaceId, imgDocPath],
+	);
 	return (
 		<div className="h-full flex flex-col bg-[var(--color-bg)]">
 			{(name || onEdit) && (
 				<div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px] flex-shrink-0">
-					<FileText size={12} className="text-[var(--color-accent)] flex-shrink-0" />
+					<FileText
+						size={12}
+						className="text-[var(--color-accent)] flex-shrink-0"
+					/>
 					<span className="font-mono truncate flex-1 text-[var(--color-fg-2)]">
 						{name}
 					</span>
@@ -124,7 +176,7 @@ export function MarkdownDoc({
 								[rehypeHighlight, { detect: true, ignoreMissing: true }],
 							]}
 							// biome-ignore lint/suspicious/noExplicitAny: rmd component map
-							components={MD_COMPONENTS as any}
+							components={components as any}
 						>
 							{fixCjkMarkdown(content)}
 						</ReactMarkdown>

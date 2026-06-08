@@ -1651,6 +1651,17 @@ class _PresentTool(_ToolBase):
         "`message` is the one-line hand-off note. At least one of paths/links is "
         "required. Call this ONCE (not per file). Prefer it over pasting file "
         "contents into your reply."
+        "entry (e.g. a built index.html), or skip `present` entirely and just say in "
+        "one line how to run it. Listing 20 .ts/.py source files is noise.\n\n"
+        "Pass `paths` (a list) to bundle the SELECTED deliverables into one panel, or "
+        "`path` for one; `message` is the one-line hand-off note. Paths are relative "
+        "to your working dir. Call this ONCE (not per file). Prefer it over pasting "
+        "file contents into your reply.\n\n"
+        "DISPATCHED WORKERS: if you are executing a sub-task handed to you by an "
+        "orchestrator (mid-burst), do NOT call `present` — just `report` the files "
+        "you produced. The orchestrator presents the merged result from main at "
+        "summary; a worker's present is suppressed anyway. Use `present` on a solo "
+        "turn, or as the orchestrator's final hand-off."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -1963,11 +1974,18 @@ _ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}
 # container or source zip while wrapping up. Pairs with `present` (the agent
 # surfaces the returned URL via a `links` entry on the deliverable panel).
 _EXPOSE   = {"expose"}
+_ORCHESTRATE = {"dispatch", "discuss", "resolve_conflict"}
+# `present` (surface deliverables as a card) is available to BUILDERS too, not
+# just the orchestrator: a solo agent must be able to hand off what it built, and
+# in a burst the /present endpoint already DEFERS a mid-burst worker's card (the
+# file still rides into main; the orchestrator presents from main at summary). The
+# tool description steers dispatched workers to `report` instead — capability is
+# granted, etiquette is prompted.
+_DELIVER = {"present"}
 # Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
-# self-report); `present` is orchestrator-only (workers `report`, the
-# orchestrator bundles + presents from main at summary). The removed
-# edit/apply_patch/revert/call_agent tools are gone for good — `write` is the
-# single audited write path, and delegation is dispatch/discuss not a blocking call.
+# self-report). resolve_conflict stays orchestrator-only (neutral arbiter). The
+# removed edit/apply_patch/revert/call_agent tools are gone for good — `write` is
+# the single audited write path, and delegation is dispatch/discuss not a blocking call.
 
 # ── Functional tiers (role names map onto these) ────────────────
 _TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _EXPOSE
@@ -1975,6 +1993,11 @@ _TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL |
 # arbiter). Workers just build + report; a conflict on their branch is escalated
 # to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
 _TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _EXPOSE
+_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _DELIVER
+# Builders do NOT resolve conflicts — that's the orchestrator's call (neutral
+# arbiter). Workers just build + report; a conflict on their branch is escalated
+# to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _DELIVER
 _TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
 _TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
 _TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write

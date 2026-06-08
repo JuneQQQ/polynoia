@@ -60,6 +60,7 @@ from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.mcp.tools import tools_for_role
 from polynoia.sandbox import Sandbox
+from polynoia.sandbox._core import _use_direct_creds
 from polynoia.settings import settings
 
 
@@ -314,6 +315,14 @@ class ClaudeCodeAdapter:
             except Exception:  # noqa: BLE001 — best-effort tee
                 pass
 
+        # On macOS the SDK's BUNDLED `claude` binary fails the Pro OAuth request
+        # with a 403 ("Request not allowed") — it isn't the Keychain item's
+        # trusted app and is an older pinned build. The host's SYSTEM `claude`
+        # (which owns that credential + is current) works. So in direct-creds
+        # mode (macOS desktop) point the SDK at the system claude; the Linux
+        # server keeps the SDK's bundled binary (its copy-cred model works there).
+        _cli_path = shutil.which("claude") if _use_direct_creds() else None
+
         opts = ClaudeAgentOptions(
             cwd=effective_cwd,
             system_prompt=sys_prompt_param,
@@ -323,6 +332,7 @@ class ClaudeCodeAdapter:
             strict_mcp_config=True,         # only the `polynoia` MCP server
             permission_mode="bypassPermissions",   # MCP boundary suffices
             model=model,
+            **({"cli_path": _cli_path} if _cli_path else {}),
             env=sandbox_env,
             # 关键:开启流式 + include partial messages 让我们拿到 text-delta
             include_partial_messages=True,
@@ -803,8 +813,40 @@ class ClaudeCodeSession:
 
             yield TurnStartedEvent(turn_id=turn_id, task_id=task_id)
 
-            # Send the user query
-            await client.query(text)
+            # Send the user query. With image attachments, send a STRUCTURED user
+            # message (text block + base64 image blocks) so the model actually
+            # SEES the pixels — `client.query(str)` would only carry text. Each
+            # attachment is {media_type, data(base64), name}; non-image atts are
+            # ignored here (only vision is wired).
+            images = [
+                a
+                for a in (attachments or [])
+                if a.get("data") and str(a.get("media_type", "")).startswith("image/")
+            ]
+            if images:
+                content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+                for a in images:
+                    content.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": a["media_type"],
+                                "data": a["data"],
+                            },
+                        }
+                    )
+
+                async def _structured_msg() -> AsyncIterator[dict[str, Any]]:
+                    yield {
+                        "type": "user",
+                        "message": {"role": "user", "content": content},
+                        "parent_tool_use_id": None,
+                    }
+
+                await client.query(_structured_msg())
+            else:
+                await client.query(text)
 
             try:
                 async for ev in _translate_claude_stream(

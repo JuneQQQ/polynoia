@@ -76,6 +76,17 @@ log = logging.getLogger(__name__)
 # once the session/prompt JSON-RPC response has been received.
 _SENTINEL: Any = object()
 
+# Grace window AFTER the session/prompt response (stopReason) before the turn is
+# sealed. opencode flushes the final `agent_message_chunk` (the reply text) a few
+# ms AFTER it sends the turn-end JSON-RPC response — that trailing notification
+# arrives on stdout *after* the response, so sealing the turn the instant the
+# response lands strands it in the SHARED cross-turn notification queue, and it
+# surfaces at the START of the next turn (the "only the thinking block shows; the
+# reply appears one message late" bug). The reader keeps enqueuing during this
+# window and the translator drains it into THIS turn. Bounded + tiny, so turn-end
+# (and the burst is_last/merge it can trigger) is delayed at most this much.
+_TRAILING_FLUSH_GRACE_S = 0.2
+
 
 def _polynoia_opencode_data_home() -> str:
     """Return a dedicated XDG_DATA_HOME for Polynoia's opencode sessions,
@@ -773,6 +784,12 @@ class OpenCodeSession:
                 try:
                     await request_task
                 finally:
+                    # Wait a short grace so opencode's trailing agent_message_chunk
+                    # (flushed just AFTER the stopReason response) is read +
+                    # translated into THIS turn instead of stranding in the shared
+                    # queue and surfacing one message late. See _TRAILING_FLUSH_GRACE_S.
+                    with contextlib.suppress(Exception):
+                        await asyncio.sleep(_TRAILING_FLUSH_GRACE_S)
                     with contextlib.suppress(Exception):
                         notif_queue.put_nowait(_SENTINEL)
 

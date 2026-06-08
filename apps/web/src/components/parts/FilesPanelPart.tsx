@@ -166,7 +166,7 @@ export function FilesPanelPart({ payload }: { payload: FilesPayload }) {
 	const { message, files, links } = payload;
 	const linkList = links ?? [];
 	return (
-		<div className="w-full max-w-[520px] rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] overflow-hidden">
+		<div className="w-full max-w-[360px] rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] overflow-hidden">
 			{message && (
 				<div className="px-3 py-2 text-[13px] text-[var(--color-fg)] leading-relaxed border-b border-[var(--color-line)]">
 					{message}

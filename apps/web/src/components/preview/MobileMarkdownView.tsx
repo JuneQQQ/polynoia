@@ -6,6 +6,18 @@
  */
 import { MarkdownDoc } from "./MarkdownDoc";
 
-export function MobileMarkdownView({ content }: { content: string }) {
-	return <MarkdownDoc content={content} />;
+export function MobileMarkdownView({
+	content,
+	workspaceId,
+	path,
+}: { content: string; workspaceId?: string; path?: string }) {
+	// Pass workspaceId/path so embedded relative images resolve to the workspace
+	// blob endpoint (no header is shown — MarkdownDoc only renders it with onEdit).
+	return (
+		<MarkdownDoc
+			content={content}
+			workspaceId={workspaceId}
+			imgBasePath={path}
+		/>
+	);
 }

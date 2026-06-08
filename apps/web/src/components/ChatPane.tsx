@@ -1,11 +1,19 @@
 import { Loader2, PanelRight, Square } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import { type ConversationSummary, api } from "../lib/api";
 import { computeBursts } from "../lib/burstClaim";
-import type { Message, TasksPayload } from "../lib/types";
-import { isMobile } from "../lib/platform";
 import { onNetworkChange, onResume } from "../lib/native";
+import { isMobile } from "../lib/platform";
+import { classifyFoldable } from "../lib/toolFold";
+import type { Message, TasksPayload } from "../lib/types";
 import { ConvWebSocket } from "../lib/ws";
 import {
 	type AgentPhase,
@@ -22,7 +30,6 @@ import { FloatingReviewBar } from "./FloatingReviewBar";
 import { MessageView } from "./MessageView";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
-import { classifyFoldable } from "../lib/toolFold";
 import { ConvScopeProvider } from "./parts/_context";
 
 type Props = {
@@ -324,6 +331,7 @@ export function ChatPane({ convId, members, title }: Props) {
 					schedule();
 				} else {
 					backoff = 800;
+					useStore.getState().setConnectionStatus("online");
 					// Reconnected. Give stream-resume + the agent-status snapshot
 					// (queryAgentStatus fires inside reconnect()) a moment to land,
 					// then retire any write/edit card still stuck on「准备写入…」whose
@@ -341,67 +349,97 @@ export function ChatPane({ convId, members, title }: Props) {
 			}, backoff);
 		};
 		ws.onClose(() => {
-			if (mounted) schedule();
-		});
-		ws.connect().catch((e) => {
-			// Filter out the React 18 Strict-Mode double-mount false alarm:
-			// when the first mount's effect is unmounted before WS even opens, the
-			// promise rejects with an Event whose currentTarget is null. Real
-			// errors carry a useful message — log only those.
-			if (!e || (typeof e === "object" && (e as Event).currentTarget === null))
-				return;
-			console.error("ws connect failed", e);
-		});
-		const offResume = onResume(() => {
-			backoff = 800;
-			schedule();
-		});
-		const offNet = onNetworkChange((connected) => {
-			if (connected) {
-				backoff = 800;
+			if (mounted) {
+				useStore.getState().setConnectionStatus("reconnecting");
 				schedule();
 			}
 		});
+		ws.connect()
+			.then(() => {
+				if (mounted) useStore.getState().setConnectionStatus("online");
+			})
+			.catch((e) => {
+				// Filter out the React 18 Strict-Mode double-mount false alarm:
+				// when the first mount's effect is unmounted before WS even opens, the
+				// promise rejects with an Event whose currentTarget is null. Real
+				// errors carry a useful message — log only those.
+				if (
+					!e ||
+					(typeof e === "object" && (e as Event).currentTarget === null)
+				)
+					return;
+				console.error("ws connect failed", e);
+			});
+		// On app resume / network regain (and the connection-banner's manual
+		// retry) reconnect this conv's live socket. Seed-list refresh on resume is
+		// handled app-wide in App.tsx so it also covers the mobile home/list view.
+		const refresh = () => {
+			backoff = 800;
+			schedule();
+		};
+		const offResume = onResume(refresh);
+		const offNet = onNetworkChange((connected) => {
+			if (connected) refresh();
+		});
+		window.addEventListener("polynoia:reconnect", refresh);
 		return () => {
 			mounted = false;
 			if (timer) clearTimeout(timer);
 			offResume();
 			offNet();
+			window.removeEventListener("polynoia:reconnect", refresh);
 			ws.close();
 		};
 	}, [convId, applyChunkToConv]);
 
-	// ─── Initial history hydration ──────────────────────────────────
+	// ─── History hydration (initial + on resume/resync) ─────────────
 	// Without this, refreshing the page wipes the store and the chat looks
 	// empty even though messages are persisted in DB. Fetch the newest 50
 	// when convId changes; older messages are lazy-loaded via scroll-up
-	// sentinel below.
-	useEffect(() => {
-		let cancelled = false;
+	// sentinel below. Also re-run on app resume (`polynoia:resync`) so messages
+	// another device added while we were backgrounded appear — the WS only
+	// streams NEW deltas, it can't backfill what was missed.
+	const hydrateNow = useCallback(() => {
+		// Skip a replace-hydrate while an agent is actively streaming in THIS conv
+		// — it would wipe the in-flight streamed message. The live WS keeps it
+		// current; the next idle resume re-hydrates.
+		const cs = useStore.getState().convs.get(convId);
+		const streaming = [...(cs?.agentStatus.values() ?? [])].some(
+			(s) => s.status === "streaming" || s.status === "starting",
+		);
+		if (streaming) return;
 		setLoadingOlder(convId, true);
 		api
 			.convMessages(convId, { limit: 50 })
 			.then(({ messages, has_more }) => {
-				if (cancelled) return;
 				hydrateMessages(convId, messages, {
 					mode: "replace",
 					hasMore: has_more,
 				});
 			})
-			.catch(() => {
-				if (!cancelled) setLoadingOlder(convId, false);
-			});
-		// Hydrate open merge conflicts so they survive a refresh.
+			.catch(() => setLoadingOlder(convId, false));
 		api
 			.listConflicts(convId)
-			.then((rows) => {
-				if (!cancelled) useStore.getState().hydrateConflicts(convId, rows);
-			})
+			.then((rows) => useStore.getState().hydrateConflicts(convId, rows))
 			.catch(() => {});
-		return () => {
-			cancelled = true;
-		};
 	}, [convId, hydrateMessages, setLoadingOlder]);
+
+	useEffect(() => {
+		hydrateNow();
+	}, [hydrateNow]);
+
+	// Re-hydrate on app resume / explicit resync (background→foreground, manual
+	// retry). WS reconnect is handled in the socket effect above; this refreshes
+	// the message history the socket can't backfill.
+	useEffect(() => {
+		const onResync = () => hydrateNow();
+		const offResume = onResume(onResync);
+		window.addEventListener("polynoia:resync", onResync);
+		return () => {
+			offResume();
+			window.removeEventListener("polynoia:resync", onResync);
+		};
+	}, [hydrateNow]);
 
 	// ─── Scroll-up lazy-load older messages ─────────────────────────
 	// When user scrolls within 200px of the top AND we have older messages
@@ -640,8 +678,7 @@ export function ChatPane({ convId, members, title }: Props) {
 	// (null convId) so a freshly-switched conv's ConflictPart doesn't read a stale
 	// mode from the conv we just left.
 	useEffect(() => {
-		if (convSummary)
-			useStore.getState().setMergeMode(mergeMode, convId);
+		if (convSummary) useStore.getState().setMergeMode(mergeMode, convId);
 		else useStore.getState().setMergeMode("auto", null);
 	}, [mergeMode, convId, convSummary]);
 
@@ -775,91 +812,95 @@ export function ChatPane({ convId, members, title }: Props) {
 	}, [burstSig, convId, claimedSet, burstByAnchorId]);
 
 	return (
-		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative">
+		<main
+			className={`flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative ${mobile ? "pn-mobile-chat" : ""}`}
+		>
 			{/* Chat header — editorial masthead: serif title + gradient hair-line.
           Hidden on mobile (App.tsx renders the back+title bar instead). */}
 			{!mobile && (
-			<header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
-				<span
-					aria-hidden
-					className="absolute left-0 right-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[var(--color-line-strong)] to-transparent"
-				/>
-				<div className="flex-1 min-w-0">
-					<div className="flex items-baseline gap-2.5">
-						<span className="font-display text-[16px] font-medium truncate text-[var(--color-fg)] tracking-wide">
-							{title}
-						</span>
-						{isGroup && (
-							<button
-								type="button"
-								onClick={() => useStore.getState().openMembersList()}
-								className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
-								title="查看成员"
-							>
-								{memberAgents.length + 1} 成员
-							</button>
+				<header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
+					<span
+						aria-hidden
+						className="absolute left-0 right-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[var(--color-line-strong)] to-transparent"
+					/>
+					<div className="flex-1 min-w-0">
+						<div className="flex items-baseline gap-2.5">
+							<span className="font-display text-[16px] font-medium truncate text-[var(--color-fg)] tracking-wide">
+								{title}
+							</span>
+							{isGroup && (
+								<button
+									type="button"
+									onClick={() => useStore.getState().openMembersList()}
+									className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
+									title="查看成员"
+								>
+									{memberAgents.length + 1} 成员
+								</button>
+							)}
+						</div>
+						{/* Group: coordinator identity now lives in the avatar cluster
+              (first avatar + purple ring), so no subtitle. DM: show tagline. */}
+						{!isGroup && (
+							<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
+								{memberAgents[0]?.tagline ?? "Agent"}
+							</div>
 						)}
 					</div>
-					{/* Group: coordinator identity now lives in the avatar cluster
-              (first avatar + purple ring), so no subtitle. DM: show tagline. */}
-					{!isGroup && (
-						<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
-							{memberAgents[0]?.tagline ?? "Agent"}
-						</div>
-					)}
-				</div>
-				<div className="flex -space-x-1.5">
-					{/* Coordinator-first: the conv's orchestrator is ranked #1 in the
+					<div className="flex -space-x-1.5">
+						{/* Coordinator-first: the conv's orchestrator is ranked #1 in the
               cluster and wears a purple ring, so "first avatar = 协调者" reads
               at a glance. Click any avatar → AgentDetail (which shows the
               coordinator badge). */}
-					{[...memberAgents]
-						.filter((a): a is NonNullable<typeof a> => !!a)
-						.sort(
-							(a, b) =>
-								(b.id === convSummary?.orchestrator_member_id ? 1 : 0) -
-								(a.id === convSummary?.orchestrator_member_id ? 1 : 0),
-						)
-						.slice(0, 5)
-						.map((a) => {
-							const isOrch = a.id === convSummary?.orchestrator_member_id;
-							return (
-								<button
-									type="button"
-									key={a.id}
-									onClick={() => useStore.getState().openAgentDetail(a.id)}
-									className={`w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10 ${
-										isOrch
-											? "ring-2 ring-[var(--color-purple)] border-2 border-[var(--color-surface)] z-10"
-											: "border-2 border-[var(--color-surface)]"
-									}`}
-									style={{ background: a.color }}
-									title={
-										isOrch ? `${a.name} · 本群协调者` : `查看 ${a.name} 详情`
-									}
-								>
-									{a.initials}
-								</button>
-							);
-						})}
-				</div>
-				<div className="flex items-center gap-1 ml-2">
-					{/* Search lives in the top-left (sidebar / ⌘K) and 群聊设置 moved to
+						{[...memberAgents]
+							.filter((a): a is NonNullable<typeof a> => !!a)
+							.sort(
+								(a, b) =>
+									(b.id === convSummary?.orchestrator_member_id ? 1 : 0) -
+									(a.id === convSummary?.orchestrator_member_id ? 1 : 0),
+							)
+							.slice(0, 5)
+							.map((a) => {
+								const isOrch = a.id === convSummary?.orchestrator_member_id;
+								return (
+									<button
+										type="button"
+										key={a.id}
+										onClick={() => useStore.getState().openAgentDetail(a.id)}
+										className={`w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10 ${
+											isOrch
+												? "ring-2 ring-[var(--color-purple)] border-2 border-[var(--color-surface)] z-10"
+												: "border-2 border-[var(--color-surface)]"
+										}`}
+										style={{ background: a.color }}
+										title={
+											isOrch ? `${a.name} · 本群协调者` : `查看 ${a.name} 详情`
+										}
+									>
+										{a.initials}
+									</button>
+								);
+							})}
+					</div>
+					<div className="flex items-center gap-1 ml-2">
+						{/* Search lives in the top-left (sidebar / ⌘K) and 群聊设置 moved to
               the conversation's ⋮ menu in the sidebar — header stays minimal. */}
-					<button
-						type="button"
-						onClick={() => (previewOpen ? closePreview() : openPreview("web"))}
-						className={`p-1.5 rounded transition ${
-							previewOpen
-								? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-								: "hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
-						}`}
-						title="产物面板"
-					>
-						<PanelRight size={14} />
-					</button>
-				</div>
-			</header>
+						<button
+							type="button"
+							onClick={() =>
+								previewOpen ? closePreview() : openPreview("web")
+							}
+							className={`p-1.5 rounded transition ${
+								previewOpen
+									? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+									: "hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
+							}`}
+							title="产物面板"
+						>
+							<PanelRight size={14} />
+						</button>
+					</div>
+				</header>
 			)}
 
 			{/* Manual-mode per-file review strip — Cursor-style, sits above the chat
@@ -883,7 +924,11 @@ export function ChatPane({ convId, members, title }: Props) {
 						className="absolute inset-0 overflow-y-auto py-4"
 						// Clear the floating composer + running-status strip, so the
 						// message being answered always sits ABOVE the status bar.
-						style={{ paddingBottom: composerH + 24 }}
+						style={{
+							paddingBottom: mobile
+								? `calc(${composerH + 14}px + var(--kb-h, 0px))`
+								: composerH + 24,
+						}}
 					>
 						<div
 							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-2" : ""}`}
@@ -971,146 +1016,154 @@ export function ChatPane({ convId, members, title }: Props) {
 			    content into the bg as it approaches the composer. */}
 			<div
 				ref={composerRef}
-				className="absolute bottom-0 inset-x-0 z-10"
-				style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+				className="absolute inset-x-0 z-10"
+				style={{
+					bottom: mobile ? "var(--kb-h, 0px)" : 0,
+					paddingBottom:
+						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
+					transition: mobile
+						? "bottom 0.24s cubic-bezier(0.17, 0.59, 0.4, 1)"
+						: undefined,
+				}}
 			>
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot
 				    below) so it never floats over / hides message content. */}
 				{/* Agent-initiated questions — floating panel above Composer */}
 				<div className="mx-auto w-full max-w-[var(--chat-measure)]">
-				<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
+					<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
-				{/* Composer */}
-				<Composer
-					convId={convId}
-					members={members}
-					showMergeToggle={inWorkspace}
-					mergeMode={mergeMode}
-					onToggleMergeMode={toggleMergeMode}
-					statusSlot={
-						activeAgents.length > 0 ? (
-							<div className="anim-fade-up mb-2 flex flex-wrap items-center justify-center gap-1.5 px-1 text-[11.5px]">
-								{activeAgents.map((a) => {
-									const agent = agents.find((x) => x.id === a.id);
-									const label =
-										a.status === "starting"
-											? lang === "en"
-												? "Starting"
-												: "准备中"
-											: phaseLabel(a.phase, a.tool, lang);
-									return (
+					{/* Composer */}
+					<Composer
+						convId={convId}
+						members={members}
+						showMergeToggle={inWorkspace}
+						mergeMode={mergeMode}
+						onToggleMergeMode={toggleMergeMode}
+						statusSlot={
+							activeAgents.length > 0 ? (
+								<div className="-mx-2.5 -mt-2 mb-1.5 flex flex-wrap items-center gap-1.5 rounded-t-[21px] border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/72 px-3 py-2 text-[11.5px] anim-fade-up">
+									{activeAgents.map((a) => {
+										const agent = agents.find((x) => x.id === a.id);
+										const label =
+											a.status === "starting"
+												? lang === "en"
+													? "Starting"
+													: "准备中"
+												: phaseLabel(a.phase, a.tool, lang);
+										return (
+											<button
+												type="button"
+												key={a.id}
+												onClick={() => wsRef.current?.abort(a.id)}
+												className="group inline-flex items-center gap-1 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/72 py-0.5 pl-1.5 pr-2 shadow-sm transition hover:border-[var(--color-red)] hover:bg-[var(--color-red-soft)]"
+												title={`点击中断 ${agent?.name ?? a.id}`}
+											>
+												<Loader2
+													size={10}
+													className="animate-spin"
+													style={{ color: agent?.color ?? "#666" }}
+												/>
+												<span
+													style={{ color: agent?.color ?? "var(--color-fg-2)" }}
+												>
+													{agent?.name ?? a.id}
+												</span>
+												{/* Hover swaps the label → a stop icon; overlay + fade
+                          so the button width never changes (no row jitter). */}
+												<span className="relative inline-flex items-center">
+													<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
+														· {label}
+													</span>
+													<Square
+														size={10}
+														aria-hidden
+														className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
+														style={{ color: "var(--color-red)" }}
+													/>
+												</span>
+											</button>
+										);
+									})}
+									{activeAgents.length > 1 && (
 										<button
 											type="button"
-											key={a.id}
-											onClick={() => wsRef.current?.abort(a.id)}
-											className="group inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
-											title={`点击中断 ${agent?.name ?? a.id}`}
-											style={{ background: agent?.bg ?? "var(--color-line)" }}
+											onClick={() => wsRef.current?.abort()}
+											className="ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[var(--color-red)] transition hover:bg-[var(--color-red-soft)]"
+											title="全部中断"
 										>
-											<Loader2
-												size={10}
-												className="animate-spin"
-												style={{ color: agent?.color ?? "#666" }}
-											/>
-											<span style={{ color: agent?.color ?? "var(--color-fg-2)" }}>
-												{agent?.name ?? a.id}
-											</span>
-											{/* Hover swaps the label → a stop icon; overlay + fade
-                          so the button width never changes (no row jitter). */}
-											<span className="relative inline-flex items-center">
-												<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
-													· {label}
-												</span>
-												<Square
-													size={10}
-													aria-hidden
-													className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
-													style={{ color: "var(--color-red)" }}
-												/>
-											</span>
+											<Square size={10} /> 全部停止
 										</button>
-									);
-								})}
-								{activeAgents.length > 1 && (
-									<button
-										type="button"
-										onClick={() => wsRef.current?.abort()}
-										className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
-										title="全部中断"
-									>
-										<Square size={10} /> 全部停止
-									</button>
-								)}
-							</div>
-						) : null
-					}
-					onAttachImage={(img) => {
-						// Optimistic UI append + fire-and-forget persistence. `img.src` is a
-						// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
-						// the DB row stays small and the image re-renders after a refresh.
-						// Pre-allocate the id so the optimistic store entry AND the DB row
-						// share it — see onSend's note for why this matters (rewind etc.).
-						const mid = appendUserImage(convId, {
-							src: img.src,
-							name: img.name,
-							media_type: img.media_type,
-						});
-						api
-							.createMessage({
-								conv_id: convId,
-								msg_id: mid,
-								payload: {
-									kind: "image",
-									src: img.src,
-									name: img.name ?? null,
-									media_type: img.media_type ?? null,
-								},
-							})
-							.catch(() => {
-								/* image survives session even if persist fails — acceptable */
-							});
-					}}
-					onAttachFile={(file) => {
-						const mid = appendUserFile(convId, {
-							src: file.src,
-							name: file.name,
-							media_type: file.media_type,
-							size_bytes: file.size_bytes,
-						});
-						api
-							.createMessage({
-								conv_id: convId,
-								msg_id: mid,
-								payload: {
-									kind: "file",
-									src: file.src,
-									name: file.name,
-									media_type: file.media_type ?? null,
-									size_bytes: file.size_bytes ?? null,
-								},
-							})
-							.catch(() => {
-								/* file survives session even if persist fails */
-							});
-					}}
-					onSend={(text, inReplyTo) => {
-						const now = Date.now();
-						const last = lastSentRef.current;
-						if (last && last.text === text && now - last.ts < 500) {
-							// Same text within 500ms — drop. Symptom: duplicate "你好" bubbles
-							// and agent counting phantom turns. Root cause TBD (Strict Mode
-							// / accidental double-input); this is the user-visible bandage.
-							return;
+									)}
+								</div>
+							) : null
 						}
-						lastSentRef.current = { text, ts: now };
-						// Pre-allocate the id so the optimistic local message AND the
-						// server-persisted row carry the SAME id. Without this, rewind /
-						// reply / pin on a freshly-sent message fail with 404 because
-						// the client holds `u-<uuid>` while the DB has its own ULID.
-						const msgId = appendUserMessage(convId, text, inReplyTo);
-						wsRef.current?.sendUserMessage(text, members, inReplyTo, msgId);
-					}}
-				/>
+						onAttachImage={(img) => {
+							// Optimistic UI append + fire-and-forget persistence. `img.src` is a
+							// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
+							// the DB row stays small and the image re-renders after a refresh.
+							// Pre-allocate the id so the optimistic store entry AND the DB row
+							// share it — see onSend's note for why this matters (rewind etc.).
+							const mid = appendUserImage(convId, {
+								src: img.src,
+								name: img.name,
+								media_type: img.media_type,
+							});
+							api
+								.createMessage({
+									conv_id: convId,
+									msg_id: mid,
+									payload: {
+										kind: "image",
+										src: img.src,
+										name: img.name ?? null,
+										media_type: img.media_type ?? null,
+									},
+								})
+								.catch(() => {
+									/* image survives session even if persist fails — acceptable */
+								});
+						}}
+						onAttachFile={(file) => {
+							const mid = appendUserFile(convId, {
+								src: file.src,
+								name: file.name,
+								media_type: file.media_type,
+								size_bytes: file.size_bytes,
+							});
+							api
+								.createMessage({
+									conv_id: convId,
+									msg_id: mid,
+									payload: {
+										kind: "file",
+										src: file.src,
+										name: file.name,
+										media_type: file.media_type ?? null,
+										size_bytes: file.size_bytes ?? null,
+									},
+								})
+								.catch(() => {
+									/* file survives session even if persist fails */
+								});
+						}}
+						onSend={(text, inReplyTo) => {
+							const now = Date.now();
+							const last = lastSentRef.current;
+							if (last && last.text === text && now - last.ts < 500) {
+								// Same text within 500ms — drop. Symptom: duplicate "你好" bubbles
+								// and agent counting phantom turns. Root cause TBD (Strict Mode
+								// / accidental double-input); this is the user-visible bandage.
+								return;
+							}
+							lastSentRef.current = { text, ts: now };
+							// Pre-allocate the id so the optimistic local message AND the
+							// server-persisted row carry the SAME id. Without this, rewind /
+							// reply / pin on a freshly-sent message fail with 404 because
+							// the client holds `u-<uuid>` while the DB has its own ULID.
+							const msgId = appendUserMessage(convId, text, inReplyTo);
+							wsRef.current?.sendUserMessage(text, members, inReplyTo, msgId);
+						}}
+					/>
 				</div>
 			</div>
 		</main>

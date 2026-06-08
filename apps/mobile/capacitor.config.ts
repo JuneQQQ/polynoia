@@ -47,14 +47,22 @@ const config: CapacitorConfig = {
   },
   plugins: {
     SplashScreen: {
+      // launchAutoHide false → the splash stays up until initNative() calls
+      // SplashScreen.hide() AFTER React's first paint, eliminating the white
+      // flash between an 800ms auto-hide and the app actually rendering on a cold
+      // start. backgroundColor matches android.backgroundColor + the app bg so
+      // the splash→app handoff has no color jump; fade-out softens it.
       launchShowDuration: 800,
+      launchAutoHide: false,
+      launchFadeOutDuration: 200,
       backgroundColor: "#14110c",
       androidScaleType: "CENTER_CROP",
     },
     Keyboard: {
-      // "none": we animate the composer up ourselves (CSS transition on
-      // --kb-h) for a smooth slide instead of the instant body-resize jump.
-      resize: "none",
+      // "native": the OS resizes the WebView to exactly above the keyboard so the
+      // composer is always flush against it (no gap / fling). The old "none" +
+      // CSS --kb-h slide mis-estimated the keyboard height across devices.
+      resize: "native",
       resizeOnFullScreen: true,
     },
   },

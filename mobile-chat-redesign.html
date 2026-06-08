@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+<title>Polynoia · 移动端聊天重设计</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   暖墨夜行 — Polynoia mobile chat, redesigned.
+   Aesthetic: warm-charcoal "ink" ground, a slow ember glow bleeding from the
+   top edge (the product's fire motif), Songti/Noto-Serif for names & brand,
+   JetBrains Mono for handles/code. The composer is FLUSH to the bottom — a real
+   flex column (header / scroll / composer), no absolute float, no --kb-h hack.
+   ───────────────────────────────────────────────────────────────────────── */
+:root{
+  --bg:#14110c; --bg-2:#1a160f; --surface:#1f1a14; --surface-2:#241e16;
+  --line:#2c251b; --line-2:#3a3122; --hair:rgba(237,229,213,.07);
+  --ink:#ece3d2; --ink-2:#c2b8a3; --ink-3:#8c8270; --ink-4:#5f5748;
+  --ember:#ec8a4c; --ember-dim:#c8703a; --ember-soft:rgba(236,138,76,.14);
+  --ember-glow:rgba(236,138,76,.30);
+  --user:#2a2114; --user-line:rgba(236,138,76,.22);
+  --serif:"Noto Serif SC", "Songti SC", serif;
+  --mono:"JetBrains Mono", ui-monospace, monospace;
+  --sans:-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --safe-top:18px; --safe-bottom:20px;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:#0c0a07; color:var(--ink); font-family:var(--sans);
+  display:grid; place-items:center; min-height:100vh; padding:32px 16px;
+  background-image:radial-gradient(120% 80% at 50% -10%, #1b160f 0%, #0c0a07 60%);
+}
+
+/* ── iPhone frame ───────────────────────────────────────────── */
+.phone{
+  position:relative; width:393px; height:830px; border-radius:54px;
+  background:linear-gradient(160deg,#2a2a2c,#0e0e10); padding:11px;
+  box-shadow:0 50px 90px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.05) inset;
+}
+.screen{
+  position:relative; width:100%; height:100%; border-radius:44px; overflow:hidden;
+  background:var(--bg); display:flex; flex-direction:column;
+  /* THE FIX, expressed structurally: a 3-row flex column. composer is the last
+     child and simply sits at the bottom. safe areas are padding on the column. */
+  padding-top:var(--safe-top); padding-bottom:var(--safe-bottom);
+  isolation:isolate;
+}
+/* ember glow bleeding from the top edge — the "fire" motif */
+.screen::before{
+  content:""; position:absolute; inset:0 0 auto 0; height:240px; z-index:0;
+  background:radial-gradient(90% 120% at 50% -40%, var(--ember-glow), transparent 70%);
+  pointer-events:none;
+}
+/* fine grain overlay for paper-in-the-dark texture */
+.screen::after{
+  content:""; position:absolute; inset:0; z-index:60; pointer-events:none; opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.notch{position:absolute; top:calc(var(--safe-top) - 4px); left:50%; transform:translateX(-50%); width:108px; height:30px; background:#000; border-radius:18px; z-index:50}
+
+/* ── status bar ─────────────────────────────────────────────── */
+.status{display:flex; justify-content:space-between; align-items:center; padding:2px 26px 8px; font-size:13px; font-weight:600; color:var(--ink); z-index:10}
+.status .r{display:flex; gap:6px; align-items:center; font-size:12px}
+
+/* ── chat header ────────────────────────────────────────────── */
+.head{position:relative; display:flex; align-items:center; gap:10px; padding:6px 14px 12px; z-index:10}
+.head .back{width:34px; height:34px; display:grid; place-items:center; border-radius:50%; color:var(--ink-2); font-size:20px; transition:background .18s}
+.head .back:active{background:var(--surface-2)}
+.head .who{flex:1; min-width:0}
+.head .name{font-family:var(--serif); font-weight:600; font-size:18px; letter-spacing:.3px; display:flex; align-items:center; gap:7px}
+.head .name .dot{width:6px; height:6px; border-radius:50%; background:#5ec27a; box-shadow:0 0 8px #5ec27a}
+.head .sub{font-size:11.5px; color:var(--ink-3); margin-top:1px; font-family:var(--mono)}
+.head .rule{position:absolute; left:0; right:0; bottom:0; height:1px; background:linear-gradient(90deg,transparent, var(--ember-soft) 30%, var(--ember-soft) 70%, transparent)}
+
+/* ── message stream (the flex-1 scroll area) ────────────────── */
+.stream{flex:1; min-height:0; overflow-y:auto; padding:14px 16px 8px; display:flex; flex-direction:column; gap:18px; z-index:5; scrollbar-width:none}
+.stream::-webkit-scrollbar{display:none}
+.daysep{align-self:center; font-size:11px; color:var(--ink-4); font-family:var(--mono); letter-spacing:.5px; padding:2px 12px; border-radius:99px; background:var(--surface)}
+
+.msg{display:flex; gap:10px; max-width:88%; animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+.msg.me{align-self:flex-end; flex-direction:row-reverse}
+.av{width:30px; height:30px; border-radius:9px; flex-shrink:0; display:grid; place-items:center; font-family:var(--serif); font-weight:600; font-size:13px; color:#fff; background:linear-gradient(150deg,var(--ember),var(--ember-dim)); box-shadow:0 4px 12px -4px var(--ember-glow)}
+.av.qy{background:linear-gradient(150deg,#7c5cff,#5b3fd0)}
+.bubblewrap{min-width:0}
+.meta{display:flex; align-items:center; gap:7px; margin:0 2px 5px}
+.meta .nm{font-family:var(--serif); font-weight:600; font-size:13.5px; color:var(--ink)}
+.meta .role{font-family:var(--mono); font-size:8.5px; letter-spacing:1px; text-transform:uppercase; color:var(--ember); border:.5px solid var(--ember-soft); border-radius:4px; padding:1px 5px}
+.meta .t{font-family:var(--mono); font-size:10px; color:var(--ink-4)}
+
+.bubble{font-size:14.5px; line-height:1.66; color:var(--ink-2); padding:11px 14px; border-radius:16px 16px 16px 5px; background:var(--surface); border:.5px solid var(--line)}
+.msg.me .bubble{background:var(--user); border:.5px solid var(--user-line); color:var(--ink); border-radius:16px 16px 5px 16px}
+.bubble b{color:var(--ink); font-weight:600}
+.bubble code{font-family:var(--mono); font-size:12.5px; background:var(--surface-2); color:var(--ember-dim); padding:.1em .4em; border-radius:4px; border:.5px solid var(--line)}
+
+/* image attachment — capped + unified (the cap fix, shown) */
+.imgcard{display:block; max-width:230px; border-radius:14px; overflow:hidden; border:.5px solid var(--line); margin-top:2px}
+.imgcard img{display:block; width:100%; max-height:240px; object-fit:cover}
+
+/* a Polynoia tool/diff card, restyled to the family */
+.toolcard{margin-top:2px; max-width:260px; border:.5px solid var(--line); border-left:3px solid var(--ember); border-radius:10px; background:var(--surface); overflow:hidden}
+.toolcard .th{display:flex; align-items:center; gap:8px; padding:8px 11px; font-size:12px}
+.toolcard .th .ic{color:var(--ember)}
+.toolcard .th .fn{font-family:var(--mono); color:var(--ink-2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.toolcard .th .add{font-family:var(--mono); font-size:10.5px; color:#5ec27a}
+
+@keyframes rise{from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none}}
+.msg:nth-child(2){animation-delay:.04s}.msg:nth-child(3){animation-delay:.1s}
+.msg:nth-child(4){animation-delay:.16s}.msg:nth-child(5){animation-delay:.22s}
+
+/* ── composer — FLUSH to the bottom, a normal flex child ─────── */
+.composer{flex-shrink:0; padding:8px 12px 4px; z-index:10}
+/* staged attachment chips */
+.chips{display:flex; gap:8px; padding:0 4px 8px}
+.chip{position:relative; width:54px; height:54px; border-radius:11px; overflow:hidden; border:.5px solid var(--line); animation:rise .35s both}
+.chip img{width:100%; height:100%; object-fit:cover}
+.chip .x{position:absolute; top:-5px; right:-5px; width:17px; height:17px; border-radius:50%; background:var(--ink-3); color:#1a160f; font-size:11px; display:grid; place-items:center; border:1.5px solid var(--bg); font-weight:700}
+.pill{
+  display:flex; flex-direction:column; gap:8px; background:var(--surface);
+  border:.5px solid var(--line-2); border-radius:24px; padding:11px 14px 9px;
+  transition:border-color .2s, box-shadow .2s;
+}
+.pill:focus-within{border-color:var(--ember-soft); box-shadow:0 0 0 3px var(--ember-soft)}
+.pill .ta{font-size:16px; color:var(--ink); min-height:24px; outline:none; line-height:1.5}
+.pill .ta:empty::before{content:"发消息给 制图"; color:var(--ink-4)}
+.bar{display:flex; align-items:center; gap:9px}
+.bar .clip{width:34px; height:34px; display:grid; place-items:center; border-radius:50%; color:var(--ink-3); transition:color .15s, background .15s}
+.bar .clip:active{color:var(--ember); background:var(--surface-2)}
+.seg{display:flex; border:.5px solid var(--line-2); border-radius:99px; overflow:hidden; font-family:var(--mono); font-size:10px; letter-spacing:1px; text-transform:uppercase}
+.seg b{padding:5px 11px; font-weight:500; color:var(--ink-3)}
+.seg b.on{background:var(--ember); color:#fff}
+.send{margin-left:auto; width:38px; height:38px; border-radius:50%; background:var(--ember); color:#fff; display:grid; place-items:center; box-shadow:0 6px 16px -6px var(--ember-glow); transition:transform .12s, filter .15s}
+.send:active{transform:scale(.9); filter:brightness(1.12)}
+.homebar{width:128px; height:5px; border-radius:99px; background:var(--ink-4); opacity:.5; margin:8px auto 0}
+
+.caption{position:absolute; bottom:-30px; left:0; right:0; text-align:center; font-family:var(--mono); font-size:11px; color:#6b6256}
+svg{display:block}
+</style>
+</head>
+<body>
+<div class="phone">
+ <div class="screen">
+  <div class="notch"></div>
+
+  <div class="status">
+    <span>12:35</span>
+    <span class="r">●●● &nbsp; 􀙇 &nbsp; 􀛨</span>
+  </div>
+
+  <div class="head">
+    <div class="back">‹</div>
+    <div class="who">
+      <div class="name">制图<span class="dot"></span></div>
+      <div class="sub">网页 / 视觉 / 小游戏 · 在线</div>
+    </div>
+    <div class="back" style="font-size:15px">⤢</div>
+    <div class="rule"></div>
+  </div>
+
+  <div class="stream">
+    <div class="daysep">今天</div>
+
+    <!-- user: image + text -->
+    <div class="msg me">
+      <div class="av">我</div>
+      <div class="bubblewrap">
+        <div class="bubble" style="padding:6px">
+          <div class="imgcard">
+            <img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='180'%3E%3Crect width='300' height='60' fill='%23dc1e1e'/%3E%3Crect y='60' width='300' height='60' fill='%23f5f5f5'/%3E%3Crect y='120' width='300' height='60' fill='%231e3cd2'/%3E%3C/svg%3E"/>
+          </div>
+        </div>
+        <div class="bubble" style="margin-top:6px">能看到我发的这张图吗?帮我把 2048 的配色往这个方向调。</div>
+      </div>
+    </div>
+
+    <!-- agent: reply + a tool card -->
+    <div class="msg">
+      <div class="av">制</div>
+      <div class="bubblewrap">
+        <div class="meta"><span class="nm">制图</span><span class="role">custom</span><span class="t">12:35</span></div>
+        <div class="bubble">看到了 — 红 / 白 / 蓝三横条。我把方块色板调成同系:底色用<b>暖白</b>,高数值过渡到<code>#1e3cd2</code> 的钴蓝,胜利态压一道红。已写回 <code>2048.html</code>。</div>
+        <div class="toolcard">
+          <div class="th"><span class="ic">􀈭</span><span class="fn">2048.html</span><span class="add">+18 −12</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- user short -->
+    <div class="msg me">
+      <div class="av">我</div>
+      <div class="bubblewrap"><div class="bubble">好看多了。再把动画做"丝滑"一点。</div></div>
+    </div>
+
+    <!-- agent typing-ish -->
+    <div class="msg">
+      <div class="av">制</div>
+      <div class="bubblewrap">
+        <div class="meta"><span class="nm">制图</span><span class="role">custom</span><span class="t">12:36</span></div>
+        <div class="bubble">合并动画改成 <code>cubic-bezier(.2,.7,.3,1)</code>、130ms,新块弹出加回弹。这就交付。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- composer: last flex child → always at the bottom -->
+  <div class="composer">
+    <div class="chips">
+      <div class="chip">
+        <img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Crect width='80' height='27' fill='%23dc1e1e'/%3E%3Crect y='27' width='80' height='26' fill='%23f5f5f5'/%3E%3Crect y='53' width='80' height='27' fill='%231e3cd2'/%3E%3C/svg%3E"/>
+        <div class="x">×</div>
+      </div>
+    </div>
+    <div class="pill">
+      <div class="ta" contenteditable="true"></div>
+      <div class="bar">
+        <div class="clip">􀰷</div>
+        <div class="seg"><b class="on">Auto</b><b>Manual</b></div>
+        <div class="send">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </div>
+      </div>
+    </div>
+    <div class="homebar"></div>
+  </div>
+
+ </div>
+ <div class="caption">暖墨夜行 · composer 贴底(flex 列,无 absolute / 无 --kb-h)· 安全区 = 列的内边距</div>
+</div>
+</body>
+</html>

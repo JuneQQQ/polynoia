@@ -14,8 +14,8 @@
  *   - 我     → 外观 / 语言 / 默认适配器(接入新建联系人创建流)
  */
 import {
-	Check,
 	ArrowUpDown,
+	Check,
 	CheckCircle2,
 	ChevronLeft,
 	ChevronRight,
@@ -38,8 +38,8 @@ import {
 	X,
 } from "lucide-react";
 import {
-	createContext,
 	type ReactNode,
+	createContext,
 	useContext,
 	useEffect,
 	useMemo,
@@ -47,9 +47,9 @@ import {
 } from "react";
 import {
 	type AdapterProbe,
-	api,
 	type ConversationSummary,
 	type EnabledAdapter,
+	api,
 } from "../../lib/api";
 import { type Lang, saveLang } from "../../lib/i18n";
 import {
@@ -184,7 +184,8 @@ const STR = {
 		dark: "Dark",
 		language: "Language",
 		serverTitle: "Remote workspace",
-		serverHint: "Point this app at a Polynoia server (the phone has no local backend)",
+		serverHint:
+			"Point this app at a Polynoia server (the phone has no local backend)",
 		serverNotSet: "Not connected",
 		serverTest: "Test",
 		serverSave: "Save & reconnect",
@@ -336,7 +337,14 @@ export function MobileHome({ onSelectConv }: Props) {
 					overflow: "hidden",
 				}}
 			>
-				<div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+				<div
+					style={{
+						flex: 1,
+						minHeight: 0,
+						display: "flex",
+						flexDirection: "column",
+					}}
+				>
 					{tab === "chat" && <ChatListScreen onSelectConv={onSelectConv} />}
 					{tab === "contacts" && <ContactsScreen onSelectConv={onSelectConv} />}
 					{tab === "folder" && <ProjectsScreen onSelectConv={onSelectConv} />}
@@ -640,8 +648,7 @@ function SortMenu({
 									width: "100%",
 									padding: "9px 10px",
 									border: "none",
-									background:
-										o.id === mode ? pal.chip : "transparent",
+									background: o.id === mode ? pal.chip : "transparent",
 									borderRadius: 8,
 									cursor: "pointer",
 									color: pal.ink,
@@ -650,9 +657,7 @@ function SortMenu({
 								}}
 							>
 								<span style={{ width: 16, display: "flex" }}>
-									{o.id === mode && (
-										<Check size={15} color={pal.accent} />
-									)}
+									{o.id === mode && <Check size={15} color={pal.accent} />}
 								</span>
 								{o.label}
 							</button>
@@ -673,20 +678,31 @@ function ChatListScreen({ onSelectConv }: Props) {
 	const [sort, setSort] = useState<SortMode>("recent");
 
 	useEffect(() => {
-		api
-			.conversations()
-			.then((list) =>
-				setConvs(
-					list
-						.filter((c) => !c.archived)
-						.sort((a, b) =>
-							(b.last_message_at ?? b.created_at).localeCompare(
-								a.last_message_at ?? a.created_at,
+		const load = () =>
+			api
+				.conversations()
+				.then((list) =>
+					setConvs(
+						list
+							.filter((c) => !c.archived)
+							.sort((a, b) =>
+								(b.last_message_at ?? b.created_at).localeCompare(
+									a.last_message_at ?? a.created_at,
+								),
 							),
-						),
-				),
-			)
-			.catch(() => setConvs([]));
+					),
+				)
+				.catch(() => setConvs([]));
+		load();
+		// Near-realtime cross-device sync: refresh the chat list on the foreground
+		// poll (~5s) and on app resume, so new messages/convs from other devices
+		// surface within seconds.
+		window.addEventListener("polynoia:resync", load);
+		window.addEventListener("polynoia:resync-lists", load);
+		return () => {
+			window.removeEventListener("polynoia:resync", load);
+			window.removeEventListener("polynoia:resync-lists", load);
+		};
 	}, []);
 
 	const agentFor = (c: ConversationSummary) =>
@@ -694,7 +710,9 @@ function ChatListScreen({ onSelectConv }: Props) {
 	const titleFor = (c: ConversationSummary) =>
 		c.title || agentFor(c)?.name || "对话";
 	const wsFor = (c: ConversationSummary) =>
-		c.workspace_id ? workspaces.find((w) => w.id === c.workspace_id) : undefined;
+		c.workspace_id
+			? workspaces.find((w) => w.id === c.workspace_id)
+			: undefined;
 
 	const shown = useMemo(() => {
 		const k = q.trim().toLowerCase();
@@ -725,9 +743,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 			/>
 			<div style={scrollStyle}>
 				<SearchInput value={q} onChange={setQ} placeholder={t.searchConv} />
-				{shown.length === 0 && (
-					<Empty text={q ? t.noResult : t.noConvs} />
-				)}
+				{shown.length === 0 && <Empty text={q ? t.noResult : t.noConvs} />}
 				{shown.map((c, i) => {
 					const a = agentFor(c);
 					const ws = wsFor(c);
@@ -759,14 +775,30 @@ function ChatListScreen({ onSelectConv }: Props) {
 									{a?.online && <OnlineDot pal={pal} />}
 								</div>
 								<div style={{ flex: 1, minWidth: 0 }}>
-									<div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+									<div
+										style={{ display: "flex", alignItems: "baseline", gap: 7 }}
+									>
 										<span style={nameStyle(pal)}>{titleFor(c)}</span>
 										{c.group && <EngineChip pal={pal} text="群" />}
-										<span style={{ marginLeft: "auto", fontSize: 11.5, color: pal.ink3, whiteSpace: "nowrap" }}>
+										<span
+											style={{
+												marginLeft: "auto",
+												fontSize: 11.5,
+												color: pal.ink3,
+												whiteSpace: "nowrap",
+											}}
+										>
 											{fmtTime(c.last_message_at)}
 										</span>
 									</div>
-									<div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+									<div
+										style={{
+											display: "flex",
+											alignItems: "center",
+											gap: 6,
+											marginTop: 4,
+										}}
+									>
 										{ws && <ProjectChip pal={pal} ws={ws} />}
 										<span style={subStyle(pal)}>
 											{a?.tagline ?? a?.role ?? t.members(c.members.length)}
@@ -842,27 +874,67 @@ function ContactsScreen({ onSelectConv }: Props) {
 							<div key={c.id}>
 								<button
 									type="button"
-									onClick={() => onSelectConv(`dm-${c.id}`, [c.id, "you"], c.name)}
+									onClick={() =>
+										onSelectConv(`dm-${c.id}`, [c.id, "you"], c.name)
+									}
 									style={{ ...rowBtn, padding: "11px 16px" }}
 								>
 									<div style={{ position: "relative", flexShrink: 0 }}>
-										<Avatar initials={c.initials} color={c.color} size={48} radius={15} />
+										<Avatar
+											initials={c.initials}
+											color={c.color}
+											size={48}
+											radius={15}
+										/>
 										<OnlineDot pal={pal} color={c.online ? ONLINE : pal.ink3} />
 									</div>
 									<div style={{ flex: 1, minWidth: 0 }}>
-										<div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-											<span style={{ fontSize: 16, fontWeight: 600, color: pal.ink }}>{c.name}</span>
+										<div
+											style={{
+												display: "flex",
+												alignItems: "baseline",
+												gap: 8,
+											}}
+										>
+											<span
+												style={{
+													fontSize: 16,
+													fontWeight: 600,
+													color: pal.ink,
+												}}
+											>
+												{c.name}
+											</span>
 											{c.setup?.model && (
-												<span style={{ fontSize: 11, color: pal.ink3, fontFamily: "ui-monospace, Menlo, monospace" }}>
+												<span
+													style={{
+														fontSize: 11,
+														color: pal.ink3,
+														fontFamily: "ui-monospace, Menlo, monospace",
+													}}
+												>
 													{c.setup.model}
 												</span>
 											)}
-											<span style={{ marginLeft: "auto", fontSize: 11.5, color: c.online ? "#5FA572" : pal.ink3 }}>
+											<span
+												style={{
+													marginLeft: "auto",
+													fontSize: 11.5,
+													color: c.online ? "#5FA572" : pal.ink3,
+												}}
+											>
 												{c.online ? t.online : t.offline}
 											</span>
 										</div>
 										{c.caps && c.caps.length > 0 && (
-											<div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+											<div
+												style={{
+													display: "flex",
+													gap: 5,
+													marginTop: 6,
+													flexWrap: "wrap",
+												}}
+											>
 												{c.caps.slice(0, 4).map((tag) => (
 													<span
 														key={tag}
@@ -910,7 +982,11 @@ function ProjectsScreen({ onSelectConv }: Props) {
 
 	if (opened) {
 		return (
-			<ProjectConvsScreen ws={opened} onBack={() => setOpened(null)} onSelectConv={onSelectConv} />
+			<ProjectConvsScreen
+				ws={opened}
+				onBack={() => setOpened(null)}
+				onSelectConv={onSelectConv}
+			/>
 		);
 	}
 
@@ -956,13 +1032,38 @@ function ProjectsScreen({ onSelectConv }: Props) {
 										justifyContent: "center",
 									}}
 								>
-									<div style={{ width: 18, height: 18, borderRadius: 6, background: w.color }} />
+									<div
+										style={{
+											width: 18,
+											height: 18,
+											borderRadius: 6,
+											background: w.color,
+										}}
+									/>
 								</div>
 								<div style={{ flex: 1, minWidth: 0 }}>
-									<div style={{ fontSize: 16, fontWeight: 600, color: pal.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+									<div
+										style={{
+											fontSize: 16,
+											fontWeight: 600,
+											color: pal.ink,
+											overflow: "hidden",
+											textOverflow: "ellipsis",
+											whiteSpace: "nowrap",
+										}}
+									>
 										{w.name}
 									</div>
-									<div style={{ fontSize: 12.5, color: pal.ink3, marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
+									<div
+										style={{
+											fontSize: 12.5,
+											color: pal.ink3,
+											marginTop: 2,
+											display: "flex",
+											alignItems: "center",
+											gap: 6,
+										}}
+									>
 										<span>{w.role ?? t.owner}</span>
 										<Dot pal={pal} />
 										<span>{srv?.name ?? t.local}</span>
@@ -970,7 +1071,11 @@ function ProjectsScreen({ onSelectConv }: Props) {
 										<span>{t.agents(w.members?.length ?? 0)}</span>
 									</div>
 								</div>
-								<ChevronRight size={17} color={pal.ink3} style={{ flexShrink: 0 }} />
+								<ChevronRight
+									size={17}
+									color={pal.ink3}
+									style={{ flexShrink: 0 }}
+								/>
 							</button>
 							{i < shown.length - 1 && <Divider pal={pal} indent={73} />}
 						</div>
@@ -1004,17 +1109,43 @@ function ProjectConvsScreen({
 
 	return (
 		<>
-			<div style={{ flexShrink: 0, background: pal.bgTop, borderBottom: `0.5px solid ${pal.line}` }}>
-				<div style={{ display: "flex", alignItems: "center", padding: "8px 8px 10px" }}>
+			<div
+				style={{
+					flexShrink: 0,
+					background: pal.bgTop,
+					borderBottom: `0.5px solid ${pal.line}`,
+				}}
+			>
+				<div
+					style={{
+						display: "flex",
+						alignItems: "center",
+						padding: "8px 8px 10px",
+					}}
+				>
 					<button
 						type="button"
 						onClick={onBack}
-						style={{ border: "none", background: "none", padding: 6, cursor: "pointer", display: "flex" }}
+						style={{
+							border: "none",
+							background: "none",
+							padding: 6,
+							cursor: "pointer",
+							display: "flex",
+						}}
 						aria-label="返回项目列表"
 					>
 						<ChevronLeft size={22} color={pal.ink2} />
 					</button>
-					<span style={{ width: 8, height: 8, borderRadius: 99, background: ws.color, flexShrink: 0 }} />
+					<span
+						style={{
+							width: 8,
+							height: 8,
+							borderRadius: 99,
+							background: ws.color,
+							flexShrink: 0,
+						}}
+					/>
 					<span
 						style={{
 							marginLeft: 8,
@@ -1055,9 +1186,18 @@ function ProjectConvsScreen({
 								<MessageSquare size={18} color={ws.color} />
 							</div>
 							<div style={{ flex: 1, minWidth: 0 }}>
-								<div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+								<div
+									style={{ display: "flex", alignItems: "baseline", gap: 7 }}
+								>
 									<span style={nameStyle(pal)}>{c.title || "对话"}</span>
-									<span style={{ marginLeft: "auto", fontSize: 11.5, color: pal.ink3, whiteSpace: "nowrap" }}>
+									<span
+										style={{
+											marginLeft: "auto",
+											fontSize: 11.5,
+											color: pal.ink3,
+											whiteSpace: "nowrap",
+										}}
+									>
 										{fmtTime(c.last_message_at)}
 									</span>
 								</div>
@@ -1155,15 +1295,28 @@ function AdapterManager() {
 		color: pal.ink2,
 		cursor: "pointer",
 	};
-	const server = getServerOverride() || "local";
 
 	return (
 		<div style={{ margin: "0 12px 16px" }}>
-			<div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 4px 9px" }}>
+			<div
+				style={{
+					display: "flex",
+					alignItems: "center",
+					gap: 8,
+					padding: "0 4px 9px",
+				}}
+			>
 				<Sparkles size={15} color={pal.accent} />
-				<span style={{ fontSize: 17, fontWeight: 600, color: pal.ink }}>接入智能体</span>
+				<span style={{ fontSize: 17, fontWeight: 600, color: pal.ink }}>
+					接入智能体
+				</span>
 				<div style={{ marginLeft: "auto", display: "flex", gap: 7 }}>
-					<button type="button" onClick={refreshCreds} disabled={cred === "busy"} style={ghost}>
+					<button
+						type="button"
+						onClick={refreshCreds}
+						disabled={cred === "busy"}
+						style={ghost}
+					>
 						{cred === "busy" ? (
 							<Loader2 size={12} className="animate-spin" />
 						) : cred === "done" ? (
@@ -1171,42 +1324,126 @@ function AdapterManager() {
 						) : (
 							<KeyRound size={12} />
 						)}
-						{cred === "busy" ? "刷新中" : cred === "done" ? "已刷新" : "刷新凭证"}
+						{cred === "busy"
+							? "刷新中"
+							: cred === "done"
+								? "已刷新"
+								: "刷新凭证"}
 					</button>
-					<button type="button" onClick={refresh} disabled={refreshing} style={ghost}>
+					<button
+						type="button"
+						onClick={refresh}
+						disabled={refreshing}
+						style={ghost}
+					>
 						<RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
 						{refreshing ? "检测中" : "重新检测"}
 					</button>
 				</div>
 			</div>
-			<div style={{ fontSize: 12, color: pal.ink3, padding: "0 4px 12px", lineHeight: 1.5 }}>
-				自动复用本机已登录的 CLI 凭证(Claude Code Pro / Codex / OpenCode)。点「启用」后对应 agent 进入联系人。
+			<div
+				style={{
+					fontSize: 12,
+					color: pal.ink3,
+					padding: "0 4px 12px",
+					lineHeight: 1.5,
+				}}
+			>
+				自动复用本机已登录的 CLI 凭证(Claude Code Pro / Codex /
+				OpenCode)。点「启用」后对应 agent 进入联系人。
 			</div>
 			{err && (
-				<div style={{ fontSize: 12, color: "#c0392b", background: "rgba(192,57,43,.08)", padding: "8px 12px", borderRadius: 10, marginBottom: 10 }}>
+				<div
+					style={{
+						fontSize: 12,
+						color: "#c0392b",
+						background: "rgba(192,57,43,.08)",
+						padding: "8px 12px",
+						borderRadius: 10,
+						marginBottom: 10,
+					}}
+				>
 					{err}
 				</div>
 			)}
 			{probes === null && !err && (
-				<div style={{ textAlign: "center", padding: 28, fontSize: 13, color: pal.ink3 }}>正在探测本机 CLI…</div>
+				<div
+					style={{
+						textAlign: "center",
+						padding: 28,
+						fontSize: 13,
+						color: pal.ink3,
+					}}
+				>
+					正在探测本机 CLI…
+				</div>
 			)}
 			{probes?.map((p) => {
 				const ready = p.installed && p.authenticated;
 				const isBusy = busy === p.id;
 				return (
-					<div key={p.id} style={{ background: pal.card, border: `0.5px solid ${pal.line}`, borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
-						<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `0.5px solid ${pal.line}` }}>
+					<div
+						key={p.id}
+						style={{
+							background: pal.card,
+							border: `0.5px solid ${pal.line}`,
+							borderRadius: 14,
+							overflow: "hidden",
+							marginBottom: 12,
+						}}
+					>
+						<div
+							style={{
+								display: "flex",
+								alignItems: "center",
+								gap: 10,
+								padding: "12px 14px",
+								borderBottom: `0.5px solid ${pal.line}`,
+							}}
+						>
 							<div style={{ flex: 1, minWidth: 0 }}>
-								<div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
-									<span style={{ fontSize: 15, fontWeight: 600, color: pal.ink }}>{p.name}</span>
-									<span style={{ fontSize: 11, fontFamily: MONO, color: pal.ink3 }}>{p.cli}</span>
+								<div
+									style={{
+										display: "flex",
+										alignItems: "center",
+										gap: 7,
+										flexWrap: "wrap",
+									}}
+								>
+									<span
+										style={{ fontSize: 15, fontWeight: 600, color: pal.ink }}
+									>
+										{p.name}
+									</span>
+									<span
+										style={{ fontSize: 11, fontFamily: MONO, color: pal.ink3 }}
+									>
+										{p.cli}
+									</span>
 									{p.enabled && (
-										<span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 5, background: "rgba(39,174,96,.15)", color: "#1f9d57", display: "inline-flex", alignItems: "center", gap: 3 }}>
+										<span
+											style={{
+												fontSize: 10,
+												padding: "1px 6px",
+												borderRadius: 5,
+												background: "rgba(39,174,96,.15)",
+												color: "#1f9d57",
+												display: "inline-flex",
+												alignItems: "center",
+												gap: 3,
+											}}
+										>
 											<CheckCircle2 size={9} /> 已启用
 										</span>
 									)}
 								</div>
-								{p.tagline && <div style={{ fontSize: 11.5, color: pal.ink3, marginTop: 2 }}>{p.tagline}</div>}
+								{p.tagline && (
+									<div
+										style={{ fontSize: 11.5, color: pal.ink3, marginTop: 2 }}
+									>
+										{p.tagline}
+									</div>
+								)}
 							</div>
 							<button
 								type="button"
@@ -1220,9 +1457,14 @@ function AdapterManager() {
 									fontWeight: 500,
 									padding: "6px 14px",
 									borderRadius: 9,
-									cursor: isBusy || (!p.enabled && !ready) ? "default" : "pointer",
+									cursor:
+										isBusy || (!p.enabled && !ready) ? "default" : "pointer",
 									border: p.enabled ? `0.5px solid ${pal.line}` : "none",
-									background: p.enabled ? pal.chip : ready ? pal.accent : pal.chip,
+									background: p.enabled
+										? pal.chip
+										: ready
+											? pal.accent
+											: pal.chip,
 									color: p.enabled ? pal.ink2 : ready ? "#fff" : pal.ink3,
 									opacity: !p.enabled && !ready ? 0.5 : 1,
 								}}
@@ -1231,30 +1473,46 @@ function AdapterManager() {
 								{isBusy ? "…" : p.enabled ? "禁用" : "启用"}
 							</button>
 						</div>
-						<div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+						<div
+							style={{
+								padding: "10px 14px",
+								display: "flex",
+								flexDirection: "column",
+								gap: 8,
+							}}
+						>
 							<StatusLine
 								ok={p.installed}
 								label="安装"
-								value={p.installed ? `${p.cli_path ?? ""}${p.version ? ` · ${p.version}` : ""}` : "未在 PATH 找到"}
+								value={
+									p.installed
+										? `${p.cli_path ?? ""}${p.version ? ` · ${p.version}` : ""}`
+										: "未在 PATH 找到"
+								}
 							/>
 							<StatusLine
 								ok={p.authenticated}
 								label="登录"
-								value={p.authenticated && p.auth_path ? p.auth_path : "未检测到凭证"}
+								value={
+									p.authenticated && p.auth_path ? p.auth_path : "未检测到凭证"
+								}
 								mono={!!(p.authenticated && p.auth_path)}
-								icon={p.authenticated && p.auth_path ? <FolderKey size={11} color={pal.ink3} /> : undefined}
+								icon={
+									p.authenticated && p.auth_path ? (
+										<FolderKey size={11} color={pal.ink3} />
+									) : undefined
+								}
 							/>
-							{!p.installed && p.install_hint && <CmdHint title="安装命令" cmd={p.install_hint} />}
-							{p.installed && !p.authenticated && p.login_cmd && <CmdHint title="登录命令" cmd={p.login_cmd} />}
+							{!p.installed && p.install_hint && (
+								<CmdHint title="安装命令" cmd={p.install_hint} />
+							)}
+							{p.installed && !p.authenticated && p.login_cmd && (
+								<CmdHint title="登录命令" cmd={p.login_cmd} />
+							)}
 						</div>
 					</div>
 				);
 			})}
-			<div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", background: pal.card, border: `0.5px solid ${pal.line}`, borderRadius: 14, fontSize: 13, color: pal.ink2 }}>
-				<Server size={14} color={pal.ink3} />
-				<span>服务器</span>
-				<span style={{ marginLeft: "auto", fontFamily: MONO, color: pal.ink }}>{server}</span>
-			</div>
 		</div>
 	);
 }
@@ -1274,10 +1532,37 @@ function StatusLine({
 }) {
 	const { pal } = useApp();
 	return (
-		<div style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12 }}>
-			<span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, marginTop: 5, background: ok ? "#27ae60" : pal.ink3 }} />
+		<div
+			style={{
+				display: "flex",
+				alignItems: "flex-start",
+				gap: 8,
+				fontSize: 12,
+			}}
+		>
+			<span
+				style={{
+					width: 7,
+					height: 7,
+					borderRadius: "50%",
+					flexShrink: 0,
+					marginTop: 5,
+					background: ok ? "#27ae60" : pal.ink3,
+				}}
+			/>
 			<span style={{ width: 30, flexShrink: 0, color: pal.ink3 }}>{label}</span>
-			<span style={{ flex: 1, minWidth: 0, color: pal.ink2, display: "inline-flex", alignItems: "center", gap: 4, fontFamily: mono ? MONO : undefined, wordBreak: "break-all" }}>
+			<span
+				style={{
+					flex: 1,
+					minWidth: 0,
+					color: pal.ink2,
+					display: "inline-flex",
+					alignItems: "center",
+					gap: 4,
+					fontFamily: mono ? MONO : undefined,
+					wordBreak: "break-all",
+				}}
+			>
 				{icon}
 				{value}
 			</span>
@@ -1289,8 +1574,20 @@ function CmdHint({ title, cmd }: { title: string; cmd: string }) {
 	const { pal } = useApp();
 	return (
 		<div style={{ marginTop: 2 }}>
-			<div style={{ fontSize: 10.5, color: pal.ink3, marginBottom: 3 }}>{title}</div>
-			<div style={{ fontSize: 11.5, fontFamily: MONO, color: pal.ink2, background: pal.chip, padding: "7px 10px", borderRadius: 8, wordBreak: "break-all" }}>
+			<div style={{ fontSize: 10.5, color: pal.ink3, marginBottom: 3 }}>
+				{title}
+			</div>
+			<div
+				style={{
+					fontSize: 11.5,
+					fontFamily: MONO,
+					color: pal.ink2,
+					background: pal.chip,
+					padding: "7px 10px",
+					borderRadius: 8,
+					wordBreak: "break-all",
+				}}
+			>
 				{cmd}
 			</div>
 		</div>
@@ -1298,13 +1595,30 @@ function CmdHint({ title, cmd }: { title: string; cmd: string }) {
 }
 
 function MeScreen() {
-	const { pal, t, lang, setLang, dark, setDark, adapter, setAdapter, adapters } =
-		useApp();
+	const {
+		pal,
+		t,
+		lang,
+		setLang,
+		dark,
+		setDark,
+		adapter,
+		setAdapter,
+		adapters,
+	} = useApp();
 	return (
 		<>
-			<div style={{ flexShrink: 0, background: pal.bgTop, borderBottom: `0.5px solid ${pal.line}` }}>
+			<div
+				style={{
+					flexShrink: 0,
+					background: pal.bgTop,
+					borderBottom: `0.5px solid ${pal.line}`,
+				}}
+			>
 				<div style={{ padding: "8px 16px 14px" }}>
-					<span style={{ fontSize: 18, fontWeight: 600, color: pal.ink }}>{t.me}</span>
+					<span style={{ fontSize: 18, fontWeight: 600, color: pal.ink }}>
+						{t.me}
+					</span>
 				</div>
 			</div>
 			<div style={{ ...scrollStyle, paddingTop: 16 }}>
@@ -1313,9 +1627,14 @@ function MeScreen() {
 				<ServerCard />
 
 				<Card title={t.secGeneral}>
-
 					<SettingRow
-						icon={dark ? <Moon size={18} color={pal.ink2} /> : <Sun size={18} color={pal.ink2} />}
+						icon={
+							dark ? (
+								<Moon size={18} color={pal.ink2} />
+							) : (
+								<Sun size={18} color={pal.ink2} />
+							)
+						}
 						label={t.appearance}
 						control={
 							<Segmented
@@ -1359,7 +1678,7 @@ function MeScreen() {
 function ServerCard() {
 	const { pal, t, lang } = useApp();
 	const current = getServerOverride();
-	const [url, setUrl] = useState(current || "http://10.2.255.109:7780");
+	const [url, setUrl] = useState(current || "http://127.0.0.1:7780");
 	const [editing, setEditing] = useState(false);
 	const [test, setTest] = useState<{
 		kind: "idle" | "testing" | "ok" | "err";
@@ -1448,8 +1767,7 @@ function ServerCard() {
 							style={{
 								fontSize: 13.5,
 								color: current ? pal.ink : pal.ink3,
-								fontFamily:
-									"ui-monospace, SFMono-Regular, Menlo, monospace",
+								fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
 								overflow: "hidden",
 								textOverflow: "ellipsis",
 								whiteSpace: "nowrap",
@@ -1483,7 +1801,7 @@ function ServerCard() {
 							setUrl(e.target.value);
 							setTest({ kind: "idle", msg: "" });
 						}}
-						placeholder="http://10.2.255.109:7780"
+						placeholder="http://127.0.0.1:7780"
 						style={{
 							width: "100%",
 							border: "none",
@@ -1493,8 +1811,7 @@ function ServerCard() {
 							padding: "10px 12px",
 							fontSize: 14,
 							color: pal.ink,
-							fontFamily:
-								"ui-monospace, SFMono-Regular, Menlo, monospace",
+							fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
 						}}
 					/>
 					{test.kind !== "idle" && (
@@ -1541,7 +1858,7 @@ function ServerCard() {
 							type="button"
 							onClick={() => {
 								setEditing(false);
-								setUrl(current || "http://10.2.255.109:7780");
+								setUrl(current || "http://127.0.0.1:7780");
 								setTest({ kind: "idle", msg: "" });
 							}}
 							disabled={saving}
@@ -1631,16 +1948,34 @@ function ServerCard() {
 	);
 }
 
-function Card({ title, children }: { title?: string; children: React.ReactNode }) {
+function Card({
+	title,
+	children,
+}: { title?: string; children: React.ReactNode }) {
 	const { pal } = useApp();
 	return (
 		<div style={{ margin: "0 12px 16px" }}>
 			{title && (
-				<div style={{ fontSize: 11.5, fontWeight: 600, color: pal.ink3, letterSpacing: 1, padding: "0 8px 7px" }}>
+				<div
+					style={{
+						fontSize: 11.5,
+						fontWeight: 600,
+						color: pal.ink3,
+						letterSpacing: 1,
+						padding: "0 8px 7px",
+					}}
+				>
 					{title}
 				</div>
 			)}
-			<div style={{ background: pal.card, borderRadius: 16, overflow: "hidden", border: `0.5px solid ${pal.line}` }}>
+			<div
+				style={{
+					background: pal.card,
+					borderRadius: 16,
+					overflow: "hidden",
+					border: `0.5px solid ${pal.line}`,
+				}}
+			>
 				{children}
 			</div>
 		</div>
@@ -1660,8 +1995,20 @@ function SettingRow({
 }) {
 	const { pal } = useApp();
 	return (
-		<div style={{ padding: "0 16px", borderBottom: last ? "none" : `0.5px solid ${pal.line}` }}>
-			<div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 0" }}>
+		<div
+			style={{
+				padding: "0 16px",
+				borderBottom: last ? "none" : `0.5px solid ${pal.line}`,
+			}}
+		>
+			<div
+				style={{
+					display: "flex",
+					alignItems: "center",
+					gap: 12,
+					padding: "14px 0",
+				}}
+			>
 				<div
 					style={{
 						width: 30,
@@ -1677,7 +2024,9 @@ function SettingRow({
 					{icon}
 				</div>
 				<div style={{ flex: 1, minWidth: 0 }}>
-					<div style={{ fontSize: 15.5, color: pal.ink, fontWeight: 500 }}>{label}</div>
+					<div style={{ fontSize: 15.5, color: pal.ink, fontWeight: 500 }}>
+						{label}
+					</div>
 				</div>
 				<div style={{ flexShrink: 0 }}>{control}</div>
 			</div>
@@ -1696,7 +2045,15 @@ function Segmented<T extends string>({
 }) {
 	const { pal } = useApp();
 	return (
-		<div style={{ display: "flex", gap: 3, background: pal.segBg, borderRadius: 10, padding: 3 }}>
+		<div
+			style={{
+				display: "flex",
+				gap: 3,
+				background: pal.segBg,
+				borderRadius: 10,
+				padding: 3,
+			}}
+		>
 			{options.map((o) => {
 				const on = o.value === value;
 				return (
@@ -1719,8 +2076,12 @@ function Segmented<T extends string>({
 							fontWeight: on ? 600 : 500,
 						}}
 					>
-						{o.icon === "sun" && <Sun size={15} color={on ? pal.accent : pal.ink3} />}
-						{o.icon === "moon" && <Moon size={15} color={on ? pal.accent : pal.ink3} />}
+						{o.icon === "sun" && (
+							<Sun size={15} color={on ? pal.accent : pal.ink3} />
+						)}
+						{o.icon === "moon" && (
+							<Moon size={15} color={on ? pal.accent : pal.ink3} />
+						)}
 						<span>{o.label}</span>
 					</button>
 				);
@@ -1747,7 +2108,8 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 				borderTop: `0.5px solid ${pal.line}`,
 				background: pal.bgTop,
 				paddingTop: 8,
-				paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)",
+				paddingBottom:
+					"calc(var(--pn-status-safe-bottom, env(safe-area-inset-bottom)) + 10px)",
 			}}
 		>
 			{tabs.map(({ id, label, Icon }) => {
@@ -1771,7 +2133,11 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 						}}
 					>
 						<Icon size={25} color={col} strokeWidth={on ? 2 : 1.7} />
-						<span style={{ fontSize: 10.5, color: col, fontWeight: on ? 600 : 500 }}>{label}</span>
+						<span
+							style={{ fontSize: 10.5, color: col, fontWeight: on ? 600 : 500 }}
+						>
+							{label}
+						</span>
 					</button>
 				);
 			})}
@@ -1912,7 +2278,11 @@ function ProjectChip({ pal, ws }: { pal: Pal; ws: Workspace }) {
 		</span>
 	);
 }
-function Divider({ pal, indent, margin }: { pal: Pal; indent: number; margin?: boolean }) {
+function Divider({
+	pal,
+	indent,
+	margin,
+}: { pal: Pal; indent: number; margin?: boolean }) {
 	return (
 		<div
 			style={{
@@ -1926,7 +2296,17 @@ function Divider({ pal, indent, margin }: { pal: Pal; indent: number; margin?: b
 	);
 }
 function Dot({ pal }: { pal: Pal }) {
-	return <span style={{ width: 3, height: 3, borderRadius: 99, background: pal.ink3, display: "inline-block" }} />;
+	return (
+		<span
+			style={{
+				width: 3,
+				height: 3,
+				borderRadius: 99,
+				background: pal.ink3,
+				display: "inline-block",
+			}}
+		/>
+	);
 }
 function ActionRow({
 	icon,
@@ -1969,7 +2349,11 @@ function ActionRow({
 				>
 					{icon}
 				</div>
-				<span style={{ fontSize: 16, fontWeight: 500, color: pal.ink, flex: 1 }}>{label}</span>
+				<span
+					style={{ fontSize: 16, fontWeight: 500, color: pal.ink, flex: 1 }}
+				>
+					{label}
+				</span>
 				<ChevronRight size={18} color={pal.ink3} />
 			</button>
 		</div>
