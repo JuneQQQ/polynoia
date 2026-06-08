@@ -144,11 +144,14 @@ class AdapterPool:
             )
             allowed: list[str] | None = [] if is_conv_orch else None
 
-            # P1.1 workspace-shared sandbox: trigger when conv has workspace_id
-            # AND is a group conv (DMs stay per-conv until P1.2).
-            # workspace-shared-git.md §3.
+            # Project-scoped sandbox: any conversation created inside a
+            # workspace (single chat or group) must write through that
+            # workspace's worktree so artifacts merge back to project main.
+            # Conversations without workspace_id remain private per-conv
+            # sandboxes; project access grants below can opt a DM into a
+            # workspace explicitly.
             ws_id: str | None = None
-            if conv is not None and conv.workspace_id and conv.group:
+            if conv is not None and conv.workspace_id:
                 ws_id = conv.workspace_id
 
             # P1.2 manual mode: pass merge_mode to adapter so it can swap

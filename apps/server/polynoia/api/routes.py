@@ -1153,7 +1153,7 @@ async def apply_diff(body: dict):
     if conv is None:
         return {"ok": False, "error": "conversation not found"}
 
-    if conv.workspace_id and conv.group:
+    if conv.workspace_id:
         if reverse:
             # 撤销 must land on workspace `main` (the root) — that's the tree the
             # user sees in the file tree / preview. Reverting on an agent's
@@ -1173,6 +1173,29 @@ async def apply_diff(body: dict):
             )
     else:
         sandbox = await Sandbox.create(conv_id)
+
+    def _is_create_file_diff(hunks: list[dict]) -> bool:
+        """Best-effort detection for write-created files.
+
+        Diff cards currently carry hunks but not git's `new file mode` header.
+        A pure creation has old-range `-0,0` and only added lines. Reversing
+        such a patch with a synthetic `--- a/file` header leaves an empty file;
+        for the card's 撤销 semantics we remove that file from main.
+        """
+        if not hunks:
+            return False
+        for h in hunks:
+            header = h.get("header") or ""
+            if not re.match(r"^@@ -0,0 \+\d+(?:,\d+)? @@", header):
+                return False
+            for line in h.get("lines") or []:
+                if not isinstance(line, list) or len(line) < 3:
+                    continue
+                if line[0] != "add":
+                    return False
+        return True
+
+    create_file_diff = _is_create_file_diff(raw_hunks)
 
     # Reconstruct unified diff. Each hunk header from the payload is already
     # in `@@ -a,b +c,d @@` shape; just sandwich body lines with +/-/space.
@@ -1205,7 +1228,7 @@ async def apply_diff(body: dict):
     # convs, no lock for legacy per-conv sandboxes (independent .git).
     lock = (
         workspace_merge_lock(conv.workspace_id)
-        if (conv.workspace_id and conv.group)
+        if conv.workspace_id
         else None
     )
     acquired = False
@@ -1224,8 +1247,16 @@ async def apply_diff(body: dict):
         if rc != 0:
             verb = "git apply --reverse" if reverse else "git apply"
             return {"ok": False, "error": f"{verb} failed: {err.strip()[:300]}"}
+        if reverse and create_file_diff:
+            target = (sandbox.root / file_path).resolve()
+            try:
+                target.relative_to(sandbox.root.resolve())
+            except ValueError:
+                return {"ok": False, "error": "path escapes workspace root"}
+            if target.exists() and target.is_file():
+                target.unlink()
         # Stage + commit
-        rc, _out, err = await sandbox._run(["git", "add", file_path])
+        rc, _out, err = await sandbox._run(["git", "add", "-A", file_path])
         if rc != 0:
             return {"ok": False, "error": f"git add failed: {err.strip()[:200]}"}
         rc, _out, err = await sandbox._run([

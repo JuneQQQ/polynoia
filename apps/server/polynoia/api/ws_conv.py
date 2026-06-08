@@ -894,7 +894,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     _sconv = await storage_repo.get_conversation(_sdb, conv_id)
                     _sws = (
                         _sconv.workspace_id
-                        if (_sconv and _sconv.group and _sconv.workspace_id)
+                        if (_sconv and _sconv.workspace_id)
                         else None
                     )
                     _has_open_conflict = bool(_sws) and any(
