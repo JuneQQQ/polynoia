@@ -77,7 +77,15 @@ const config: CapacitorConfig = {
   },
   ios: {
     backgroundColor: "#14110c",
-    contentInset: "automatic",
+    // "never": WKWebView content area = physical screen edge-to-edge.
+    // CSS `env(safe-area-inset-bottom)` (home indicator) + `inset-top` (Dynamic
+    // Island / status bar) then return REAL values, and the leaf TabBar /
+    // composer pad themselves accordingly. "automatic" (default) makes the
+    // WebView inset its scroll content area, so `100dvh` becomes WebView
+    // content height (NOT physical screen) — TabBar then sits at the inset
+    // bottom of the WebView, leaving the ~34px home-indicator band as
+    // WebView background ("4-tab 距离屏幕底部空白").
+    contentInset: "never",
     // Disable the WKWebView's own scroll: inner overflow:auto / 100dvh shells
     // still scroll, but dragging the page edge no longer rubber-bands the whole
     // document down. Pairs with overscroll-behavior:none in index.css.

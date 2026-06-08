@@ -241,6 +241,7 @@ html[data-capacitor="1"] {
 	   status bar overlays the WebView. Keep banners and mobile headers below the
 	   system chrome; iOS notches still win via the larger env() value. */
 	--pn-status-safe-top: max(env(safe-area-inset-top), 24px);
+	--pn-mobile-tabbar-h: calc(64px + var(--pn-status-safe-bottom));
 }
 html[data-capacitor="1"][data-cap-platform="ios"] {
 	--pn-status-safe-top: env(safe-area-inset-top);
@@ -282,6 +283,7 @@ html[data-capacitor="1"] .pn-mobile-shell {
 .pn-mobile-home-content {
 	position: absolute;
 	inset: 0 0 var(--pn-mobile-tabbar-h, 84px) 0;
+	z-index: 0;
 	min-height: 0;
 	overflow: hidden;
 }
@@ -291,7 +293,7 @@ html[data-capacitor="1"] .pn-mobile-shell {
 	left: 0;
 	right: 0;
 	bottom: 0;
-	z-index: 40;
+	z-index: 2147483000;
 	height: var(--pn-mobile-tabbar-h, 84px);
 	min-height: var(--pn-mobile-tabbar-h, 84px);
 	box-sizing: border-box;

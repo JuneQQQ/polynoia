@@ -346,7 +346,6 @@ export function MobileHome({ onSelectConv }: Props) {
 					overflow: "hidden",
 				}}
 			>
-				<TabBar key={tabbarPaintKey} tab={tab} setTab={setTab} />
 				<div
 					className="pn-mobile-home-content"
 					style={{
@@ -363,6 +362,7 @@ export function MobileHome({ onSelectConv }: Props) {
 					{homeReady && tab === "folder" && <ProjectsScreen onSelectConv={onSelectConv} />}
 					{homeReady && tab === "me" && <MeScreen />}
 				</div>
+				<TabBar key={tabbarPaintKey} tab={tab} setTab={setTab} />
 			</div>
 			{newContactOpen && (
 				<NewContactModal
