@@ -309,7 +309,10 @@ export function App() {
 						// container ran past the screen bottom → content pushed off-screen.
 						// Pad BOTH safe areas: top for the Dynamic Island, bottom for the
 						// home indicator (was missing → bottom bar/composer got clipped).
-						paddingTop: "env(safe-area-inset-top)",
+						// max(safe-area, --conn-h): when the connection banner is showing it
+						// publishes its height as --conn-h, so the chat header (back arrow)
+						// drops below the fixed banner instead of being covered by it.
+						paddingTop: "max(env(safe-area-inset-top), var(--conn-h, 0px))",
 						paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
 						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
 					}}
@@ -355,7 +358,9 @@ export function App() {
 			<div
 				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{
-					paddingTop: "env(safe-area-inset-top)",
+					// max(safe-area, --conn-h) so the connection banner never covers the
+					// home's top bar (see chat view note).
+					paddingTop: "max(env(safe-area-inset-top), var(--conn-h, 0px))",
 					// Home does NOT pad for the keyboard (unlike the chat view, whose
 					// composer must slide above it): its inputs (server field, search)
 					// sit near the top, so the keyboard simply overlays the bottom. The
@@ -376,7 +381,15 @@ export function App() {
 
 	// ── Desktop / browser layout (Tauri or normal browser) ───────────
 	return (
-		<div className="h-screen flex overflow-hidden">
+		<div
+			className="flex overflow-hidden"
+			style={{
+				// Sit below the connection banner (it publishes --conn-h when shown)
+				// so it never covers the sidebar/header. 0 when online → full height.
+				marginTop: "var(--conn-h, 0px)",
+				height: "calc(100dvh - var(--conn-h, 0px))",
+			}}
+		>
 			{/* Sidebar self-manages full vs collapsed icon-rail (reads
           sidebarCollapsed internally) — always mounted. */}
 			<Sidebar

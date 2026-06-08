@@ -10,16 +10,29 @@
  * ChatPane handles to kick the live socket immediately.
  */
 import { Loader2, RefreshCw, WifiOff } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 
 export function ConnectionBanner() {
 	const status = useStore((s) => s.connectionStatus);
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
+	const ref = useRef<HTMLOutputElement>(null);
 
 	// Only intrude when the link is actually degraded.
-	if (status === "online" || status === "connecting") return null;
+	const degraded = status !== "online" && status !== "connecting";
+
+	// Publish the banner's height as --conn-h so layouts can pad their top by it
+	// — the fixed banner otherwise OVERLAPS the page (covering the chat back
+	// arrow / header). 0 when hidden, so nothing shifts in the normal case.
+	useLayoutEffect(() => {
+		const root = document.documentElement;
+		const h = degraded && ref.current ? ref.current.offsetHeight : 0;
+		root.style.setProperty("--conn-h", `${h}px`);
+		return () => root.style.setProperty("--conn-h", "0px");
+	}, [degraded, status, retrying]);
+
+	if (!degraded) return null;
 	const offline = status === "offline";
 	const tone = offline ? "var(--color-red)" : "var(--color-accent)";
 
@@ -37,6 +50,7 @@ export function ConnectionBanner() {
 
 	return (
 		<output
+			ref={ref}
 			aria-live="polite"
 			className="anim-conn-in fixed inset-x-0 top-0 z-[70] flex items-center gap-2 px-4 border-b"
 			style={{
