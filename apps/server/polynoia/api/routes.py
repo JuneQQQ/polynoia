@@ -1392,6 +1392,615 @@ async def post_terminal_card(conv_id: str, body: dict):
     return {"ok": True, "id": term_id}
 
 
+# ── Deploy runners ───────────────────────────────────────────────────
+#
+# Lower-level helpers that actually do the deploy work for a conv's sandbox:
+# zip the source / spin up an ephemeral HTTP preview / copy to a static mount /
+# build+run a docker container. They return `(extras, error)` — the caller
+# decides how to surface the URL/download to the user (Phase B/C wires these
+# to the enriched `present` tool + a new `expose` MCP tool; no dedicated card
+# layer, no fast-path text trigger).
+
+
+async def _deploy_source_root_for(conv_id: str):
+    """Resolve the on-disk root to zip for ``target=source``: workspace root
+    if the conv belongs to one, else its per-conv sandbox. None if neither
+    exists yet (fresh conv, nothing to package).
+    """
+    async with SessionLocal() as _s:
+        conv = await storage_repo.get_conversation(_s, conv_id)
+    if conv is not None and getattr(conv, "workspace_id", None):
+        root = workspace_root_for(conv.workspace_id)
+    else:
+        root = settings.sandbox_root / conv_id
+    return root if root.exists() else None
+
+
+# token → {"conv_id", "size", "name", "created_at"} — source zips that survive
+# a server restart (we don't auto-clean them since they're a one-shot download).
+_SOURCE_DEPLOYS: dict[str, dict] = {}
+
+
+async def _run_deploy_source(conv_id: str) -> tuple[dict, str | None]:
+    """Real source-package flow: zip the conv's workspace/sandbox root into
+    ``settings.sandbox_root/.deploy/<token>.zip``. Returns (extras, error).
+    """
+    root = await _deploy_source_root_for(conv_id)
+    if root is None:
+        return ({}, "沙箱目录不存在,无法打包(请先让 agent 写过文件)。")
+    token = "src-" + uuid.uuid4().hex[:16]
+    deploy_dir = settings.sandbox_root / ".deploy"
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+    out_path = deploy_dir / f"{token}.zip"
+    try:
+        # zip writing is CPU/IO-bound — push to a worker thread so we don't
+        # block the event loop while a big sandbox is archived. Reuses the
+        # workspace zip helper (same _ARCHIVE_SKIP_DIRS prune).
+        def _do_zip() -> int:
+            buf = _build_workspace_zip(root, selected_paths=None)
+            try:
+                buf.seek(0, 2)
+                size = buf.tell()
+                buf.seek(0)
+                with out_path.open("wb") as fh:
+                    while True:
+                        chunk = buf.read(65536)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                return size
+            finally:
+                with suppress(Exception):
+                    buf.close()
+        size = await asyncio.to_thread(_do_zip)
+    except Exception as exc:  # noqa: BLE001 — surface failure on the card
+        return ({}, f"打包失败:{exc}")
+    download_name = f"polynoia-{conv_id[:8]}.zip"
+    _SOURCE_DEPLOYS[token] = {
+        "conv_id": conv_id,
+        "size": int(size),
+        "name": download_name,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    extras = {
+        "token": token,
+        "target": "source",
+        "download_url": f"/api/deploy/downloads/{token}",
+        "download_name": download_name,
+        "download_bytes": int(size),
+        "log": f"zipped {root} → {out_path.name} ({size} bytes)",
+    }
+    return (extras, None)
+
+
+# ── Helpers shared by the 3 real flows ──────────────────────────────
+
+
+def _deploy_public_host() -> str:
+    """Pick a routable host for emitting clickable deploy URLs.
+    Tries an env override first, then non-loopback IPs from ``hostname -I``.
+    Falls back to ``127.0.0.1`` (still useful for same-host testing)."""
+    override = os.environ.get("POLYNOIA_PUBLIC_HOST")
+    if override:
+        return override
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["hostname", "-I"], capture_output=True, text=True, timeout=2,
+        ).stdout.split()
+        # Prefer 10.x / 192.168.x / 172.16-31.x — skip docker0 / link-local / v6
+        priorities = [
+            lambda s: s.startswith("10."),
+            lambda s: s.startswith("192.168."),
+            lambda s: s.startswith("172.") and 16 <= int(s.split(".")[1]) <= 31,
+        ]
+        for pred in priorities:
+            for ip in out:
+                if ":" in ip:  # skip ipv6
+                    continue
+                try:
+                    if pred(ip):
+                        return ip
+                except (ValueError, IndexError):
+                    continue
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+def _pick_free_port() -> int:
+    """Ask the kernel for any free TCP port. Race-safe enough for demo."""
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("", 0))
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
+
+
+# ── Real flow #1 — Preview URL via ephemeral http.server ─────────────
+
+
+# token → {"proc": Process, "port": int, "expiry": asyncio.Task}
+_PREVIEW_SERVERS: dict[str, dict] = {}
+# Auto-shutdown so a forgotten preview server doesn't squat a port forever.
+_PREVIEW_TTL_SECONDS = 30 * 60
+
+
+async def _run_deploy_preview(conv_id: str) -> tuple[dict, str | None]:
+    """Spin up an ephemeral HTTP server (Python ``http.server``) bound to a
+    random port on 0.0.0.0, serving the conv's sandbox files. Auto-shuts down
+    after :data:`_PREVIEW_TTL_SECONDS`. Real working URL — zero external
+    dependency, perfect for an instant chat-side preview."""
+    import sys
+    root = await _deploy_source_root_for(conv_id)
+    if root is None:
+        return ({}, "沙箱目录不存在,无法预览(请先让 agent 写过文件)。")
+    port = _pick_free_port()
+    token = "prev-" + uuid.uuid4().hex[:12]
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "http.server", str(port), "--bind", "0.0.0.0",
+        cwd=str(root),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+    async def _shutdown_later() -> None:
+        try:
+            await asyncio.sleep(_PREVIEW_TTL_SECONDS)
+        except asyncio.CancelledError:
+            return
+        with suppress(Exception):
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        _PREVIEW_SERVERS.pop(token, None)
+
+    expiry_task = asyncio.create_task(_shutdown_later())
+    host = _deploy_public_host()
+    url = f"http://{host}:{port}/"
+    _PREVIEW_SERVERS[token] = {
+        "proc": proc,
+        "port": port,
+        "expiry": expiry_task,
+        "conv_id": conv_id,
+        "url": url,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "ttl_seconds": _PREVIEW_TTL_SECONDS,
+    }
+
+    log = (
+        "[real] preview HTTP server started\n"
+        f"[real] cwd       : {root}\n"
+        f"[real] bound     : 0.0.0.0:{port}\n"
+        f"[real] auto-stop : {_PREVIEW_TTL_SECONDS // 60} 分钟后\n"
+        f"[real] url       : {url}\n"
+        f"[real] token     : {token}"
+    )
+    return ({"token": token, "target": "preview", "url": url, "log": log}, None)
+
+
+# ── Real flow #2 — Static site via FastAPI mount ─────────────────────
+
+
+_STATIC_DEPLOY_DIR = "static"  # under settings.sandbox_root/.deploy/
+
+# token → {"conv_id", "dest", "size", "url", "created_at"} — persistent across
+# restarts (the files live on disk); only the in-memory index is rebuilt-on-boot
+# best-effort. Phase D lists/stops via these.
+_STATIC_DEPLOYS: dict[str, dict] = {}
+
+
+async def _run_deploy_static(conv_id: str) -> tuple[dict, str | None]:
+    """Copy the sandbox into a token-scoped dir and serve it via
+    ``/api/deploy/static/<token>/...``. Persistent — survives server
+    restarts, doesn't squat any extra port."""
+    import shutil
+    root = await _deploy_source_root_for(conv_id)
+    if root is None:
+        return ({}, "沙箱目录不存在,无法发布(请先让 agent 写过文件)。")
+    token = "stat-" + uuid.uuid4().hex[:12]
+    dest = settings.sandbox_root / ".deploy" / _STATIC_DEPLOY_DIR / token
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    def _copy() -> int:
+        from pathlib import Path as _P
+        # Prune cache + heavy dirs (same set _build_workspace_zip uses).
+        shutil.copytree(
+            str(root), str(dest),
+            ignore=shutil.ignore_patterns(*_ARCHIVE_SKIP_DIRS, ".git"),
+        )
+        size = 0
+        for dirpath, _dirs, files in os.walk(dest):
+            for fn in files:
+                with suppress(OSError):
+                    size += (_P(dirpath) / fn).stat().st_size
+        return size
+
+    try:
+        size = await asyncio.to_thread(_copy)
+    except Exception as exc:  # noqa: BLE001
+        return ({}, f"复制失败:{exc}")
+
+    url = f"/api/deploy/static/{token}/"
+    _STATIC_DEPLOYS[token] = {
+        "conv_id": conv_id,
+        "dest": str(dest),
+        "size": int(size),
+        "url": url,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    log = (
+        "[real] static site published\n"
+        f"[real] src   : {root}\n"
+        f"[real] dst   : {dest}\n"
+        f"[real] bytes : {size}\n"
+        f"[real] url   : {url}"
+    )
+    return ({"token": token, "target": "static", "url": url, "log": log}, None)
+
+
+@router.get("/api/deploy/static/{token}/")
+@router.get("/api/deploy/static/{token}/{path:path}")
+async def serve_deploy_static(token: str, path: str = ""):
+    """Serve a static-deploy artifact (copied sandbox). Default to index.html
+    on a dir request. Strict path-traversal guard."""
+    if not re.fullmatch(r"stat-[0-9a-f]{4,32}", token):
+        raise HTTPException(400, "bad token")
+    base = (settings.sandbox_root / ".deploy" / _STATIC_DEPLOY_DIR / token).resolve()
+    if not base.exists() or not base.is_dir():
+        raise HTTPException(404, "site not found or expired")
+    requested = (base / (path or "index.html")).resolve()
+    try:
+        requested.relative_to(base)
+    except ValueError as exc:
+        raise HTTPException(403, "path escape") from exc
+    if requested.is_dir():
+        requested = requested / "index.html"
+    if not requested.exists() or not requested.is_file():
+        raise HTTPException(404, "file not found")
+    return FileResponse(
+        path=requested,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+# ── Real flow #3 — Container via docker build + run ──────────────────
+
+
+# token → {"container_id": str, "image": str, "port": int}
+_CONTAINER_DEPLOYS: dict[str, dict] = {}
+
+
+async def _docker(*args: str, timeout: float = 60.0) -> tuple[int, str, str]:
+    """Run ``docker <args>``, return (rc, stdout, stderr). NEVER raises."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return (
+            proc.returncode or 0,
+            out.decode("utf-8", "replace"),
+            err.decode("utf-8", "replace"),
+        )
+    except (FileNotFoundError, asyncio.TimeoutError) as exc:
+        return (-1, "", f"docker {args[0] if args else ''} failed: {exc}")
+
+
+async def _run_deploy_container(conv_id: str) -> tuple[dict, str | None]:
+    """Build a tiny nginx image FROM the sandbox + run it on a random host
+    port. Real working container with a clickable URL.
+
+    Heuristic: if sandbox already has a ``Dockerfile``, use it. Otherwise
+    generate a minimal nginx:alpine Dockerfile that serves the sandbox as a
+    static site (good for HTML/JS/CSS demos)."""
+    root = await _deploy_source_root_for(conv_id)
+    if root is None:
+        return ({}, "沙箱目录不存在,无法容器化(请先让 agent 写过文件)。")
+
+    # Pre-flight: docker daemon reachable?
+    rc, _, err = await _docker("info", "--format", "{{.ServerVersion}}", timeout=5)
+    if rc != 0:
+        return ({}, f"docker daemon 不可用:{err.strip()[:200]}")
+
+    # Decide base: existing Dockerfile wins; else generate one.
+    user_dockerfile = root / "Dockerfile"
+    generated_marker = "# polynoia-deploy generated"
+    if user_dockerfile.exists():
+        dockerfile_path = user_dockerfile
+        used_generated = False
+    else:
+        # Need nginx:alpine present locally; we don't pull (the daemon may
+        # not have proxy access). Surface that requirement clearly.
+        rc, img_out, _ = await _docker("images", "-q", "nginx:alpine", timeout=5)
+        if rc != 0 or not img_out.strip():
+            return ({}, (
+                "本地无 nginx:alpine 镜像,且不会自动拉取。请先执行:\n"
+                "  docker pull nginx:alpine\n"
+                "(若 daemon 无代理拉不动,先配 /etc/systemd/system/docker.service.d/http-proxy.conf"
+                " 再 systemctl restart docker)"
+            ))
+        dockerfile_path = root / ".polynoia-deploy" / "Dockerfile"
+        dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+        dockerfile_path.write_text(
+            f"{generated_marker}\n"
+            "FROM nginx:alpine\n"
+            "COPY . /usr/share/nginx/html\n"
+            "EXPOSE 80\n",
+            encoding="utf-8",
+        )
+        used_generated = True
+
+    token = "ctn-" + uuid.uuid4().hex[:12]
+    image_tag = f"polynoia-deploy/{token}:latest"
+    container_name = f"polynoia-deploy-{token}"
+
+    # Build
+    rc, b_out, b_err = await _docker(
+        "build", "-q", "-t", image_tag, "-f", str(dockerfile_path), str(root),
+        timeout=180,
+    )
+    if rc != 0:
+        # Cleanup generated dockerfile (don't leave junk in sandbox)
+        if used_generated:
+            with suppress(Exception):
+                dockerfile_path.unlink()
+        return ({}, f"docker build 失败:\n{(b_err or b_out).strip()[:600]}")
+
+    image_sha = b_out.strip()  # "sha256:..."
+
+    # Run, mapping a random host port → :80
+    host_port = _pick_free_port()
+    rc, r_out, r_err = await _docker(
+        "run", "-d",
+        "--name", container_name,
+        "--restart", "unless-stopped",
+        "-p", f"{host_port}:80",
+        image_tag,
+        timeout=30,
+    )
+    if rc != 0:
+        return ({}, f"docker run 失败:{r_err.strip()[:400]}")
+
+    container_id = r_out.strip()[:12]
+    host = _deploy_public_host()
+    url = f"http://{host}:{host_port}/"
+    _CONTAINER_DEPLOYS[token] = {
+        "container_id": container_id,
+        "container_name": container_name,
+        "image": image_tag,
+        "image_sha": image_sha,
+        "port": host_port,
+        "conv_id": conv_id,
+        "url": url,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    log = (
+        "[real] docker container started\n"
+        f"[real] image     : {image_tag}\n"
+        f"[real] image_sha : {image_sha[:24]}…\n"
+        f"[real] container : {container_id}\n"
+        f"[real] name      : {container_name}\n"
+        f"[real] port      : {host_port} → :80\n"
+        f"[real] dockerfile: {'user-supplied' if not used_generated else 'auto-generated (nginx:alpine static)'}\n"
+        f"[real] url       : {url}\n"
+        "[real] 停止:docker rm -f " + container_name
+    )
+    return ({"token": token, "target": "container", "url": url, "log": log}, None)
+
+
+# ── Expose endpoint + Services management (Phase C/D) ──────────────────
+
+
+_EXPOSE_TARGETS = ("preview", "static", "container", "source")
+
+
+@router.post("/api/conversations/{conv_id}/expose")
+async def post_expose(conv_id: str, body: dict):
+    """Run one of the deploy flows for ``conv_id`` and return its URL/download.
+
+    Body: ``{ target: "preview"|"static"|"container"|"source" }``.
+    Returns extras from the runner: ``{token, target, url?, download_url?,
+    download_name?, download_bytes?, log?, error?}``. The agent surfaces the
+    URL via the `present` tool with a `links` entry — this route does NOT
+    emit a chat card."""
+    target = (body.get("target") or "").strip().lower()
+    if target not in _EXPOSE_TARGETS:
+        raise HTTPException(400, f"target must be one of {_EXPOSE_TARGETS}")
+    runner = {
+        "source": _run_deploy_source,
+        "preview": _run_deploy_preview,
+        "static": _run_deploy_static,
+        "container": _run_deploy_container,
+    }[target]
+    try:
+        extras, err = await runner(conv_id)
+    except Exception as exc:  # noqa: BLE001 — surface internal failure as 500
+        log.exception("expose %s failed for %s", target, conv_id)
+        raise HTTPException(500, f"内部错误:{exc}") from exc
+    if err:
+        return {"ok": False, "target": target, "error": err, "log": extras.get("log")}
+    return {"ok": True, **extras}
+
+
+def _list_services_for(conv_id: str | None) -> list[dict]:
+    """Snapshot all services across the three live registries. Filter by
+    ``conv_id`` when set; pass None for the global view."""
+    out: list[dict] = []
+    for tok, meta in _PREVIEW_SERVERS.items():
+        if conv_id and meta.get("conv_id") != conv_id:
+            continue
+        proc = meta.get("proc")
+        alive = bool(proc and proc.returncode is None)
+        out.append({
+            "token": tok,
+            "kind": "preview",
+            "conv_id": meta.get("conv_id"),
+            "url": meta.get("url"),
+            "port": meta.get("port"),
+            "alive": alive,
+            "created_at": meta.get("created_at"),
+            "ttl_seconds": meta.get("ttl_seconds"),
+        })
+    for tok, meta in _STATIC_DEPLOYS.items():
+        if conv_id and meta.get("conv_id") != conv_id:
+            continue
+        out.append({
+            "token": tok,
+            "kind": "static",
+            "conv_id": meta.get("conv_id"),
+            "url": meta.get("url"),
+            "size": meta.get("size"),
+            "alive": True,
+            "created_at": meta.get("created_at"),
+        })
+    for tok, meta in _CONTAINER_DEPLOYS.items():
+        if conv_id and meta.get("conv_id") != conv_id:
+            continue
+        out.append({
+            "token": tok,
+            "kind": "container",
+            "conv_id": meta.get("conv_id"),
+            "url": meta.get("url"),
+            "port": meta.get("port"),
+            "container_id": meta.get("container_id"),
+            "image": meta.get("image"),
+            "alive": True,
+            "created_at": meta.get("created_at"),
+        })
+    for tok, meta in _SOURCE_DEPLOYS.items():
+        if conv_id and meta.get("conv_id") != conv_id:
+            continue
+        out.append({
+            "token": tok,
+            "kind": "source",
+            "conv_id": meta.get("conv_id"),
+            "download_url": f"/api/deploy/downloads/{tok}",
+            "name": meta.get("name"),
+            "size": meta.get("size"),
+            "alive": True,
+            "created_at": meta.get("created_at"),
+        })
+    out.sort(key=lambda s: s.get("created_at") or "", reverse=True)
+    return out
+
+
+@router.get("/api/conversations/{conv_id}/services")
+async def list_conv_services(conv_id: str):
+    """List all live deploys/exposes owned by this conv (preview servers,
+    static mounts, containers, source zips). Used by the Services tab."""
+    return {"services": _list_services_for(conv_id)}
+
+
+@router.get("/api/services")
+async def list_all_services():
+    """Global list across all convs — for future admin view."""
+    return {"services": _list_services_for(None)}
+
+
+@router.delete("/api/services/{token}")
+async def stop_service(token: str):
+    """Stop and forget a service. Token prefix decides the kind:
+    ``prev-`` preview HTTP server / ``stat-`` static mount /
+    ``ctn-`` container / ``src-`` source zip."""
+    if token.startswith("prev-"):
+        meta = _PREVIEW_SERVERS.pop(token, None)
+        if meta is None:
+            raise HTTPException(404, "preview not found")
+        expiry = meta.get("expiry")
+        if expiry is not None:
+            with suppress(Exception):
+                expiry.cancel()
+        proc = meta.get("proc")
+        if proc is not None:
+            with suppress(Exception):
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=5)
+        return {"ok": True, "kind": "preview"}
+    if token.startswith("stat-"):
+        meta = _STATIC_DEPLOYS.pop(token, None)
+        if meta is None:
+            raise HTTPException(404, "static deploy not found")
+        import shutil
+        dest = meta.get("dest")
+        if dest:
+            with suppress(Exception):
+                shutil.rmtree(dest)
+        return {"ok": True, "kind": "static"}
+    if token.startswith("ctn-"):
+        meta = _CONTAINER_DEPLOYS.pop(token, None)
+        if meta is None:
+            raise HTTPException(404, "container not found")
+        name = meta.get("container_name")
+        image = meta.get("image")
+        if name:
+            await _docker("rm", "-f", name, timeout=10)
+        if image:
+            await _docker("rmi", "-f", image, timeout=15)
+        return {"ok": True, "kind": "container"}
+    if token.startswith("src-"):
+        meta = _SOURCE_DEPLOYS.pop(token, None)
+        if meta is None:
+            raise HTTPException(404, "source package not found")
+        out_path = settings.sandbox_root / ".deploy" / f"{token}.zip"
+        with suppress(Exception):
+            out_path.unlink()
+        return {"ok": True, "kind": "source"}
+    raise HTTPException(400, "unknown token prefix")
+
+
+@router.get("/api/deploy/downloads/{token}")
+async def download_deploy_zip(token: str):
+    """Serve a source-package zip produced by the deploy flow. Tokens are
+    opaque + non-guessable (uuid4 hex); the file lives under the server's
+    sandbox_root, so we still verify the resolved path stays inside that dir
+    before responding."""
+    # Reject anything that isn't the simple "src-<hex>" shape so we don't
+    # trip path traversal via "../" or absolute paths in the path param.
+    if not re.fullmatch(r"src-[0-9a-f]{8,32}", token):
+        raise HTTPException(400, "bad token")
+    deploy_dir = (settings.sandbox_root / ".deploy").resolve()
+    target = (deploy_dir / f"{token}.zip").resolve()
+    try:
+        target.relative_to(deploy_dir)
+    except ValueError as exc:
+        raise HTTPException(400, "bad token") from exc
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "package expired or not found")
+    return FileResponse(
+        path=target,
+        filename=target.name,
+        media_type="application/zip",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/messages/{message_id}/pin")
+async def pin_message(message_id: str):
+    """Mark one message as pinned. Surfaces it in L3 ledger / future
+    pinned-messages list. Idempotent."""
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_message_pinned(session, message_id, True)
+        if not ok:
+            return {"error": "message not found"}, 404
+        await session.commit()
+    return {"ok": True, "pinned": True}
+
+
+@router.delete("/api/messages/{message_id}/pin")
+async def unpin_message(message_id: str):
+    """Remove pin from a message."""
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_message_pinned(session, message_id, False)
+        if not ok:
+            return {"error": "message not found"}, 404
+        await session.commit()
+    return {"ok": True, "pinned": False}
+
+
 # ── Manual-mode Pending Edits (Phase A) ──────────────────────────────
 
 
@@ -1479,13 +2088,16 @@ async def create_pending_edit_endpoint(body: dict):
 
 @router.post("/api/present")
 async def present_file(body: dict):
-    """Agent proactively shows produced files to the user as ONE deliverable panel.
+    """Agent proactively shows produced deliverables to the user as ONE panel.
 
-    Body ``{conv_id, agent_id, ws, paths|path, message?}``. ``ws`` is the workspace
-    address the files live in (a project workspace_id, or ``conv:<id>`` for a
-    private DM). Appends ONE ``kind:files`` panel (a one-line ``message`` + the
-    file list) + broadcasts ``data-files`` so it shows live; each file is clickable
-    to preview in the right rail / download. Persists so it survives a refresh."""
+    Body ``{conv_id, agent_id, ws, paths|path?, links?, message?}``. ``ws`` is
+    the workspace address files live in (a project workspace_id, or ``conv:<id>``
+    for a private DM). Either ``paths`` (sandbox files) or ``links`` (external
+    URLs — e.g. a preview/container URL, a deploy zip download) must be present;
+    both may coexist. Appends ONE ``kind:files`` panel (one-line ``message`` +
+    file list + link list) and broadcasts ``data-files`` so it shows live.
+    Files are clickable to preview in the right rail / download; links open
+    externally (``kind:web``) or trigger a download (``kind:download``)."""
     conv_id = (body.get("conv_id") or "").strip()
     ws = (body.get("ws") or "").strip()
     # Accept a single `path` or a list `paths` — present one or many files at once.
@@ -1495,8 +2107,32 @@ async def present_file(body: dict):
     else:
         _single = (body.get("path") or "").strip().lstrip("/")
         paths = [_single] if _single else []
-    if not conv_id or not ws or not paths:
-        return {"error": "conv_id + ws + path(s) required"}, 400
+    # `links` is a parallel list of external URLs. Each entry: {url, label?,
+    # kind?: 'web'|'download', bytes?, note?}. Validate + normalize loosely —
+    # callers are agent tools, not arbitrary external clients.
+    raw_links = body.get("links") or []
+    links: list[dict] = []
+    if isinstance(raw_links, list):
+        for entry in raw_links:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("url") or "").strip()
+            if not url:
+                continue
+            link = {"url": url}
+            if entry.get("label"):
+                link["label"] = str(entry["label"])[:200]
+            kind = str(entry.get("kind") or "web").lower()
+            link["kind"] = kind if kind in ("web", "download") else "web"
+            if isinstance(entry.get("bytes"), int) and entry["bytes"] > 0:
+                link["bytes"] = entry["bytes"]
+            if entry.get("note"):
+                link["note"] = str(entry["note"])[:200]
+            links.append(link)
+    if not conv_id or not ws:
+        return {"error": "conv_id + ws required"}, 400
+    if not paths and not links:
+        return {"error": "at least one of paths or links required"}, 400
     agent_id = (body.get("agent_id") or "system").strip()
     # Orchestrator-presents (user's choice): a worker mid-burst must NOT surface
     # its own file — the card would stream from its unmerged branch, and the user
@@ -1533,6 +2169,7 @@ async def present_file(body: dict):
             }
             for path in paths
         ],
+        "links": links,
     }
     mid = f"present-{uuid.uuid4().hex[:12]}"
     async with SessionLocal() as session:

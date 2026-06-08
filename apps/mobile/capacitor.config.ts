@@ -26,9 +26,13 @@ const config: CapacitorConfig = {
   webDir: "../web/dist",
   bundledWebRuntime: false,
   server: {
-    // For local dev with `--livereload --external`, override at CLI:
-    //   cap run android --livereload --external --port=5173
-    // For prod, the bundled webDir is used.
+    // WebView loads the web app from the dev box's vite server instead of the
+    // baked-in bundle. After this is committed and Xcode rebuilds once, future
+    // web changes flow over HMR — no more Xcode rebuilds. Phone must be on the
+    // same LAN as 10.2.255.109 (verified reachable from iOS Safari).
+    // To go back to the bundled-snapshot mode, comment out `url` + `cleartext`.
+    url: "http://10.2.255.109:5173",
+    cleartext: true,
     androidScheme: "https",
     iosScheme: "https",
     // Allow Capacitor's https://localhost origin to connect to the Polynoia
@@ -36,6 +40,7 @@ const config: CapacitorConfig = {
     allowNavigation: [
       "127.0.0.1",
       "localhost",
+      "10.2.255.109",
       "*.polynoia.local",
       "*.polynoia.app",
     ],
@@ -73,6 +78,10 @@ const config: CapacitorConfig = {
   ios: {
     backgroundColor: "#14110c",
     contentInset: "automatic",
+    // Disable the WKWebView's own scroll: inner overflow:auto / 100dvh shells
+    // still scroll, but dragging the page edge no longer rubber-bands the whole
+    // document down. Pairs with overscroll-behavior:none in index.css.
+    scrollEnabled: false,
   },
 };
 

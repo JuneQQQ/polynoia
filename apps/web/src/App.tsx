@@ -307,6 +307,13 @@ export function App() {
 					style={{
 						// 100dvh (NOT 100vh): iOS 100vh over-reports the viewport, so the
 						// container ran past the screen bottom → content pushed off-screen.
+						// Pad top safe area for the Dynamic Island. Bottom safe-area is
+						// owned by the leaf ChatPane composer so its background can paint
+						// to the physical screen edge (was double-padded → strip of bg
+						// below the composer). Padding here only rises with the keyboard.
+						paddingTop: "env(safe-area-inset-top)",
+						paddingBottom: "var(--kb-h, 0px)",
+						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
 						// Top safe area stays on the page root. Bottom/keyboard insets are
 						// owned by ChatPane's floating composer; padding the whole root by
 						// --kb-h makes Android leave a large blank band above the keyboard.

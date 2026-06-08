@@ -427,6 +427,13 @@ type Store = {
 	terminalOpen: boolean;
 	toggleTerminal: () => void;
 
+	/** Services view replaces the file tree in the right rail — lists running
+	 * preview servers / static mounts / containers / source zips for the active
+	 * conv, with a stop button per row. Toggled from the file-tree toolbar.
+	 * Reset on conv switch. */
+	servicesView: boolean;
+	toggleServicesView: () => void;
+
 	/** Manual-review cursor (Phase 4): which pending edit the floating review
 	 * bar / DiffReviewPane is currently showing. Index into the active conv's
 	 * pending list; clamped by consumers. Reset on conv switch. */
@@ -584,6 +591,7 @@ export const useStore = create<Store>((set, get) => ({
 	diffSplit: true,
 	reviewIndex: 0,
 	terminalOpen: false,
+	servicesView: false,
 
 	openCodeFile: null,
 	setOpenCodeFile: (f) => set({ openCodeFile: f }),
@@ -642,6 +650,7 @@ export const useStore = create<Store>((set, get) => ({
 			commitsTabOpen: false,
 			reviewIndex: 0,
 			terminalOpen: false,
+			servicesView: false,
 		}),
 	openCommitsTab: () =>
 		set({ commitsTabOpen: true, activeCenterTab: COMMITS_TAB }),
@@ -656,6 +665,8 @@ export const useStore = create<Store>((set, get) => ({
 	setDiffSplit: (v) => set({ diffSplit: v }),
 	setReviewIndex: (i) => set({ reviewIndex: Math.max(0, i) }),
 	toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
+	toggleServicesView: () =>
+		set((s) => ({ servicesView: !s.servicesView })),
 
 	// Left sidebar full-collapse (persisted). VS Code Cmd+B idiom.
 	sidebarCollapsed:

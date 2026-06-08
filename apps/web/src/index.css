@@ -194,6 +194,14 @@
 html,
 body,
 #root {
+  height: 100%;
+  margin: 0;
+  /* Kill iOS WebView rubber-band: dragging the page edge would bounce the whole
+     app down, revealing the WebView background under the safe-area inset. The
+     app is a 100dvh shell so the document itself should never scroll —
+     overflow:hidden + overscroll-behavior:none jointly stop it on iOS/Android. */
+  overflow: hidden;
+  overscroll-behavior: none;
 	height: 100%;
 	margin: 0;
 }
