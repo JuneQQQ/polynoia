@@ -194,16 +194,16 @@
 html,
 body,
 #root {
-  height: 100%;
-  margin: 0;
-  /* Kill iOS WebView rubber-band: dragging the page edge would bounce the whole
-     app down, revealing the WebView background under the safe-area inset. The
-     app is a 100dvh shell so the document itself should never scroll —
-     overflow:hidden + overscroll-behavior:none jointly stop it on iOS/Android. */
-  overflow: hidden;
-  overscroll-behavior: none;
 	height: 100%;
 	margin: 0;
+	/* Kill iOS WebView rubber-band: dragging the page edge would bounce the whole
+	   app down, revealing the WebView background under the safe-area inset. The
+	   app is a 100dvh shell so the document itself should never scroll —
+	   overflow:hidden + overscroll-behavior:none jointly stop it on iOS/Android,
+	   AND defeat iOS WebKit's "scroll-input-into-view" body adjustment that
+	   would otherwise pull the chat header off the top when the keyboard opens. */
+	overflow: hidden;
+	overscroll-behavior: none;
 }
 
 /* Android/WebView feel: kill the grey tap-flash on every press, lock font
@@ -215,8 +215,22 @@ body,
 html {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
+	/* `--pn-safe-bottom-min` is the FALLBACK floor for the bottom inset. Default
+	   0px (desktop/web; iPhone with home button). lib/native.ts sets it to 34px
+	   on iOS Capacitor devices with a home indicator (screen.height >= 812 CSS
+	   pt), so the very first paint already reserves space for the home indicator
+	   — env() catches up async, but `max(env, min)` masks the warmup so the
+	   bottom tab/composer doesn't visibly "settle into the bottom" anymore. */
+	--pn-safe-bottom-min: 0px;
 	--pn-status-safe-top: env(safe-area-inset-top);
-	--pn-status-safe-bottom: env(safe-area-inset-bottom);
+	--pn-status-safe-bottom: max(
+		env(safe-area-inset-bottom),
+		var(--pn-safe-bottom-min, 0px)
+	);
+	--pn-visual-top: 0px;
+	--pn-visual-bottom: 0px;
+	--pn-keyboard-inset: 0px;
+	--pn-composer-safe-bottom: var(--pn-status-safe-bottom);
 }
 html[data-capacitor="1"],
 html[data-capacitor="1"] body {
@@ -227,11 +241,94 @@ html[data-capacitor="1"] {
 	   status bar overlays the WebView. Keep banners and mobile headers below the
 	   system chrome; iOS notches still win via the larger env() value. */
 	--pn-status-safe-top: max(env(safe-area-inset-top), 24px);
-	--pn-status-safe-bottom: env(safe-area-inset-bottom);
+}
+html[data-capacitor="1"][data-cap-platform="ios"] {
+	--pn-status-safe-top: env(safe-area-inset-top);
 }
 html[data-capacitor="1"] * {
 	-webkit-tap-highlight-color: transparent;
 	-webkit-touch-callout: none;
+}
+
+html[data-capacitor="1"] {
+	position: fixed;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+html[data-capacitor="1"] body,
+html[data-capacitor="1"] #root {
+	position: fixed;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+}
+
+.pn-mobile-shell {
+	position: fixed;
+	inset: 0;
+	width: 100%;
+	height: 100svh;
+	box-sizing: border-box;
+	overflow: hidden;
+}
+
+html[data-capacitor="1"] .pn-mobile-shell {
+	height: 100dvh;
+}
+
+.pn-mobile-home-content {
+	position: absolute;
+	inset: 0 0 var(--pn-mobile-tabbar-h, 84px) 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.pn-mobile-tabbar {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 40;
+	height: var(--pn-mobile-tabbar-h, 84px);
+	min-height: var(--pn-mobile-tabbar-h, 84px);
+	box-sizing: border-box;
+	isolation: isolate;
+	backface-visibility: hidden;
+	transform: translate3d(0, 0, 0);
+	will-change: transform, opacity;
+}
+
+
+.pn-mobile-fixed-header {
+	position: fixed;
+	top: calc(var(--pn-visual-top, 0px) + max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px)));
+	left: 0;
+	right: 0;
+}
+
+.pn-mobile-chat-body {
+	position: fixed;
+	left: 0;
+	right: 0;
+	top: calc(var(--pn-visual-top, 0px) + max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px)) + var(--pn-mobile-chat-header-h, 57px));
+	bottom: 0;
+	overflow: hidden;
+}
+
+html[data-capacitor="1"] .pn-mobile-scroll,
+html[data-capacitor="1"] .pn-mobile-chat-scroll {
+	-webkit-overflow-scrolling: touch;
+	overscroll-behavior: contain;
+}
+
+html[data-capacitor="1"] input,
+html[data-capacitor="1"] textarea,
+html[data-capacitor="1"] select {
+	scroll-margin-top: calc(var(--pn-status-safe-top, env(safe-area-inset-top)) + 64px);
+	scroll-margin-bottom: calc(var(--pn-status-safe-bottom, env(safe-area-inset-bottom)) + 96px);
 }
 
 body {

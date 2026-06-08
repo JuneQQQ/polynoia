@@ -813,7 +813,7 @@ export function ChatPane({ convId, members, title }: Props) {
 
 	return (
 		<main
-			className={`flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative ${mobile ? "pn-mobile-chat" : ""}`}
+			className={`flex-1 min-h-0 flex flex-col min-w-0 bg-[var(--color-bg)] relative overflow-hidden ${mobile ? "pn-mobile-chat" : ""}`}
 		>
 			{/* Chat header — editorial masthead: serif title + gradient hair-line.
           Hidden on mobile (App.tsx renders the back+title bar instead). */}
@@ -921,13 +921,11 @@ export function ChatPane({ convId, members, title }: Props) {
 				<ConvScopeProvider value={{ convId, inWorkspace, members }}>
 					<div
 						ref={bodyRef}
-						className="absolute inset-0 overflow-y-auto py-4"
+						className={`absolute inset-0 overflow-y-auto py-4 ${mobile ? "pn-mobile-chat-scroll" : ""}`}
 						// Clear the floating composer + running-status strip, so the
 						// message being answered always sits ABOVE the status bar.
 						style={{
-							paddingBottom: mobile
-								? `calc(${composerH + 14}px + var(--kb-h, 0px))`
-								: composerH + 24,
+							paddingBottom: mobile ? composerH + 14 : composerH + 24,
 						}}
 					>
 						<div
@@ -1018,12 +1016,10 @@ export function ChatPane({ convId, members, title }: Props) {
 				ref={composerRef}
 				className="absolute inset-x-0 z-10"
 				style={{
-					bottom: mobile ? "var(--kb-h, 0px)" : 0,
-					paddingBottom:
-						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
-					transition: mobile
-						? "bottom 0.24s cubic-bezier(0.17, 0.59, 0.4, 1)"
-						: undefined,
+					bottom: mobile ? "var(--pn-keyboard-inset, 0px)" : 0,
+					paddingBottom: mobile
+						? "var(--pn-composer-safe-bottom, var(--pn-status-safe-bottom, env(safe-area-inset-bottom)))"
+						: "var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 				}}
 			>
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot

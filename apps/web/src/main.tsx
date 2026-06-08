@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { initNative } from "./lib/native";
+import { initNative, prepareNativeLayout } from "./lib/native";
 import { prefetchStorage } from "./lib/storage";
 import "./index.css";
 
@@ -11,6 +11,7 @@ import "./index.css";
 // prefetchStorage resolves immediately (single microtask), so web/desktop boot
 // is unchanged.
 async function boot() {
+  prepareNativeLayout();
   await prefetchStorage();
   const { App } = await import("./App");
   // ConnectionBanner is a fixed-position overlay → mount it as a sibling of App

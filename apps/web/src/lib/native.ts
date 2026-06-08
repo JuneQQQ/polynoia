@@ -16,6 +16,79 @@ function isCapacitorNative(): boolean {
 	);
 }
 
+function seedNativeLayoutVars(): void {
+	document.documentElement.dataset.capacitor = "1";
+	document.documentElement.style.setProperty("--kb-h", "0px");
+	try {
+		const cap = (
+			globalThis as { Capacitor?: { getPlatform?: () => string } }
+		).Capacitor;
+		const platform = cap?.getPlatform?.();
+		if (platform) document.documentElement.dataset.capPlatform = platform;
+		// iOS WKWebView often resolves env(safe-area-inset-bottom) after the
+		// first paint. Seed the home-indicator floor synchronously for ALL iOS
+		// native shells so the tab bar/composer never settles after boot.
+		if (platform === "ios") {
+			document.documentElement.style.setProperty(
+				"--pn-safe-bottom-min",
+				"34px",
+			);
+		}
+	} catch {
+		/* feature detection is best-effort */
+	}
+}
+
+function pinNativeRootScroll(): void {
+	if (!isCapacitorNative()) return;
+	const reset = () => {
+		document.documentElement.scrollTop = 0;
+		document.body.scrollTop = 0;
+		window.scrollTo(0, 0);
+	};
+	reset();
+	requestAnimationFrame(reset);
+	window.setTimeout(reset, 50);
+	window.setTimeout(reset, 140);
+	window.setTimeout(reset, 280);
+}
+
+function installNativeScrollGuards(): void {
+	if (!isCapacitorNative()) return;
+	const onFocus = (ev: Event) => {
+		const el = ev.target as HTMLElement | null;
+		if (!el?.matches?.("input, textarea, select, [contenteditable='true']")) return;
+		pinNativeRootScroll();
+		// WKWebView may scroll the root AFTER focus to reveal the input. Re-focus
+		// with preventScroll where supported, then keep the root pinned while the
+		// keyboard animation settles.
+		window.setTimeout(() => {
+			try {
+				(el as HTMLInputElement | HTMLTextAreaElement).focus?.({
+					preventScroll: true,
+				});
+			} catch {
+				/* older WebKit: plain focus already happened */
+			}
+			pinNativeRootScroll();
+		}, 0);
+	};
+	document.addEventListener("focusin", onFocus, { passive: true });
+	window.visualViewport?.addEventListener("resize", pinNativeRootScroll, {
+		passive: true,
+	});
+	window.visualViewport?.addEventListener("scroll", pinNativeRootScroll, {
+		passive: true,
+	});
+}
+
+/** Synchronous native layout bootstrap. Call before the first React render so
+ * iOS safe-area floors and WebView-only CSS apply on the first paint. */
+export function prepareNativeLayout(): void {
+	if (!isCapacitorNative()) return;
+	seedNativeLayoutVars();
+}
+
 /** Read a CSS custom property off :root (e.g. the theme bg) as a hex string. */
 function cssVar(name: string, fallback: string): string {
 	try {
@@ -57,7 +130,8 @@ export async function initNative(): Promise<void> {
 	if (!isCapacitorNative()) return;
 	// Marks the document as running inside the native shell so CSS can opt in to
 	// WebView-only tweaks (no tap-flash, no document overscroll, locked font scale).
-	document.documentElement.dataset.capacitor = "1";
+	seedNativeLayoutVars();
+	installNativeScrollGuards();
 	await Promise.allSettled([
 		applyStatusBarTheme(),
 		import("@capacitor/splash-screen").then(({ SplashScreen }) =>
@@ -73,6 +147,9 @@ export async function initNative(): Promise<void> {
 			// that still reference it (chat/home paddingBottom) fall back to the
 			// safe-area inset only.
 			Keyboard.setResizeMode?.({ mode: "native" as never }).catch(() => {});
+			void Keyboard.addListener?.("keyboardWillShow", pinNativeRootScroll)?.catch?.(() => {});
+			void Keyboard.addListener?.("keyboardDidShow", pinNativeRootScroll)?.catch?.(() => {});
+			void Keyboard.addListener?.("keyboardWillHide", pinNativeRootScroll)?.catch?.(() => {});
 			document.documentElement.style.setProperty("--kb-h", "0px");
 		}),
 	]).catch(() => {});

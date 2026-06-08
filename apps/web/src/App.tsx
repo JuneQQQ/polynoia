@@ -13,7 +13,7 @@ import { PreviewPane } from "./components/preview/PreviewPane";
 import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
-import { api } from "./lib/api";
+import { type ConversationSummary, api } from "./lib/api";
 import { onBackButton, onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
 import { getServerOverride, isCapacitor } from "./lib/runtime-config";
@@ -23,12 +23,14 @@ export function App() {
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const serverReachable = useStore((s) => s.serverReachable);
 	const providers = useStore((s) => s.providers);
+	const agents = useStore((s) => s.agents);
 	const view = useStore((s) => s.view);
 	const setView = useStore((s) => s.setView);
 	const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 	const workspaces = useStore((s) => s.workspaces);
 	const previewOpen = useStore((s) => s.preview.open);
 	const toggleSidebar = useStore((s) => s.toggleSidebar);
+	const openMembersList = useStore((s) => s.openMembersList);
 	const resetCenterTabs = useStore((s) => s.resetCenterTabs);
 	const [activeConv, setActiveConv] = useState<{
 		id: string;
@@ -50,6 +52,71 @@ export function App() {
 	// conversation pushes the chat over it (back button returns). Desktop:
 	// sidebar is a permanent left column.
 	const mobile = isMobile();
+
+	useEffect(() => {
+		if (!mobile) return;
+		let active = true;
+		const root = document.documentElement;
+		const updateViewportVars = () => {
+			if (!active) return;
+			const vv = window.visualViewport;
+			const visualTop = vv ? Math.max(0, vv.offsetTop) : 0;
+			const viewportBottom = vv
+				? Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+				: 0;
+			const keyboardInset = viewportBottom > 120 ? viewportBottom : 0;
+			root.style.setProperty("--pn-visual-top", `${visualTop}px`);
+			root.style.setProperty("--pn-visual-bottom", `${viewportBottom}px`);
+			root.style.setProperty("--pn-keyboard-inset", `${keyboardInset}px`);
+			root.style.setProperty(
+				"--pn-composer-safe-bottom",
+				keyboardInset > 0
+					? "0px"
+					: "var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
+			);
+		};
+		const settleViewport = () => {
+			updateViewportVars();
+			requestAnimationFrame(updateViewportVars);
+			window.setTimeout(updateViewportVars, 80);
+			window.setTimeout(updateViewportVars, 220);
+		};
+		const onFocusIn = (ev: FocusEvent) => {
+			const el = ev.target as HTMLElement | null;
+			if (!el?.matches?.("input, textarea, select, [contenteditable='true']")) return;
+			settleViewport();
+			window.setTimeout(() => {
+				try {
+					(el as HTMLInputElement | HTMLTextAreaElement).focus?.({
+						preventScroll: true,
+					});
+				} catch {}
+				settleViewport();
+			}, 0);
+		};
+		updateViewportVars();
+		window.addEventListener("resize", settleViewport, { passive: true });
+		window.addEventListener("orientationchange", settleViewport, { passive: true });
+		document.addEventListener("focusin", onFocusIn, { passive: true });
+		window.visualViewport?.addEventListener("resize", settleViewport, {
+			passive: true,
+		});
+		window.visualViewport?.addEventListener("scroll", settleViewport, {
+			passive: true,
+		});
+		return () => {
+			active = false;
+			root.style.removeProperty("--pn-visual-top");
+			root.style.removeProperty("--pn-visual-bottom");
+			root.style.removeProperty("--pn-keyboard-inset");
+			root.style.removeProperty("--pn-composer-safe-bottom");
+			window.removeEventListener("resize", settleViewport);
+			window.removeEventListener("orientationchange", settleViewport);
+			document.removeEventListener("focusin", onFocusIn);
+			window.visualViewport?.removeEventListener("resize", settleViewport);
+			window.visualViewport?.removeEventListener("scroll", settleViewport);
+		};
+	}, [mobile]);
 
 	useEffect(() => {
 		// On a Capacitor first run there's no server yet — ConnectServerScreen
@@ -141,6 +208,28 @@ export function App() {
 		});
 	}, [mobile, activeConv, setView]);
 
+	// Boot-time validation: the `polynoia:active-conv` entry in localStorage can
+	// point at a conversation that was since deleted (server returns 404). Without
+	// this check we land on a dead chat shell, ChatPane keeps re-fetching the same
+	// 404, and the devtools Console fills with noise on every refresh. Clear the
+	// stale selection once on mount so the user lands on the conv list instead.
+	useEffect(() => {
+		const id = activeConv?.id;
+		if (!id || id.startsWith("dm-")) return;
+		let alive = true;
+		api
+			.getConv(id)
+			.catch(() => {
+				if (alive) setActiveConv(null);
+			});
+		return () => {
+			alive = false;
+		};
+		// Validate ONLY on first mount — runtime conv switches are user-driven
+		// and don't need re-validation here.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	// VS Code idiom: Cmd/Ctrl+B toggles the left sidebar (desktop only).
 	useEffect(() => {
 		if (mobile) return;
@@ -166,6 +255,29 @@ export function App() {
 			else window.localStorage.removeItem("polynoia:active-conv");
 		} catch {}
 	}, [activeConv]);
+
+	// Mobile chat header drives off the conv summary (orchestrator id → tagline).
+	// Fetched alongside ChatPane (which fetches the same thing) — a tiny extra
+	// request, but keeps the header self-sufficient on the routing layer. DM /
+	// synthetic ids 404; ignore.
+	const [convSummary, setConvSummary] = useState<ConversationSummary | null>(
+		null,
+	);
+	useEffect(() => {
+		setConvSummary(null);
+		const id = activeConv?.id;
+		if (!id || id.startsWith("dm-")) return;
+		let alive = true;
+		api
+			.getConv(id)
+			.then((s) => {
+				if (alive) setConvSummary(s);
+			})
+			.catch(() => {});
+		return () => {
+			alive = false;
+		};
+	}, [activeConv?.id]);
 
 	// Entering a project no longer fabricates a "主对话" — conversations are
 	// strictly user-created. Clear any stale selection on a workspace SWITCH; the
@@ -303,31 +415,12 @@ export function App() {
 		if (view === "chat" && activeConv) {
 			return (
 				<div
-					className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
-					style={{
-						// 100dvh (NOT 100vh): iOS 100vh over-reports the viewport, so the
-						// container ran past the screen bottom → content pushed off-screen.
-						// Pad top safe area for the Dynamic Island. Bottom safe-area is
-						// owned by the leaf ChatPane composer so its background can paint
-						// to the physical screen edge (was double-padded → strip of bg
-						// below the composer). Padding here only rises with the keyboard.
-						paddingTop: "env(safe-area-inset-top)",
-						paddingBottom: "var(--kb-h, 0px)",
-						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
-						// Top safe area stays on the page root. Bottom/keyboard insets are
-						// owned by ChatPane's floating composer; padding the whole root by
-						// --kb-h makes Android leave a large blank band above the keyboard.
-						// max(safe-area, --conn-h): when the connection banner is showing it
-						// publishes its height as --conn-h, so the chat header (back arrow)
-						// drops below the fixed banner instead of being covered by it.
-						paddingTop:
-							"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
-					}}
+					className="pn-m-atmos pn-mobile-shell bg-[var(--color-bg)]"
+					style={{ ["--pn-mobile-chat-header-h" as string]: "57px" }}
 				>
-					{/* Single chat header — back (→ list) + title. Frosted over the
-              ember glow, an ember hairline rule beneath. ChatPane drops its own
-              masthead on mobile, so this is the only header. */}
-					<div className="relative flex items-center gap-1 px-1.5 py-2.5 bg-[var(--color-surface)]/70 backdrop-blur-md">
+					{/* Fixed mobile chat header. It is outside the scroll container so
+              iOS input-focus scrolling cannot pull it off the top. */}
+					<div className="pn-mobile-fixed-header relative z-30 flex items-center gap-1 px-1.5 py-2 bg-[var(--color-surface)]/70 backdrop-blur-md">
 						<span
 							aria-hidden
 							className="pn-m-rule absolute inset-x-0 bottom-0"
@@ -335,18 +428,47 @@ export function App() {
 						<button
 							type="button"
 							onClick={() => setActiveConv(null)}
-							className="w-10 h-10 grid place-items-center rounded-full hover:bg-[var(--color-line)] text-[var(--color-fg-2)] press-down"
+							className="w-10 h-10 grid place-items-center rounded-full hover:bg-[var(--color-line)] text-[var(--color-fg-2)] press-down flex-shrink-0"
 							aria-label="返回列表"
 						>
 							<ArrowLeft size={22} />
 						</button>
-						<span className="flex-1 min-w-0 truncate font-display text-[17px] font-medium tracking-wide text-[var(--color-fg)]">
-							{activeConv.title}
-						</span>
+						{(() => {
+							const memberIds = activeConv.members.filter((m) => m !== "you");
+							const memberAgents = memberIds
+								.map((id) => agents.find((a) => a.id === id))
+								.filter((a): a is NonNullable<typeof a> => !!a);
+							const orchId = convSummary?.orchestrator_member_id ?? null;
+							const orch =
+								memberAgents.find((a) => a.id === orchId) ?? memberAgents[0];
+							const subtitle = orch?.tagline ?? orch?.role ?? null;
+							return (
+								<button
+									type="button"
+									onClick={openMembersList}
+									className="flex-1 min-w-0 text-left flex flex-col justify-center press-down py-0.5"
+									aria-label="查看群成员"
+								>
+									<div className="flex items-baseline gap-2">
+										<span className="truncate font-display text-[16px] font-medium tracking-wide text-[var(--color-fg)]">
+											{activeConv.title}
+										</span>
+										{memberAgents.length > 0 && (
+											<span className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-fg-3)] flex-shrink-0">
+												{memberAgents.length + 1}人
+											</span>
+										)}
+									</div>
+									{subtitle && (
+										<div className="truncate text-[11px] text-[var(--color-fg-3)] -mt-0.5">
+											{subtitle}
+										</div>
+									)}
+								</button>
+							);
+						})()}
 					</div>
-					{/* flex flex-col so ChatPane's flex-1 <main> can fill height —
-              without it the composer (absolute bottom-0) pins to the top. */}
-					<div className="flex-1 min-h-0 flex flex-col">
+					<div className="pn-mobile-chat-body flex flex-col">
 						<ChatPane
 							convId={activeConv.id}
 							members={activeConv.members}
@@ -363,19 +485,10 @@ export function App() {
 		// conversation pushes the chat over it (back button returns).
 		return (
 			<div
-				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
+				className="pn-m-atmos pn-mobile-shell bg-[var(--color-bg)]"
 				style={{
-					// max(safe-area, --conn-h) so the connection banner never covers the
-					// home's top bar (see chat view note).
 					paddingTop:
 						"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
-					// Home does NOT pad for the keyboard (unlike the chat view, whose
-					// composer must slide above it): its inputs (server field, search)
-					// sit near the top, so the keyboard simply overlays the bottom. The
-					// old `--kb-h` padding shoved the whole home up on focus → a big black
-					// gap between the tab bar and the keyboard ("中间一大片黑屏").
-					paddingBottom:
-						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 				}}
 			>
 				<MobileHome
