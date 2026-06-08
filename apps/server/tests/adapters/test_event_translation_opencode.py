@@ -1,12 +1,16 @@
 """Unit tests for `_translate_acp_stream_to_pap` — the OpenCode ACP→PAP translator."""
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
-from polynoia.adapters.opencode import _translate_acp_stream_to_pap
+from polynoia.adapters.opencode import (
+    _opencode_config_content,
+    _translate_acp_stream_to_pap,
+)
 from polynoia.domain.messages import TextPayload, ToolCallPayload
 
 
@@ -17,6 +21,31 @@ async def _aiter(items: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
 
 async def _collect(gen: AsyncIterator) -> list:
     return [ev async for ev in gen]
+
+
+def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
+    config = json.loads(_opencode_config_content("opencode-go/glm5.1"))
+
+    assert config["model"] == "opencode-go/glm5.1"
+    permission = config["permission"]
+    assert permission["polynoia_*"] == "allow"
+    for builtin in (
+        "read",
+        "edit",
+        "glob",
+        "grep",
+        "list",
+        "bash",
+        "task",
+        "skill",
+        "lsp",
+        "todoread",
+        "todowrite",
+        "webfetch",
+        "websearch",
+        "codesearch",
+    ):
+        assert permission[builtin] == "deny"
 
 
 @pytest.mark.asyncio

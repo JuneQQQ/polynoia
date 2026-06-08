@@ -64,6 +64,7 @@ from polynoia.adapters.base import (
     TurnFailedEvent,
     TurnStartedEvent,
 )
+from polynoia.credentials import credential_source_home
 from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.sandbox import Sandbox
@@ -88,6 +89,45 @@ _SENTINEL: Any = object()
 _TRAILING_FLUSH_GRACE_S = 0.2
 
 
+_OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
+    # Keep OpenCode on the same audited path as Claude Code and Codex:
+    # Polynoia MCP tools only. OpenCode permissions are keyed by tool/category;
+    # `edit` covers built-in write/edit/apply_patch.
+    "read": "deny",
+    "edit": "deny",
+    "glob": "deny",
+    "grep": "deny",
+    "list": "deny",
+    "bash": "deny",
+    "task": "deny",
+    "skill": "deny",
+    "lsp": "deny",
+    "todoread": "deny",
+    "todowrite": "deny",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "codesearch": "deny",
+}
+
+
+def _opencode_config_content(model: str | None) -> str:
+    config: dict[str, Any] = {
+        "permission": {
+            **_OPENCODE_BUILTIN_PERMISSION_DENY,
+            # MCP tools from the registered server are surfaced as polynoia_<tool>.
+            "polynoia_*": "allow",
+        },
+    }
+    if model:
+        config["model"] = model
+    return json.dumps(config)
+
+
+def _write_opencode_config(path: Path, model: str | None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_opencode_config_content(model), encoding="utf-8")
+
+
 def _polynoia_opencode_data_home() -> str:
     """Return a dedicated XDG_DATA_HOME for Polynoia's opencode sessions,
     ISOLATED from the user's own ``~/.local/share/opencode`` so the two never
@@ -102,10 +142,8 @@ def _polynoia_opencode_data_home() -> str:
     data = target / "opencode"
     data.mkdir(parents=True, exist_ok=True)
 
-    host = (
-        Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
-        / "opencode"
-    )
+    default_data_home = credential_source_home() / ".local" / "share"
+    host = Path(os.environ.get("XDG_DATA_HOME", str(default_data_home))) / "opencode"
     # auth.json — refresh every call (cheap; keeps credentials current).
     host_auth = host / "auth.json"
     if host_auth.exists():
@@ -538,14 +576,13 @@ class OpenCodeSession:
             "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
         }
         # CRITICAL: opencode ACP `session/new` ignores any client-supplied
-        # model — it uses the config's default `model`. Without this the
-        # session silently runs opencode's free `big-pickle` model (which
-        # congests/hangs), NOT the model the user picked. We inject the model
-        # via OPENCODE_CONFIG_CONTENT (merged at highest precedence, keeps the
-        # user's providers) so this session actually uses self._model
-        # (e.g. "opencode-go/deepseek-v4-pro").
-        if self._model:
-            env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"model": self._model})
+        # model — it uses config's default `model`. We also deny OpenCode's
+        # built-in file/shell tools and allow only the registered Polynoia MCP
+        # server, so every mutation stays audit/merge/reviewable.
+        opencode_config = self._sandbox.root / ".polynoia" / "opencode-config.json"
+        _write_opencode_config(opencode_config, self._model)
+        env["OPENCODE_CONFIG"] = str(opencode_config)
+        env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(self._model)
         # NOTE: do NOT set OPENCODE_ACP_NEXT=1 — see module docstring.
         # `limit` overrides asyncio's default 64KB StreamReader buffer. ACP
         # emits one JSON-RPC message per line; large tool results (file reads,
@@ -575,7 +612,7 @@ class OpenCodeSession:
             {
                 "protocolVersion": 1,
                 "clientCapabilities": {
-                    "fs": {"readTextFile": True, "writeTextFile": True},
+                    "fs": {"readTextFile": True, "writeTextFile": False},
                 },
             },
         )

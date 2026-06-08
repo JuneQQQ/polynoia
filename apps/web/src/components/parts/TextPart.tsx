@@ -294,6 +294,79 @@ export function fixCjkMarkdown(s: string): string {
 	return s.replace(CJK_CLOSE_RE, "$1​$2");
 }
 
+const RAW_TOOL_MARKER_RE = /<(?:tool_call|tool_result)>/g;
+const HIDDEN_TOOL_NOTICE = "> 工具调用协议内容已隐藏。";
+
+function findJsonLikeEnd(text: string, start: number): number | null {
+	const opener = text[start];
+	const closer = opener === "{" ? "}" : opener === "[" ? "]" : null;
+	if (!closer) return null;
+	const stack: string[] = [closer];
+	let inString = false;
+	let escaped = false;
+	for (let i = start + 1; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+			} else if (ch === "\\") {
+				escaped = true;
+			} else if (ch === '"') {
+				inString = false;
+			}
+			continue;
+		}
+		if (ch === '"') {
+			inString = true;
+			continue;
+		}
+		if (ch === "{") {
+			stack.push("}");
+			continue;
+		}
+		if (ch === "[") {
+			stack.push("]");
+			continue;
+		}
+		if (ch === stack[stack.length - 1]) {
+			stack.pop();
+			if (stack.length === 0) return i + 1;
+		}
+	}
+	return null;
+}
+
+export function stripRawToolProtocol(text: string): string {
+	if (!text.includes("<tool_")) return text;
+	RAW_TOOL_MARKER_RE.lastIndex = 0;
+	let out = "";
+	let cursor = 0;
+	let hidden = 0;
+	let match: RegExpExecArray | null = RAW_TOOL_MARKER_RE.exec(text);
+	while (match) {
+		out += text.slice(cursor, match.index);
+		let i = match.index + match[0].length;
+		while (i < text.length && /\s/.test(text[i])) i++;
+		const end = findJsonLikeEnd(text, i);
+		hidden += 1;
+		if (end === null) {
+			cursor = text.length;
+			break;
+		}
+		cursor = end;
+		const close = /^<\/(?:tool_call|tool_result)>/.exec(text.slice(cursor));
+		if (close) cursor += close[0].length;
+		RAW_TOOL_MARKER_RE.lastIndex = cursor;
+		match = RAW_TOOL_MARKER_RE.exec(text);
+	}
+	out += text.slice(cursor);
+	if (hidden === 0) return text;
+	const normalized = out.replace(/\n{3,}/g, "\n\n").trim();
+	return normalized
+		? `${normalized}\n\n${HIDDEN_TOOL_NOTICE}`
+		: HIDDEN_TOOL_NOTICE;
+}
+
 function findSafeSplitPoint(text: string): number {
 	let pos = text.length;
 	while (pos > 0) {
@@ -330,6 +403,7 @@ const StringBlock = memo(function StringBlock({
 	text: string;
 	isStreaming?: boolean;
 }) {
+	const displayText = stripRawToolProtocol(text);
 	if (!isStreaming) {
 		return (
 			<ReactMarkdown
@@ -339,14 +413,14 @@ const StringBlock = memo(function StringBlock({
 				]}
 				components={MARKDOWN_COMPONENTS as any}
 			>
-				{fixCjkMarkdown(text)}
+				{fixCjkMarkdown(displayText)}
 			</ReactMarkdown>
 		);
 	}
 	// Streaming: prefix (settled) + tail (raw).
-	const split = findSafeSplitPoint(text);
-	const prefix = split > 0 ? text.slice(0, split) : "";
-	const tail = text.slice(split);
+	const split = findSafeSplitPoint(displayText);
+	const prefix = split > 0 ? displayText.slice(0, split) : "";
+	const tail = displayText.slice(split);
 	// The settled prefix is append-only and only grows when `split` advances past
 	// a new \n\n boundary. Memoize the (expensive) ReactMarkdown + rehypeHighlight
 	// parse on `split`, so streaming deltas only re-render the cheap pre-wrap tail

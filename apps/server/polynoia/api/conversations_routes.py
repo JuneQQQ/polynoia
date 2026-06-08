@@ -252,19 +252,15 @@ async def set_conv_member_roles(conv_id: str, body: dict):
 
 @router.patch("/api/conversations/{conv_id}/merge_mode")
 async def set_conv_merge_mode(conv_id: str, body: dict):
-    """Flip a conversation's merge gate.
+    """Legacy merge-mode endpoint.
 
-    Body: ``{ "mode": "auto" | "manual" }``
-
-    - ``auto``   → orchestrator runs git_merge after sub-tasks finish
-    - ``manual`` → per-edit user approval (Cursor-style)
-
-    Only affects FUTURE edits/merges — in-flight pending edits or already-
-    merged branches are not retroactively re-gated.
+    Manual per-edit approval has been removed from the product flow. The only
+    accepted mode is now ``auto``; the route remains for old clients/tests that
+    still PATCH the current mode.
     """
     mode = body.get("mode")
-    if mode not in ("auto", "manual"):
-        return {"error": "mode must be 'auto' or 'manual'"}, 400
+    if mode != "auto":
+        return {"error": "manual merge mode has been removed; use 'auto'"}, 400
     async with SessionLocal() as session:
         ok = await storage_repo.set_merge_mode(session, conv_id, mode)
         if not ok:

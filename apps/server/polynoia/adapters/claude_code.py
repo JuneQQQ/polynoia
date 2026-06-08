@@ -58,9 +58,9 @@ from polynoia.adapters.base import (
 )
 from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
+from polynoia.credentials import use_direct_host_credentials
 from polynoia.mcp.tools import tools_for_role
 from polynoia.sandbox import Sandbox
-from polynoia.sandbox._core import _use_direct_creds
 from polynoia.settings import settings
 
 
@@ -321,7 +321,7 @@ class ClaudeCodeAdapter:
         # (which owns that credential + is current) works. So in direct-creds
         # mode (macOS desktop) point the SDK at the system claude; the Linux
         # server keeps the SDK's bundled binary (its copy-cred model works there).
-        _cli_path = shutil.which("claude") if _use_direct_creds() else None
+        _cli_path = shutil.which("claude") if use_direct_host_credentials() else None
 
         opts = ClaudeAgentOptions(
             cwd=effective_cwd,

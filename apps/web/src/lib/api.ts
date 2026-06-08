@@ -205,8 +205,8 @@ export type ConversationSummary = {
 	last_message_at: string | null;
 	created_at: string;
 	updated_at: string;
-	/** Per-conversation merge gate. Auto = orchestrator runs git_merge after
-	 * sub-tasks finish. Manual = per-edit user approval. Default "auto". */
+	/** Per-conversation merge gate. Manual is retained only for legacy rows;
+	 * the active product flow always uses auto. */
 	merge_mode: "auto" | "manual";
 	/** Per-member role assignment (agent_id → free-text role).
 	 * Empty/missing keys = no role assigned for that member. */

@@ -3,7 +3,7 @@
 Covers:
     - Conversation Pydantic defaults merge_mode="auto"
     - Workspace Pydantic defaults default_merge_mode="auto"
-    - Round-trip through SQLite preserves merge_mode + default_merge_mode
+    - Round-trip through SQLite preserves the auto merge mode
     - set_merge_mode rejects invalid values
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ def test_workspace_default_merge_mode() -> None:
 async def test_merge_mode_round_trip(fresh_db) -> None:
     cid = new_ulid()
     conv = Conversation(
-        id=cid, title="t", members=["you"], merge_mode="manual",
+        id=cid, title="t", members=["you"], merge_mode="auto",
     )
     async with SessionLocal() as db:
         await storage_repo.create_conversation(db, conv)
@@ -54,7 +54,7 @@ async def test_merge_mode_round_trip(fresh_db) -> None:
     async with SessionLocal() as db:
         loaded = await storage_repo.get_conversation(db, cid)
     assert loaded is not None
-    assert loaded.merge_mode == "manual"
+    assert loaded.merge_mode == "auto"
 
 
 @pytest.mark.asyncio
@@ -65,12 +65,12 @@ async def test_set_merge_mode_flips_value(fresh_db) -> None:
         await storage_repo.create_conversation(db, conv)
         await db.commit()
     async with SessionLocal() as db:
-        assert await storage_repo.set_merge_mode(db, cid, "manual")
+        assert await storage_repo.set_merge_mode(db, cid, "auto")
         await db.commit()
     async with SessionLocal() as db:
         loaded = await storage_repo.get_conversation(db, cid)
     assert loaded is not None
-    assert loaded.merge_mode == "manual"
+    assert loaded.merge_mode == "auto"
 
 
 @pytest.mark.asyncio
@@ -83,6 +83,18 @@ async def test_set_merge_mode_rejects_invalid(fresh_db) -> None:
     async with SessionLocal() as db:
         with pytest.raises(ValueError):
             await storage_repo.set_merge_mode(db, cid, "nope")
+
+
+@pytest.mark.asyncio
+async def test_set_merge_mode_rejects_manual(fresh_db) -> None:
+    cid = new_ulid()
+    conv = Conversation(id=cid, title="t", members=["you"])
+    async with SessionLocal() as db:
+        await storage_repo.create_conversation(db, conv)
+        await db.commit()
+    async with SessionLocal() as db:
+        with pytest.raises(ValueError):
+            await storage_repo.set_merge_mode(db, cid, "manual")
 
 
 @pytest.mark.asyncio

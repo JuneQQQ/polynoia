@@ -86,17 +86,7 @@ async def test_command_execution_lifecycle() -> None:
         }),
         n("turn/completed", threadId=TID, turn={"id": TURN, "status": "completed"}),
     ])
-    tool_evs = [e for e in events if e.type == "part.completed"]
-    assert tool_evs[0].part.kind == "tool-call"
-    assert tool_evs[0].part.name == "Bash"
-    assert tool_evs[0].part.state == "running"
-    assert tool_evs[1].part.state == "completed"
-    assert tool_evs[1].part.is_error is False
-    assert tool_evs[1].part.output_text == "hi\n"
-    assert tool_evs[1].part.duration_ms == 5
-    # both share one (message_id, part_id) — same item id
-    assert (tool_evs[0].message_id, tool_evs[0].part_id) == (
-        tool_evs[1].message_id, tool_evs[1].part_id)
+    assert [e.type for e in events] == ["turn.completed"]
 
 
 @pytest.mark.asyncio
@@ -108,9 +98,7 @@ async def test_nonzero_exit_code_is_error() -> None:
         }),
         n("turn/completed", threadId=TID, turn={"id": TURN, "status": "completed"}),
     ])
-    tool = events[0]
-    assert tool.part.is_error is True
-    assert tool.part.state == "completed"  # finished, but failed
+    assert [e.type for e in events] == ["turn.completed"]
 
 
 @pytest.mark.asyncio

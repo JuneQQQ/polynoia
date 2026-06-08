@@ -525,14 +525,8 @@ async def create_conversation_endpoint(body: dict):
                 "that is one of its members"
             ),
         )
-    # Inherit workspace.default_merge_mode for workspace convs; DMs default "auto".
+    # Manual per-edit approval is retired; all new conversations run in auto.
     workspace_id = body.get("workspace_id")
-    inherited_merge_mode = "auto"
-    if workspace_id:
-        async with SessionLocal() as ws_db:
-            ws = await ws_db.get(WorkspaceRow, workspace_id)
-            if ws is not None:
-                inherited_merge_mode = ws.default_merge_mode
     conv = Conversation(
         id=body.get("id") or new_ulid(),
         workspace_id=workspace_id,
@@ -543,7 +537,7 @@ async def create_conversation_endpoint(body: dict):
         member_roles=member_roles,
         orchestrator_member_id=orchestrator_member_id,
         last_message_at=None,
-        merge_mode=inherited_merge_mode,  # type: ignore[arg-type]
+        merge_mode="auto",
     )
     async with SessionLocal() as session:
         await storage_repo.create_conversation(session, conv)
@@ -630,6 +624,39 @@ async def list_conv_messages(
                 recovered = True
                 with suppress(Exception):
                     await storage_repo.update_message_payload(session, m["id"], p)
+        if recovered:
+            with suppress(Exception):
+                await session.commit()
+
+        # Orphaned tool-call recovery: a generic tool card can be persisted as
+        # pending/running and then lose its owning asyncio task (server reload,
+        # adapter subprocess/session ended unexpectedly, or a task registry gap).
+        # On refresh that stale DB state otherwise looks like a live execution.
+        # If the conv has no live task for this sender, make the hydrate honest.
+        live_agents = _conv_agent_tasks.get(conv_id, {})
+        for m in msgs:
+            p = m.get("payload")
+            if not isinstance(p, dict) or p.get("kind") != "tool-call":
+                continue
+            if p.get("state") not in ("pending", "running", "run"):
+                continue
+            sender_id = str(m.get("sender_id") or "")
+            task = live_agents.get(sender_id)
+            if task is not None and not task.done():
+                continue
+            if sender_id and sender_id in (_conv_live.get(conv_id) or {}):
+                continue
+            next_payload = {
+                **p,
+                "state": "error",
+                "is_error": True,
+                "output_text": p.get("output_text")
+                or "执行状态已丢失:后端未找到对应的运行任务,该工具调用可能已中断。",
+            }
+            m["payload"] = next_payload
+            recovered = True
+            with suppress(Exception):
+                await storage_repo.update_message_payload(session, m["id"], next_payload)
         if recovered:
             with suppress(Exception):
                 await session.commit()
@@ -2163,6 +2190,21 @@ async def set_conv_members(conv_id: str, body: dict):
         conv0 = await storage_repo.get_conversation(session, conv_id)
         if conv0 is None:
             raise HTTPException(status_code=404, detail="conversation not found")
+        if conv0.workspace_id:
+            workspaces = await storage_repo.list_workspaces(session)
+            ws = next((w for w in workspaces if w.id == conv0.workspace_id), None)
+            if ws is None:
+                raise HTTPException(status_code=404, detail="workspace not found")
+            allowed = set(ws.members or [])
+            outside = sorted(m for m in members if m not in allowed)
+            if outside:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "conversation members must be a subset of workspace members: "
+                        + ", ".join(outside)
+                    ),
+                )
         orch = conv0.orchestrator_member_id
         if orch and orch not in members:
             raise HTTPException(
@@ -2267,6 +2309,21 @@ def _clean_tool_name(raw: str) -> str:
     return n.lower()
 
 
+def _is_ephemeral_edit_tool_success(payload: dict) -> bool:
+    """Successful write/edit tool-calls are live-only because the durable diff
+    card records the result. Failed/interrupted write calls are audit evidence:
+    persist them with their original args/output so refresh preserves the error
+    card instead of hiding the failure."""
+    if payload.get("kind") != "tool-call":
+        return False
+    if _clean_tool_name(payload.get("name", "")) not in _EPHEMERAL_EDIT_TOOLS:
+        return False
+    state = payload.get("state")
+    if state == "error" or payload.get("is_error"):
+        return False
+    return True
+
+
 async def _persist_and_emit_error(
     emit,
     *,
@@ -2364,6 +2421,7 @@ async def _tap_text_into(
     incrementally (the stream-resume covers them live; they land at turn-end).
     """
     reasoning_parts: set[str] = set()  # part_ids whose deltas are thinking
+    ephemeral_edit_parts: dict[str, dict] = {}
     _anon = 0  # fallback counter for parts with no part_id
     async for ev in events:
         t = ev.type
@@ -2399,21 +2457,28 @@ async def _tap_text_into(
                 # persist upserts by the same id.
                 with suppress(Exception):
                     dump = part.model_dump(mode="json")
-                    # Ephemeral write/edit tool-call cards: don't persist (the
-                    # committed diff card is the durable record). Persisting them
-                    # resurrects an empty "写入中" shell on refresh. The LIVE card
-                    # still streams via the emit path; we just skip the DB write.
-                    if (
-                        kind == "tool-call"
-                        and _clean_tool_name(dump.get("name", "")) in _EPHEMERAL_EDIT_TOOLS
-                    ):
-                        yield ev
-                        continue
                     pid = getattr(ev, "part_id", None) or dump.get("tool_call_id")
                     if pid is None:
                         _anon += 1
                         pid = f"anon{_anon}"
                     mid = f"tc-{pid}"
+                    # Ephemeral write/edit tool-call cards: don't persist (the
+                    # committed diff card is the durable record). Persisting them
+                    # resurrects an empty "写入中" shell on refresh. The LIVE card
+                    # still streams via the emit path. Keep its args in memory so
+                    # a later error state can be persisted with the original input.
+                    if _is_ephemeral_edit_tool_success(dump):
+                        ephemeral_edit_parts[mid] = dump
+                        yield ev
+                        continue
+                    prev = ephemeral_edit_parts.get(mid)
+                    if prev and dump.get("kind") == "tool-call":
+                        next_has_input = bool(dump.get("input"))
+                        dump = {
+                            **dump,
+                            "input": dump.get("input") if next_has_input else prev.get("input", dump.get("input")),
+                            "input_preview": dump.get("input_preview") or prev.get("input_preview"),
+                        }
                     parts[mid] = dump
                     # Durable mid-stream: persist EACH part (tool-call / diff /
                     # reasoning) the moment it completes, so a refresh keeps the

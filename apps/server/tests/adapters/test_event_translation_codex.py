@@ -42,21 +42,10 @@ async def test_command_execution_lifecycle(fake_codex_stdout_with_tool: str) -> 
         events.append(ev)
 
     types = [e.type for e in events]
-    # item.started (running) + item.completed (completed) + agent_message + turn.completed
-    assert types == [
-        "part.completed",
-        "part.completed",
-        "part.completed",
-        "turn.completed",
-    ]
-    # First two share message_id + part_id (same item_id reuses keys)
-    assert (events[0].message_id, events[0].part_id) == (
-        events[1].message_id,
-        events[1].part_id,
-    )
-    assert events[0].part.state == "running"
-    assert events[1].part.state == "completed"
-    assert events[1].part.output == "a.txt\nb.txt"
+    # Native Codex command_execution is ignored: Polynoia side effects must go
+    # through MCP tools so they are audited/reviewed/merged consistently.
+    assert types == ["part.completed", "turn.completed"]
+    assert events[0].part.body[0].c == "done"
 
 
 @pytest.mark.asyncio
@@ -116,11 +105,7 @@ async def test_file_change_item() -> None:
             feed(transcript), turn_id="t1", task_id="x",
         )
     ]
-    file_change_ev = events[0]
-    assert file_change_ev.part.kind == "tool-call"
-    assert file_change_ev.part.name == "FileChange"
-    assert "foo.py" in file_change_ev.part.summary
-    assert "bar.py" in file_change_ev.part.summary
+    assert [e.type for e in events] == ["turn.completed"]
 
 
 @pytest.mark.asyncio

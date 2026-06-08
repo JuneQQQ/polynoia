@@ -45,6 +45,7 @@ async def test_create_idempotent(tmp_path: Path, monkeypatch):
 async def test_env_for_agent_rewrites_home(tmp_path: Path, monkeypatch):
     """env_for_agent overrides HOME to credentials/ inside sandbox."""
     monkeypatch.setattr("polynoia.settings.settings.sandbox_root", tmp_path)
+    monkeypatch.setenv("POLYNOIA_DIRECT_CREDS", "0")
     sb = await Sandbox.create("conv_env")
     try:
         env = sb.env_for_agent()
@@ -67,6 +68,7 @@ async def test_env_for_agent_rewrites_home(tmp_path: Path, monkeypatch):
 async def test_env_for_agent_extra_merges(tmp_path: Path, monkeypatch):
     """extra dict merges into env, taking precedence."""
     monkeypatch.setattr("polynoia.settings.settings.sandbox_root", tmp_path)
+    monkeypatch.setenv("POLYNOIA_DIRECT_CREDS", "0")
     sb = await Sandbox.create("conv_extra")
     try:
         env = sb.env_for_agent(extra={"ANTHROPIC_API_KEY": "sk-test", "PATH": "/override"})
@@ -96,6 +98,7 @@ async def test_git_log_returns_initial_commit(tmp_path: Path, monkeypatch):
 async def test_credential_copy_from_real_host(tmp_path: Path, monkeypatch):
     """If host has ~/.claude, sandbox should get a copy."""
     monkeypatch.setattr("polynoia.settings.settings.sandbox_root", tmp_path)
+    monkeypatch.setenv("POLYNOIA_DIRECT_CREDS", "0")
     host_claude = Path.home() / ".claude"
     if not host_claude.exists():
         pytest.skip("host has no ~/.claude — can't verify copy")

@@ -158,9 +158,8 @@ class ConversationRow(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     unread: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # P1.2 merge gate. Inherited from Workspace.default_merge_mode on create,
-    # then mutable per-conv via PATCH /api/conversations/{id}/merge_mode.
-    # See docs/diagrams/merge-flow.html.
+    # Merge gate. Manual is retained only for legacy rows; new conversations
+    # are pinned to auto by the API.
     merge_mode: Mapped[str] = mapped_column(String(16), default="auto", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -294,11 +293,8 @@ class OnboardedAdapterRow(Base):
 
 # ── PendingEdit ──────────────────────────────────────────────────────
 #
-# Manual merge mode (P1.2): when conv.merge_mode == "manual", every agent
-# edit_file / write / apply_patch call gates here. MCP tool process creates
-# a row, then long-polls /api/pending-edits/{id}/wait. User clicks ✓/✗ in
-# UI → status flips → MCP unblocks → applies (accept) or returns error to
-# LLM (reject). See ADR-005 + docs/diagrams/merge-flow.html.
+# Legacy pending-edit table. Manual approval has been removed from the active
+# product flow, but the schema stays so older conversations can still load.
 class PendingEditRow(Base):
     __tablename__ = "pending_edits"
 

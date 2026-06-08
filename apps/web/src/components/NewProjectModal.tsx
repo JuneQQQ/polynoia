@@ -29,16 +29,25 @@ type Props = {
   /** Called after successful create — controller switches to the new workspace + opens main conv */
   /** mainConvId is null now — workspaces ship empty; user creates first conv. */
   onCreated: (workspaceId: string, mainConvId: string | null, members: string[], title: string) => void;
-  /** When set, the modal is in EDIT mode for that project: only persona fields
-   * (name / desc / color) move — members + repo are creation-time concerns and
-   * stay hidden. Submit calls updateWorkspace + onSaved instead of createWorkspace. */
+  /** When set, the modal is in EDIT mode for that project. Normal settings edit
+   * includes project persona + members; "members" keeps the legacy narrow mode
+   * for callers that only need roster editing. Repo/path remain creation-time
+   * concerns. Submit calls updateWorkspace + onSaved instead of createWorkspace. */
   editing?: Workspace | null;
   /** Called after a successful edit (sidebar ⋮「编辑项目」). */
   onSaved?: () => void | Promise<void>;
+  editMode?: "settings" | "members";
 };
 
-export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }: Props) {
+export function NewProjectModal({
+  onClose,
+  onCreated,
+  editing = null,
+  onSaved,
+  editMode = "settings",
+}: Props) {
   const isEdit = editing !== null;
+  const isMemberEdit = isEdit && editMode === "members";
   const agents = useStore((s) => s.agents);
   const [name, setName] = useState(editing?.name ?? "");
   const [desc, setDesc] = useState(editing?.desc ?? "");
@@ -80,7 +89,11 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
     });
   };
 
-  const canSubmit = name.trim().length > 0 && selected.size >= 1 && !submitting;
+  const canSubmit =
+    !submitting &&
+    (isMemberEdit
+      ? selected.size >= 1
+      : name.trim().length > 0 && selected.size >= 1);
 
   const checkPath = async () => {
     const p = path.trim();
@@ -112,12 +125,17 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
     setErr(null);
     try {
       if (isEdit && editing) {
-        await api.updateWorkspace(editing.id, {
-          name: name.trim(),
-          desc: desc.trim() || null,
-          color,
-          members: Array.from(selected),
-        });
+        await api.updateWorkspace(
+          editing.id,
+          isMemberEdit
+            ? { members: Array.from(selected) }
+            : {
+                name: name.trim(),
+                desc: desc.trim() || null,
+                color,
+                members: Array.from(selected),
+              },
+        );
         await onSaved?.();
         onClose();
         return;
@@ -157,13 +175,15 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
       >
         <header className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-line)]">
           <div className="flex items-center gap-2.5">
-            {isEdit ? (
+            {isMemberEdit ? (
+              <Users size={15} className="text-[var(--color-accent)]" />
+            ) : isEdit ? (
               <Pencil size={15} className="text-[var(--color-accent)]" />
             ) : (
               <FolderPlus size={15} className="text-[var(--color-accent)]" />
             )}
             <span className="font-display text-[18px] font-medium text-[var(--color-fg)] tracking-wide">
-              {isEdit ? "编辑项目" : "新建项目"}
+              {isMemberEdit ? "编辑项目成员" : isEdit ? "项目设置" : "新建项目"}
             </span>
           </div>
           <button
@@ -176,25 +196,29 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
         </header>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-          <Field label="项目名" required>
-            <input
-              autoFocus
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="如:Webhook Router"
-              className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
-            />
-          </Field>
-          <Field label="简介(可选)">
-            <input
-              type="text"
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              placeholder="一句话说明项目目标"
-              className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
-            />
-          </Field>
+          {!isMemberEdit && (
+            <>
+              <Field label="项目名" required>
+                <input
+                  autoFocus
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="如:Webhook Router"
+                  className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+                />
+              </Field>
+              <Field label="简介(可选)">
+                <input
+                  type="text"
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                  placeholder="一句话说明项目目标"
+                  className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+                />
+              </Field>
+            </>
+          )}
           {!isEdit && (
             <Field label="工作区目录(可选)">
               <div className="flex gap-2">
@@ -249,64 +273,68 @@ export function NewProjectModal({ onClose, onCreated, editing = null, onSaved }:
               />
             </Field>
           )}
-          <Field label="项目颜色">
-            <div className="flex gap-1.5">
-              {COLOR_OPTIONS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  className="w-7 h-7 rounded-md transition border-2"
-                  style={{
-                    background: c,
-                    borderColor: c === color ? "var(--color-fg)" : "transparent",
-                  }}
-                  aria-label={`color ${c}`}
-                />
-              ))}
-            </div>
-          </Field>
-          <Field
-            label={
-              <>
-                <Users size={11} className="inline -mt-0.5 mr-1" />
-                项目成员(已选 {selected.size},至少 1 个)
-              </>
-            }
-            required
-          >
-            {pickable.length === 0 ? (
-              <div className="text-[11.5px] text-[var(--color-fg-3)] py-2">
-                没有可选 agent。先到「新建」页添加联系人。
+          {!isMemberEdit && (
+            <Field label="项目颜色">
+              <div className="flex gap-1.5">
+                {COLOR_OPTIONS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setColor(c)}
+                    className="w-7 h-7 rounded-md transition border-2"
+                    style={{
+                      background: c,
+                      borderColor: c === color ? "var(--color-fg)" : "transparent",
+                    }}
+                    aria-label={`color ${c}`}
+                  />
+                ))}
               </div>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {pickable.map((a) => {
-                  const sel = selected.has(a.id);
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => toggle(a.id)}
-                      className={`inline-flex items-center gap-1.5 text-[11.5px] px-2 py-1 rounded border transition ${
-                        sel
-                          ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-                          : "border-[var(--color-line)] hover:bg-[var(--color-surface-2)] text-[var(--color-fg-2)]"
-                      }`}
-                    >
-                      <span
-                        className="w-4 h-4 rounded text-[9px] text-white grid place-items-center flex-shrink-0"
-                        style={{ background: a.color }}
+            </Field>
+          )}
+          {(isEdit || !isMemberEdit) && (
+            <Field
+              label={
+                <>
+                  <Users size={11} className="inline -mt-0.5 mr-1" />
+                  项目成员(已选 {selected.size},至少 1 个)
+                </>
+              }
+              required
+            >
+              {pickable.length === 0 ? (
+                <div className="text-[11.5px] text-[var(--color-fg-3)] py-2">
+                  没有可选 agent。先到「新建」页添加联系人。
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {pickable.map((a) => {
+                    const sel = selected.has(a.id);
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => toggle(a.id)}
+                        className={`inline-flex items-center gap-1.5 text-[11.5px] px-2 py-1 rounded border transition ${
+                          sel
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                            : "border-[var(--color-line)] hover:bg-[var(--color-surface-2)] text-[var(--color-fg-2)]"
+                        }`}
                       >
-                        {a.initials}
-                      </span>
-                      {a.name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </Field>
+                        <span
+                          className="w-4 h-4 rounded text-[9px] text-white grid place-items-center flex-shrink-0"
+                          style={{ background: a.color }}
+                        >
+                          {a.initials}
+                        </span>
+                        {a.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </Field>
+          )}
           {err && (
             <div className="text-[11.5px] text-[var(--color-red)] bg-[var(--color-red-soft)]/40 px-3 py-2 rounded border border-[var(--color-red)]/30">
               {err}

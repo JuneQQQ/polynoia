@@ -6,6 +6,7 @@
  * Also holds global PreviewPane state (which tab + which payload).
  */
 import { create } from "zustand";
+import { api } from "./lib/api";
 import type {
 	Agent,
 	AskFormPayload,
@@ -113,18 +114,36 @@ export function cleanToolName(raw: string): string {
  * Unknown tools fall back to the cleaned English key (rule: English → just the
  * last key name; known → Chinese). Never shows an mcp__polynoia__ prefix. */
 const _TOOL_ZH: Record<string, string> = {
-	read: "读取", write: "写入", edit: "编辑", apply_patch: "打补丁",
-	bash: "执行命令", grep: "搜索", glob: "查找文件", revert: "回滚",
-	dispatch: "派活", discuss: "讨论", remember: "记录", recall: "回忆",
-	report: "汇报", ask_user: "询问", request_project_access: "申请项目权限",
-	present: "展示文件", task: "子任务", todowrite: "更新待办",
-	webfetch: "抓取网页", websearch: "联网搜索", multiedit: "批量编辑",
+	read: "读取",
+	write: "写入",
+	edit: "编辑",
+	apply_patch: "打补丁",
+	bash: "执行命令",
+	grep: "搜索",
+	glob: "查找文件",
+	revert: "回滚",
+	dispatch: "派活",
+	discuss: "讨论",
+	remember: "记录",
+	recall: "回忆",
+	report: "汇报",
+	ask_user: "询问",
+	request_project_access: "申请项目权限",
+	present: "展示文件",
+	task: "子任务",
+	todowrite: "更新待办",
+	webfetch: "抓取网页",
+	websearch: "联网搜索",
+	multiedit: "批量编辑",
 };
 
 /** Display name for a tool in the status pill: cleaned key (no mcp__polynoia__
  * prefix). In zh, known tools are translated (read→读取, dispatch→派活); in en,
  * just the cleaned key (read, dispatch). Unknown tools → cleaned key in both. */
-export function toolDisplayName(raw?: string, lang: import("./lib/i18n").Lang = "zh"): string {
+export function toolDisplayName(
+	raw?: string,
+	lang: import("./lib/i18n").Lang = "zh",
+): string {
 	if (!raw) return "";
 	const key = cleanToolName(raw);
 	if (lang === "en") return key;
@@ -193,8 +212,8 @@ type Store = {
 	// Per-conv state
 	convs: Map<string, ConvState>;
 
-	/** Manual-mode pending edits, keyed by conv_id.
-	 * Server pushes via `data-pending-edit` WS chunk; UI renders ✓/✗ cards. */
+	/** Legacy pending edits, keyed by conv_id.
+	 * Old conversations may replay `data-pending-edit` WS chunks. */
 	pendingEditsByConv: Map<string, import("./lib/api").PendingEdit[]>;
 
 	/** ADR-020 project-access requests, keyed by conv_id. Server pushes via
@@ -277,9 +296,7 @@ type Store = {
 	 * switches. Composer consumes it once on mount/change and clears it
 	 * (passes ``null``) to avoid re-applying on every re-render. */
 	composerDraft: { convId: string; text: string } | null;
-	setComposerDraft: (
-		value: { convId: string; text: string } | null,
-	) => void;
+	setComposerDraft: (value: { convId: string; text: string } | null) => void;
 	/** Upsert a pending edit (WS chunk handler) — also flips existing entries
 	 * when the server pushes a status change. */
 	upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
@@ -411,9 +428,8 @@ type Store = {
 	terminalOpen: boolean;
 	toggleTerminal: () => void;
 
-	/** Manual-review cursor (Phase 4): which pending edit the floating review
-	 * bar / DiffReviewPane is currently showing. Index into the active conv's
-	 * pending list; clamped by consumers. Reset on conv switch. */
+	/** Legacy pending-edit cursor. Index into the active conv's pending list;
+	 * clamped by consumers. Reset on conv switch. */
 	reviewIndex: number;
 	setReviewIndex: (i: number) => void;
 
@@ -816,7 +832,7 @@ export const useStore = create<Store>((set, get) => ({
 		for (const mid of cur.messageOrder) {
 			const msg = cur.msgById.get(mid);
 			if (!msg) continue;
-			const p = msg.payload as {
+			const p = msg.payload as Record<string, unknown> & {
 				kind?: string;
 				state?: string;
 				name?: string;
@@ -834,9 +850,7 @@ export const useStore = create<Store>((set, get) => ({
 			// reconnect, the server still owns the turn — leave the card alone (it
 			// will resolve to a diff / error on its own). Only a turn the server
 			// has forgotten (no fresh status) gets its stuck card retired.
-			const st = msg.sender_id
-				? cur.agentStatus.get(msg.sender_id)
-				: undefined;
+			const st = msg.sender_id ? cur.agentStatus.get(msg.sender_id) : undefined;
 			if (st && st.status === "streaming" && st.ts >= since) continue;
 			if (!patched) patched = new Map(cur.msgById);
 			patched.set(mid, {
@@ -845,10 +859,22 @@ export const useStore = create<Store>((set, get) => ({
 					...p,
 					state: "error",
 					is_error: true,
-					output_text:
-						"⚠️ 连接已中断,该写入可能未完成(刷新可清除此卡)",
+					output_text: "⚠️ 连接已中断,该写入可能未完成",
 				} as Message["payload"],
 			});
+			api
+				.createMessage({
+					conv_id: convId,
+					sender_id: msg.sender_id,
+					msg_id: mid,
+					payload: {
+						...p,
+						state: "error",
+						is_error: true,
+						output_text: "⚠️ 连接已中断,该写入可能未完成",
+					},
+				})
+				.catch(() => undefined);
 		}
 		if (!patched) return;
 		convs.set(convId, { ...cur, msgById: patched });
@@ -1128,7 +1154,22 @@ export const useStore = create<Store>((set, get) => ({
 				return;
 			}
 			const cardSender = action.senderId || fallbackSender;
-			const existing = cur.msgById.get(action.messageId);
+			let messageId = action.messageId;
+			if (action.cardKind === "tool-call") {
+				const nextToolId = (action.payload as { tool_call_id?: unknown })
+					.tool_call_id;
+				if (typeof nextToolId === "string" && nextToolId) {
+					for (const mid of cur.messageOrder) {
+						const msg = cur.msgById.get(mid);
+						const p = msg?.payload as { kind?: string; tool_call_id?: unknown };
+						if (p?.kind === "tool-call" && p.tool_call_id === nextToolId) {
+							messageId = mid;
+							break;
+						}
+					}
+				}
+			}
+			const existing = cur.msgById.get(messageId);
 			const nextById = new Map(cur.msgById);
 			if (existing) {
 				let mergedPayload = action.payload;
@@ -1146,15 +1187,15 @@ export const useStore = create<Store>((set, get) => ({
 						input_preview: next.input_preview ?? prev?.input_preview ?? null,
 					};
 				}
-				nextById.set(action.messageId, { ...existing, payload: mergedPayload });
+				nextById.set(messageId, { ...existing, payload: mergedPayload });
 				convs.set(convId, {
 					...cur,
 					msgById: nextById,
 					streamTick: cur.streamTick + 1,
 				});
 			} else {
-				nextById.set(action.messageId, {
-					id: action.messageId,
+				nextById.set(messageId, {
+					id: messageId,
 					conv_id: convId,
 					sender_id: cardSender,
 					payload: action.payload,
@@ -1162,7 +1203,7 @@ export const useStore = create<Store>((set, get) => ({
 				});
 				convs.set(convId, {
 					...cur,
-					messageOrder: [...cur.messageOrder, action.messageId],
+					messageOrder: [...cur.messageOrder, messageId],
 					msgById: nextById,
 					streamTick: cur.streamTick + 1,
 				});
@@ -1233,10 +1274,17 @@ export function selectAgentStatuses(
  * activity belongs last) — see floatInProgressLast. */
 export function isInProgressCard(m: Message): boolean {
 	const p = m.payload as
-		| { kind?: string; state?: string; commit_sha?: string | null; applied?: boolean; running?: boolean }
+		| {
+				kind?: string;
+				state?: string;
+				commit_sha?: string | null;
+				applied?: boolean;
+				running?: boolean;
+		  }
 		| undefined;
 	if (!p) return false;
-	if (p.kind === "tool-call") return p.state === "running" || p.state === "pending";
+	if (p.kind === "tool-call")
+		return p.state === "running" || p.state === "pending";
 	if (p.kind === "diff") return !p.commit_sha && p.applied !== true;
 	if (p.kind === "terminal") return p.running === true;
 	return false;

@@ -14,6 +14,7 @@ import { type AgentStatus, phaseLabel, selectAgentStatuses, useStore } from "../
 export function MembersListView() {
   const activeConvId = useStore((s) => s.activeConvId);
   const agents = useStore((s) => s.agents);
+  const workspaces = useStore((s) => s.workspaces);
   const lang = useStore((s) => s.lang);
   const openAgentDetail = useStore((s) => s.openAgentDetail);
 
@@ -70,6 +71,12 @@ export function MembersListView() {
     .filter(Boolean) as NonNullable<ReturnType<typeof agents.find>>[];
 
   const orchestratorId = conv.orchestrator_member_id;
+  const workspace = conv.workspace_id
+    ? workspaces.find((w) => w.id === conv.workspace_id)
+    : null;
+  const projectMemberIds = workspace?.members
+    ? new Set(workspace.members)
+    : null;
 
   return (
     <div className="flex flex-col">
@@ -87,15 +94,15 @@ export function MembersListView() {
           type="button"
           onClick={() => setPicking((p) => !p)}
           aria-pressed={picking}
-          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded-md border transition ${
+          className={`inline-flex items-center gap-1.5 px-3 py-2 text-[12px] rounded-md border transition font-medium ${
             picking
-              ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-              : "border-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)]"
+              ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+              : "border-[var(--color-accent)] bg-[var(--color-accent)] text-white hover:opacity-90"
           }`}
           title="添加成员"
         >
           <UserPlus size={12} />
-          添加
+          添加成员
         </button>
       </div>
 
@@ -109,15 +116,23 @@ export function MembersListView() {
           it (persisted); the orchestrator invariant is enforced server-side. */}
       {picking && (() => {
         const present = new Set(conv.members);
-        const candidates = agents.filter((a) => !present.has(a.id));
+        const candidates = agents.filter(
+          (a) =>
+            !present.has(a.id) &&
+            a.id !== "you" &&
+            a.id !== "system" &&
+            (!projectMemberIds || projectMemberIds.has(a.id)),
+        );
         return (
           <div className="mx-4 mt-2 mb-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)]/50 overflow-hidden">
             <div className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-4)] border-b border-[var(--color-line)]">
-              加入联系人
+              {workspace ? `从项目成员加入 · ${workspace.name}` : "加入联系人"}
             </div>
             {candidates.length === 0 ? (
               <div className="px-3 py-3 text-[11px] text-[var(--color-fg-4)] italic">
-                没有可加入的联系人了 — 先在「广场」创建。
+                {workspace
+                  ? "项目成员都已在群聊中。先编辑项目成员,再添加到群聊。"
+                  : "没有可加入的联系人了 — 先在「广场」创建。"}
               </div>
             ) : (
               <ul className="max-h-52 overflow-y-auto py-1">

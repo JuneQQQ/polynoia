@@ -11,10 +11,13 @@ import {
   Plus,
   Search,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
+  UserPlus,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, type ConversationSummary } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useStore } from "../store";
@@ -64,6 +67,9 @@ export function Sidebar({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(
     null,
+  );
+  const [projectEditMode, setProjectEditMode] = useState<"settings" | "members">(
+    "settings",
   );
   // Which project row's ⋮ overflow menu is open (by workspace id; null = none).
   const [projectMenuOpen, setProjectMenuOpen] = useState<string | null>(null);
@@ -119,20 +125,6 @@ export function Sidebar({
     return () => window.removeEventListener("click", close);
   }, [contactMenuOpen]);
 
-  // Listen for "edit-contact" events from AgentDetailView. Window event
-  // chosen over prop drilling because the drawer is mounted globally in
-  // App.tsx while editingContact state lives here.
-  useEffect(() => {
-    const onEdit = (e: Event) => {
-      const detail = (e as CustomEvent<{ agent: Agent }>).detail;
-      if (detail?.agent) {
-        setEditingContact(detail.agent);
-        setNewContactOpen(true);
-      }
-    };
-    window.addEventListener("polynoia:edit-contact", onEdit);
-    return () => window.removeEventListener("polynoia:edit-contact", onEdit);
-  }, []);
   // 适配器管理(原 OnboardingModal)— 二级,从 NewContactModal footer / 联系人空状态进入
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
@@ -455,6 +447,34 @@ export function Sidebar({
   if (inWorkspace) {
     const ws = workspaces.find((w) => w.id === activeWorkspaceId);
     const srv = servers.find((s) => s.id === ws?.server_id);
+    const activeConv = wsConvs.find((c) => c.id === activeConvId) ?? null;
+    const canArchiveActive = !!activeConv?.group && !activeConv.archived;
+    const archiveActiveGroup = async () => {
+      if (!activeConv || !canArchiveActive) return;
+      if (
+        !window.confirm(
+          `归档群聊「${activeConv.title}」?\n归档后会从当前会话列表移除,可在归档视图恢复或删除。`,
+        )
+      ) {
+        return;
+      }
+      try {
+        await api.archiveConv(activeConv.id);
+        const next = wsConvs.find((c) => c.id !== activeConv.id);
+        await refreshWsConvs();
+        if (next) onSelectConv(next.id, next.members, next.title);
+        else {
+          useStore.setState({ activeConvId: null });
+          window.dispatchEvent(
+            new CustomEvent("polynoia:conv-archived", {
+              detail: { convId: activeConv.id },
+            }),
+          );
+        }
+      } catch (e) {
+        window.alert(`归档失败:${e}`);
+      }
+    };
 
     return (
       <aside
@@ -488,13 +508,14 @@ export function Sidebar({
               type="button"
               onClick={() => {
                 setEditingWorkspace(ws);
+                setProjectEditMode("settings");
                 setNewProjectOpen(true);
               }}
-              title={t("editProject", lang)}
-              aria-label={t("editProject", lang)}
+              title="项目设置"
+              aria-label="项目设置"
               className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors flex-shrink-0"
             >
-              <Pencil size={15} />
+              <SlidersHorizontal size={15} />
             </button>
           )}
           {!mobile && (
@@ -510,12 +531,13 @@ export function Sidebar({
           )}
           <button
             type="button"
-            onClick={() => setSearchOverlayOpen(true)}
-            title="搜索 (⌘/Ctrl+K)"
-            aria-label="搜索"
-            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors flex-shrink-0"
+            onClick={archiveActiveGroup}
+            disabled={!canArchiveActive}
+            title={canArchiveActive ? "归档当前群聊" : "请选择一个群聊后归档"}
+            aria-label="归档当前群聊"
+            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--color-sidebar-muted)] transition-colors flex-shrink-0"
           >
-            <Search size={15} />
+            <Archive size={15} />
           </button>
         </header>
 
@@ -529,13 +551,22 @@ export function Sidebar({
             least one conv. Empty workspaces get a full guide card instead
             (below) so the primary CTA is more obvious. */}
         {wsConvs.length > 0 && (
-          <div className="px-3 py-2">
+          <div className="px-3 py-2 flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => setNewConvOpen(true)}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[12px] rounded bg-[var(--color-sidebar-hover)] hover:bg-[var(--color-sidebar-active)]"
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[12px] rounded bg-[var(--color-sidebar-hover)] hover:bg-[var(--color-sidebar-active)]"
             >
               <Plus size={12} /> 新建对话
+            </button>
+            <button
+              type="button"
+              onClick={() => setSearchOverlayOpen(true)}
+              title="搜索 (⌘/Ctrl+K)"
+              aria-label="搜索"
+              className="w-8 h-8 grid place-items-center rounded bg-[var(--color-sidebar-hover)] hover:bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] transition-colors flex-shrink-0"
+            >
+              <Search size={14} />
             </button>
           </div>
         )}
@@ -624,9 +655,11 @@ export function Sidebar({
         {!mobile && newProjectOpen && (
           <NewProjectModal
             editing={editingWorkspace}
+            editMode={projectEditMode}
             onClose={() => {
               setNewProjectOpen(false);
               setEditingWorkspace(null);
+              setProjectEditMode("settings");
             }}
             onSaved={async () => {
               try {
@@ -636,10 +669,12 @@ export function Sidebar({
                 // ignore
               }
               setEditingWorkspace(null);
+              setProjectEditMode("settings");
             }}
             onCreated={async () => {
               setNewProjectOpen(false);
               setEditingWorkspace(null);
+              setProjectEditMode("settings");
             }}
           />
         )}
@@ -1201,6 +1236,7 @@ export function Sidebar({
                             e.stopPropagation();
                             setProjectMenuOpen(null);
                             setEditingWorkspace(ws);
+                            setProjectEditMode("settings");
                             setNewProjectOpen(true);
                           }}
                           onKeyDown={(e) => {
@@ -1209,6 +1245,7 @@ export function Sidebar({
                               e.preventDefault();
                               setProjectMenuOpen(null);
                               setEditingWorkspace(ws);
+                              setProjectEditMode("settings");
                               setNewProjectOpen(true);
                             }
                           }}
@@ -1252,9 +1289,11 @@ export function Sidebar({
       {!mobile && newProjectOpen && (
         <NewProjectModal
           editing={editingWorkspace}
+          editMode={projectEditMode}
           onClose={() => {
             setNewProjectOpen(false);
             setEditingWorkspace(null);
+            setProjectEditMode("settings");
           }}
           onSaved={async () => {
             try {
@@ -1264,9 +1303,11 @@ export function Sidebar({
               // ignore
             }
             setEditingWorkspace(null);
+            setProjectEditMode("settings");
           }}
           onCreated={async (wsId, convId, members, title) => {
             setNewProjectOpen(false);
+            setProjectEditMode("settings");
             try {
               const list = await api.workspaces();
               useStore.setState({ workspaces: list });
@@ -1334,9 +1375,14 @@ function ConvRow({
   onDeleted: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(
+    null,
+  );
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const kindLabel = conv.direct ? "单聊" : conv.group ? "群聊" : "对话";
+  const hasMenuActions = conv.group || conv.archived;
 
   // Up to 3 teammate avatars as the row's visual identity — text-only rows
   // read as empty/sparse. Exclude "you"; group convs benefit most but a
@@ -1354,8 +1400,33 @@ function ConvRow({
     if (!menuOpen) return;
     const close = () => setMenuOpen(false);
     window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) setMenuPos(null);
+  }, [menuOpen]);
+
+  const openMenu = () => {
+    const rect = menuButtonRef.current?.getBoundingClientRect();
+    if (!rect) {
+      setMenuOpen((v) => !v);
+      return;
+    }
+    const width = 152;
+    const height = conv.group ? 86 : conv.archived ? 42 : 42;
+    setMenuPos({
+      left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
+      top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8)),
+    });
+    setMenuOpen((v) => !v);
+  };
 
   const handleDelete = async () => {
     setMenuOpen(false);
@@ -1371,24 +1442,11 @@ function ConvRow({
     }
   };
 
-  const handleArchive = async () => {
-    setMenuOpen(false);
-    setBusy(true);
-    try {
-      await (conv.archived ? api.unarchiveConv(conv.id) : api.archiveConv(conv.id));
-      onDeleted();  // refresh the list — archived convs drop out of the main list
-    } catch (e) {
-      window.alert(`归档失败:${e}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div
       className={`group relative rounded ${
         active ? "bg-[var(--color-sidebar-active)]" : "hover:bg-[var(--color-sidebar-hover)]"
-      } ${busy ? "opacity-60" : ""}`}
+      } ${busy ? "opacity-60" : ""} ${menuOpen ? "z-50" : ""}`}
     >
       <button
         type="button"
@@ -1426,22 +1484,40 @@ function ConvRow({
           </div>
         </div>
       </button>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setMenuOpen((v) => !v);
-        }}
-        className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-muted)] transition"
-        aria-label="会话操作"
-      >
-        <MoreHorizontal size={13} />
-      </button>
-      {menuOpen && (
+      {hasMenuActions && (
+        <button
+          ref={menuButtonRef}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            openMenu();
+          }}
+          className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-[var(--color-sidebar-active)] text-[var(--color-sidebar-muted)] transition"
+          aria-label="会话操作"
+        >
+          <MoreHorizontal size={13} />
+        </button>
+      )}
+      {hasMenuActions && menuOpen && menuPos && createPortal(
         <div
           onClick={(e) => e.stopPropagation()}
-          className="absolute right-1 top-full mt-0.5 z-10 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
+          className="fixed z-[9999] min-w-[152px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-2xl py-1"
+          style={{ left: menuPos.left, top: menuPos.top }}
         >
+          {conv.group && (
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpen();
+                useStore.getState().openMembersList();
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left"
+            >
+              <UserPlus size={12} />
+              编辑成员
+            </button>
+          )}
           {conv.group && (
             <button
               type="button"
@@ -1455,24 +1531,18 @@ function ConvRow({
               群聊设置
             </button>
           )}
-          <button
-            type="button"
-            onClick={handleArchive}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left"
-          >
-            <Archive size={12} />
-            {conv.archived ? "取消归档" : "归档会话"}
-          </button>
-          <button
-            type="button"
-            onClick={handleDelete}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 text-left"
-          >
-            <Trash2 size={12} />
-            删除会话
-          </button>
+          {conv.archived && (
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 text-left"
+            >
+              <Trash2 size={12} />
+              删除会话
+            </button>
+          )}
         </div>
-      )}
+        , document.body)}
       {rolesOpen && (
         <ConvRolesModal
           conv={conv}

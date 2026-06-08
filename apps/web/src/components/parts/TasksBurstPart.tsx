@@ -18,6 +18,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Check, Loader2, Square, X } from "lucide-react";
 import { memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
+import { isMobile } from "../../lib/platform";
 import { classifyFoldable } from "../../lib/toolFold";
 import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
 import { isInProgressCard, useStore } from "../../store";
@@ -138,6 +139,15 @@ function TasksBurstPartInner({
 						bg: "var(--color-amber-soft)",
 						color: "var(--color-amber)",
 					};
+	const laneTasks = Array.from(
+		tasks
+			.reduce((m, t) => {
+				if (!m.has(t.agent)) m.set(t.agent, t);
+				return m;
+			}, new Map<string, (typeof tasks)[number]>())
+			.values(),
+	);
+	const laneCount = laneTasks.length;
 
 	return (
 		// Width matches the message TEXT column exactly: left at 68px (px-6 +
@@ -191,14 +201,14 @@ function TasksBurstPartInner({
 					// they don't fit the text-width card, the grid scrolls horizontally
 					// INSIDE the card (slide right to reveal the rest) rather than
 					// bleeding past the card's right edge.
-					gridTemplateColumns: `repeat(${Math.max(1, totalCount)}, minmax(280px, 1fr))`,
+					gridTemplateColumns: `repeat(${Math.max(1, laneCount)}, minmax(${isMobile() ? "240px" : "280px"}, 1fr))`,
 					overflowX: "auto",
 				}}
 				initial={reduce ? false : "hidden"}
 				animate="show"
 				variants={{ show: { transition: { staggerChildren: 0.08 } } }}
 			>
-				{tasks.map((t) => {
+				{laneTasks.map((t) => {
 					const agent = agents.find((a) => a.id === t.agent);
 					const state =
 						STATE_BADGE[t.state as LaneState] ?? STATE_BADGE.pending;
@@ -265,7 +275,10 @@ function TasksBurstPartInner({
 												)}
 											</>
 										) : (
-											<span className="text-[var(--color-fg-4)]" title="本泳道无文件改动">
+											<span
+												className="text-[var(--color-fg-4)]"
+												title="本泳道无文件改动"
+											>
 												—
 											</span>
 										)}
@@ -353,7 +366,10 @@ function TasksBurstPartInner({
 											let anyLive = false;
 											for (const mid of lane) {
 												const m = byId.get(mid);
-												if (m && isInProgressCard(m)) { anyLive = true; break; }
+												if (m && isInProgressCard(m)) {
+													anyLive = true;
+													break;
+												}
 											}
 											if (!anyLive) return lane;
 											const done: string[] = [];

@@ -437,8 +437,8 @@ async def reset_unread(session: AsyncSession, conv_id: str) -> None:
 async def set_merge_mode(
     session: AsyncSession, conv_id: str, mode: str
 ) -> bool:
-    """Flip merge_mode for one conv. Returns False if conv doesn't exist."""
-    if mode not in ("auto", "manual"):
+    """Set merge_mode for one conv. Manual mode is retired; only auto remains."""
+    if mode != "auto":
         raise ValueError(f"invalid merge_mode {mode!r}")
     row = await session.get(ConversationRow, conv_id)
     if row is None:
@@ -892,7 +892,7 @@ async def remove_onboarded_adapter(session: AsyncSession, adapter_id: str) -> bo
     return True
 
 
-# ── PendingEdit (Manual merge mode) ──────────────────────────────────
+# ── PendingEdit (legacy compatibility) ───────────────────────────────
 
 
 async def create_pending_edit(

@@ -36,16 +36,16 @@ export function ServerUnreachable() {
 					<ServerCrash size={22} style={{ color: "var(--color-red)" }} />
 				</div>
 				<div className="pn-m-kicker mb-2" style={{ color: "var(--color-red)" }}>
-					连接失败
+					服务不可用
 				</div>
 				<h1 className="text-[19px] font-semibold text-[var(--color-fg)] mb-1.5">
-					无法连接到服务器
+					暂时无法连接 Polynoia 服务
 				</h1>
 				<p className="text-[13px] text-[var(--color-fg-3)] leading-relaxed mb-1">
-					没能从后端拉到数据。请确认服务正在运行,然后重试。
+					请确认服务已启动,且当前设备可以访问该地址。
 				</p>
 				<p className="text-[11.5px] font-mono text-[var(--color-fg-3)] mb-5 truncate">
-					{base}
+					当前连接目标: {base || "默认服务地址"}
 				</p>
 				<button
 					type="button"

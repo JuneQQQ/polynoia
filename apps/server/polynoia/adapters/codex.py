@@ -93,6 +93,7 @@ from polynoia.adapters.base import (
     TurnFailedEvent,
     TurnStartedEvent,
 )
+from polynoia.credentials import sync_codex_home
 from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.sandbox import Sandbox
@@ -107,6 +108,76 @@ ToolCallState = Literal["pending", "running", "completed", "error"]
 
 # Marker so merging is idempotent — we never append the block twice.
 _MCP_BLOCK_MARKER = "[mcp_servers.polynoia]"
+
+
+def _codex_appserver_approval_policy() -> str | dict[str, Any]:
+    """Approval shape for app-server turns.
+
+    Polynoia side effects must go through our MCP server, where tools already
+    enforce role gating, audit cards, commits, and merge policy. Codex native
+    filesystem writes are blocked separately by the read-only sandbox policy,
+    and older approval callbacks are still explicitly declined by
+    ``_codex_appserver_server_request_response``.
+
+    Codex 0.13x routes MCP tool authorization through the thread approval
+    policy before app config is considered in some paths. A granular policy can
+    surface as "user rejected MCP tool call" for harmless Polynoia tools such as
+    ``recall``. Use the protocol-level ``never`` policy here so Polynoia MCP
+    remains the single approval boundary.
+    """
+    return "never"
+
+
+def _codex_appserver_server_request_response(
+    msg: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a JSON-RPC response for app-server server→client requests.
+
+    We intentionally do not implement Codex native execution approvals. Native
+    command/file changes must not bypass the Polynoia MCP audit path. Returning a
+    typed denial is better than `method not found`: Codex can continue the turn
+    and choose a Polynoia MCP tool instead.
+    """
+    method = str(msg.get("method") or "")
+    rid = msg.get("id")
+    base: dict[str, Any] = {"jsonrpc": "2.0", "id": rid}
+    if method == "item/commandExecution/requestApproval":
+        return {**base, "result": {"decision": "decline"}}
+    if method == "item/fileChange/requestApproval":
+        return {**base, "result": {"decision": "decline"}}
+    if method == "item/permissions/requestApproval":
+        return {
+            **base,
+            "error": {
+                "code": -32001,
+                "message": "native permission escalation disabled by polynoia",
+            },
+        }
+    if method == "applyPatchApproval":
+        return {**base, "result": {"decision": "denied"}}
+    if method == "mcpServer/elicitation/request":
+        params = msg.get("params") or {}
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        if (
+            isinstance(params, dict)
+            and isinstance(meta, dict)
+            and params.get("serverName") == "polynoia"
+            and meta.get("codex_approval_kind") == "mcp_tool_call"
+        ):
+            return {
+                **base,
+                "result": {"action": "accept", "content": None, "_meta": None},
+            }
+        return {**base, "result": {"action": "decline", "content": None}}
+    if method == "item/tool/requestUserInput":
+        return {
+            **base,
+            "error": {
+                "code": -32002,
+                "message": "interactive tool input is not supported by polynoia",
+            },
+        }
+    return None
 
 
 def _polynoia_mcp_block(
@@ -147,6 +218,12 @@ POLYNOIA_AGENT_TOOLS = "{tools}"
 POLYNOIA_API_BASE = "{api_base}"
 POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
 {worktree_lines}PYTHONPATH = "{pythonpath}"
+
+[apps.polynoia]
+enabled = true
+default_tools_approval_mode = "approve"
+destructive_enabled = true
+open_world_enabled = true
 '''
 
 
@@ -164,18 +241,21 @@ def _merge_mcp_into_config(existing: str, mcp_block: str) -> str:
     one polynoia block in the file', not 'never re-write it'.
     """
     if _MCP_BLOCK_MARKER in existing:
-        # The injected block spans TWO TOML tables — ``[mcp_servers.polynoia]``
-        # and ``[mcp_servers.polynoia.env]`` — optionally preceded by a
+        # The injected block spans several TOML tables — ``[mcp_servers.polynoia]``,
+        # ``[mcp_servers.polynoia.env]`` and ``[apps.polynoia]`` — optionally preceded by a
         # ``# ── Injected by Polynoia CodexAdapter ...`` comment. Strip every
         # line from the first such marker through the next NON-polynoia
         # section header (or EOF), then append the fresh block below.
         def _is_ours(s: str) -> bool:
             # `s` is lstripped. Match ONLY the tables we inject —
-            # [mcp_servers.polynoia] and [mcp_servers.polynoia.<sub>] — NOT
-            # sibling tables like [mcp_servers.polynoiaProd]. A bare-prefix check
-            # used to swallow + delete those on every spawn.
-            return s.startswith("[mcp_servers.polynoia]") or s.startswith(
-                "[mcp_servers.polynoia."
+            # [mcp_servers.polynoia] / [mcp_servers.polynoia.<sub>] and the
+            # paired app approval table. Do NOT match siblings like
+            # [mcp_servers.polynoiaProd] or [apps.polynoiaProd].
+            return (
+                s.startswith("[mcp_servers.polynoia]")
+                or s.startswith("[mcp_servers.polynoia.")
+                or s.startswith("[apps.polynoia]")
+                or s.startswith("[apps.polynoia.")
             )
 
         kept: list[str] = []
@@ -290,6 +370,7 @@ class CodexAdapter:
         # (creating a minimal one if the user had none, e.g. login-only auth).
         codex_home = sandbox.credentials_home / ".codex"
         codex_home.mkdir(parents=True, exist_ok=True)
+        sync_codex_home(codex_home)
         config_path = codex_home / "config.toml"
 
         existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
@@ -353,6 +434,7 @@ class CodexAdapter:
             _env["all_proxy"] = proxy
         return CodexSession(
             sandbox=sandbox,
+            codex_home=codex_home,
             model=model,
             system_prompt=system_prompt,
             extra_env=_env,
@@ -375,6 +457,7 @@ class CodexSession:
         self,
         *,
         sandbox: Sandbox,
+        codex_home: os.PathLike[str] | str,
         model: str | None,
         system_prompt: str | None,
         extra_env: dict[str, str],
@@ -383,6 +466,7 @@ class CodexSession:
         self.session_id = _new_id()
         self.agent_id = agent_id
         self._sandbox = sandbox
+        self._codex_home = os.fspath(codex_home)
         self._model = model
         self._system_prompt = system_prompt
         self._extra_env = extra_env
@@ -414,7 +498,7 @@ class CodexSession:
             "exec",
             "--json",
             "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
+            "--sandbox", "read-only",
             "--color", "never",
             "--cd", str(self._sandbox.root),
         ]
@@ -432,7 +516,9 @@ class CodexSession:
         # adapter forwarded from the host (see CodexAdapter.start_session). The
         # actual auth (auth.json / config.toml) lives in the sandbox CODEX_HOME
         # that env_for_agent points at. Nothing backend-specific is hardcoded.
-        return self._sandbox.env_for_agent(self._extra_env)
+        env = self._sandbox.env_for_agent(self._extra_env)
+        env["CODEX_HOME"] = self._codex_home
+        return env
 
     async def send(
         self,
@@ -484,7 +570,11 @@ class CodexSession:
             "capabilities": {"experimentalApi": True},
         })
         await self._client.notify("initialized", {})
-        start_params: dict[str, Any] = {"cwd": str(self._sandbox.root)}
+        start_params: dict[str, Any] = {
+            "cwd": str(self._sandbox.root),
+            "approvalPolicy": _codex_appserver_approval_policy(),
+            "sandbox": "read-only",
+        }
         if self._model:
             start_params["model"] = self._model
         res = await self._client.request("thread/start", start_params)
@@ -508,8 +598,15 @@ class CodexSession:
                 params: dict[str, Any] = {
                     "threadId": self._as_thread_id,
                     "input": [{"type": "text", "text": self._maybe_prepend_system(text)}],
-                    "approvalPolicy": "never",
-                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                    # Do not let Codex mutate the sandbox via its native
+                    # commandExecution/fileChange tools. Polynoia owns all
+                    # side effects through MCP (write/edit/bash/present/etc.),
+                    # where we can audit, persist, review, and merge them. Native
+                    # MCP tools are approved at the Polynoia layer. Keep native
+                    # sandbox escapes reviewable so _AppServerClient can decline
+                    # them without blocking normal MCP calls like write/edit.
+                    "approvalPolicy": _codex_appserver_approval_policy(),
+                    "sandboxPolicy": {"type": "readOnly"},
                 }
                 if self._model:
                     params["model"] = self._model
@@ -723,6 +820,17 @@ def _codex_filechange_to_toolcall(item_id: str, item: dict[str, Any]) -> ToolCal
     )
 
 
+def _is_native_codex_item_type(item_type: str | None) -> bool:
+    """Codex built-in tools are not Polynoia tools.
+
+    Polynoia registers MCP and expects all side effects to go through that layer
+    for audit/review/merge. If Codex still emits native command/file events
+    (older exec transport, cached threads, or a policy bug), ignore them instead
+    of surfacing FileChange/commandExecution as user-visible tools.
+    """
+    return item_type in {"command_execution", "file_change", "commandExecution", "fileChange"}
+
+
 def _codex_mcp_to_toolcall(item_id: str, item: dict[str, Any]) -> ToolCallPayload:
     status = item.get("status", "in_progress")
     err = item.get("error") or {}
@@ -776,12 +884,14 @@ class _AppServerClient:
                 except json.JSONDecodeError:
                     continue
                 if "method" in msg and "id" in msg:
-                    # server→client request — we don't implement approvals etc.
-                    with contextlib.suppress(Exception):
-                        await self._write({
+                    response = _codex_appserver_server_request_response(msg)
+                    if response is None:
+                        response = {
                             "jsonrpc": "2.0", "id": msg["id"],
                             "error": {"code": -32601, "message": "unhandled by polynoia"},
-                        })
+                        }
+                    with contextlib.suppress(Exception):
+                        await self._write(response)
                 elif "id" in msg and ("result" in msg or "error" in msg):
                     fut = self._pending.pop(msg["id"], None)
                     if fut is not None and not fut.done():
@@ -853,6 +963,8 @@ def _v2_item_to_toolcall(item: dict[str, Any]) -> ToolCallPayload | None:
     itype = item.get("type")
     item_id = item.get("id") or _new_id()
     status = item.get("status")
+    if _is_native_codex_item_type(itype):
+        return None
     if itype == "commandExecution":
         out = item.get("aggregatedOutput") or ""
         exit_code = item.get("exitCode")
@@ -1216,17 +1328,9 @@ async def _translate_codex_stream(
                     )
                 continue
             elif inner == "command_execution":
-                yield PartCompletedEvent(
-                    message_id=mid,
-                    part_id=pid,
-                    part=_codex_cmd_to_toolcall(item_id, item),
-                )
+                continue
             elif inner == "file_change":
-                yield PartCompletedEvent(
-                    message_id=mid,
-                    part_id=pid,
-                    part=_codex_filechange_to_toolcall(item_id, item),
-                )
+                continue
             elif inner == "mcp_tool_call":
                 yield PartCompletedEvent(
                     message_id=mid,

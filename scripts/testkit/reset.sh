@@ -24,15 +24,15 @@ asyncio.run(seed_demo._wipe_and_bootstrap())
 print("  wiped + bootstrapped")
 PYEOF
 
-echo "→ 启动服务器(给 cc/codex agent 走 7897 代理出墙;localhost 直连)"
-# Spawned agents (Claude Code / Codex) inherit these via Sandbox.env_for_agent.
+echo "→ 启动服务器(给 claude/codex/opencode agent 走 7897 代理出墙;localhost 直连)"
+# Spawned agents (Claude Code / Codex / OpenCode) inherit these via Sandbox.env_for_agent.
 # NO_PROXY MUST include localhost — the MCP subprocess + dispatch/report tools
 # call back to 127.0.0.1:7780; routing those through the proxy would break them.
 PROXY="${POLYNOIA_AGENT_PROXY:-http://127.0.0.1:7897}"
 export HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY" ALL_PROXY="$PROXY"
 export http_proxy="$PROXY" https_proxy="$PROXY" all_proxy="$PROXY"
-export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
-nohup "$SRV/.venv/bin/uvicorn" polynoia.main:app --host 127.0.0.1 --port 7780 \
+export NO_PROXY="localhost,127.0.0.1,0.0.0.0,::1" no_proxy="localhost,127.0.0.1,0.0.0.0,::1"
+nohup "$SRV/.venv/bin/uvicorn" polynoia.main:app --host 0.0.0.0 --port 7780 \
   > /tmp/polynoia_server.log 2>&1 &
 for i in $(seq 1 20); do
   code="$(curl -s -m 2 http://127.0.0.1:7780/api/agents -o /dev/null -w '%{http_code}' 2>/dev/null || true)"
@@ -44,4 +44,6 @@ echo "→ 重种 6 个测试用例"
 "$PY" "$REPO/scripts/testkit/_more_seed.py" >/dev/null
 
 CONVS="$(sqlite3 ~/.polynoia/polynoia.db 'SELECT count(*) FROM conversations')"
+AGENTS="$(sqlite3 ~/.polynoia/polynoia.db "SELECT name || ':' || json_extract(setup, '$.adapter_id') || '/' || json_extract(setup, '$.model') FROM agents WHERE custom = 1 ORDER BY name")"
 echo "✓ 重置完成 — $CONVS 个会话(干净的 6 个 testkit 用例)"
+echo "$AGENTS"

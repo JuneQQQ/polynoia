@@ -51,16 +51,18 @@ const SQ_IOS = squirclePath(50, 50, 49.6, 5.2); // iOS continuous corner
 // —— the three concept glyphs (fixed 100-box coords) ——
 function GlyphMono() {
 	return (
+		// x=49.4 / y=48 (not 50/53.5) optically centers the "P" — the glyph is
+		// stem-heavy with an empty lower-right, so geometric centering reads as
+		// low-left. No letterSpacing on a single glyph (it shifted the anchor).
 		<text
-			x="50"
-			y="53.5"
+			x="49.4"
+			y="48"
 			textAnchor="middle"
 			dominantBaseline="central"
 			fontFamily="'Inter', system-ui, sans-serif"
 			fontWeight="800"
 			fontSize="62"
 			fill={PC.cream}
-			letterSpacing="-2"
 		>
 			P
 		</text>

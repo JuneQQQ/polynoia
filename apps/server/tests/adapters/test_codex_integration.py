@@ -15,6 +15,8 @@ import pytest
 
 from polynoia.adapters.codex import (
     _MCP_BLOCK_MARKER,
+    _codex_appserver_approval_policy,
+    _codex_appserver_server_request_response,
     _merge_mcp_into_config,
     _polynoia_mcp_block,
 )
@@ -40,6 +42,8 @@ def test_merge_mcp_appends_when_absent() -> None:
     # ...and the MCP block is appended.
     assert _MCP_BLOCK_MARKER in merged
     assert 'POLYNOIA_CONV_ID = "c1"' in merged
+    assert "[apps.polynoia]" in merged
+    assert 'default_tools_approval_mode = "approve"' in merged
 
 
 def test_merge_mcp_is_idempotent() -> None:
@@ -61,6 +65,62 @@ def test_merge_mcp_into_empty_config() -> None:
     # No hardcoded backend leaks in.
     assert "laogou8" not in merged
     assert "model_provider" not in merged
+
+
+def test_appserver_approval_policy_does_not_prompt_for_mcp_rules() -> None:
+    policy = _codex_appserver_approval_policy()
+
+    assert policy == "never"
+
+
+def test_appserver_server_requests_decline_native_tools() -> None:
+    assert _codex_appserver_server_request_response({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "item/commandExecution/requestApproval",
+        "params": {},
+    }) == {"jsonrpc": "2.0", "id": 7, "result": {"decision": "decline"}}
+
+    assert _codex_appserver_server_request_response({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "item/fileChange/requestApproval",
+        "params": {},
+    }) == {"jsonrpc": "2.0", "id": 8, "result": {"decision": "decline"}}
+
+    permissions = _codex_appserver_server_request_response({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "item/permissions/requestApproval",
+        "params": {},
+    })
+    assert permissions is not None
+    assert permissions["error"]["code"] == -32001
+
+    assert _codex_appserver_server_request_response({
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "mcpServer/elicitation/request",
+        "params": {
+            "serverName": "polynoia",
+            "_meta": {"codex_approval_kind": "mcp_tool_call"},
+        },
+    }) == {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {"action": "accept", "content": None, "_meta": None},
+    }
+
+    assert _codex_appserver_server_request_response({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "mcpServer/elicitation/request",
+        "params": {"serverName": "other", "_meta": {}},
+    }) == {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": {"action": "decline", "content": None},
+    }
 
 
 # ── Adapter-level (sandbox, no CLI spawn) ────────────────────────────

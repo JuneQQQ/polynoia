@@ -4,6 +4,7 @@ import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
+import { ConvRolesModal } from "./components/ConvRolesModal";
 import { ServerUnreachable } from "./components/ServerUnreachable";
 import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
 import { RightDrawer } from "./components/RightDrawer";
@@ -17,6 +18,7 @@ import { onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
 import { getServerOverride, isCapacitor } from "./lib/runtime-config";
 import { useStore } from "./store";
+import { api, type ConversationSummary } from "./lib/api";
 
 export function App() {
 	const reloadSeed = useStore((s) => s.reloadSeed);
@@ -29,6 +31,8 @@ export function App() {
 	const previewOpen = useStore((s) => s.preview.open);
 	const toggleSidebar = useStore((s) => s.toggleSidebar);
 	const resetCenterTabs = useStore((s) => s.resetCenterTabs);
+	const [editingRolesConv, setEditingRolesConv] =
+		useState<ConversationSummary | null>(null);
 	const [activeConv, setActiveConv] = useState<{
 		id: string;
 		members: string[];
@@ -167,6 +171,47 @@ export function App() {
 			window.removeEventListener("polynoia:conv-members-changed", onMembers);
 	}, []);
 
+	useEffect(() => {
+		const onEditRoles = (ev: Event) => {
+			const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
+			if (!convId) return;
+			api.getConv(convId).then(setEditingRolesConv).catch(() => {});
+		};
+		window.addEventListener("polynoia:edit-conv-roles", onEditRoles);
+		return () =>
+			window.removeEventListener("polynoia:edit-conv-roles", onEditRoles);
+	}, []);
+
+	useEffect(() => {
+		const onArchived = (ev: Event) => {
+			const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
+			if (!convId) return;
+			setActiveConv((cur) => (cur?.id === convId ? null : cur));
+		};
+		window.addEventListener("polynoia:conv-archived", onArchived);
+		return () =>
+			window.removeEventListener("polynoia:conv-archived", onArchived);
+	}, []);
+
+	const globalContactModals = (
+		<>
+			{editingRolesConv && (
+				<ConvRolesModal
+					conv={editingRolesConv}
+					onClose={() => setEditingRolesConv(null)}
+					onSaved={(updated) => {
+						setEditingRolesConv(null);
+						window.dispatchEvent(
+							new CustomEvent("polynoia:conv-members-changed", {
+								detail: { convId: updated.id, members: updated.members },
+							}),
+						);
+					}}
+				/>
+			)}
+		</>
+	);
+
 	const renderMain = () => {
 		if (view === "chat" && activeConv) {
 			return (
@@ -222,19 +267,21 @@ export function App() {
 					style={{
 						// 100dvh (NOT 100vh): iOS 100vh over-reports the viewport, so the
 						// container ran past the screen bottom → content pushed off-screen.
-						// Pad BOTH safe areas: top for the Dynamic Island, bottom for the
-						// home indicator (was missing → bottom bar/composer got clipped).
-						paddingTop: "env(safe-area-inset-top)",
-						paddingBottom:
-							"max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
-						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+						// Top safe area stays on the page root. Bottom/keyboard insets are
+						// owned by ChatPane's composer; padding the whole root by --kb-h
+						// leaves a large blank band above Android keyboards.
+						paddingTop:
+							"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
 					}}
 				>
 					{/* Single chat header — back (→ list) + title. Frosted over the
               ember glow, an ember hairline rule beneath. ChatPane drops its own
               masthead on mobile, so this is the only header. */}
 					<div className="relative flex items-center gap-1 px-1.5 py-2.5 bg-[var(--color-surface)]/70 backdrop-blur-md">
-						<span aria-hidden className="pn-m-rule absolute inset-x-0 bottom-0" />
+						<span
+							aria-hidden
+							className="pn-m-rule absolute inset-x-0 bottom-0"
+						/>
 						<button
 							type="button"
 							onClick={() => setActiveConv(null)}
@@ -259,6 +306,7 @@ export function App() {
 					{/* Full-screen read-only artifact preview, opened from chat file
 					    cards (FilePart/FilesPanelPart). Self-gates on preview state. */}
 					<MobilePreviewSheet />
+					{globalContactModals}
 				</div>
 			);
 		}
@@ -268,9 +316,10 @@ export function App() {
 			<div
 				className="pn-m-atmos h-[100dvh] flex flex-col overflow-hidden bg-[var(--color-bg)]"
 				style={{
-					paddingTop: "env(safe-area-inset-top)",
-					paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
-					transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
+					paddingTop:
+						"max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))",
+					paddingBottom:
+						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
 				}}
 			>
 				<MobileHome
@@ -279,13 +328,20 @@ export function App() {
 						setView("chat");
 					}}
 				/>
+				{globalContactModals}
 			</div>
 		);
 	}
 
 	// ── Desktop / browser layout (Tauri or normal browser) ───────────
 	return (
-		<div className="h-screen flex overflow-hidden">
+		<div
+			className="flex overflow-hidden"
+			style={{
+				marginTop: "var(--conn-h, 0px)",
+				height: "calc(100dvh - var(--conn-h, 0px))",
+			}}
+		>
 			{/* Sidebar self-manages full vs collapsed icon-rail (reads
           sidebarCollapsed internally) — always mounted. */}
 			<Sidebar
@@ -303,6 +359,7 @@ export function App() {
 			<RightDrawer />
 			{/* Search overlay — Cmd+K global hotkey + header 🔍 button */}
 			<ChatSearchOverlay />
+			{globalContactModals}
 		</div>
 	);
 }

@@ -26,6 +26,11 @@ def req(path, body, method="POST"):
         return json.load(resp)
 
 
+def get(path):
+    with urllib.request.urlopen(API + path) as resp:
+        return json.load(resp)
+
+
 def post_task(conv_id, task):
     """Pre-fill the task as the first user message (persist only, no agent run)."""
     return req("/api/messages", {
@@ -35,15 +40,17 @@ def post_task(conv_id, task):
 
 
 OPUS, SONNET = "claude-opus-4-7", "claude-sonnet-4-6"
+CODEX_MODEL = "gpt-5.5"
+OPENCODE_MODEL = "opencode-go/glm5.1"
 
 TEAM = [
     {"adapter_id": "claudeCode", "name": "阿核", "model": OPUS,
      "tagline": "项目协调 · 拆解+验收", "tool_role": "orchestrator"},
     {"adapter_id": "claudeCode", "name": "文澜", "model": SONNET,
      "tagline": "文档/报告/纪要 撰写", "tool_role": "writer"},
-    {"adapter_id": "claudeCode", "name": "制图", "model": OPUS,
-     "tagline": "网页/视觉/小游戏", "tool_role": "designer"},
-    {"adapter_id": "claudeCode", "name": "数擎", "model": SONNET,
+    {"adapter_id": "codex", "name": "制图", "model": CODEX_MODEL,
+     "tagline": "Codex · 网页/视觉/小游戏", "tool_role": "designer"},
+    {"adapter_id": "opencoder", "name": "数擎", "model": OPENCODE_MODEL,
      "tagline": "数据/脚本/Excel/分析", "tool_role": "generalist"},
 ]
 
@@ -82,46 +89,72 @@ CASES = [
 
 
 def main():
-    req("/api/agents/claudeCode/enable", {})
+    for adapter_id in ("claudeCode", "codex", "opencoder"):
+        req(f"/api/agents/{adapter_id}/enable", {})
+    existing_agents = {a["name"]: a for a in get("/api/agents")}
     ids = {}
     for c in TEAM:
-        ids[c["name"]] = req("/api/contacts", c)["contact"]["id"]
+        existing = existing_agents.get(c["name"])
+        if existing:
+            ids[c["name"]] = existing["id"]
+        else:
+            ids[c["name"]] = req("/api/contacts", c)["contact"]["id"]
     by_role = {
         "orchestrator": ids["阿核"], "writer": ids["文澜"],
         "designer": ids["制图"], "generalist": ids["数擎"],
     }
     all_members = list(ids.values())
+    existing_workspaces = {w["name"]: w for w in get("/api/workspaces")}
+    existing_convs = {
+        (c.get("workspace_id"), c["title"]): c
+        for c in get("/api/conversations")
+    }
     manifest = []
     for key, title, who, task in CASES:
-        ws = req("/api/workspaces", {
-            "name": f"测试 · {title}",
-            "desc": f"测试用例:{title}",
-            "members": all_members, "color": "#7C5CFF",
-        })["workspace"]["id"]
+        ws_name = f"测试 · {title}"
+        ws_row = existing_workspaces.get(ws_name)
+        if ws_row:
+            ws = ws_row["id"]
+        else:
+            ws = req("/api/workspaces", {
+                "name": ws_name,
+                "desc": f"测试用例:{title}",
+                "members": all_members, "color": "#7C5CFF",
+            })["workspace"]["id"]
+            existing_workspaces[ws_name] = {"id": ws, "name": ws_name}
+        conv_title = f"测试 · {title}"
+        existing_conv = existing_convs.get((ws, conv_title))
         if who == "group":
             orch = by_role["orchestrator"]
-            conv = req("/api/conversations", {
-                "workspace_id": ws, "title": f"测试 · {title}",
-                "members": ["you"] + all_members, "group": True, "direct": False,
-                "member_roles": {
-                    orch: "拆解 + 验收 + 合并 present",
-                    by_role["writer"]: "章节撰写",
-                    by_role["designer"]: "章节撰写/排版",
-                    by_role["generalist"]: "章节撰写/数据",
-                },
-                "orchestrator_member_id": orch,
-            })
+            if existing_conv:
+                conv = existing_conv
+            else:
+                conv = req("/api/conversations", {
+                    "workspace_id": ws, "title": conv_title,
+                    "members": ["you"] + all_members, "group": True, "direct": False,
+                    "member_roles": {
+                        orch: "拆解 + 验收 + 合并 present",
+                        by_role["writer"]: "章节撰写",
+                        by_role["designer"]: "章节撰写/排版",
+                        by_role["generalist"]: "章节撰写/数据",
+                    },
+                    "orchestrator_member_id": orch,
+                })
             members = ["you"] + all_members
         else:
             role = who.split(":", 1)[1]
             agent = by_role[role]
-            conv = req("/api/conversations", {
-                "workspace_id": ws, "title": f"测试 · {title}",
-                "members": ["you", agent], "group": True, "direct": False,
-                "member_roles": {agent: "独立完成本任务"},
-            })
+            if existing_conv:
+                conv = existing_conv
+            else:
+                conv = req("/api/conversations", {
+                    "workspace_id": ws, "title": conv_title,
+                    "members": ["you", agent], "group": True, "direct": False,
+                    "member_roles": {agent: "独立完成本任务"},
+                })
             members = ["you", agent]
-        post_task(conv["id"], task)
+        if not existing_conv:
+            post_task(conv["id"], task)
         manifest.append({"key": key, "conv_id": conv["id"], "title": title,
                          "members": members, "task": task})
     print("MANIFEST=" + json.dumps(manifest, ensure_ascii=False))

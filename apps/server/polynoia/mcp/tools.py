@@ -49,87 +49,18 @@ async def _gate_via_pending_edit(
     file_path: str,
     args: dict[str, Any],
 ) -> bool:
-    base = os.environ.get("POLYNOIA_API_BASE")
-    if not base:
-        # No API base set → we're probably in a test or standalone run.
-        # Treat as auto mode (don't block).
-        return True
-    timeout_seconds = 300  # 5 minutes total wait
-    try:
-        # trust_env=False: the callback targets 127.0.0.1 — never route it
-        # through an inherited HTTP_PROXY/ALL_PROXY (esp. a socks:// proxy,
-        # which also needs httpx[socks]). Localhost must hit the server direct.
-        async with httpx.AsyncClient(base_url=base, timeout=70.0, trust_env=False) as client:
-            # First check conv.merge_mode — only gate in manual mode.
-            r = await client.get(f"/api/conversations/{ctx.conv_id}")
-            if r.status_code != 200:
-                log.warning(
-                    "gate: conv lookup failed %d, defaulting to auto", r.status_code,
-                )
-                return True
-            conv = r.json()
-            # Defensive: only a JSON object carries merge_mode. Anything else
-            # (a list, a bare string, an error envelope) → treat as auto so a
-            # malformed/unexpected response can never abort the agent's write.
-            mode = conv.get("merge_mode") if isinstance(conv, dict) else None
-            if (mode or "auto") != "manual":
-                return True
-
-            # Create the pending edit row + WS broadcast.
-            r = await client.post("/api/pending-edits", json={
-                "conv_id": ctx.conv_id,
-                "agent_id": ctx.agent_id,
-                "kind": kind,
-                "file_path": file_path,
-                "args": args,
-            })
-            if r.status_code != 200:
-                log.warning("gate: create pending failed %d", r.status_code)
-                return True  # fail-open
-            pending_id = r.json().get("id")
-            if not pending_id:
-                return True
-
-            # Long-poll until decided OR overall timeout.
-            deadline = asyncio.get_event_loop().time() + timeout_seconds
-            while True:
-                r = await client.get(
-                    f"/api/pending-edits/{pending_id}/wait",
-                    params={"timeout": 60},
-                )
-                if r.status_code != 200:
-                    log.warning("gate: wait poll failed %d", r.status_code)
-                    return False
-                row = r.json()
-                status = row.get("status")
-                if status == "accepted":
-                    return True
-                if status in ("rejected", "timeout"):
-                    return False
-                # Still pending → loop unless we've burned our overall budget.
-                if asyncio.get_event_loop().time() >= deadline:
-                    # Mark timeout server-side so UI updates + future calls
-                    # see the final state.
-                    with contextlib.suppress(Exception):
-                        await client.post(
-                            f"/api/pending-edits/{pending_id}/decide",
-                            json={"decision": "reject"},  # treat as reject on timeout
-                        )
-                    return False
-    except (httpx.RequestError, httpx.HTTPError) as e:
-        log.warning("gate: transport failure (%s), defaulting to auto", e)
-        return True  # fail-open: don't break agent when server hiccups
+    _ = (ctx, kind, file_path, args)
+    # Manual per-edit approval is no longer part of the product flow. Keep this
+    # function as a compatibility shim so old tests/routes/imports survive, but
+    # never block an agent write. User control now lives in auditable diff cards
+    # plus revert-on-main, which is the stable path for multi-agent demos.
+    return True
 
 
 async def _require_edit_approval(
     ctx: ToolContext, *, kind: str, file_path: str, args: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Manual-mode approval gate (ADR-005) for the file-mutation path (`write`).
-
-    Returns a ``{"kind":"rejected"}`` envelope if the user declined (the tool
-    should return it verbatim), or ``None`` to proceed. Centralizes the
-    gate-then-reject pattern; the tool keeps its own locking/commit. ``kind`` is
-    kept generic so the gate stays reusable if other mutation tools return."""
+    """Compatibility shim for the retired manual edit approval gate."""
     approved = await _gate_via_pending_edit(ctx, kind=kind, file_path=file_path, args=args)
     if not approved:
         return {"error": "rejected by user", "kind": "rejected"}
@@ -428,10 +359,7 @@ _MAX_READ_BYTES = 50_000      # cap total returned content per read
 
 class _WriteTool(_ToolBase):
     name = "write"
-    # In MANUAL merge mode `execute` long-polls the pending-edit gate waiting for
-    # the user to approve/reject (capped at 300s in-tool) → don't let the central
-    # timeout cancel an edit the user is still deciding on.
-    human_wait = True
+    human_wait = False
     description = (
         "Create a NEW file, or fully REPLACE an existing one, with `content`. "
         "Creates parent dirs; auto-commits to sandbox git. "
@@ -490,8 +418,7 @@ class _WriteTool(_ToolBase):
 
 class _EditTool(_ToolBase):
     name = "edit"
-    # Same human approval long-poll as write (it goes through _require_edit_approval).
-    human_wait = True
+    human_wait = False
     description = (
         "Targeted in-place edit of an EXISTING file: replace `old_string` with "
         "`new_string`. PREFER THIS over `write` for changing part of a file — the "

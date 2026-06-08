@@ -3,7 +3,7 @@
  * 列出 archived=true 的 conversations。
  * 点击 → 跳进 chat;hover → 显示"恢复"按钮 (unarchive,变回 active)。
  */
-import { Archive as ArchiveIcon, ArchiveRestore } from "lucide-react";
+import { Archive as ArchiveIcon, ArchiveRestore, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
@@ -24,6 +24,7 @@ export function ArchiveView({ onOpenConv }: Props) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const reload = async () => {
     setLoading(true);
@@ -51,6 +52,21 @@ export function ArchiveView({ onOpenConv }: Props) {
       setErr(String(e));
     } finally {
       setRestoring(null);
+    }
+  };
+
+  const handleDelete = async (conv: ConversationSummary) => {
+    if (!window.confirm(`彻底删除归档对话「${conv.title}」?\n该操作不可撤销。`)) {
+      return;
+    }
+    setDeleting(conv.id);
+    try {
+      await api.deleteConv(conv.id);
+      setConvs((prev) => prev.filter((c) => c.id !== conv.id));
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -134,16 +150,28 @@ export function ArchiveView({ onOpenConv }: Props) {
                     </div>
                   </div>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleRestore(c.id)}
-                  disabled={restoring === c.id}
-                  className="opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] disabled:opacity-50 transition"
-                  title="恢复(取消归档)"
-                >
-                  <ArchiveRestore size={12} />
-                  {restoring === c.id ? "恢复中…" : "恢复"}
-                </button>
+                <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition">
+                  <button
+                    type="button"
+                    onClick={() => handleRestore(c.id)}
+                    disabled={restoring === c.id || deleting === c.id}
+                    className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] disabled:opacity-50 transition"
+                    title="恢复(取消归档)"
+                  >
+                    <ArchiveRestore size={12} />
+                    {restoring === c.id ? "恢复中…" : "恢复"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(c)}
+                    disabled={restoring === c.id || deleting === c.id}
+                    className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/50 disabled:opacity-50 transition"
+                    title="彻底删除"
+                  >
+                    <Trash2 size={12} />
+                    {deleting === c.id ? "删除中…" : "删除"}
+                  </button>
+                </div>
               </li>
             );
           })}

@@ -10,16 +10,28 @@
  * ChatPane handles to kick the live socket immediately.
  */
 import { Loader2, RefreshCw, WifiOff } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 
 export function ConnectionBanner() {
 	const status = useStore((s) => s.connectionStatus);
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
+	const ref = useRef<HTMLOutputElement>(null);
+	const degraded = status !== "online" && status !== "connecting";
+
+	useLayoutEffect(() => {
+		const root = document.documentElement;
+		const h =
+			degraded && ref.current
+				? Math.ceil(ref.current.getBoundingClientRect().bottom)
+				: 0;
+		root.style.setProperty("--conn-h", `${h}px`);
+		return () => root.style.setProperty("--conn-h", "0px");
+	}, [degraded, status, retrying]);
 
 	// Only intrude when the link is actually degraded.
-	if (status === "online" || status === "connecting") return null;
+	if (!degraded) return null;
 	const offline = status === "offline";
 	const tone = offline ? "var(--color-red)" : "var(--color-accent)";
 
@@ -37,11 +49,12 @@ export function ConnectionBanner() {
 
 	return (
 		<output
+			ref={ref}
 			aria-live="polite"
 			className="anim-conn-in fixed inset-x-0 top-0 z-[70] flex items-center gap-2 px-4 border-b"
 			style={{
-				// safe-area aware on mobile (Dynamic Island / notch)
-				paddingTop: "max(0.375rem, env(safe-area-inset-top))",
+				top: "var(--pn-status-safe-top, 0px)",
+				paddingTop: "0.375rem",
 				paddingBottom: "0.375rem",
 				borderColor: tone,
 				background: offline

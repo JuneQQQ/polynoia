@@ -90,9 +90,12 @@ def favicon_web_mono() -> str:
     """Web favicon — flat orange tile + cream P (legible at 16px)."""
     body = (
         f'<rect x="0.6" y="0.6" width="98.8" height="98.8" rx="22" ry="22" fill="{PC["orange"]}"/>'
-        '<text x="50" y="53.5" text-anchor="middle" dominant-baseline="central" '
+        # x=49.4 / y=48 (not 50/53.5) optically centers the "P" — the glyph's
+        # ink sits low-left otherwise (stem-heavy, empty lower-right). No
+        # letter-spacing on a single glyph (it shifted the anchor right).
+        '<text x="49.4" y="48" text-anchor="middle" dominant-baseline="central" '
         f'font-family="Inter, system-ui, sans-serif" font-weight="800" font-size="62" '
-        f'fill="{PC["cream"]}" letter-spacing="-2">P</text>'
+        f'fill="{PC["cream"]}">P</text>'
     )
     return _svg(body, title="Polynoia")
 

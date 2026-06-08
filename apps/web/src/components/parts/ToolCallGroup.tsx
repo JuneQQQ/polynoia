@@ -14,7 +14,7 @@
  * (e.g. text → fold → text from one agent) leaves the column empty — one avatar
  * for the whole run, not one per element.
  */
-import { Wrench } from "lucide-react";
+import { Loader2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
@@ -82,7 +82,13 @@ export function ToolCallGroup({
 			let thinking = false;
 			for (const id of msgIds) {
 				const p = cs?.msgById.get(id)?.payload as
-					| { kind?: string; name?: string; running?: boolean; body?: ReasoningBody }
+					| {
+							kind?: string;
+							name?: string;
+							running?: boolean;
+							state?: string;
+							body?: ReasoningBody;
+					  }
 					| undefined;
 				if (p?.kind === "reasoning") {
 					// Only claim 含思考 when the thinking has VISIBLE text — an empty
@@ -93,6 +99,8 @@ export function ToolCallGroup({
 					if (p.running) anyRunning = true;
 				} else {
 					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
+					if (p?.state === "running" || p?.state === "pending")
+						anyRunning = true;
 				}
 			}
 			const joined =
@@ -140,6 +148,12 @@ export function ToolCallGroup({
 				<span className="text-[var(--color-fg-3)] truncate font-mono text-[10.5px]">
 					{summary}
 				</span>
+				{running && (
+					<span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-[var(--color-accent-soft)] text-[var(--color-accent)] text-[10px] font-medium flex-shrink-0">
+						<Loader2 size={10} className="animate-spin" />
+						正在执行
+					</span>
+				)}
 				<span className="ml-auto text-[10px] text-[var(--color-fg-4)] flex-shrink-0">
 					{expanded ? "收起 ▾" : "展开 ▸"}
 				</span>

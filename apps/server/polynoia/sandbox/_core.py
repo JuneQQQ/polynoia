@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polynoia.credentials import (
+    credential_source_home,
+    use_direct_host_credentials,
+)
 from polynoia.settings import settings
 
 
@@ -21,23 +25,8 @@ log = logging.getLogger(__name__)
 
 
 def _use_direct_creds() -> bool:
-    """Whether agent subprocesses should use the host's REAL credentials directly
-    (no sandbox copy, no HOME rewrite) instead of the isolated-copy model.
-
-    Why: macOS stores the `claude` OAuth token in the **Keychain**, NOT in
-    ``~/.claude/.credentials.json``. The copy-to-sandbox model (built for the
-    Linux multi-tenant server) therefore can't carry it — the spawned claude
-    lands "Not logged in · Please run /login". On a local single-user desktop the
-    isolation the copy buys is unnecessary, so default to direct use on macOS
-    (non-root): the agent reads ~/.claude + the Keychain exactly like a hand-run
-    ``claude -p``. The Linux server keeps the isolated copy (default off there).
-
-    Override explicitly with ``POLYNOIA_DIRECT_CREDS=1`` / ``0``.
-    """
-    v = os.environ.get("POLYNOIA_DIRECT_CREDS")
-    if v is not None:
-        return v.strip().lower() in ("1", "true", "yes", "on")
-    return _IS_DARWIN and os.geteuid() != 0
+    """Backward-compatible wrapper for the centralized credential policy."""
+    return use_direct_host_credentials()
 
 # ── Custom-workspace registries ──────────────────────────────────────────
 # Keep the sandbox layer storage-agnostic (it never reads the DB). routes.py —
@@ -794,35 +783,8 @@ class Sandbox:
     # at that dir so agents find their config in the expected layout.
     @classmethod
     def _cred_source_home(cls) -> Path:
-        """Home dir to read host credentials FROM.
-
-        Normally the running user's home. But the server is sometimes launched
-        as ROOT (sudo / a root shell / a root container). Then ``Path.home()``
-        is ``/root`` and we'd copy root's (often stale) credentials — e.g.
-        ``/root/.codex/config.toml`` pinned to a dead ``mimo`` provider, which
-        makes codex agents fail with ``Missing environment variable:
-        MIMO_API_KEY`` instead of using the dev user's working ``bytego`` login.
-        Resolve the INTENDED user's home regardless of who launched us:
-          1. ``POLYNOIA_CRED_HOME`` env override (explicit operator knob), else
-          2. when running as root via sudo, the invoking user's home (SUDO_USER),
-          3. else ``Path.home()`` (and warn if that's /root — likely wrong).
-        """
-        override = os.environ.get("POLYNOIA_CRED_HOME")
-        if override:
-            return Path(override)
-        if not _IS_WINDOWS and os.geteuid() == 0:
-            sudo_user = os.environ.get("SUDO_USER")
-            if sudo_user and sudo_user != "root":
-                with contextlib.suppress(Exception):
-                    import pwd
-
-                    return Path(pwd.getpwnam(sudo_user).pw_dir)
-            log.warning(
-                "running as root with no POLYNOIA_CRED_HOME/SUDO_USER — reading "
-                "credentials from /root (likely stale). Set POLYNOIA_CRED_HOME to "
-                "the dev user's home, or run the server as that user."
-            )
-        return Path.home()
+        """Home dir to read host credentials from."""
+        return credential_source_home()
 
     @classmethod
     def _cred_allowlist(cls) -> dict[Path, tuple[str, list[str]]]:

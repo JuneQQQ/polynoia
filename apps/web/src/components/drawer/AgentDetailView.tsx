@@ -6,9 +6,9 @@
  *   3. Role in this conv(from conv.member_roles) — link to edit
  *   4. Persona(system_prompt) — collapsible
  *   5. Recent activity in this conv — last 5 sender_id matches
- *   6. Action bar: 单独私聊 / 编辑联系人
+ *   6. Action bar: 编辑群内职责 / 移除群聊
  */
-import { ChevronDown, ChevronRight, MessageCircle, Pencil, Trash2, User } from "lucide-react";
+import { ChevronDown, ChevronRight, MessageCircle, Settings, User, UserMinus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
@@ -16,7 +16,6 @@ import { useStore } from "../../store";
 export function AgentDetailView({ agentId }: { agentId: string }) {
   const agent = useStore((s) => s.agents.find((a) => a.id === agentId));
   const activeConvId = useStore((s) => s.activeConvId);
-  const setActiveConv = useStore((s) => s.setActiveConv);
   const closeDrawer = useStore((s) => s.closeRightDrawer);
   const messageOrder = useStore(
     (s) => s.convs.get(activeConvId ?? "")?.messageOrder ?? EMPTY_ARRAY,
@@ -35,6 +34,8 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
   }, [activeConvId]);
 
   const [showFullPersona, setShowFullPersona] = useState(false);
+  const [memberBusy, setMemberBusy] = useState(false);
+  const [memberErr, setMemberErr] = useState<string | null>(null);
 
   if (!agent) {
     return (
@@ -54,8 +55,6 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
   // This agent coordinates the current conv → show a marker when opened.
   const isOrchestrator =
     !!convSummary && convSummary.orchestrator_member_id === agent.id;
-  // Hide "单独私聊" when we're ALREADY in this agent's private DM (redundant).
-  const isCurrentDm = activeConvId === `dm-${agent.id}`;
   // Per-conv role only makes sense inside a PROJECT conv — a plain 1:1 has no
   // project role, so showing "本对话中的角色: 未指定" there is just noise (R2:
   // roles are per-project).
@@ -76,9 +75,34 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
     return out;
   })();
 
-  const openDM = () => {
-    setActiveConv(`dm-${agent.id}`);
-    closeDrawer();
+  const canRemoveFromGroup =
+    !!activeConvId &&
+    !!convSummary?.group &&
+    convSummary.members.includes(agent.id) &&
+    convSummary.orchestrator_member_id !== agent.id;
+
+  const removeFromGroup = async () => {
+    if (!activeConvId || !convSummary || memberBusy) return;
+    if (!window.confirm(`将「${agent.name}」移出当前群聊?`)) return;
+    setMemberBusy(true);
+    setMemberErr(null);
+    try {
+      const updated = await api.setConvMembers(
+        activeConvId,
+        convSummary.members.filter((m) => m !== agent.id),
+      );
+      setConvSummary(updated);
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-members-changed", {
+          detail: { convId: activeConvId, members: updated.members },
+        }),
+      );
+      closeDrawer();
+    } catch (e) {
+      setMemberErr(e instanceof Error ? e.message : "移除群聊失败");
+    } finally {
+      setMemberBusy(false);
+    }
   };
 
   return (
@@ -177,52 +201,36 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
       {/* 6. Action bar */}
       {!isYou && !isSystem && (
         <div className="px-6 py-4 flex flex-col gap-2">
-          {/* "单独私聊" only when NOT already in this agent's private DM. */}
-          {!isCurrentDm && (
-            <button
-              type="button"
-              onClick={openDM}
-              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md bg-[var(--color-accent)] text-white hover:opacity-90 transition font-medium"
-            >
-              <MessageCircle size={13} />
-              单独私聊
-            </button>
+          {memberErr && (
+            <div className="px-2.5 py-1.5 text-[11px] rounded-md bg-[var(--color-red-soft)] text-[var(--color-red)]">
+              {memberErr}
+            </div>
           )}
-          {agent.custom && (
+          {!!activeConvId && !!convSummary?.group && convSummary.members.includes(agent.id) && (
             <button
               type="button"
               onClick={() => {
-                // Surface via global window event so Sidebar's existing
-                // editing flow picks it up — avoids cross-component plumbing.
                 window.dispatchEvent(
-                  new CustomEvent("polynoia:edit-contact", { detail: { agent } }),
+                  new CustomEvent("polynoia:edit-conv-roles", {
+                    detail: { convId: activeConvId },
+                  }),
                 );
-                closeDrawer();
               }}
               className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] transition font-medium"
             >
-              <Pencil size={12} />
-              编辑联系人
+              <Settings size={12} />
+              编辑群内职责
             </button>
           )}
-          {agent.custom && (
+          {canRemoveFromGroup && (
             <button
               type="button"
-              onClick={async () => {
-                if (!window.confirm(`删除联系人「${agent.name}」?该操作不可撤销。`)) return;
-                try {
-                  await api.deleteContact(agent.id);
-                  const list = await api.agents();
-                  useStore.setState({ agents: list });
-                } catch {
-                  // best-effort — row stays if delete failed
-                }
-                closeDrawer();
-              }}
+              disabled={memberBusy}
+              onClick={removeFromGroup}
               className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-red)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition font-medium"
             >
-              <Trash2 size={12} />
-              删除联系人
+              <UserMinus size={12} />
+              {memberBusy ? "移除中..." : "移除群聊"}
             </button>
           )}
         </div>

@@ -2,9 +2,7 @@ import {
 	Check,
 	ChevronDown,
 	ChevronRight,
-	Copy,
 	Diff as DiffIcon,
-	FileText,
 	Loader2,
 	RotateCcw,
 	Undo2,
@@ -12,14 +10,14 @@ import {
 import { useState } from "react";
 import { api } from "../../lib/api";
 import type { DiffPayload } from "../../lib/types";
-import { useStore } from "../../store";
 import { useConvScope } from "./_context";
 
 // `git apply --reverse` can't land once the file diverged from this card's
 // captured diff (e.g. after a conflict union-merge shifted the surrounding
 // lines). Detect that specific failure so we can guide to the commit-history
 // restore instead of leaking the raw git error.
-const REVERT_DIVERGED = /does not apply|patch failed|--reverse failed|with conflicts/i;
+const REVERT_DIVERGED =
+	/does not apply|patch failed|--reverse failed|with conflicts/i;
 
 export function DiffPart({
 	payload,
@@ -41,7 +39,7 @@ export function DiffPart({
 	const [err, setErr] = useState<string | null>(null);
 	const [appliedSha, setAppliedSha] = useState<string | null>(null);
 	const scope = useConvScope();
-	const openPreview = useStore((s) => s.openPreview);
+	const canRevertHunk = payload.hunks.length > 1;
 
 	const apply = async () => {
 		if (!scope) {
@@ -176,7 +174,9 @@ export function DiffPart({
 				{committed && (
 					<span
 						className="text-[10px] text-[var(--color-fg-3)] font-mono flex-shrink-0 inline-flex items-center gap-1"
-						title={payload.commit_sha ? `已提交 ${payload.commit_sha}` : "已提交"}
+						title={
+							payload.commit_sha ? `已提交 ${payload.commit_sha}` : "已提交"
+						}
 					>
 						<Check size={11} className="text-[var(--color-green)]" />
 						{payload.commit_sha ? payload.commit_sha.slice(0, 7) : "已改"}
@@ -186,23 +186,26 @@ export function DiffPart({
 
 			{open && (
 				<>
-					<div className="border-t border-[var(--color-line)] mono text-[11.5px] leading-[1.55] max-h-[280px] overflow-y-auto">
+					<div className="border-t border-[var(--color-line)] mono text-[11.5px] leading-[1.55] max-h-[280px] overflow-auto">
 						{payload.hunks.map((h, hi) => (
 							// biome-ignore lint/suspicious/noArrayIndexKey: hunks are positional, never reordered
 							<div key={hi}>
-								<div className="flex items-center gap-2 px-3 py-1 bg-[var(--color-surface-2)] text-[var(--color-fg-4)] text-[10.5px]">
+								<div className="flex min-w-full w-max items-center gap-2 px-3 py-1 bg-[var(--color-surface-2)] text-[var(--color-fg-4)] text-[10.5px]">
 									<span className="flex-1 truncate">{h.header}</span>
-									{committed && !reverted && !divergedRevert && (
-										<button
-											type="button"
-											onClick={() => revert([h])}
-											disabled={revBusy}
-											title="撤销此块(反向 apply)"
-											className="inline-flex items-center gap-0.5 px-1 rounded text-[var(--color-fg-3)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 disabled:opacity-40"
-										>
-											<Undo2 size={10} /> 撤销
-										</button>
-									)}
+									{committed &&
+										canRevertHunk &&
+										!reverted &&
+										!divergedRevert && (
+											<button
+												type="button"
+												onClick={() => revert([h])}
+												disabled={revBusy}
+												title="撤销此块(反向 apply)"
+												className="inline-flex items-center gap-0.5 px-1 rounded text-[var(--color-fg-3)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 disabled:opacity-40"
+											>
+												<Undo2 size={10} /> 撤销
+											</button>
+										)}
 								</div>
 								{h.lines.map(([kind, no, tx], li) => {
 									const bg =
@@ -214,11 +217,15 @@ export function DiffPart({
 									const sym = kind === "add" ? "+" : kind === "del" ? "−" : " ";
 									return (
 										// biome-ignore lint/suspicious/noArrayIndexKey: lines are positional within a hunk
-										<div key={li} className="flex" style={{ background: bg }}>
-											<span className="w-10 text-right pr-2 text-[var(--color-fg-4)] select-none">
+										<div
+											key={li}
+											className="flex min-w-full w-max"
+											style={{ background: bg }}
+										>
+											<span className="w-10 shrink-0 text-right pr-2 text-[var(--color-fg-4)] select-none">
 												{no}
 											</span>
-											<span className="flex-1 whitespace-pre">
+											<span className="whitespace-pre pr-3">
 												{sym} {tx}
 											</span>
 										</div>
@@ -371,19 +378,6 @@ export function DiffPart({
 								✗ {err.length > 60 ? `${err.slice(0, 60)}…` : err}
 							</span>
 						)}
-						<button
-							type="button"
-							onClick={() => openPreview("code")}
-							className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium hover:bg-[var(--color-line)] transition"
-						>
-							<FileText size={11} /> 查看完整文件
-						</button>
-						<button
-							type="button"
-							className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-[var(--color-fg-3)] rounded hover:bg-[var(--color-line)] transition ml-auto"
-						>
-							<Copy size={11} /> 复制
-						</button>
 					</div>
 				</>
 			)}

@@ -24,10 +24,8 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
   const openPreview = useStore((s) => s.openPreview);
   const upsertConflict = useStore((s) => s.upsertConflict);
   const agents = useStore((s) => s.agents);
-  // auto = orchestrator resolves (don't make it look like it's waiting on the
-  // user); manual = user resolves in the panel. Only trust the auto hint when the
-  // store's mergeMode is confirmed FOR THIS conv (mergeModeConvId match) — on a
-  // fresh conv-switch the mirror lags, so default to the safe manual buttons.
+  // Manual merge mode is retired from the product flow. The store still mirrors
+  // mergeMode for legacy rows, but ChatPane pins it to auto for active convs.
   const scope = useConvScope();
   const mergeMode = useStore((s) => s.mergeMode);
   const mergeModeConvId = useStore((s) => s.mergeModeConvId);
@@ -129,13 +127,6 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
             <AlertTriangle size={12} /> 已放弃,分支未合并进 main
           </span>
         ) : isAuto ? (
-          // AUTO → the orchestrator resolves (from the clean post-merge state).
-          // No manual-takeover here: a half-auto-resolved intermediate isn't a
-          // valid hand-off point. To resolve by hand, switch the conv to MANUAL
-          // (which restarts from the original surfaced conflict — resolve is
-          // atomic, so there's never a partial state to inherit). If the
-          // orchestrator can't auto-fix (e.g. all-binary), switching to Manual is
-          // the way out — hence the hint.
           <span
             className="inline-flex items-center gap-1.5 text-[11px]"
             style={{ color: "var(--color-amber)" }}
@@ -145,7 +136,7 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
               auto 模式 · 协调者自动合并中…
               <span className="text-[var(--color-fg-4)]">
                 {" "}
-                (长时间未动可切 Manual 手动解决)
+                (若无法自动修复,可在版本历史中恢复或重开任务)
               </span>
             </span>
           </span>

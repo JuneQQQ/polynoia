@@ -12,114 +12,116 @@
     ─────────────────────────────────────────────────────────────────  */
 
 @theme {
-  /* ── 字体 ─────────────────────────────────────────────────────── */
-  /* Body — 中英混排清晰,字面平衡。Noto Sans SC 的中文字面比 Plex 更舒展耐看 */
-  --font-ui:
-    "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
-    -apple-system, system-ui, sans-serif;
-  /* Display — 标题层,衬线宋。中文先;英文 fallback 用 Plex Serif */
-  --font-display:
-    "Noto Serif SC", "Source Han Serif SC", "Songti SC", "宋体",
-    "IBM Plex Serif", "Times New Roman", serif;
-  /* Mono — 代码 / 仓库路径 / 凭证路径 */
-  --font-mono:
-    "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
+	/* ── 字体 ─────────────────────────────────────────────────────── */
+	/* Body — 中英混排清晰,字面平衡。Noto Sans SC 的中文字面比 Plex 更舒展耐看 */
+	--font-ui: "Noto Sans SC", "PingFang SC", "HarmonyOS Sans SC",
+		"Microsoft YaHei", -apple-system, system-ui, sans-serif;
+	/* Display — 标题层,衬线宋。中文先;英文 fallback 用 Plex Serif */
+	--font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "宋体",
+		"IBM Plex Serif", "Times New Roman", serif;
+	/* Mono — 代码 / 仓库路径 / 凭证路径 */
+	--font-mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, Menlo,
+		monospace;
 
-  /* ── 字号阶梯 (vertical rhythm 锚点) ──────────────────────────── */
-  /* 每档使用场景写在注释里。组件类只能从这 6 个里挑,不允许填 px。 */
-  --text-caption: 11.5px;   /* 极小辅助:section header / 时间戳 */
-  --text-meta: 13px;        /* 元数据:tagline / 一行说明 / footer */
-  --text-body: 15px;        /* 默认正文 / 按钮 / 列表项 */
-  --text-lead: 17px;        /* 强调正文 / chat 消息主体 */
-  --text-title: 22px;       /* modal 标题 / section title */
-  --text-display: 31px;     /* page hero / 空状态文案 */
+	/* ── 字号阶梯 (vertical rhythm 锚点) ──────────────────────────── */
+	/* 每档使用场景写在注释里。组件类只能从这 6 个里挑,不允许填 px。 */
+	--text-caption: 11.5px; /* 极小辅助:section header / 时间戳 */
+	--text-meta: 13px; /* 元数据:tagline / 一行说明 / footer */
+	--text-body: 15px; /* 默认正文 / 按钮 / 列表项 */
+	--text-lead: 17px; /* 强调正文 / chat 消息主体 */
+	--text-title: 22px; /* modal 标题 / section title */
+	--text-display: 31px; /* page hero / 空状态文案 */
 
-  --leading-tight: 1.35;
-  --leading-normal: 1.55;
-  --leading-relaxed: 1.7;   /* chat 消息段落 */
+	--leading-tight: 1.35;
+	--leading-normal: 1.55;
+	--leading-relaxed: 1.7; /* chat 消息段落 */
 
-  /* Readable chat-column measure: the message stream + composer cap at this
+	/* Readable chat-column measure: the message stream + composer cap at this
      width and center on large/ultrawide screens, so content never stretches
      edge-to-edge. Screens narrower than this are unaffected (it's a max-width). */
-  --chat-measure: 1080px;
+	--chat-measure: 1080px;
+	/* Composer is intentionally narrower than the message stream on desktop:
+	   it reads as a focused input surface instead of a full-width bottom bar.
+	   Mobile remains effectively full-width because the viewport is narrower. */
+	--composer-measure: 860px;
 
-  /* ── 颜色 (warm cream paper) ─────────────────────────────────── */
-  --color-bg: #f6f2ea;
-  --color-surface: #ffffff;
-  --color-surface-2: #fbf7f0;
-  --color-surface-3: #f0eadc;
+	/* ── 颜色 (warm cream paper) ─────────────────────────────────── */
+	--color-bg: #f6f2ea;
+	--color-surface: #ffffff;
+	--color-surface-2: #fbf7f0;
+	--color-surface-3: #f0eadc;
 
-  /* 亮色:侧栏跟随主题 —— 暖羊皮纸面板(比 bg 略深,读作面板) */
-  --color-sidebar: #ece4d3;
-  --color-sidebar-2: #e3dac6;
-  --color-sidebar-line: rgba(31, 27, 22, 0.10);
-  --color-sidebar-hover: rgba(31, 27, 22, 0.05);
-  --color-sidebar-active: rgba(31, 27, 22, 0.09);
-  --color-sidebar-fg: #2a241c;
-  --color-sidebar-muted: #897f6c;
+	/* 亮色:侧栏跟随主题 —— 暖羊皮纸面板(比 bg 略深,读作面板) */
+	--color-sidebar: #ece4d3;
+	--color-sidebar-2: #e3dac6;
+	--color-sidebar-line: rgba(31, 27, 22, 0.1);
+	--color-sidebar-hover: rgba(31, 27, 22, 0.05);
+	--color-sidebar-active: rgba(31, 27, 22, 0.09);
+	--color-sidebar-fg: #2a241c;
+	--color-sidebar-muted: #897f6c;
 
-  --color-line: #ece5d8;
-  --color-line-2: #e0d8c6;
-  --color-line-strong: #c9bfaa;
-  --color-line-hair: rgba(31, 27, 22, 0.08);  /* 0.5-1px 细线 */
+	--color-line: #ece5d8;
+	--color-line-2: #e0d8c6;
+	--color-line-strong: #c9bfaa;
+	--color-line-hair: rgba(31, 27, 22, 0.08); /* 0.5-1px 细线 */
 
-  --color-fg: #1f1b16;
-  --color-fg-2: #4a4338;
-  --color-fg-3: #7a7060;
-  --color-fg-4: #9f9683;
+	--color-fg: #1f1b16;
+	--color-fg-2: #4a4338;
+	--color-fg-3: #7a7060;
+	--color-fg-4: #9f9683;
 
-  /* 唯一 hot accent — 用 sparingly */
-  --color-accent: #e07a3c;
-  --color-accent-soft: #fbe6d6;
-  --color-accent-dim: #c46330;
-  /* 行内代码 `code` — 暖色微底 + 同色边,与正文区分但不喧宾夺主 */
-  --color-code-bg: rgba(224, 122, 60, 0.09);
-  --color-code-fg: #9c4f24;
+	/* 唯一 hot accent — 用 sparingly */
+	--color-accent: #e07a3c;
+	--color-accent-soft: #fbe6d6;
+	--color-accent-dim: #c46330;
+	/* 行内代码 `code` — 暖色微底 + 同色边,与正文区分但不喧宾夺主 */
+	--color-code-bg: rgba(224, 122, 60, 0.09);
+	--color-code-fg: #9c4f24;
 
-  /* 语义色 (warning / error / success / info — 与 accent 不冲突) */
-  --color-green: #2e7f5b;
-  --color-green-soft: #dceee5;
-  --color-amber: #a87000;
-  --color-amber-soft: #f5e9c8;
-  --color-red: #b34536;
-  --color-red-soft: #f0d4cd;
-  --color-blue: #3d6fa8;
-  --color-blue-soft: #d9e3ee;
-  --color-purple: #6b4dc4;
-  --color-purple-soft: #ddd5ed;
+	/* 语义色 (warning / error / success / info — 与 accent 不冲突) */
+	--color-green: #2e7f5b;
+	--color-green-soft: #dceee5;
+	--color-amber: #a87000;
+	--color-amber-soft: #f5e9c8;
+	--color-red: #b34536;
+	--color-red-soft: #f0d4cd;
+	--color-blue: #3d6fa8;
+	--color-blue-soft: #d9e3ee;
+	--color-purple: #6b4dc4;
+	--color-purple-soft: #ddd5ed;
 
-  /* ── 阴影 + 边框 (极克制) ──────────────────────────────────── */
-  --shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.04);
-  --shadow-md: 0 12px 32px rgba(60, 40, 20, 0.08),
-               0 2px 6px rgba(60, 40, 20, 0.04);
-  --shadow-lg: 0 24px 60px -12px rgba(60, 40, 20, 0.18),
-               0 6px 16px -6px rgba(60, 40, 20, 0.10);
-  /* hair-line: 用于 modal 顶/底 / divider */
-  --rule-hair: 0.5px solid var(--color-line-hair);
+	/* ── 阴影 + 边框 (极克制) ──────────────────────────────────── */
+	--shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.04);
+	--shadow-md: 0 12px 32px rgba(60, 40, 20, 0.08), 0 2px 6px
+		rgba(60, 40, 20, 0.04);
+	--shadow-lg: 0 24px 60px -12px rgba(60, 40, 20, 0.18), 0 6px 16px -6px
+		rgba(60, 40, 20, 0.1);
+	/* hair-line: 用于 modal 顶/底 / divider */
+	--rule-hair: 0.5px solid var(--color-line-hair);
 
-  /* ── Atelier 深度 (内高光 + 焦点环 + 卡片浮起 + accent 辉光) ──
+	/* ── Atelier 深度 (内高光 + 焦点环 + 卡片浮起 + accent 辉光) ──
      亮色下内高光是白边、暗色下是更亮的暖白边;卡片"浮起"= 投影 + 顶部内高光。*/
-  --ring-inset: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  --shadow-card: var(--shadow-sm), var(--ring-inset);
-  --color-focus: rgba(224, 122, 60, 0.55);
-  --ring-focus: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-focus);
-  --glow-accent: 0 0 0 1px rgba(224, 122, 60, 0.30),
-                 0 6px 22px -8px rgba(224, 122, 60, 0.35);
-  /* 输入聚焦 — Stripe/Vercel 风:紧贴形状的低透明柔环,不要大投影 glow。
+	--ring-inset: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(224, 122, 60, 0.55);
+	--ring-focus: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-focus);
+	--glow-accent: 0 0 0 1px rgba(224, 122, 60, 0.3), 0 6px 22px -8px
+		rgba(224, 122, 60, 0.35);
+	/* 输入聚焦 — Stripe/Vercel 风:紧贴形状的低透明柔环,不要大投影 glow。
      跟随 border-radius,读作"聚焦光晕"而非橙色涂抹。*/
-  --ring-input-focus: 0 0 0 3px rgba(224, 122, 60, 0.13), var(--shadow-sm);
+	--ring-input-focus: 0 0 0 3px rgba(224, 122, 60, 0.13), var(--shadow-sm);
 
-  /* ── 氛围 (径向 mesh + 纸面颗粒) ─────────────────────────────
+	/* ── 氛围 (径向 mesh + 纸面颗粒) ─────────────────────────────
      mesh 是 2-3 团极低饱和暖色径向渐变,静态不动画(性能)。*/
-  --mesh-1: rgba(224, 122, 60, 0.05);   /* 暖橙团,锚 top-left */
-  --mesh-2: rgba(120, 90, 60, 0.04);    /* 暖棕团,锚 bottom-right */
-  --mesh-3: rgba(180, 150, 110, 0.03);  /* 中性暖,中部 */
-  --grain-opacity: 0.035;
-  --grain-blend: multiply;
+	--mesh-1: rgba(224, 122, 60, 0.05); /* 暖橙团,锚 top-left */
+	--mesh-2: rgba(120, 90, 60, 0.04); /* 暖棕团,锚 bottom-right */
+	--mesh-3: rgba(180, 150, 110, 0.03); /* 中性暖,中部 */
+	--grain-opacity: 0.035;
+	--grain-blend: multiply;
 
-  /* ── 动画 timing ────────────────────────────────────────────── */
-  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* 状态翻转的轻微回弹 */
+	/* ── 动画 timing ────────────────────────────────────────────── */
+	--ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* 状态翻转的轻微回弹 */
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -127,60 +129,66 @@
    层叠 surface 渐亮制造深度;前景暖奶白;线条暖、低对比。
    ───────────────────────────────────────────────────────────────── */
 [data-theme="dark"] {
-  --color-bg: #14110c;          /* 最深暖墨豆底 */
-  --color-surface: #1f1a14;     /* 卡片/聊天面 */
-  --color-surface-2: #1a160f;   /* 略沉 */
-  --color-surface-3: #17130d;   /* 最沉嵌入面 */
+	--color-bg: #14110c; /* 最深暖墨豆底 */
+	--color-surface: #1f1a14; /* 卡片/聊天面 */
+	--color-surface-2: #1a160f; /* 略沉 */
+	--color-surface-3: #17130d; /* 最沉嵌入面 */
 
-  --color-sidebar: #0e0b07;     /* 比 bg 还深,锚定左栏 */
-  --color-sidebar-2: #0a0805;
-  --color-sidebar-line: rgba(237, 229, 213, 0.07);
-  --color-sidebar-hover: rgba(237, 229, 213, 0.05);
-  --color-sidebar-active: rgba(237, 229, 213, 0.10);
-  --color-sidebar-fg: #ece3d2;
-  --color-sidebar-muted: #8a8170;
+	--color-sidebar: #0e0b07; /* 比 bg 还深,锚定左栏 */
+	--color-sidebar-2: #0a0805;
+	--color-sidebar-line: rgba(237, 229, 213, 0.07);
+	--color-sidebar-hover: rgba(237, 229, 213, 0.05);
+	--color-sidebar-active: rgba(237, 229, 213, 0.1);
+	--color-sidebar-fg: #ece3d2;
+	--color-sidebar-muted: #8a8170;
 
-  --color-line: #2c251b;
-  --color-line-2: #382f22;
-  --color-line-strong: #4c3f2d;
-  --color-line-hair: rgba(237, 229, 213, 0.09);
+	--color-line: #2c251b;
+	--color-line-2: #382f22;
+	--color-line-strong: #4c3f2d;
+	--color-line-hair: rgba(237, 229, 213, 0.09);
 
-  --color-fg: #ece3d2;          /* 暖奶白 */
-  --color-fg-2: #c2b8a3;
-  --color-fg-3: #8c8270;
-  --color-fg-4: #62594a;
+	--color-fg: #ece3d2; /* 暖奶白 */
+	--color-fg-2: #c2b8a3;
+	--color-fg-3: #8c8270;
+	--color-fg-4: #62594a;
 
-  /* accent 暗底微提亮 + soft 改低透明橙 wash(不能用奶油) */
-  --color-accent: #ec8a4c;
-  --color-accent-soft: rgba(236, 138, 76, 0.14);
-  --color-accent-dim: #c8703a;
-  --color-code-bg: rgba(236, 138, 76, 0.13);
-  --color-code-fg: #e2a06e;
+	/* accent 暗底微提亮 + soft 改低透明橙 wash(不能用奶油) */
+	--color-accent: #ec8a4c;
+	--color-accent-soft: rgba(236, 138, 76, 0.14);
+	--color-accent-dim: #c8703a;
+	--color-code-bg: rgba(236, 138, 76, 0.13);
+	--color-code-fg: #e2a06e;
 
-  /* 语义色:暗底提亮主色,-soft 改同色相低透明 tint(徽章全靠它) */
-  --color-green: #4faf86;       --color-green-soft: rgba(79, 175, 134, 0.15);
-  --color-amber: #d9a441;       --color-amber-soft: rgba(217, 164, 65, 0.15);
-  --color-red: #d6695a;         --color-red-soft: rgba(214, 105, 90, 0.16);
-  --color-blue: #5b8fc9;        --color-blue-soft: rgba(91, 143, 201, 0.15);
-  --color-purple: #9b7ee0;      --color-purple-soft: rgba(155, 126, 224, 0.15);
+	/* 语义色:暗底提亮主色,-soft 改同色相低透明 tint(徽章全靠它) */
+	--color-green: #4faf86;
+	--color-green-soft: rgba(79, 175, 134, 0.15);
+	--color-amber: #d9a441;
+	--color-amber-soft: rgba(217, 164, 65, 0.15);
+	--color-red: #d6695a;
+	--color-red-soft: rgba(214, 105, 90, 0.16);
+	--color-blue: #5b8fc9;
+	--color-blue-soft: rgba(91, 143, 201, 0.15);
+	--color-purple: #9b7ee0;
+	--color-purple-soft: rgba(155, 126, 224, 0.15);
 
-  /* 深度:暗底纯投影偏弱,靠顶部内高光"抬起" */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
-  --shadow-md: 0 16px 40px rgba(0, 0, 0, 0.50), 0 3px 10px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.62), 0 8px 22px -8px rgba(0, 0, 0, 0.45);
-  --ring-inset: inset 0 1px 0 rgba(255, 240, 220, 0.06);
-  --shadow-card: var(--shadow-sm), var(--ring-inset);
-  --color-focus: rgba(236, 138, 76, 0.55);
-  --glow-accent: 0 0 0 1px rgba(236, 138, 76, 0.35),
-                 0 6px 26px -8px rgba(236, 138, 76, 0.45);
-  --ring-input-focus: 0 0 0 3px rgba(236, 138, 76, 0.16), var(--shadow-sm);
+	/* 深度:暗底纯投影偏弱,靠顶部内高光"抬起" */
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.5), 0 3px 10px rgba(0, 0, 0, 0.35);
+	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.62), 0 8px 22px -8px
+		rgba(0, 0, 0, 0.45);
+	--ring-inset: inset 0 1px 0 rgba(255, 240, 220, 0.06);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(236, 138, 76, 0.55);
+	--glow-accent: 0 0 0 1px rgba(236, 138, 76, 0.35), 0 6px 26px -8px
+		rgba(236, 138, 76, 0.45);
+	--ring-input-focus: 0 0 0 3px rgba(236, 138, 76, 0.16), var(--shadow-sm);
 
-  /* 氛围:暗底 mesh 更明显些,grain 用 soft-light(multiply 在暗底不可见) */
-  --mesh-1: rgba(236, 138, 76, 0.07);
-  --mesh-2: rgba(150, 110, 70, 0.06);
-  --mesh-3: rgba(90, 110, 130, 0.035);
-  --grain-opacity: 0.05;
-  --grain-blend: soft-light;
+	/* 氛围:暗底 mesh 更明显些,grain 用 soft-light(multiply 在暗底不可见) */
+	--mesh-1: rgba(236, 138, 76, 0.07);
+	--mesh-2: rgba(150, 110, 70, 0.06);
+	--mesh-3: rgba(90, 110, 130, 0.035);
+	--grain-opacity: 0.05;
+	--grain-blend: soft-light;
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -190,50 +198,77 @@
 html,
 body,
 #root {
-  height: 100%;
-  margin: 0;
+	height: 100%;
+	margin: 0;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+	--pn-status-safe-top: env(safe-area-inset-top);
+	--pn-status-safe-bottom: env(safe-area-inset-bottom);
+}
+
+html[data-capacitor="1"],
+html[data-capacitor="1"] body,
+html[data-capacitor="1"] #root {
+	height: 100%;
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
+html[data-capacitor="1"] {
+	--pn-status-safe-top: max(env(safe-area-inset-top), 44px);
+	--pn-status-safe-bottom: env(safe-area-inset-bottom);
+}
+
+html[data-capacitor="1"] * {
+	-webkit-tap-highlight-color: transparent;
+	-webkit-touch-callout: none;
 }
 
 body {
-  font-family: var(--font-ui);
-  font-size: var(--text-body);
-  line-height: var(--leading-normal);
-  color: var(--color-fg);
-  background: var(--color-bg);
-  -webkit-font-smoothing: antialiased;
-  font-feature-settings: "ss01", "kern", "palt";  /* SC 字间紧致 */
-  text-rendering: optimizeLegibility;
+	font-family: var(--font-ui);
+	font-size: var(--text-body);
+	line-height: var(--leading-normal);
+	color: var(--color-fg);
+	background: var(--color-bg);
+	-webkit-font-smoothing: antialiased;
+	font-feature-settings: "ss01", "kern", "palt"; /* SC 字间紧致 */
+	text-rendering: optimizeLegibility;
 }
 
 /* 氛围层 1 — 径向 mesh:2-3 团极低饱和暖色渐变制造深度。静态、不动画。 */
 body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(60% 50% at 8% 0%, var(--mesh-1) 0%, transparent 70%),
-    radial-gradient(55% 55% at 100% 100%, var(--mesh-2) 0%, transparent 70%),
-    radial-gradient(80% 60% at 50% 40%, var(--mesh-3) 0%, transparent 75%);
+	content: "";
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 0;
+	background: radial-gradient(
+			60% 50% at 8% 0%,
+			var(--mesh-1) 0%,
+			transparent 70%
+		), radial-gradient(55% 55% at 100% 100%, var(--mesh-2) 0%, transparent 70%),
+		radial-gradient(80% 60% at 50% 40%, var(--mesh-3) 0%, transparent 75%);
 }
 
 /* 氛围层 2 — 纸面颗粒:暖纸质感。亮色 multiply,暗色 soft-light。 */
 body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  opacity: var(--grain-opacity);
-  mix-blend-mode: var(--grain-blend);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='5'/><feColorMatrix values='0 0 0 0 0.18  0 0 0 0 0.14  0 0 0 0 0.09  0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  background-size: 200px 200px;
+	content: "";
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 0;
+	opacity: var(--grain-opacity);
+	mix-blend-mode: var(--grain-blend);
+	background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='5'/><feColorMatrix values='0 0 0 0 0.18  0 0 0 0 0.14  0 0 0 0 0.09  0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+	background-size: 200px 200px;
 }
 
 #root {
-  position: relative;
-  z-index: 1;
+	position: relative;
+	z-index: 1;
 }
 
 /* 键盘焦点环 — 只作用于按钮/链接等可点元素。
@@ -243,9 +278,9 @@ button:focus-visible,
 a:focus-visible,
 [role="button"]:focus-visible,
 summary:focus-visible {
-  outline: none;
-  box-shadow: var(--ring-focus);
-  border-radius: 6px;
+	outline: none;
+	box-shadow: var(--ring-focus);
+	border-radius: 6px;
 }
 
 /* Tailwind v4 preflight strips the default `cursor: pointer` from <button>
@@ -258,29 +293,59 @@ button:not(:disabled),
 summary,
 label[for],
 a[href] {
-  cursor: pointer;
+	cursor: pointer;
 }
 button:disabled,
 [role="button"][aria-disabled="true"] {
-  cursor: not-allowed;
+	cursor: not-allowed;
 }
 
 /* ─────────────────────────────────────────────────────────────────
    Typography utilities (用语义类替代散乱的 text-[12px])
    ─────────────────────────────────────────────────────────────────  */
 
-.text-caption { font-size: var(--text-caption); line-height: var(--leading-tight); }
-.text-meta { font-size: var(--text-meta); line-height: var(--leading-normal); }
-.text-body { font-size: var(--text-body); line-height: var(--leading-normal); }
-.text-lead { font-size: var(--text-lead); line-height: var(--leading-relaxed); }
-.text-title { font-size: var(--text-title); line-height: var(--leading-tight); font-family: var(--font-display); font-weight: 500; }
-.text-display { font-size: var(--text-display); line-height: var(--leading-tight); font-family: var(--font-display); font-weight: 500; letter-spacing: -0.01em; }
+.text-caption {
+	font-size: var(--text-caption);
+	line-height: var(--leading-tight);
+}
+.text-meta {
+	font-size: var(--text-meta);
+	line-height: var(--leading-normal);
+}
+.text-body {
+	font-size: var(--text-body);
+	line-height: var(--leading-normal);
+}
+.text-lead {
+	font-size: var(--text-lead);
+	line-height: var(--leading-relaxed);
+}
+.text-title {
+	font-size: var(--text-title);
+	line-height: var(--leading-tight);
+	font-family: var(--font-display);
+	font-weight: 500;
+}
+.text-display {
+	font-size: var(--text-display);
+	line-height: var(--leading-tight);
+	font-family: var(--font-display);
+	font-weight: 500;
+	letter-spacing: -0.01em;
+}
 
 /* display 类的英文用 Plex Serif 自动 fallback；中文走 Noto Serif SC */
-.font-display { font-family: var(--font-display); }
-.font-ui { font-family: var(--font-ui); }
+.font-display {
+	font-family: var(--font-display);
+}
+.font-ui {
+	font-family: var(--font-ui);
+}
 .mono,
-.font-mono { font-family: var(--font-mono); font-feature-settings: "zero", "ss01"; }
+.font-mono {
+	font-family: var(--font-mono);
+	font-feature-settings: "zero", "ss01";
+}
 
 /* ─────────────────────────────────────────────────────────────────
    Component primitives — editorial flavor
@@ -288,81 +353,93 @@ button:disabled,
 
 /* 主按钮 — 全直角 + 黑底奶油字。橙色作 hover hair-line 暗示 */
 .btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  background: var(--color-fg);
-  color: var(--color-bg);
-  border: 1px solid var(--color-fg);
-  border-radius: 0;          /* 直角 */
-  font-size: var(--text-body);
-  line-height: 1.2;
-  cursor: pointer;
-  transition: background 120ms var(--ease-out-soft),
-              border-color 120ms var(--ease-out-soft);
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 14px;
+	background: var(--color-fg);
+	color: var(--color-bg);
+	border: 1px solid var(--color-fg);
+	border-radius: 0; /* 直角 */
+	font-size: var(--text-body);
+	line-height: 1.2;
+	cursor: pointer;
+	transition: background 120ms var(--ease-out-soft), border-color 120ms
+		var(--ease-out-soft);
 }
-.btn-primary:hover { background: var(--color-fg-2); border-color: var(--color-accent); }
-.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-primary:hover {
+	background: var(--color-fg-2);
+	border-color: var(--color-accent);
+}
+.btn-primary:disabled {
+	opacity: 0.35;
+	cursor: not-allowed;
+}
 
 /* 次按钮 — ghost + hair-line */
 .btn-ghost {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  background: transparent;
-  color: var(--color-fg-2);
-  border: 1px solid var(--color-line-strong);
-  border-radius: 2px;
-  font-size: var(--text-body);
-  line-height: 1.2;
-  cursor: pointer;
-  transition: background 120ms var(--ease-out-soft),
-              color 120ms var(--ease-out-soft);
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 14px;
+	background: transparent;
+	color: var(--color-fg-2);
+	border: 1px solid var(--color-line-strong);
+	border-radius: 2px;
+	font-size: var(--text-body);
+	line-height: 1.2;
+	cursor: pointer;
+	transition: background 120ms var(--ease-out-soft), color 120ms
+		var(--ease-out-soft);
 }
-.btn-ghost:hover { background: var(--color-surface-2); color: var(--color-fg); }
+.btn-ghost:hover {
+	background: var(--color-surface-2);
+	color: var(--color-fg);
+}
 
 /* Modal 容器 — 顶部一条 1.5px 橙色 hair-line 作 identity */
 .modal-card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-line-strong);
-  border-radius: 10px;      /* Atelier:柔和圆角而非硬直角,配深色更精致 */
-  box-shadow: var(--shadow-lg);
-  position: relative;
-  overflow: hidden;
+	background: var(--color-surface);
+	border: 1px solid var(--color-line-strong);
+	border-radius: 10px; /* Atelier:柔和圆角而非硬直角,配深色更精致 */
+	box-shadow: var(--shadow-lg);
+	position: relative;
+	overflow: hidden;
 }
-.modal-card::after {  /* 顶部内高光,暗底下让卡片"浮起" */
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: var(--ring-inset);
-  pointer-events: none;
+.modal-card::after {
+	/* 顶部内高光,暗底下让卡片"浮起" */
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	box-shadow: var(--ring-inset);
+	pointer-events: none;
 }
 .modal-card::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 1.5px;
-  background: var(--color-accent);
+	content: "";
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 1.5px;
+	background: var(--color-accent);
 }
 
 /* Section header utility — small caps 风,字距宽 */
 .section-eyebrow {
-  font-family: var(--font-display);
-  font-size: var(--text-caption);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--color-fg-2);
-  font-weight: 500;
+	font-family: var(--font-display);
+	font-size: var(--text-caption);
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--color-fg-2);
+	font-weight: 500;
 }
 
 /* Hair-line divider */
 .hr-hair {
-  border: none;
-  border-top: var(--rule-hair);
-  margin: 0;
+	border: none;
+	border-top: var(--rule-hair);
+	margin: 0;
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -381,141 +458,219 @@ button:disabled,
    ─────────────────────────────────────────────────────────────────  */
 
 @keyframes pulse-online {
-  0%, 100% { opacity: 0.55; transform: scale(1); }
-  50%      { opacity: 1;    transform: scale(1.15); }
+	0%,
+	100% {
+		opacity: 0.55;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1.15);
+	}
 }
-.dot-online { animation: pulse-online 2.4s var(--ease-out-soft) infinite; }
+.dot-online {
+	animation: pulse-online 2.4s var(--ease-out-soft) infinite;
+}
 
 @keyframes modal-in {
-  from { opacity: 0; transform: scale(0.97) translateY(4px); }
-  to   { opacity: 1; transform: none; }
+	from {
+		opacity: 0;
+		transform: scale(0.97) translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
-.anim-modal-in { animation: modal-in 220ms var(--ease-out-soft); }
+.anim-modal-in {
+	animation: modal-in 220ms var(--ease-out-soft);
+}
 
 /* Connection banner: slide down from the top edge. */
-@keyframes conn-in { from { transform: translateY(-100%); opacity: 0; } to { transform: none; opacity: 1; } }
-.anim-conn-in { animation: conn-in 280ms var(--ease-out-soft); }
+@keyframes conn-in {
+	from {
+		transform: translateY(-100%);
+		opacity: 0;
+	}
+	to {
+		transform: none;
+		opacity: 1;
+	}
+}
+.anim-conn-in {
+	animation: conn-in 280ms var(--ease-out-soft);
+}
 
 @keyframes backdrop-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
 }
-.anim-backdrop-in { animation: backdrop-in 200ms var(--ease-out-soft); }
+.anim-backdrop-in {
+	animation: backdrop-in 200ms var(--ease-out-soft);
+}
 
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: none; }
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
-.anim-fade-up { animation: fade-up 320ms var(--ease-out-soft) both; }
+.anim-fade-up {
+	animation: fade-up 320ms var(--ease-out-soft) both;
+}
 
 @keyframes stagger-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: none; }
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
 /* Used in lists: each child sets --i and inline animation-delay = calc(var(--i) * 30ms) */
 .anim-stagger {
-  animation: stagger-in 320ms var(--ease-out-soft) both;
+	animation: stagger-in 320ms var(--ease-out-soft) both;
 }
 
 /* ── Hover utilities (compose-friendly) ──────────────────────── */
 
 /* List item: tiny right-shift, like a book pulled off shelf */
 .hover-shift {
-  transition: transform 180ms var(--ease-out-soft),
-              background-color 180ms var(--ease-out-soft),
-              color 180ms var(--ease-out-soft);
+	transition: transform 180ms var(--ease-out-soft), background-color 180ms
+		var(--ease-out-soft), color 180ms var(--ease-out-soft);
 }
-.hover-shift:hover { transform: translateX(2px); }
+.hover-shift:hover {
+	transform: translateX(2px);
+}
 
 /* Card / button: subtle lift */
 .hover-lift {
-  transition: transform 180ms var(--ease-out-soft),
-              background-color 180ms var(--ease-out-soft),
-              border-color 180ms var(--ease-out-soft),
-              box-shadow 180ms var(--ease-out-soft);
+	transition: transform 180ms var(--ease-out-soft), background-color 180ms
+		var(--ease-out-soft), border-color 180ms var(--ease-out-soft), box-shadow
+		180ms var(--ease-out-soft);
 }
-.hover-lift:hover { transform: translateY(-1px); }
+.hover-lift:hover {
+	transform: translateY(-1px);
+}
 
 /* Avatar / small graphic: scale up */
 .hover-scale {
-  transition: transform 200ms var(--ease-out-soft);
+	transition: transform 200ms var(--ease-out-soft);
 }
-.hover-scale:hover { transform: scale(1.06); }
+.hover-scale:hover {
+	transform: scale(1.06);
+}
 
 /* + icon rotate on parent hover — for "add" buttons */
-.icon-rotate-on-hover { transition: transform 320ms var(--ease-out-soft); }
-.group:hover .icon-rotate-on-hover { transform: rotate(90deg); }
+.icon-rotate-on-hover {
+	transition: transform 320ms var(--ease-out-soft);
+}
+.group:hover .icon-rotate-on-hover {
+	transform: rotate(90deg);
+}
 
 /* Chevron rotate down → right when collapsed (used via prop, not class) */
 
 /* Press-down: subtle squish on active */
-.press-down:active { transform: translateY(1px) scale(0.985); }
+.press-down:active {
+	transform: translateY(1px) scale(0.985);
+}
 
 /* Editorial underline reveal — left-to-right hair-line */
 .hover-underline {
-  position: relative;
-  transition: color 160ms var(--ease-out-soft);
+	position: relative;
+	transition: color 160ms var(--ease-out-soft);
 }
 .hover-underline::after {
-  content: "";
-  position: absolute;
-  left: 0; right: 0; bottom: -2px;
-  height: 1px;
-  background: currentColor;
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform 220ms var(--ease-out-soft);
+	content: "";
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: -2px;
+	height: 1px;
+	background: currentColor;
+	transform: scaleX(0);
+	transform-origin: left center;
+	transition: transform 220ms var(--ease-out-soft);
 }
-.hover-underline:hover::after { transform: scaleX(1); }
+.hover-underline:hover::after {
+	transform: scaleX(1);
+}
 
 /* Icon shimmer — gentle hue shift, for inline accents */
 @keyframes icon-shimmer {
-  0%, 100% { opacity: 0.7; }
-  50%      { opacity: 1; }
+	0%,
+	100% {
+		opacity: 0.7;
+	}
+	50% {
+		opacity: 1;
+	}
 }
-.icon-shimmer { animation: icon-shimmer 3s var(--ease-out-soft) infinite; }
+.icon-shimmer {
+	animation: icon-shimmer 3s var(--ease-out-soft) infinite;
+}
 
 /* ── Checking state — editorial 风,顶部 1.5px hair-line marquee 缓慢横移,
    配合卡片背景极弱橙色脉冲。比之前的"扫描带"克制 10 倍。 */
 @keyframes hairline-marquee {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(250%);
+	}
 }
 @keyframes bg-pulse {
-  0%, 100% { opacity: 0.025; }
-  50%      { opacity: 0.07; }
+	0%,
+	100% {
+		opacity: 0.025;
+	}
+	50% {
+		opacity: 0.07;
+	}
 }
 .is-checking {
-  position: relative;
+	position: relative;
 }
 .is-checking::before {
-  /* 顶部 1.5px 橙色 hair-line,40%宽,渐变两端透明 */
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 40%;
-  height: 1.5px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--color-accent) 50%,
-    transparent 100%
-  );
-  animation: hairline-marquee 1.4s linear infinite;
-  pointer-events: none;
-  z-index: 1;
+	/* 顶部 1.5px 橙色 hair-line,40%宽,渐变两端透明 */
+	content: "";
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 40%;
+	height: 1.5px;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		var(--color-accent) 50%,
+		transparent 100%
+	);
+	animation: hairline-marquee 1.4s linear infinite;
+	pointer-events: none;
+	z-index: 1;
 }
 .is-checking::after {
-  /* 卡片背景极弱橙色呼吸 */
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--color-accent);
-  opacity: 0.025;
-  pointer-events: none;
-  animation: bg-pulse 1.6s ease-in-out infinite;
-  border-radius: inherit;
+	/* 卡片背景极弱橙色呼吸 */
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: var(--color-accent);
+	opacity: 0.025;
+	pointer-events: none;
+	animation: bg-pulse 1.6s ease-in-out infinite;
+	border-radius: inherit;
 }
 
 /* ── Burst lane "running" state: NO animation. The breathing glow + hairline
@@ -527,76 +682,97 @@ button:disabled,
 /* ── Badge entry — used when "已启用" badge first appears after probe.
    Slight scale-up from 0.85 + fade-in. Feels like the badge being "stamped on". */
 @keyframes badge-in {
-  0%   { opacity: 0; transform: scale(0.85); }
-  60%  { opacity: 1; transform: scale(1.06); }
-  100% { opacity: 1; transform: scale(1); }
+	0% {
+		opacity: 0;
+		transform: scale(0.85);
+	}
+	60% {
+		opacity: 1;
+		transform: scale(1.06);
+	}
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
 }
-.anim-badge-in { animation: badge-in 320ms var(--ease-out-soft) both; }
+.anim-badge-in {
+	animation: badge-in 320ms var(--ease-out-soft) both;
+}
 
 /* ── Numeric tween — smooth count-up via transition-discrete  */
-.tabular { font-variant-numeric: tabular-nums; }
+.tabular {
+	font-variant-numeric: tabular-nums;
+}
 
 /* ── Section collapse — grid-row trick gives smooth height animation
    without measuring content. Pair with [data-open="true|false"]. */
 .collapse-section {
-  display: grid;
-  grid-template-rows: 1fr;
-  opacity: 1;
-  transition:
-    grid-template-rows 300ms var(--ease-out-soft),
-    opacity 200ms var(--ease-out-soft);
+	display: grid;
+	grid-template-rows: 1fr;
+	opacity: 1;
+	transition: grid-template-rows 300ms var(--ease-out-soft), opacity 200ms
+		var(--ease-out-soft);
 }
 .collapse-section[data-open="false"] {
-  grid-template-rows: 0fr;
-  opacity: 0;
+	grid-template-rows: 0fr;
+	opacity: 0;
 }
 .collapse-section > .collapse-inner {
-  min-height: 0;
-  overflow: hidden;
+	min-height: 0;
+	overflow: hidden;
 }
 
 /* Editorial: 默认 link 风格(章节里的 hot link)*/
 a.editorial,
 .link-accent {
-  color: var(--color-accent);
-  text-decoration: none;
-  background-image: linear-gradient(currentColor, currentColor);
-  background-size: 100% 0.5px;
-  background-position: 0 100%;
-  background-repeat: no-repeat;
-  transition: background-size 120ms var(--ease-out-soft);
+	color: var(--color-accent);
+	text-decoration: none;
+	background-image: linear-gradient(currentColor, currentColor);
+	background-size: 100% 0.5px;
+	background-position: 0 100%;
+	background-repeat: no-repeat;
+	transition: background-size 120ms var(--ease-out-soft);
 }
 a.editorial:hover,
-.link-accent:hover { background-size: 100% 1px; }
+.link-accent:hover {
+	background-size: 100% 1px;
+}
 
 /* ─────────────────────────────────────────────────────────────────
    Scrollbar — 不要默认银白,改 cream 上的浅棕
    ─────────────────────────────────────────────────────────────────  */
 
 * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-line-strong) transparent;
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-line-strong) transparent;
 }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
 *::-webkit-scrollbar-thumb {
-  background: var(--color-line-2);
-  border-radius: 0;
+	background: var(--color-line-2);
+	border-radius: 0;
 }
-*::-webkit-scrollbar-thumb:hover { background: var(--color-line-strong); }
+*::-webkit-scrollbar-thumb:hover {
+	background: var(--color-line-strong);
+}
 
 /* Sidebar 内部 scrollbar 走深色 */
 [class*="bg-[var(--color-sidebar)]"]::-webkit-scrollbar-thumb,
 .bg-sidebar::-webkit-scrollbar-thumb {
-  background: var(--color-sidebar-line);
+	background: var(--color-sidebar-line);
 }
 
 /* 拖拽调宽时:全局锁 col-resize 光标 + 禁选,避免选中文字/闪烁。
    侧栏与产物面板共用(此前被引用但从未定义)。 */
 body.polynoia-resizing,
 body.polynoia-resizing * {
-  cursor: col-resize !important;
-  user-select: none !important;
+	cursor: col-resize !important;
+	user-select: none !important;
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -606,63 +782,113 @@ body.polynoia-resizing * {
 /* 回复跳转高亮 — 此前 .flash-target 被引用但从未定义,补上(accent 环脉冲,
    ~1200ms 对齐 MessageView/ChatSearchOverlay 的 setTimeout 移除时机)。*/
 @keyframes flash-ring {
-  0%   { box-shadow: 0 0 0 0 rgba(224, 122, 60, 0.0); background-color: transparent; }
-  18%  { box-shadow: 0 0 0 3px var(--color-accent-soft), var(--glow-accent); background-color: var(--color-accent-soft); }
-  100% { box-shadow: 0 0 0 0 rgba(224, 122, 60, 0.0); background-color: transparent; }
+	0% {
+		box-shadow: 0 0 0 0 rgba(224, 122, 60, 0.0);
+		background-color: transparent;
+	}
+	18% {
+		box-shadow: 0 0 0 3px var(--color-accent-soft), var(--glow-accent);
+		background-color: var(--color-accent-soft);
+	}
+	100% {
+		box-shadow: 0 0 0 0 rgba(224, 122, 60, 0.0);
+		background-color: transparent;
+	}
 }
 .flash-target {
-  animation: flash-ring 1200ms var(--ease-out-soft);
-  border-radius: 8px;
+	animation: flash-ring 1200ms var(--ease-out-soft);
+	border-radius: 8px;
 }
 
 /* BurstCard 泳道揭示 — 从左滑入(Framer Motion 用 JS stagger;此为 CSS 兜底/降级) */
 @keyframes lane-reveal {
-  from { opacity: 0; transform: translateY(8px) scale(0.985); }
-  to   { opacity: 1; transform: none; }
+	from {
+		opacity: 0;
+		transform: translateY(8px) scale(0.985);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
-.anim-lane-reveal { animation: lane-reveal 400ms var(--ease-out-soft) both; }
+.anim-lane-reveal {
+	animation: lane-reveal 400ms var(--ease-out-soft) both;
+}
 
 /* 状态徽章翻转 — 轻微回弹 scale-pop(Waiting→Running→Done) */
 @keyframes state-flip {
-  0%   { transform: scale(0.8); }
-  60%  { transform: scale(1.08); }
-  100% { transform: scale(1); }
+	0% {
+		transform: scale(0.8);
+	}
+	60% {
+		transform: scale(1.08);
+	}
+	100% {
+		transform: scale(1);
+	}
 }
-.anim-state-flip { animation: state-flip 280ms var(--ease-spring); }
+.anim-state-flip {
+	animation: state-flip 280ms var(--ease-spring);
+}
 
 /* 写入光标:干脆的编辑器式闪烁(step,不是淡入淡出),比 animate-pulse 更像真光标 */
 @keyframes caret-blink {
-  0%, 49%   { opacity: 1; }
-  50%, 100% { opacity: 0; }
+	0%,
+	49% {
+		opacity: 1;
+	}
+	50%,
+	100% {
+		opacity: 0;
+	}
 }
-.caret-blink { animation: caret-blink 1.05s steps(1, end) infinite; }
+.caret-blink {
+	animation: caret-blink 1.05s steps(1, end) infinite;
+}
 
 /* 写入中正文区的极淡“活着”呼吸底,信号正在落字 */
 @keyframes write-breath {
-  0%, 100% { background-color: color-mix(in srgb, var(--color-accent) 4%, transparent); }
-  50%      { background-color: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+	0%,
+	100% {
+		background-color: color-mix(in srgb, var(--color-accent) 4%, transparent);
+	}
+	50% {
+		background-color: color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
 }
-.anim-write-breath { animation: write-breath 2.2s ease-in-out infinite; }
+.anim-write-breath {
+	animation: write-breath 2.2s ease-in-out infinite;
+}
 
 /* done 态泳道的一次性暖光确认 */
 @keyframes done-glow {
-  0%   { box-shadow: 0 0 0 0 transparent; }
-  40%  { box-shadow: var(--glow-accent); }
-  100% { box-shadow: 0 0 0 0 transparent; }
+	0% {
+		box-shadow: 0 0 0 0 transparent;
+	}
+	40% {
+		box-shadow: var(--glow-accent);
+	}
+	100% {
+		box-shadow: 0 0 0 0 transparent;
+	}
 }
-.anim-done-glow { animation: done-glow 900ms var(--ease-out-soft); }
+.anim-done-glow {
+	animation: done-glow 900ms var(--ease-out-soft);
+}
 
 /* ── 降级守卫:尊重 prefers-reduced-motion,中和所有 transform/动画 ── */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-  body::after { display: none; }  /* mesh 静态本就无害,但减少绘制 */
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+	body::after {
+		display: none;
+	} /* mesh 静态本就无害,但减少绘制 */
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -670,31 +896,50 @@ body.polynoia-resizing * {
    暗色下用 .hljs token 覆盖映射到 Atelier 暗色,保持 import 不动(逻辑安全)。
    ───────────────────────────────────────────────────────────────── */
 [data-theme="dark"] .hljs {
-  background: transparent;
-  color: var(--color-fg-2);
+	background: transparent;
+	color: var(--color-fg-2);
 }
 [data-theme="dark"] .hljs-comment,
-[data-theme="dark"] .hljs-quote { color: var(--color-fg-4); font-style: italic; }
+[data-theme="dark"] .hljs-quote {
+	color: var(--color-fg-4);
+	font-style: italic;
+}
 [data-theme="dark"] .hljs-keyword,
 [data-theme="dark"] .hljs-selector-tag,
 [data-theme="dark"] .hljs-literal,
 [data-theme="dark"] .hljs-built_in,
-[data-theme="dark"] .hljs-name { color: var(--color-accent); }
+[data-theme="dark"] .hljs-name {
+	color: var(--color-accent);
+}
 [data-theme="dark"] .hljs-string,
 [data-theme="dark"] .hljs-attr,
 [data-theme="dark"] .hljs-regexp,
-[data-theme="dark"] .hljs-addition { color: var(--color-green); }
+[data-theme="dark"] .hljs-addition {
+	color: var(--color-green);
+}
 [data-theme="dark"] .hljs-number,
 [data-theme="dark"] .hljs-symbol,
-[data-theme="dark"] .hljs-bullet { color: var(--color-amber); }
+[data-theme="dark"] .hljs-bullet {
+	color: var(--color-amber);
+}
 [data-theme="dark"] .hljs-title,
 [data-theme="dark"] .hljs-section,
-[data-theme="dark"] .hljs-function .hljs-title { color: var(--color-blue); }
+[data-theme="dark"] .hljs-function .hljs-title {
+	color: var(--color-blue);
+}
 [data-theme="dark"] .hljs-type,
-[data-theme="dark"] .hljs-class .hljs-title { color: var(--color-purple); }
-[data-theme="dark"] .hljs-deletion { color: var(--color-red); }
-[data-theme="dark"] .hljs-emphasis { font-style: italic; }
-[data-theme="dark"] .hljs-strong { font-weight: 600; }
+[data-theme="dark"] .hljs-class .hljs-title {
+	color: var(--color-purple);
+}
+[data-theme="dark"] .hljs-deletion {
+	color: var(--color-red);
+}
+[data-theme="dark"] .hljs-emphasis {
+	font-style: italic;
+}
+[data-theme="dark"] .hljs-strong {
+	font-weight: 600;
+}
 
 /* ════════════════════════════════════════════════════════════════════════
    「夜读」 — Mobile editorial-nocturne layer.
@@ -708,69 +953,130 @@ body.polynoia-resizing * {
 /* Signature atmosphere — drop on a full-screen mobile container. Two stacked
    pseudo-layers behind content: (1) an ember radial glow from the top + a faint
    violet floor, (2) a fractal-noise paper grain. */
-.pn-m-atmos { position: relative; isolation: isolate; }
+.pn-m-atmos {
+	position: relative;
+	isolation: isolate;
+}
 .pn-m-atmos::before {
-  content: "";
-  position: absolute; inset: 0; z-index: -2; pointer-events: none;
-  background:
-    radial-gradient(135% 62% at 50% -14%, rgba(236, 138, 76, 0.20), rgba(236, 138, 76, 0.05) 38%, transparent 64%),
-    radial-gradient(120% 55% at 50% 116%, rgba(155, 126, 224, 0.08), transparent 70%);
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: -2;
+	pointer-events: none;
+	background: radial-gradient(
+			135% 62% at 50% -14%,
+			rgba(236, 138, 76, 0.2),
+			rgba(236, 138, 76, 0.05) 38%,
+			transparent 64%
+		),
+		radial-gradient(
+			120% 55% at 50% 116%,
+			rgba(155, 126, 224, 0.08),
+			transparent 70%
+		);
 }
 .pn-m-atmos::after {
-  content: "";
-  position: absolute; inset: 0; z-index: -1; pointer-events: none;
-  opacity: 0.05; mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	opacity: 0.05;
+	mix-blend-mode: overlay;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-[data-theme="dark"] .pn-m-atmos::after { opacity: 0.06; }
+[data-theme="dark"] .pn-m-atmos::after {
+	opacity: 0.06;
+}
 
 /* Ember hairline rule — a thin accent line that ignites at the left and fades
    into the dark. Sits under a masthead. */
 .pn-m-rule {
-  height: 1px; border: 0;
-  background: linear-gradient(90deg,
-    var(--color-accent) 0%,
-    color-mix(in srgb, var(--color-accent) 45%, transparent) 22%,
-    var(--color-line) 60%,
-    transparent 100%);
+	height: 1px;
+	border: 0;
+	background: linear-gradient(
+		90deg,
+		var(--color-accent) 0%,
+		color-mix(in srgb, var(--color-accent) 45%, transparent) 22%,
+		var(--color-line) 60%,
+		transparent 100%
+	);
 }
 
 /* Mono micro-label — wide-tracked uppercase caption (editorial kicker). */
 .pn-m-kicker {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.34em;
-  text-transform: uppercase;
-  color: var(--color-fg-3);
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: 0.34em;
+	text-transform: uppercase;
+	color: var(--color-fg-3);
 }
 
 /* Orchestrated entrance — a slower, more deliberate rise than anim-fade-up,
    for the connect screen's staged reveal. Pair with .pn-d-1 … .pn-d-6. */
 @keyframes pn-rise {
-  from { opacity: 0; transform: translateY(14px); filter: blur(3px); }
-  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
+	from {
+		opacity: 0;
+		transform: translateY(14px);
+		filter: blur(3px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+		filter: blur(0);
+	}
 }
-.pn-rise { animation: pn-rise 620ms var(--ease-out-soft) both; }
-.pn-d-1 { animation-delay: 60ms; }
-.pn-d-2 { animation-delay: 150ms; }
-.pn-d-3 { animation-delay: 250ms; }
-.pn-d-4 { animation-delay: 360ms; }
-.pn-d-5 { animation-delay: 480ms; }
-.pn-d-6 { animation-delay: 610ms; }
+.pn-rise {
+	animation: pn-rise 620ms var(--ease-out-soft) both;
+}
+.pn-d-1 {
+	animation-delay: 60ms;
+}
+.pn-d-2 {
+	animation-delay: 150ms;
+}
+.pn-d-3 {
+	animation-delay: 250ms;
+}
+.pn-d-4 {
+	animation-delay: 360ms;
+}
+.pn-d-5 {
+	animation-delay: 480ms;
+}
+.pn-d-6 {
+	animation-delay: 610ms;
+}
 
 /* The brand mark's slow ember breathing on the connect screen. */
 @keyframes pn-ember {
-  0%, 100% { opacity: 0.55; transform: scale(1); }
-  50%      { opacity: 1;    transform: scale(1.06); }
+	0%,
+	100% {
+		opacity: 0.55;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1.06);
+	}
 }
-.pn-ember { animation: pn-ember 4.5s ease-in-out infinite; }
+.pn-ember {
+	animation: pn-ember 4.5s ease-in-out infinite;
+}
 
 /* Tactile press for list rows / buttons on touch. */
-.pn-m-press { transition: transform 120ms var(--ease-out-soft); }
-.pn-m-press:active { transform: scale(0.985); }
+.pn-m-press {
+	transition: transform 120ms var(--ease-out-soft);
+}
+.pn-m-press:active {
+	transform: scale(0.985);
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .pn-rise, .pn-ember { animation: none; }
+	.pn-rise,
+	.pn-ember {
+		animation: none;
+	}
 }
 
 /* iOS input-focus zoom guard. iOS Safari / WKWebView auto-zoom into any focused
@@ -780,9 +1086,9 @@ body.polynoia-resizing * {
    Forcing >=16px on touch devices is the only reliable fix; desktop (fine
    pointer) keeps its compact field sizes. */
 @media (pointer: coarse) {
-  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
-  textarea,
-  select {
-    font-size: 16px !important;
-  }
+	input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+	textarea,
+	select {
+		font-size: 16px !important;
+	}
 }

@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import { renderToStaticMarkup } from "react-dom/server";
 import remarkGfm from "remark-gfm";
 import { describe, expect, it } from "vitest";
-import { fixCjkMarkdown } from "./TextPart";
+import { fixCjkMarkdown, stripRawToolProtocol } from "./TextPart";
 
 // Renders through the SAME pipeline TextPart uses (react-markdown + remark-gfm),
 // jsdom-free via renderToStaticMarkup. We assert on <strong> presence so the test
@@ -50,5 +50,33 @@ describe("fixCjkMarkdown — closing-side CJK bold gotcha", () => {
 
 	it("leaves text with no CJK-before-** untouched", () => {
 		expect(fixCjkMarkdown("**hello** world")).toBe("**hello** world");
+	});
+});
+
+describe("stripRawToolProtocol", () => {
+	it("hides a leaked complete tool_call JSON block", () => {
+		const input =
+			'先写文件\n<tool_call>{"name":"write","parameters":{"path":"a.md","content":"x"}}\n继续说明';
+		const out = stripRawToolProtocol(input);
+		expect(out).toContain("先写文件");
+		expect(out).toContain("继续说明");
+		expect(out).toContain("工具调用协议内容已隐藏");
+		expect(out).not.toContain("<tool_call>");
+		expect(out).not.toContain('"content":"x"');
+	});
+
+	it("hides an incomplete streaming tool_call from the marker onward", () => {
+		const input =
+			'准备写\n<tool_call>{"name":"write","parameters":{"path":"a.md","content":"很长';
+		const out = stripRawToolProtocol(input);
+		expect(out).toContain("准备写");
+		expect(out).toContain("工具调用协议内容已隐藏");
+		expect(out).not.toContain("<tool_call>");
+		expect(out).not.toContain("很长");
+	});
+
+	it("preserves ordinary text unchanged", () => {
+		const input = "这是普通回复,包含 `write` 这个词但不是协议块。";
+		expect(stripRawToolProtocol(input)).toBe(input);
 	});
 });

@@ -23,6 +23,7 @@ from polynoia.context.group_members import build_group_members_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
 from polynoia.context.ledger import build_activity_ledger_layer, _format_message_body
+from polynoia.context.membership import build_membership_layer
 from polynoia.context.orchestrator import build_orchestrator_protocol_layer
 from polynoia.context.shared import build_shared_memory_layer, member_role_for
 from polynoia.context.budget import compute_budget
@@ -114,6 +115,11 @@ async def build_context_for_turn(
             gm = build_group_members_layer(agent_id=agent_id, roster=roster_roles)
             if gm is not None:
                 layers.append(gm)
+        membership = await build_membership_layer(
+            db, agent_id=agent_id, conv=conv, agents=rows
+        )
+        if membership is not None:
+            layers.append(membership)
 
     briefs = await build_project_briefs_layer(db, agent_id, conv_id=conv_id)
     if briefs is not None:

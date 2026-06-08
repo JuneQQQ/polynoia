@@ -18,7 +18,6 @@ import {
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
-import { FloatingReviewBar } from "./FloatingReviewBar";
 import { MessageView } from "./MessageView";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
@@ -161,9 +160,10 @@ export function ChatPane({ convId, members, title }: Props) {
 					break;
 				default:
 					if (chunk.type === "data-pending-edit") {
-						// Manual-mode approval card. Route to pendingEditsByConv —
-						// DON'T create a regular message bubble. UI surfaces these as
-						// floating ✓/✗ cards above the composer.
+						// Legacy pending-edit chunk. Route to pendingEditsByConv and
+						// avoid creating a regular message bubble. The current product
+						// flow runs in auto mode, but old conversations may still replay
+						// these events.
 						const anyChunk = chunk as any;
 						const edit = anyChunk.data;
 						if (edit && edit.id && edit.conv_id) {
@@ -356,7 +356,10 @@ export function ChatPane({ convId, members, title }: Props) {
 				// when the first mount's effect is unmounted before WS even opens, the
 				// promise rejects with an Event whose currentTarget is null. Real
 				// errors carry a useful message — log only those.
-				if (!e || (typeof e === "object" && (e as Event).currentTarget === null))
+				if (
+					!e ||
+					(typeof e === "object" && (e as Event).currentTarget === null)
+				)
 					return;
 				console.error("ws connect failed", e);
 			});
@@ -643,32 +646,14 @@ export function ChatPane({ convId, members, title }: Props) {
 			alive = false;
 		};
 	}, [convId]);
-	const mergeMode = convSummary?.merge_mode ?? "auto";
 	const inWorkspace = !!convSummary?.workspace_id;
-	// Mirror the active conv's merge gate into the store so deep parts
-	// (ConflictPart) can branch their UI on auto vs manual without prop-drilling.
-	// Tag it with convId; while convSummary is still loading mark it unknown
-	// (null convId) so a freshly-switched conv's ConflictPart doesn't read a stale
-	// mode from the conv we just left.
+	// Manual merge mode is retired from the product flow. Keep the store mirror
+	// pinned to auto so deep conflict cards use the automatic-resolution UI even
+	// if an old conversation row still says "manual".
 	useEffect(() => {
-		if (convSummary)
-			useStore.getState().setMergeMode(mergeMode, convId);
+		if (convSummary) useStore.getState().setMergeMode("auto", convId);
 		else useStore.getState().setMergeMode("auto", null);
-	}, [mergeMode, convId, convSummary]);
-
-	const toggleMergeMode = async () => {
-		if (!convSummary) return;
-		const next: "auto" | "manual" = mergeMode === "auto" ? "manual" : "auto";
-		// Optimistic flip — server PATCH returns canonical state.
-		setConvSummary({ ...convSummary, merge_mode: next });
-		try {
-			const updated = await api.setMergeMode(convId, next);
-			setConvSummary(updated);
-		} catch {
-			// Roll back on failure
-			setConvSummary({ ...convSummary, merge_mode: mergeMode });
-		}
-	};
+	}, [convId, convSummary]);
 
 	// List of agents currently doing work (starting/streaming) — for the status row
 	const activeAgents = useMemo(() => {
@@ -786,96 +771,96 @@ export function ChatPane({ convId, members, title }: Props) {
 	}, [burstSig, convId, claimedSet, burstByAnchorId]);
 
 	return (
-		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative">
+		<main
+			className={`flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative ${mobile ? "pn-mobile-chat" : ""}`}
+		>
 			{/* Chat header — editorial masthead: serif title + gradient hair-line.
           Hidden on mobile (App.tsx renders the back+title bar instead). */}
 			{!mobile && (
-			<header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
-				<span
-					aria-hidden
-					className="absolute left-0 right-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[var(--color-line-strong)] to-transparent"
-				/>
-				<div className="flex-1 min-w-0">
-					<div className="flex items-baseline gap-2.5">
-						<span className="font-display text-[16px] font-medium truncate text-[var(--color-fg)] tracking-wide">
-							{title}
-						</span>
-						{isGroup && (
-							<button
-								type="button"
-								onClick={() => useStore.getState().openMembersList()}
-								className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
-								title="查看成员"
-							>
-								{memberAgents.length + 1} 成员
-							</button>
+				<header className="relative flex items-center gap-3 px-6 py-3 bg-[var(--color-surface)] shadow-[var(--ring-inset)]">
+					<span
+						aria-hidden
+						className="absolute left-0 right-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[var(--color-line-strong)] to-transparent"
+					/>
+					<div className="flex-1 min-w-0">
+						<div className="flex items-baseline gap-2.5">
+							<span className="font-display text-[16px] font-medium truncate text-[var(--color-fg)] tracking-wide">
+								{title}
+							</span>
+							{isGroup && (
+								<button
+									type="button"
+									onClick={() => useStore.getState().openMembersList()}
+									className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
+									title="查看成员"
+								>
+									{memberAgents.length + 1} 成员
+								</button>
+							)}
+						</div>
+						{/* Group: coordinator identity now lives in the avatar cluster
+              (first avatar + purple ring), so no subtitle. DM: show tagline. */}
+						{!isGroup && (
+							<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
+								{memberAgents[0]?.tagline ?? "Agent"}
+							</div>
 						)}
 					</div>
-					{/* Group: coordinator identity now lives in the avatar cluster
-              (first avatar + purple ring), so no subtitle. DM: show tagline. */}
-					{!isGroup && (
-						<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
-							{memberAgents[0]?.tagline ?? "Agent"}
-						</div>
-					)}
-				</div>
-				<div className="flex -space-x-1.5">
-					{/* Coordinator-first: the conv's orchestrator is ranked #1 in the
+					<div className="flex -space-x-1.5">
+						{/* Coordinator-first: the conv's orchestrator is ranked #1 in the
               cluster and wears a purple ring, so "first avatar = 协调者" reads
               at a glance. Click any avatar → AgentDetail (which shows the
               coordinator badge). */}
-					{[...memberAgents]
-						.filter((a): a is NonNullable<typeof a> => !!a)
-						.sort(
-							(a, b) =>
-								(b.id === convSummary?.orchestrator_member_id ? 1 : 0) -
-								(a.id === convSummary?.orchestrator_member_id ? 1 : 0),
-						)
-						.slice(0, 5)
-						.map((a) => {
-							const isOrch = a.id === convSummary?.orchestrator_member_id;
-							return (
-								<button
-									type="button"
-									key={a.id}
-									onClick={() => useStore.getState().openAgentDetail(a.id)}
-									className={`w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10 ${
-										isOrch
-											? "ring-2 ring-[var(--color-purple)] border-2 border-[var(--color-surface)] z-10"
-											: "border-2 border-[var(--color-surface)]"
-									}`}
-									style={{ background: a.color }}
-									title={
-										isOrch ? `${a.name} · 本群协调者` : `查看 ${a.name} 详情`
-									}
-								>
-									{a.initials}
-								</button>
-							);
-						})}
-				</div>
-				<div className="flex items-center gap-1 ml-2">
-					{/* Search lives in the top-left (sidebar / ⌘K) and 群聊设置 moved to
+						{[...memberAgents]
+							.filter((a): a is NonNullable<typeof a> => !!a)
+							.sort(
+								(a, b) =>
+									(b.id === convSummary?.orchestrator_member_id ? 1 : 0) -
+									(a.id === convSummary?.orchestrator_member_id ? 1 : 0),
+							)
+							.slice(0, 5)
+							.map((a) => {
+								const isOrch = a.id === convSummary?.orchestrator_member_id;
+								return (
+									<button
+										type="button"
+										key={a.id}
+										onClick={() => useStore.getState().openAgentDetail(a.id)}
+										className={`w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium transition-all duration-200 hover:scale-[1.12] hover:shadow-md hover:z-10 ${
+											isOrch
+												? "ring-2 ring-[var(--color-purple)] border-2 border-[var(--color-surface)] z-10"
+												: "border-2 border-[var(--color-surface)]"
+										}`}
+										style={{ background: a.color }}
+										title={
+											isOrch ? `${a.name} · 本群协调者` : `查看 ${a.name} 详情`
+										}
+									>
+										{a.initials}
+									</button>
+								);
+							})}
+					</div>
+					<div className="flex items-center gap-1 ml-2">
+						{/* Search lives in the top-left (sidebar / ⌘K) and 群聊设置 moved to
               the conversation's ⋮ menu in the sidebar — header stays minimal. */}
-					<button
-						type="button"
-						onClick={() => (previewOpen ? closePreview() : openPreview("web"))}
-						className={`p-1.5 rounded transition ${
-							previewOpen
-								? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-								: "hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
-						}`}
-						title="产物面板"
-					>
-						<PanelRight size={14} />
-					</button>
-				</div>
-			</header>
+						<button
+							type="button"
+							onClick={() =>
+								previewOpen ? closePreview() : openPreview("web")
+							}
+							className={`p-1.5 rounded transition ${
+								previewOpen
+									? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+									: "hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
+							}`}
+							title="产物面板"
+						>
+							<PanelRight size={14} />
+						</button>
+					</div>
+				</header>
 			)}
-
-			{/* Manual-mode per-file review strip — Cursor-style, sits above the chat
-          (←/→ through the queue, ✓/✗ the focused change). */}
-			<FloatingReviewBar convId={convId} />
 
 			{/* ADR-020 project-access approval strip — when an agent in a private DM
           requests access to a project, the user picks the project + 批准/拒绝. */}
@@ -894,10 +879,14 @@ export function ChatPane({ convId, members, title }: Props) {
 						className="absolute inset-0 overflow-y-auto py-4"
 						// Clear the floating composer + running-status strip, so the
 						// message being answered always sits ABOVE the status bar.
-						style={{ paddingBottom: composerH + 24 }}
+						style={{
+							paddingBottom: mobile
+								? `calc(${composerH + 14}px + var(--kb-h, 0px))`
+								: composerH + 24,
+						}}
 					>
 						<div
-							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-4" : ""}`}
+							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-1" : ""}`}
 						>
 							{/* Lazy-load top sentinel — visible spinner while older messages
             are being fetched. Shown only if we have more to fetch. */}
@@ -982,146 +971,159 @@ export function ChatPane({ convId, members, title }: Props) {
 			    content into the bg as it approaches the composer. */}
 			<div
 				ref={composerRef}
-				className="absolute bottom-0 inset-x-0 z-10"
-				style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+				className="absolute inset-x-0 z-10"
+				style={{
+					bottom: mobile ? "var(--kb-h, 0px)" : 0,
+					paddingBottom:
+						"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
+					transition: mobile
+						? "bottom 0.24s cubic-bezier(0.17, 0.59, 0.4, 1)"
+						: undefined,
+				}}
 			>
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot
 				    below) so it never floats over / hides message content. */}
 				{/* Agent-initiated questions — floating panel above Composer */}
-				<div className="mx-auto w-full max-w-[var(--chat-measure)]">
-				<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
+				<div className="mx-auto w-full max-w-[var(--composer-measure)]">
+					<AskFormsPanel convId={convId} members={members} ws={wsRef.current} />
 
-				{/* Composer */}
-				<Composer
-					convId={convId}
-					members={members}
-					showMergeToggle={inWorkspace}
-					mergeMode={mergeMode}
-					onToggleMergeMode={toggleMergeMode}
-					statusSlot={
-						activeAgents.length > 0 ? (
-							<div className="anim-fade-up mb-2 flex flex-wrap items-center justify-center gap-1.5 px-1 text-[11.5px]">
-								{activeAgents.map((a) => {
-									const agent = agents.find((x) => x.id === a.id);
-									const label =
-										a.status === "starting"
-											? lang === "en"
-												? "Starting"
-												: "准备中"
-											: phaseLabel(a.phase, a.tool, lang);
-									return (
-										<button
-											type="button"
-											key={a.id}
-											onClick={() => wsRef.current?.abort(a.id)}
-											className="group inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
-											title={`点击中断 ${agent?.name ?? a.id}`}
-											style={{ background: agent?.bg ?? "var(--color-line)" }}
-										>
-											<Loader2
-												size={10}
-												className="animate-spin"
-												style={{ color: agent?.color ?? "#666" }}
-											/>
-											<span style={{ color: agent?.color ?? "var(--color-fg-2)" }}>
-												{agent?.name ?? a.id}
-											</span>
-											{/* Hover swaps the label → a stop icon; overlay + fade
-                          so the button width never changes (no row jitter). */}
-											<span className="relative inline-flex items-center">
-												<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
-													· {label}
-												</span>
-												<Square
-													size={10}
-													aria-hidden
-													className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
-													style={{ color: "var(--color-red)" }}
-												/>
-											</span>
-										</button>
-									);
-								})}
-								{activeAgents.length > 1 && (
-									<button
-										type="button"
-										onClick={() => wsRef.current?.abort()}
-										className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
-										title="全部中断"
-									>
-										<Square size={10} /> 全部停止
-									</button>
-								)}
-							</div>
-						) : null
-					}
-					onAttachImage={(img) => {
-						// Optimistic UI append + fire-and-forget persistence. `img.src` is a
-						// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
-						// the DB row stays small and the image re-renders after a refresh.
-						// Pre-allocate the id so the optimistic store entry AND the DB row
-						// share it — see onSend's note for why this matters (rewind etc.).
-						const mid = appendUserImage(convId, {
-							src: img.src,
-							name: img.name,
-							media_type: img.media_type,
-						});
-						api
-							.createMessage({
-								conv_id: convId,
-								msg_id: mid,
-								payload: {
-									kind: "image",
-									src: img.src,
-									name: img.name ?? null,
-									media_type: img.media_type ?? null,
-								},
-							})
-							.catch(() => {
-								/* image survives session even if persist fails — acceptable */
-							});
-					}}
-					onAttachFile={(file) => {
-						const mid = appendUserFile(convId, {
-							src: file.src,
-							name: file.name,
-							media_type: file.media_type,
-							size_bytes: file.size_bytes,
-						});
-						api
-							.createMessage({
-								conv_id: convId,
-								msg_id: mid,
-								payload: {
-									kind: "file",
-									src: file.src,
-									name: file.name,
-									media_type: file.media_type ?? null,
-									size_bytes: file.size_bytes ?? null,
-								},
-							})
-							.catch(() => {
-								/* file survives session even if persist fails */
-							});
-					}}
-					onSend={(text, inReplyTo) => {
-						const now = Date.now();
-						const last = lastSentRef.current;
-						if (last && last.text === text && now - last.ts < 500) {
-							// Same text within 500ms — drop. Symptom: duplicate "你好" bubbles
-							// and agent counting phantom turns. Root cause TBD (Strict Mode
-							// / accidental double-input); this is the user-visible bandage.
-							return;
+					{/* Composer */}
+					<Composer
+						convId={convId}
+						members={members}
+						statusSlot={
+							activeAgents.length > 0 ? (
+								<div className="anim-fade-up mb-2 border-b border-[var(--color-line)] pb-2">
+									<div className="flex flex-wrap items-center gap-1.5 px-1 text-[11.5px]">
+										<span className="mr-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)]">
+											Agent
+										</span>
+										{activeAgents.map((a) => {
+											const agent = agents.find((x) => x.id === a.id);
+											const label =
+												a.status === "starting"
+													? lang === "en"
+														? "Starting"
+														: "准备中"
+													: phaseLabel(a.phase, a.tool, lang);
+											return (
+												<button
+													type="button"
+													key={a.id}
+													onClick={() => wsRef.current?.abort(a.id)}
+													className="group inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
+													title={`点击中断 ${agent?.name ?? a.id}`}
+													style={{
+														background: agent?.bg ?? "var(--color-surface-2)",
+													}}
+												>
+													<Loader2
+														size={10}
+														className="animate-spin"
+														style={{ color: agent?.color ?? "#666" }}
+													/>
+													<span
+														style={{
+															color: agent?.color ?? "var(--color-fg-2)",
+														}}
+													>
+														{agent?.name ?? a.id}
+													</span>
+													<span className="relative inline-flex items-center">
+														<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
+															· {label}
+														</span>
+														<Square
+															size={10}
+															aria-hidden
+															className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
+															style={{ color: "var(--color-red)" }}
+														/>
+													</span>
+												</button>
+											);
+										})}
+										{activeAgents.length > 1 && (
+											<button
+												type="button"
+												onClick={() => wsRef.current?.abort()}
+												className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
+												title="全部中断"
+											>
+												<Square size={10} /> 全部停止
+											</button>
+										)}
+									</div>
+								</div>
+							) : null
 						}
-						lastSentRef.current = { text, ts: now };
-						// Pre-allocate the id so the optimistic local message AND the
-						// server-persisted row carry the SAME id. Without this, rewind /
-						// reply / pin on a freshly-sent message fail with 404 because
-						// the client holds `u-<uuid>` while the DB has its own ULID.
-						const msgId = appendUserMessage(convId, text, inReplyTo);
-						wsRef.current?.sendUserMessage(text, members, inReplyTo, msgId);
-					}}
-				/>
+						onAttachImage={(img) => {
+							// Optimistic UI append + fire-and-forget persistence. `img.src` is a
+							// server URL (/api/files/<id>/raw — Composer uploaded the bytes), so
+							// the DB row stays small and the image re-renders after a refresh.
+							// Pre-allocate the id so the optimistic store entry AND the DB row
+							// share it — see onSend's note for why this matters (rewind etc.).
+							const mid = appendUserImage(convId, {
+								src: img.src,
+								name: img.name,
+								media_type: img.media_type,
+							});
+							api
+								.createMessage({
+									conv_id: convId,
+									msg_id: mid,
+									payload: {
+										kind: "image",
+										src: img.src,
+										name: img.name ?? null,
+										media_type: img.media_type ?? null,
+									},
+								})
+								.catch(() => {
+									/* image survives session even if persist fails — acceptable */
+								});
+						}}
+						onAttachFile={(file) => {
+							const mid = appendUserFile(convId, {
+								src: file.src,
+								name: file.name,
+								media_type: file.media_type,
+								size_bytes: file.size_bytes,
+							});
+							api
+								.createMessage({
+									conv_id: convId,
+									msg_id: mid,
+									payload: {
+										kind: "file",
+										src: file.src,
+										name: file.name,
+										media_type: file.media_type ?? null,
+										size_bytes: file.size_bytes ?? null,
+									},
+								})
+								.catch(() => {
+									/* file survives session even if persist fails */
+								});
+						}}
+						onSend={(text, inReplyTo) => {
+							const now = Date.now();
+							const last = lastSentRef.current;
+							if (last && last.text === text && now - last.ts < 500) {
+								// Same text within 500ms — drop. Symptom: duplicate "你好" bubbles
+								// and agent counting phantom turns. Root cause TBD (Strict Mode
+								// / accidental double-input); this is the user-visible bandage.
+								return;
+							}
+							lastSentRef.current = { text, ts: now };
+							// Pre-allocate the id so the optimistic local message AND the
+							// server-persisted row carry the SAME id. Without this, rewind /
+							// reply / pin on a freshly-sent message fail with 404 because
+							// the client holds `u-<uuid>` while the DB has its own ULID.
+							const msgId = appendUserMessage(convId, text, inReplyTo);
+							wsRef.current?.sendUserMessage(text, members, inReplyTo, msgId);
+						}}
+					/>
 				</div>
 			</div>
 		</main>

@@ -29,6 +29,7 @@ from polynoia.domain.entities import (
 import polynoia.storage.db as db_module
 from polynoia.storage.models import MessageRow
 from polynoia.storage.repo import (
+    append_message,
     create_conversation,
     upsert_agent,
     upsert_workspace,
@@ -173,6 +174,61 @@ async def test_workspace_briefs_filter_by_membership(clean_db) -> None:
         )
     assert "Alice 的项目" in prompt
     assert "Bob 的私人项目" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_group_membership_layer_surfaces_roster_and_recent_changes(clean_db) -> None:
+    """Join/leave events are operational context, not best-effort chat history."""
+    orch = await _seed_agent("阿核")
+    writer = await _seed_agent("文澜")
+    analyst = await _seed_agent("数擎")
+    removed = await _seed_agent("旧成员")
+    ws = await _seed_workspace(
+        "PRD 项目", members=["you", orch.id, writer.id, analyst.id]
+    )
+    conv = Conversation(
+        id=new_ulid(),
+        workspace_id=ws.id,
+        title="PRD 群聊",
+        members=["you", orch.id, writer.id, analyst.id],
+        group=True,
+        orchestrator_member_id=orch.id,
+        member_roles={
+            writer.id: "章节撰写",
+            analyst.id: "数据分析",
+        },
+    )
+    async with db_module.SessionLocal() as session:
+        await create_conversation(session, conv)
+        await append_message(
+            session,
+            conv_id=conv.id,
+            sender_id="system",
+            payload={
+                "kind": "text",
+                "body": [
+                    {
+                        "t": "p",
+                        "c": f"👥 成员变更 — 加入 @{analyst.name} · 移出 @{removed.name}",
+                    }
+                ],
+            },
+        )
+        await session.commit()
+
+    async with db_module.SessionLocal() as db:
+        prompt = await build_context_for_turn(
+            db, agent_id=writer.id, conv_id=conv.id, user_text="继续"
+        )
+
+    assert "# 群成员与成员变更" in prompt
+    assert "@文澜 (你) —— 章节撰写" in prompt
+    assert "@阿核 (协调者)" in prompt
+    assert "@数擎 —— 数据分析" in prompt
+    assert "最近成员变更" in prompt
+    assert "加入 @数擎" in prompt
+    assert "移出 @旧成员" in prompt
+    assert "只能 @ / dispatch 当前群成员" in prompt
 
 
 @pytest.mark.asyncio
