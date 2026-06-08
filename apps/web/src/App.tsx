@@ -13,6 +13,7 @@ import { PreviewPane } from "./components/preview/PreviewPane";
 import { ArchiveView } from "./components/views/ArchiveView";
 import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
+import { api } from "./lib/api";
 import { onNetworkChange, onResume } from "./lib/native";
 import { isMobile } from "./lib/platform";
 import { getServerOverride, isCapacitor } from "./lib/runtime-config";
@@ -158,6 +159,13 @@ export function App() {
 				data: { ...s.preview.data, workspaceId: wsForConv },
 			},
 		}));
+		// Opening a conversation marks it read so the unread badge clears (desktop
+		// had no read-marking — it stayed unread even while you watched it). Skip
+		// synthetic dm- ids (no server row yet). Fire-and-forget; the badge also
+		// hides immediately because the active conv suppresses its own count.
+		if (convId && !isDm) {
+			api.markConvRead(convId).catch(() => undefined);
+		}
 	}, [activeConv?.id, activeWorkspaceId, resetCenterTabs]);
 
 	// Members changed in the drawer (add/remove) → keep the active conv's member
