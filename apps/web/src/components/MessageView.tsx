@@ -23,6 +23,7 @@ import {
 	selectMessageById,
 	useStore,
 } from "../store";
+import { isMobile } from "../lib/platform";
 import { MessagePart } from "./parts";
 import { useConvScope } from "./parts/_context";
 
@@ -48,6 +49,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 	);
 	const agents = useStore((s) => s.agents);
 	const convScope = useConvScope();
+	const mobile = isMobile();
 
 	if (!msg) return null;
 	const isYou = msg.sender_id === "you";
@@ -129,11 +131,11 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 	return (
 		<div
 			data-msg-id={msg.id}
-			className={`anim-fade-up group/msg flex gap-3 transition-colors duration-200 ${
+			className={`anim-fade-up group/msg flex transition-colors duration-200 ${
 				// In a burst lane the lane BODY already supplies px-3; adding it again
 				// here double-indented diff/text cards relative to the fold block
 				// (ToolCallGroup compact, which has no px). No own px in compact.
-				compact ? "" : "px-6"
+				compact ? "" : mobile ? "px-2 gap-2" : "px-6 gap-3"
 			} ${
 				isGrouped ? "pt-0.5 pb-0.5" : compact ? "pt-2 pb-1" : "pt-3 pb-1.5"
 			} ${
@@ -145,11 +147,11 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 			{/* Avatar column — skip entirely in compact mode (lane header
           already shows agent). Keep for normal/grouped to preserve indent. */}
 			{!compact && (
-				<div className="w-8 flex-shrink-0">
+				<div className={`${mobile ? "w-7" : "w-8"} flex-shrink-0`}>
 					{!isGrouped &&
 						(isYou || isSystem ? (
 							<div
-								className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm transition-transform duration-200 group-hover/msg:scale-[1.04]"
+								className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm transition-transform duration-200 group-hover/msg:scale-[1.04]`}
 								style={{
 									background: isYou ? "#5E5749" : "var(--color-red)",
 								}}
@@ -162,7 +164,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 								onClick={() =>
 									agent && useStore.getState().openAgentDetail(agent.id)
 								}
-								className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-all duration-200 group-hover/msg:scale-[1.04] hover:shadow-[var(--glow-accent)]"
+								className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-all duration-200 group-hover/msg:scale-[1.04] hover:shadow-[var(--glow-accent)]`}
 								style={{ background: agent?.color ?? "var(--color-fg-3)" }}
 								title={`查看 ${agent?.name ?? "Agent"} 详情`}
 							>
@@ -443,8 +445,8 @@ function MessageActions({
 			// system merge identity (polynoia-agent) → "系统".
 			const roster = useStore.getState().agents;
 			const nameOf = (a: string) =>
-				roster.find((x) => x.id === a || x.name === a || x.handle === a)?.name ??
-				(a === "polynoia-agent" ? "系统" : a);
+				roster.find((x) => x.id === a || x.name === a || x.handle === a)
+					?.name ?? (a === "polynoia-agent" ? "系统" : a);
 			const who = pv.authors.length
 				? `(${pv.authors.map(nameOf).join("、")})`
 				: "";
@@ -486,24 +488,21 @@ function MessageActions({
 					return;
 				}
 				if (pv.blocked) {
-					window.alert(
-						"有 Agent 正在本对话里干活,先等它完成或取消再重来。",
-					);
+					window.alert("有 Agent 正在本对话里干活,先等它完成或取消再重来。");
 					return;
 				}
 				// Agent commits are authored by the persona id; map id/name/handle →
-			// display name so the dialog reads "(顾屿、沈昭)" not raw ULIDs. The
-			// system merge identity (polynoia-agent) → "系统".
-			const roster = useStore.getState().agents;
-			const nameOf = (a: string) =>
-				roster.find((x) => x.id === a || x.name === a || x.handle === a)?.name ??
-				(a === "polynoia-agent" ? "系统" : a);
-			const who = pv.authors.length
-				? `(${pv.authors.map(nameOf).join("、")})`
-				: "";
+				// display name so the dialog reads "(顾屿、沈昭)" not raw ULIDs. The
+				// system merge identity (polynoia-agent) → "系统".
+				const roster = useStore.getState().agents;
+				const nameOf = (a: string) =>
+					roster.find((x) => x.id === a || x.name === a || x.handle === a)
+						?.name ?? (a === "polynoia-agent" ? "系统" : a);
+				const who = pv.authors.length
+					? `(${pv.authors.map(nameOf).join("、")})`
+					: "";
 				const fileList =
-					pv.files.slice(0, 8).join("、") +
-					(pv.files.length > 8 ? " …" : "");
+					pv.files.slice(0, 8).join("、") + (pv.files.length > 8 ? " …" : "");
 				confirmMsg =
 					`从此处重来:将删除这条消息以及之后的所有对话,并把代码回退到此刻 ` +
 					`(撤销 ${pv.commits} 处改动${who}${pv.files.length ? `;涉及 ${fileList}` : ""})。\n\n` +
@@ -666,10 +665,7 @@ function MessageActions({
 							: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
 					}`}
 				>
-					<RotateCcw
-						size={11}
-						className={restoreBusy ? "animate-spin" : ""}
-					/>
+					<RotateCcw size={11} className={restoreBusy ? "animate-spin" : ""} />
 				</button>
 			) : (
 				codeSha &&

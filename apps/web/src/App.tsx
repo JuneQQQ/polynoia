@@ -307,14 +307,13 @@ export function App() {
 					style={{
 						// 100dvh (NOT 100vh): iOS 100vh over-reports the viewport, so the
 						// container ran past the screen bottom → content pushed off-screen.
-						// Pad BOTH safe areas: top for the Dynamic Island, bottom for the
-						// home indicator (was missing → bottom bar/composer got clipped).
+						// Top safe area stays on the page root. Bottom/keyboard insets are
+						// owned by ChatPane's floating composer; padding the whole root by
+						// --kb-h makes Android leave a large blank band above the keyboard.
 						// max(safe-area, --conn-h): when the connection banner is showing it
 						// publishes its height as --conn-h, so the chat header (back arrow)
 						// drops below the fixed banner instead of being covered by it.
 						paddingTop: "max(env(safe-area-inset-top), var(--conn-h, 0px))",
-						paddingBottom: "max(env(safe-area-inset-bottom), var(--kb-h, 0px))",
-						transition: "padding-bottom 0.27s cubic-bezier(0.17, 0.59, 0.4, 1)",
 					}}
 				>
 					{/* Single chat header — back (→ list) + title. Frosted over the

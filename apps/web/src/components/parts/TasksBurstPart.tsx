@@ -198,207 +198,247 @@ function TasksBurstPartInner({
 				animate="show"
 				variants={{ show: { transition: { staggerChildren: 0.08 } } }}
 			>
-				{tasks.map((t) => {
-					const agent = agents.find((a) => a.id === t.agent);
-					const state =
-						STATE_BADGE[t.state as LaneState] ?? STATE_BADGE.pending;
-					const lane = burstInfo.lanes.get(t.agent) ?? EMPTY_LANE;
-					const diffStat = laneDiffStat(convId, lane);
-					const isDone = t.state === "done";
-					const isRun = t.state === "run";
-					return (
-						<motion.div
-							key={t.id}
-							className="flex flex-col min-w-0"
-							variants={{
-								hidden: { opacity: 0, y: 10 },
-								show: {
-									opacity: 1,
-									y: 0,
-									transition: { duration: 0.4, ease: [0.22, 1, 0.36, 1] },
-								},
-							}}
-						>
-							{/* Lane header — agent color as a top accent edge */}
-							<div className="relative flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50">
-								<span
-									aria-hidden
-									className="absolute top-0 inset-x-0 h-[2px] opacity-70"
-									style={{ background: agent?.color ?? "var(--color-fg-3)" }}
-								/>
-								{agent ? (
-									<button
-										type="button"
-										onClick={() =>
-											useStore.getState().openAgentDetail(agent.id)
-										}
-										className="w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium shadow-sm ring-1 ring-black/10 hover:scale-[1.08] transition-transform duration-200"
-										style={{ background: agent.color }}
-										title={`查看 ${agent.name} 详情`}
-									>
-										{agent.initials}
-									</button>
-								) : (
-									<span className="w-7 h-7 rounded-full bg-[var(--color-fg-3)]" />
-								)}
-								<div className="flex-1 min-w-0">
-									<div className="font-display text-[12.5px] text-[var(--color-fg)] truncate leading-tight">
-										{agent?.name ?? t.agent}
-									</div>
-									<div className="text-[10.5px] text-[var(--color-fg-3)] truncate font-mono">
-										{t.label}
-									</div>
-									{/* Always render this row (even with no diffs) so every lane
+				{(() => {
+					// One lane PER AGENT, not per task: an agent assigned multiple
+					// subtasks (e.g. 第1章 + 第2章) shares ONE lane — claimed messages are
+					// per-agent, so rendering a column per task duplicated the same
+					// content across columns. Aggregate each agent's tasks into one
+					// synthetic lane (joined labels + worst-case state).
+					const byAgent = new Map<string, typeof tasks>();
+					for (const tk of tasks) {
+						const arr = byAgent.get(tk.agent);
+						if (arr) arr.push(tk);
+						else byAgent.set(tk.agent, [tk]);
+					}
+					const laneTasks = [...byAgent.entries()].map(([agentId, ts]) => {
+						const states = ts.map((x) => x.state);
+						const state = states.includes("run")
+							? "run"
+							: states.every((s) => s === "done")
+								? "done"
+								: states.includes("failed")
+									? "failed"
+									: "pending";
+						return {
+							id: agentId,
+							agent: agentId,
+							label: ts
+								.map((x) => x.label)
+								.filter(Boolean)
+								.join(" · "),
+							state,
+						};
+					});
+					return laneTasks.map((t) => {
+						const agent = agents.find((a) => a.id === t.agent);
+						const state =
+							STATE_BADGE[t.state as LaneState] ?? STATE_BADGE.pending;
+						const lane = burstInfo.lanes.get(t.agent) ?? EMPTY_LANE;
+						const diffStat = laneDiffStat(convId, lane);
+						const isDone = t.state === "done";
+						const isRun = t.state === "run";
+						return (
+							<motion.div
+								key={t.id}
+								className="flex flex-col min-w-0"
+								variants={{
+									hidden: { opacity: 0, y: 10 },
+									show: {
+										opacity: 1,
+										y: 0,
+										transition: { duration: 0.4, ease: [0.22, 1, 0.36, 1] },
+									},
+								}}
+							>
+								{/* Lane header — agent color as a top accent edge */}
+								<div className="relative flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50">
+									<span
+										aria-hidden
+										className="absolute top-0 inset-x-0 h-[2px] opacity-70"
+										style={{ background: agent?.color ?? "var(--color-fg-3)" }}
+									/>
+									{agent ? (
+										<button
+											type="button"
+											onClick={() =>
+												useStore.getState().openAgentDetail(agent.id)
+											}
+											className="w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium shadow-sm ring-1 ring-black/10 hover:scale-[1.08] transition-transform duration-200"
+											style={{ background: agent.color }}
+											title={`查看 ${agent.name} 详情`}
+										>
+											{agent.initials}
+										</button>
+									) : (
+										<span className="w-7 h-7 rounded-full bg-[var(--color-fg-3)]" />
+									)}
+									<div className="flex-1 min-w-0">
+										<div className="font-display text-[12.5px] text-[var(--color-fg)] truncate leading-tight">
+											{agent?.name ?? t.agent}
+										</div>
+										<div className="text-[10.5px] text-[var(--color-fg-3)] truncate font-mono">
+											{t.label}
+										</div>
+										{/* Always render this row (even with no diffs) so every lane
 									    header is the SAME height — a lane with file changes and one
 									    without must line up. Empty → a muted dash placeholder. */}
-									<div className="mt-0.5 flex items-center gap-1 text-[10px] font-mono text-[var(--color-fg-3)] min-h-[15px]">
-										{diffStat ? (
-											<>
-												<span title="本泳道已改文件数">✎ {diffStat.files}</span>
-												<span style={{ color: "var(--color-green)" }}>
-													+{diffStat.adds}
-												</span>
-												{diffStat.dels > 0 && (
-													<span style={{ color: "var(--color-red)" }}>
-														−{diffStat.dels}
+										<div className="mt-0.5 flex items-center gap-1 text-[10px] font-mono text-[var(--color-fg-3)] min-h-[15px]">
+											{diffStat ? (
+												<>
+													<span title="本泳道已改文件数">
+														✎ {diffStat.files}
 													</span>
-												)}
-											</>
-										) : (
-											<span className="text-[var(--color-fg-4)]" title="本泳道无文件改动">
-												—
-											</span>
-										)}
+													<span style={{ color: "var(--color-green)" }}>
+														+{diffStat.adds}
+													</span>
+													{diffStat.dels > 0 && (
+														<span style={{ color: "var(--color-red)" }}>
+															−{diffStat.dels}
+														</span>
+													)}
+												</>
+											) : (
+												<span
+													className="text-[var(--color-fg-4)]"
+													title="本泳道无文件改动"
+												>
+													—
+												</span>
+											)}
+										</div>
 									</div>
-								</div>
-								{/* Per-lane stop (Agent-level terminate) — only while running.
+									{/* Per-lane stop (Agent-level terminate) — only while running.
                     Dispatches a window event ChatPane forwards to ws.abort. */}
-								{isRun && (
-									<button
-										type="button"
-										onClick={() =>
-											window.dispatchEvent(
-												new CustomEvent("polynoia:abort-agent", {
-													detail: { convId, agentId: t.agent },
-												}),
-											)
-										}
-										title={`停止 ${agent?.name ?? t.agent} 这条泳道`}
-										aria-label="停止这条泳道"
-										className="p-1 rounded text-[var(--color-fg-4)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/50 transition"
+									{isRun && (
+										<button
+											type="button"
+											onClick={() =>
+												window.dispatchEvent(
+													new CustomEvent("polynoia:abort-agent", {
+														detail: { convId, agentId: t.agent },
+													}),
+												)
+											}
+											title={`停止 ${agent?.name ?? t.agent} 这条泳道`}
+											aria-label="停止这条泳道"
+											className="p-1 rounded text-[var(--color-fg-4)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/50 transition"
+										>
+											<Square size={10} />
+										</button>
+									)}
+									{/* State badge — spring-pops on every state transition (keyed) */}
+									<motion.span
+										key={t.state}
+										initial={reduce ? false : { scale: 0.8 }}
+										animate={{ scale: 1 }}
+										transition={{ type: "spring", stiffness: 520, damping: 24 }}
+										className="inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded-sm text-[9px] font-mono uppercase tracking-[0.18em] font-medium"
+										style={{ background: state.bg, color: state.color }}
 									>
-										<Square size={10} />
-									</button>
-								)}
-								{/* State badge — spring-pops on every state transition (keyed) */}
-								<motion.span
-									key={t.state}
-									initial={reduce ? false : { scale: 0.8 }}
-									animate={{ scale: 1 }}
-									transition={{ type: "spring", stiffness: 520, damping: 24 }}
-									className="inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded-sm text-[9px] font-mono uppercase tracking-[0.18em] font-medium"
-									style={{ background: state.bg, color: state.color }}
-								>
-									{state.icon}
-									{state.label}
-								</motion.span>
-							</div>
+										{state.icon}
+										{state.label}
+									</motion.span>
+								</div>
 
-							{/* Lane body — claimed messages, compact mode. Capped height +
+								{/* Lane body — claimed messages, compact mode. Capped height +
 							    internal scroll so a long lane doesn't stretch the whole burst
 							    card (leaving sibling lanes with huge blank space). */}
-							<div
-								// px-3 matches the lane header/empty-state inset so the message
-								// text + fold blocks don't hug the lane's left edge (looked ugly
-								// glued to the border).
-								className={`flex flex-col px-3 py-2 min-h-[60px] max-h-[520px] overflow-y-auto ${isDone ? "anim-done-glow" : ""}`}
-								// scrollbar-gutter:stable reserves the vertical scrollbar's
-								// width always → the lane width never jumps when content
-								// streams in, so the parent grid's horizontal scrollbar
-								// stops flickering on/off (the「闪烁」bug).
-								style={{ scrollbarGutter: "stable" }}
-							>
-								{lane.length === 0 ? (
-									// Empty lane: only show "等待开始" while genuinely PENDING/RUNNING.
-									// A done/failed lane with no claimed messages must NOT show
-									// "等待开始" (the "Done + 等待开始" contradiction) — show a quiet
-									// terminal note instead.
-									<div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
-										{isDone
-											? en
-												? "Done · no output"
-												: "已完成 · 无输出"
-											: t.state === "failed"
+								<div
+									// px-3 matches the lane header/empty-state inset so the message
+									// text + fold blocks don't hug the lane's left edge (looked ugly
+									// glued to the border).
+									className={`flex flex-col px-3 py-2 min-h-[60px] max-h-[520px] overflow-y-auto ${isDone ? "anim-done-glow" : ""}`}
+									// scrollbar-gutter:stable reserves the vertical scrollbar's
+									// width always → the lane width never jumps when content
+									// streams in, so the parent grid's horizontal scrollbar
+									// stops flickering on/off (the「闪烁」bug).
+									style={{ scrollbarGutter: "stable" }}
+								>
+									{lane.length === 0 ? (
+										// Empty lane: only show "等待开始" while genuinely PENDING/RUNNING.
+										// A done/failed lane with no claimed messages must NOT show
+										// "等待开始" (the "Done + 等待开始" contradiction) — show a quiet
+										// terminal note instead.
+										<div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
+											{isDone
 												? en
-													? "Failed"
-													: "已失败"
-												: en
-													? "Waiting to start…"
-													: "等待开始…"}
-									</div>
-								) : (
-									(() => {
-										// Fold tool calls into a compact ToolCallGroup; only
-										// file-edit (diff/write) cards render standalone — same
-										// rule as the main timeline.
-										const byId =
-											useStore.getState().convs.get(convId)?.msgById ??
-											new Map<string, Message>();
-										// In-progress cards (a still-"写入中" write, a running bash)
-										// belong at the BOTTOM — they stream in BEFORE the tool runs,
-										// so a sibling file whose diff already committed must sort
-										// above them. Stable-partition the lane ids the same way the
-										// main timeline does (floatInProgressLast).
-										const ordered = (() => {
-											let anyLive = false;
-											for (const mid of lane) {
-												const m = byId.get(mid);
-												if (m && isInProgressCard(m)) { anyLive = true; break; }
-											}
-											if (!anyLive) return lane;
-											const done: string[] = [];
-											const live: string[] = [];
-											for (const mid of lane) {
-												const m = byId.get(mid);
-												(m && isInProgressCard(m) ? live : done).push(mid);
-											}
-											return [...done, ...live];
-										})();
-										const { firsts, skip } = computeLaneFold(byId, ordered);
-										// Track RENDERED position (not the raw array index): dropped
-										// (skipped) bash tool-calls don't count, so the first VISIBLE
-										// item gets isGrouped=false even if earlier items were dropped.
-										let shownAny = false;
-										return ordered.map((mid) => {
-											if (skip.has(mid)) return null;
-											const grouped = shownAny;
-											shownAny = true;
-											const grp = firsts.get(mid);
-											if (grp)
+													? "Done · no output"
+													: "已完成 · 无输出"
+												: t.state === "failed"
+													? en
+														? "Failed"
+														: "已失败"
+													: en
+														? "Waiting to start…"
+														: "等待开始…"}
+										</div>
+									) : (
+										(() => {
+											// Fold tool calls into a compact ToolCallGroup; only
+											// file-edit (diff/write) cards render standalone — same
+											// rule as the main timeline.
+											const byId =
+												useStore.getState().convs.get(convId)?.msgById ??
+												new Map<string, Message>();
+											// In-progress cards (a still-"写入中" write, a running bash)
+											// belong at the BOTTOM — they stream in BEFORE the tool runs,
+											// so a sibling file whose diff already committed must sort
+											// above them. Stable-partition the lane ids the same way the
+											// main timeline does (floatInProgressLast).
+											const ordered = (() => {
+												let anyLive = false;
+												for (const mid of lane) {
+													const m = byId.get(mid);
+													if (m && isInProgressCard(m)) {
+														anyLive = true;
+														break;
+													}
+												}
+												if (!anyLive) return lane;
+												const done: string[] = [];
+												const live: string[] = [];
+												for (const mid of lane) {
+													const m = byId.get(mid);
+													(m && isInProgressCard(m) ? live : done).push(mid);
+												}
+												return [...done, ...live];
+											})();
+											const { firsts, skip } = computeLaneFold(byId, ordered);
+											// Track RENDERED position (not the raw array index): dropped
+											// (skipped) bash tool-calls don't count, so the first VISIBLE
+											// item gets isGrouped=false even if earlier items were dropped.
+											let shownAny = false;
+											return ordered.map((mid) => {
+												if (skip.has(mid)) return null;
+												const grouped = shownAny;
+												shownAny = true;
+												const grp = firsts.get(mid);
+												if (grp)
+													return (
+														<ToolCallGroup
+															key={mid}
+															convId={convId}
+															msgIds={grp}
+															compact
+														/>
+													);
 												return (
-													<ToolCallGroup
+													<MessageView
 														key={mid}
 														convId={convId}
-														msgIds={grp}
+														msgId={mid}
 														compact
+														isGrouped={grouped}
 													/>
 												);
-											return (
-												<MessageView
-													key={mid}
-													convId={convId}
-													msgId={mid}
-													compact
-													isGrouped={grouped}
-												/>
-											);
-										});
-									})()
-								)}
-							</div>
-						</motion.div>
-					);
-				})}
+											});
+										})()
+									)}
+								</div>
+							</motion.div>
+						);
+					});
+				})()}
 			</motion.div>
 
 			<BurstChangesSummary convId={convId} burstInfo={burstInfo} />

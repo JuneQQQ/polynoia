@@ -812,7 +812,9 @@ export function ChatPane({ convId, members, title }: Props) {
 	}, [burstSig, convId, claimedSet, burstByAnchorId]);
 
 	return (
-		<main className="flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative">
+		<main
+			className={`flex-1 flex flex-col min-w-0 bg-[var(--color-bg)] relative ${mobile ? "pn-mobile-chat" : ""}`}
+		>
 			{/* Chat header — editorial masthead: serif title + gradient hair-line.
           Hidden on mobile (App.tsx renders the back+title bar instead). */}
 			{!mobile && (
@@ -922,10 +924,14 @@ export function ChatPane({ convId, members, title }: Props) {
 						className="absolute inset-0 overflow-y-auto py-4"
 						// Clear the floating composer + running-status strip, so the
 						// message being answered always sits ABOVE the status bar.
-						style={{ paddingBottom: composerH + 24 }}
+						style={{
+							paddingBottom: mobile
+								? `calc(${composerH + 14}px + var(--kb-h, 0px))`
+								: composerH + 24,
+						}}
 					>
 						<div
-							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-4" : ""}`}
+							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-1" : ""}`}
 						>
 							{/* Lazy-load top sentinel — visible spinner while older messages
             are being fetched. Shown only if we have more to fetch. */}
@@ -1010,8 +1016,14 @@ export function ChatPane({ convId, members, title }: Props) {
 			    content into the bg as it approaches the composer. */}
 			<div
 				ref={composerRef}
-				className="absolute bottom-0 inset-x-0 z-10"
-				style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+				className="absolute inset-x-0 z-10"
+				style={{
+					bottom: mobile ? "var(--kb-h, 0px)" : 0,
+					paddingBottom: "env(safe-area-inset-bottom)",
+					transition: mobile
+						? "bottom 0.24s cubic-bezier(0.17, 0.59, 0.4, 1)"
+						: undefined,
+				}}
 			>
 				{/* Running-status strip now lives INSIDE the Composer (statusSlot
 				    below) so it never floats over / hides message content. */}

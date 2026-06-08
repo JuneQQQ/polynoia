@@ -35,16 +35,18 @@ def post_task(conv_id, task):
 
 
 OPUS, SONNET = "claude-opus-4-7", "claude-sonnet-4-6"
+CODEX_MODEL = "gpt-5.5"
+OPENCODE_GO_MODEL = "opencode-go/glm5.1"
 
 TEAM = [
     {"adapter_id": "claudeCode", "name": "阿核", "model": OPUS,
      "tagline": "项目协调 · 拆解+验收", "tool_role": "orchestrator"},
     {"adapter_id": "claudeCode", "name": "文澜", "model": SONNET,
      "tagline": "文档/报告/纪要 撰写", "tool_role": "writer"},
-    {"adapter_id": "claudeCode", "name": "制图", "model": OPUS,
-     "tagline": "网页/视觉/小游戏", "tool_role": "designer"},
-    {"adapter_id": "claudeCode", "name": "数擎", "model": SONNET,
-     "tagline": "数据/脚本/Excel/分析", "tool_role": "generalist"},
+    {"adapter_id": "codex", "name": "制图", "model": CODEX_MODEL,
+     "tagline": "Codex · 网页/视觉/小游戏", "tool_role": "designer"},
+    {"adapter_id": "opencoder", "name": "数擎", "model": OPENCODE_GO_MODEL,
+     "tagline": "OpenCode Go · 数据/脚本/Excel/分析", "tool_role": "generalist"},
 ]
 
 # Each case: (key, title, who → "solo:<role>" or "group", task)
@@ -82,7 +84,8 @@ CASES = [
 
 
 def main():
-    req("/api/agents/claudeCode/enable", {})
+    for adapter_id in ("claudeCode", "codex", "opencoder"):
+        req(f"/api/agents/{adapter_id}/enable", {})
     ids = {}
     for c in TEAM:
         ids[c["name"]] = req("/api/contacts", c)["contact"]["id"]

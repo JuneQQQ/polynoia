@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 一键重置本地 Polynoia 库:整库清空 + 重建 schema + 重种 6 个 testkit 测试用例。
 # 幂等(每次跑完都是干净的 6 个用例)。会清掉所有现有会话(含任何旧 run)。
-# macOS 上 direct-creds 自动开启,重启后 claude/agent 仍能登录运行。
+# macOS 上 direct-creds 自动开启,重启后 claude/codex/opencode agent 仍能登录运行。
 #
 #   bash scripts/testkit/reset.sh
 set -euo pipefail
@@ -24,8 +24,8 @@ asyncio.run(seed_demo._wipe_and_bootstrap())
 print("  wiped + bootstrapped")
 PYEOF
 
-echo "→ 启动服务器(给 cc/codex agent 走 7897 代理出墙;localhost 直连)"
-# Spawned agents (Claude Code / Codex) inherit these via Sandbox.env_for_agent.
+echo "→ 启动服务器(给 claude/codex/opencode agent 走 7897 代理出墙;localhost 直连)"
+# Spawned agents (Claude Code / Codex / OpenCode) inherit these via Sandbox.env_for_agent.
 # NO_PROXY MUST include localhost — the MCP subprocess + dispatch/report tools
 # call back to 127.0.0.1:7780; routing those through the proxy would break them.
 PROXY="${POLYNOIA_AGENT_PROXY:-http://127.0.0.1:7897}"
@@ -40,8 +40,10 @@ for i in $(seq 1 20); do
   sleep 1
 done
 
-echo "→ 重种 6 个测试用例"
+echo "→ 重种 6 个测试用例(Claude Code + Codex + opencode-go/glm5.1)"
 "$PY" "$REPO/scripts/testkit/_more_seed.py" >/dev/null
 
 CONVS="$(sqlite3 ~/.polynoia/polynoia.db 'SELECT count(*) FROM conversations')"
+AGENTS="$(sqlite3 ~/.polynoia/polynoia.db "SELECT name || ':' || adapter_id || '/' || model FROM agents WHERE custom = 1 ORDER BY name")"
 echo "✓ 重置完成 — $CONVS 个会话(干净的 6 个 testkit 用例)"
+printf '%s\n' "$AGENTS" | sed 's/^/  agent: /'
