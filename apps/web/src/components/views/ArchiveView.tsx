@@ -48,6 +48,9 @@ export function ArchiveView({ onOpenConv }: Props) {
     try {
       await api.unarchiveConv(convId);
       setConvs((prev) => prev.filter((c) => c.id !== convId));
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-updated", { detail: { convId } }),
+      );
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -63,6 +66,9 @@ export function ArchiveView({ onOpenConv }: Props) {
     try {
       await api.deleteConv(conv.id);
       setConvs((prev) => prev.filter((c) => c.id !== conv.id));
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-updated", { detail: { convId: conv.id } }),
+      );
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -106,7 +112,7 @@ export function ArchiveView({ onOpenConv }: Props) {
             <div className="text-[13px] font-medium text-[var(--color-fg-2)] mb-1">
               暂无归档对话
             </div>
-            <div>从 Sidebar 的某条对话右键可以归档,或调 API 测试。</div>
+            <div>从群聊行的 ⋯ 菜单归档后,会显示在这里。</div>
           </div>
         )}
         <ul>
@@ -146,7 +152,7 @@ export function ArchiveView({ onOpenConv }: Props) {
                       {c.title}
                     </div>
                     <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
-                      最近活动 · {fmtDate(c.last_message_at)} · {c.members.length - 1} 成员
+                      最近活动 · {fmtDate(c.last_message_at)} · {c.members.length} 成员
                     </div>
                   </div>
                 </button>

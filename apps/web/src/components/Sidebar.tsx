@@ -230,6 +230,26 @@ export function Sidebar({
   useEffect(() => {
     refreshWsConvs();
   }, [refreshWsConvs]);
+  useEffect(() => {
+    const onConvChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ convId?: string; members?: string[] }>).detail;
+      if (!detail?.convId) return;
+      if (detail.members) {
+        setWsConvs((rows) =>
+          rows.map((c) =>
+            c.id === detail.convId ? { ...c, members: detail.members ?? c.members } : c,
+          ),
+        );
+      }
+      void refreshWsConvs();
+    };
+    window.addEventListener("polynoia:conv-members-changed", onConvChanged);
+    window.addEventListener("polynoia:conv-updated", onConvChanged);
+    return () => {
+      window.removeEventListener("polynoia:conv-members-changed", onConvChanged);
+      window.removeEventListener("polynoia:conv-updated", onConvChanged);
+    };
+  }, [refreshWsConvs]);
 
   // Heartbeat for adapter-backed contacts — every 30s probe the underlying
   // CLI to refresh online/offline status (CLI uninstalled / credential
@@ -447,35 +467,6 @@ export function Sidebar({
   if (inWorkspace) {
     const ws = workspaces.find((w) => w.id === activeWorkspaceId);
     const srv = servers.find((s) => s.id === ws?.server_id);
-    const activeConv = wsConvs.find((c) => c.id === activeConvId) ?? null;
-    const canArchiveActive = !!activeConv?.group && !activeConv.archived;
-    const archiveActiveGroup = async () => {
-      if (!activeConv || !canArchiveActive) return;
-      if (
-        !window.confirm(
-          `归档群聊「${activeConv.title}」?\n归档后会从当前会话列表移除,可在归档视图恢复或删除。`,
-        )
-      ) {
-        return;
-      }
-      try {
-        await api.archiveConv(activeConv.id);
-        const next = wsConvs.find((c) => c.id !== activeConv.id);
-        await refreshWsConvs();
-        if (next) onSelectConv(next.id, next.members, next.title);
-        else {
-          useStore.setState({ activeConvId: null });
-          window.dispatchEvent(
-            new CustomEvent("polynoia:conv-archived", {
-              detail: { convId: activeConv.id },
-            }),
-          );
-        }
-      } catch (e) {
-        window.alert(`归档失败:${e}`);
-      }
-    };
-
     return (
       <aside
         className={`relative bg-[var(--color-sidebar)] text-[var(--color-sidebar-fg)] flex flex-col flex-shrink-0 ${mobile ? "h-full min-h-0" : ""}`}
@@ -531,11 +522,10 @@ export function Sidebar({
           )}
           <button
             type="button"
-            onClick={archiveActiveGroup}
-            disabled={!canArchiveActive}
-            title={canArchiveActive ? "归档当前群聊" : "请选择一个群聊后归档"}
-            aria-label="归档当前群聊"
-            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[var(--color-sidebar-muted)] transition-colors flex-shrink-0"
+            onClick={() => setView("archive")}
+            title="查看归档"
+            aria-label="查看归档"
+            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors flex-shrink-0"
           >
             <Archive size={15} />
           </button>
@@ -629,6 +619,11 @@ export function Sidebar({
                 if (activeConvId === c.id) {
                   // Clear active conv if we just deleted it
                   useStore.setState({ activeConvId: null });
+                  window.dispatchEvent(
+                    new CustomEvent("polynoia:conv-archived", {
+                      detail: { convId: c.id },
+                    }),
+                  );
                 }
               }}
             />
@@ -1420,7 +1415,7 @@ function ConvRow({
       return;
     }
     const width = 152;
-    const height = conv.group ? 86 : conv.archived ? 42 : 42;
+    const height = conv.group ? 122 : conv.archived ? 42 : 42;
     setMenuPos({
       left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
       top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8)),
@@ -1437,6 +1432,25 @@ function ConvRow({
       onDeleted();
     } catch (e) {
       window.alert(`删除失败:${e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleArchive = async () => {
+    setMenuOpen(false);
+    if (
+      !window.confirm(
+        `归档群聊「${conv.title}」?\n归档后会从当前会话列表移除,可在归档视图恢复或删除。`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.archiveConv(conv.id);
+      onDeleted();
+    } catch (e) {
+      window.alert(`归档失败:${e}`);
     } finally {
       setBusy(false);
     }
@@ -1531,6 +1545,16 @@ function ConvRow({
               群聊设置
             </button>
           )}
+          {conv.group && !conv.archived && (
+            <button
+              type="button"
+              onClick={handleArchive}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left"
+            >
+              <Archive size={12} />
+              归档群聊
+            </button>
+          )}
           {conv.archived && (
             <button
               type="button"
@@ -1547,7 +1571,19 @@ function ConvRow({
         <ConvRolesModal
           conv={conv}
           onClose={() => setRolesOpen(false)}
-          onSaved={() => setRolesOpen(false)}
+          onSaved={(updated) => {
+            setRolesOpen(false);
+            window.dispatchEvent(
+              new CustomEvent("polynoia:conv-members-changed", {
+                detail: { convId: updated.id, members: updated.members },
+              }),
+            );
+            window.dispatchEvent(
+              new CustomEvent("polynoia:conv-updated", {
+                detail: { convId: updated.id },
+              }),
+            );
+          }}
         />
       )}
     </div>

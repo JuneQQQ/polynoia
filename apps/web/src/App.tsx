@@ -206,6 +206,11 @@ export function App() {
 								detail: { convId: updated.id, members: updated.members },
 							}),
 						);
+						window.dispatchEvent(
+							new CustomEvent("polynoia:conv-updated", {
+								detail: { convId: updated.id },
+							}),
+						);
 					}}
 				/>
 			)}

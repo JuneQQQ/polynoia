@@ -7,7 +7,7 @@
  * "streaming" indicator updates in real time.
  */
 import { Loader2, User, UserPlus, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { type AgentStatus, phaseLabel, selectAgentStatuses, useStore } from "../../store";
 
@@ -28,12 +28,25 @@ export function MembersListView() {
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
+  const refreshConv = useCallback(() => {
     if (!activeConvId) return;
     let alive = true;
     api.getConv(activeConvId).then((c) => alive && setConv(c)).catch(() => {});
     return () => { alive = false; };
   }, [activeConvId]);
+  useEffect(() => refreshConv(), [refreshConv]);
+  useEffect(() => {
+    const onConvChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ convId?: string }>).detail;
+      if (detail?.convId === activeConvId) refreshConv();
+    };
+    window.addEventListener("polynoia:conv-members-changed", onConvChanged);
+    window.addEventListener("polynoia:conv-updated", onConvChanged);
+    return () => {
+      window.removeEventListener("polynoia:conv-members-changed", onConvChanged);
+      window.removeEventListener("polynoia:conv-updated", onConvChanged);
+    };
+  }, [activeConvId, refreshConv]);
 
   // Add/remove members → persist the FULL list, update locally, and tell the
   // rest of the app (ChatPane reads members for @mention + dispatch) to refresh.

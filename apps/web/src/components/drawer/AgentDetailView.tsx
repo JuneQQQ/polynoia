@@ -9,7 +9,7 @@
  *   6. Action bar: 编辑群内职责 / 移除群聊
  */
 import { ChevronDown, ChevronRight, MessageCircle, Settings, User, UserMinus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
 
@@ -26,12 +26,25 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
 
   // Pull conv summary so we can show role-in-conv. Fetched on agentId change.
   const [convSummary, setConvSummary] = useState<ConversationSummary | null>(null);
-  useEffect(() => {
+  const refreshConvSummary = useCallback(() => {
     if (!activeConvId) return;
     let alive = true;
     api.getConv(activeConvId).then((c) => alive && setConvSummary(c)).catch(() => {});
     return () => { alive = false; };
   }, [activeConvId]);
+  useEffect(() => refreshConvSummary(), [refreshConvSummary]);
+  useEffect(() => {
+    const onConvChanged = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ convId?: string }>).detail;
+      if (detail?.convId === activeConvId) refreshConvSummary();
+    };
+    window.addEventListener("polynoia:conv-members-changed", onConvChanged);
+    window.addEventListener("polynoia:conv-updated", onConvChanged);
+    return () => {
+      window.removeEventListener("polynoia:conv-members-changed", onConvChanged);
+      window.removeEventListener("polynoia:conv-updated", onConvChanged);
+    };
+  }, [activeConvId, refreshConvSummary]);
 
   const [showFullPersona, setShowFullPersona] = useState(false);
   const [memberBusy, setMemberBusy] = useState(false);

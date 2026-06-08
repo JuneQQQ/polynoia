@@ -1,5 +1,12 @@
 import { Loader2, PanelRight, Square } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import { type ConversationSummary, api } from "../lib/api";
 import { computeBursts } from "../lib/burstClaim";
@@ -66,6 +73,30 @@ export function ChatPane({ convId, members, title }: Props) {
 	const previewOpen = useStore((s) => s.preview.open);
 	const openPreview = useStore((s) => s.openPreview);
 	const closePreview = useStore((s) => s.closePreview);
+	const [convSummary, setConvSummary] = useState<ConversationSummary | null>(
+		null,
+	);
+	const refreshConversationSnapshot = useCallback(async () => {
+		const [convRes, messagesRes] = await Promise.allSettled([
+			api.getConv(convId),
+			api.convMessages(convId, { limit: 50 }),
+		]);
+		if (convRes.status === "fulfilled") {
+			const conv = convRes.value;
+			setConvSummary(conv);
+			window.dispatchEvent(
+				new CustomEvent("polynoia:conv-members-changed", {
+					detail: { convId: conv.id, members: conv.members },
+				}),
+			);
+		}
+		if (messagesRes.status === "fulfilled") {
+			hydrateMessages(convId, messagesRes.value.messages, {
+				mode: "replace",
+				hasMore: messagesRes.value.has_more,
+			});
+		}
+	}, [convId, hydrateMessages]);
 
 	const wsRef = useRef<ConvWebSocket | null>(null);
 	const bodyRef = useRef<HTMLDivElement>(null);
@@ -89,6 +120,18 @@ export function ChatPane({ convId, members, title }: Props) {
 	// double-Enter / Enter+click). Otherwise the agent sees N copies and
 	// its native session bloats with phantom turns.
 	const lastSentRef = useRef<{ text: string; ts: number } | null>(null);
+
+	useEffect(() => {
+		const onConvUpdated = (ev: Event) => {
+			const detail = (ev as CustomEvent<{ convId?: string }>).detail;
+			if (!detail?.convId || detail.convId === convId) {
+				void refreshConversationSnapshot();
+			}
+		};
+		window.addEventListener("polynoia:conv-updated", onConvUpdated);
+		return () =>
+			window.removeEventListener("polynoia:conv-updated", onConvUpdated);
+	}, [convId, refreshConversationSnapshot]);
 
 	// Maintain a WS connection per active conv (lifecycle tied to convId)
 	useEffect(() => {
@@ -218,6 +261,14 @@ export function ChatPane({ convId, members, title }: Props) {
 								pendingAccessByConv,
 							};
 						});
+					} else if (chunk.type === "data-conv-updated") {
+						// Control event only: member/role metadata changed. Refresh the
+						// current conv snapshot and latest system timeline markers, but do
+						// not render this transport hint as a message card.
+						const d = (chunk as any).data;
+						if (!d?.conv_id || d.conv_id === convId) {
+							void refreshConversationSnapshot();
+						}
 					} else if (chunk.type === "data-stream-resume") {
 						// Refresh/reconnect mid-stream: server sent the accumulated content
 						// of an agent's in-progress message. Rebuild it so the 思考块 + 回复
@@ -383,7 +434,7 @@ export function ChatPane({ convId, members, title }: Props) {
 			window.removeEventListener("polynoia:reconnect", refresh);
 			ws.close();
 		};
-	}, [convId, applyChunkToConv]);
+	}, [convId, applyChunkToConv, hydrateMessages, refreshConversationSnapshot]);
 
 	// ─── Initial history hydration ──────────────────────────────────
 	// Without this, refreshing the page wipes the store and the chat looks
@@ -603,9 +654,6 @@ export function ChatPane({ convId, members, title }: Props) {
 
 	// Conv summary — needed for workspace_id (gates merge toggle visibility) and
 	// for the current merge_mode value. Refetched whenever convId switches.
-	const [convSummary, setConvSummary] = useState<ConversationSummary | null>(
-		null,
-	);
 	useEffect(() => {
 		let alive = true;
 		setConvSummary(null);
