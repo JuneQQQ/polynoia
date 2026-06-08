@@ -42,6 +42,10 @@ export type EnabledAdapter = {
 // server. Read once at module load — see lib/runtime-config.ts.
 const BASE = getServerHttpBase();
 
+function apiUrl(path: string): string {
+	return BASE + path;
+}
+
 /** Pending edit row, returned by manual-mode endpoints. */
 export type PendingEdit = {
 	id: string;
@@ -123,6 +127,26 @@ export type CommitDiff = {
 	truncated: boolean;
 };
 
+/** One running deploy/expose service. The 4 kinds share fields loosely — UI
+ * branches on `kind` for the right icon + secondary action (open / download /
+ * copy URL). `alive=false` happens for preview servers whose subprocess died.
+ */
+export type ServiceItem = {
+	token: string;
+	kind: "preview" | "static" | "container" | "source";
+	conv_id?: string | null;
+	url?: string | null;
+	download_url?: string | null;
+	name?: string | null;
+	port?: number | null;
+	size?: number | null;
+	container_id?: string | null;
+	image?: string | null;
+	alive: boolean;
+	created_at?: string | null;
+	ttl_seconds?: number | null;
+};
+
 async function getJSON<T>(path: string): Promise<T> {
 	const res = await fetch(BASE + path);
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -163,7 +187,7 @@ async function deleteJSON<T>(path: string): Promise<T> {
  * Content-Disposition so the browser saves instead of navigating. */
 function triggerDownload(url: string): void {
 	const a = document.createElement("a");
-	a.href = BASE + url;
+	a.href = apiUrl(url);
 	// Empty filename = let the server's Content-Disposition decide.
 	a.setAttribute("download", "");
 	document.body.appendChild(a);
@@ -259,14 +283,19 @@ export const api = {
 		),
 	/** Installed skill packages (folder per skill). */
 	listSkills: () =>
-		getJSON<{ name: string; description: string; path: string }[]>("/api/skills"),
+		getJSON<{ name: string; description: string; path: string }[]>(
+			"/api/skills",
+		),
 	/** Install skill(s) from a git URL or local path. A source can be a single
 	 * skill OR a collection (e.g. a plugin's skills/), so it returns a LIST. */
 	installSkill: (source: string, name?: string) =>
-		postJSON<{ name: string; description: string; path: string }[]>("/api/skills", {
-			source,
-			name,
-		}),
+		postJSON<{ name: string; description: string; path: string }[]>(
+			"/api/skills",
+			{
+				source,
+				name,
+			},
+		),
 	/** Uninstall an installed skill package by name (removes its folder). */
 	deleteSkill: (name: string) =>
 		deleteJSON<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`),
@@ -291,7 +320,7 @@ export const api = {
 			members: string[];
 		}>,
 	) =>
-		fetch(`/api/workspaces/${id}`, {
+		fetch(apiUrl(`/api/workspaces/${id}`), {
 			method: "PATCH",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
@@ -321,7 +350,9 @@ export const api = {
 	 * the message payload (instead of inlining base64). */
 	upload: (file: File, name: string, convId?: string) =>
 		fetch(
-			`/api/upload?name=${encodeURIComponent(name)}${convId ? `&conv_id=${encodeURIComponent(convId)}` : ""}`,
+			apiUrl(
+				`/api/upload?name=${encodeURIComponent(name)}${convId ? `&conv_id=${encodeURIComponent(convId)}` : ""}`,
+			),
 			{
 				method: "POST",
 				headers: { "content-type": file.type || "application/octet-stream" },
@@ -342,8 +373,17 @@ export const api = {
 				size_bytes: number;
 			}>;
 		}),
-	getConv: (convId: string) =>
-		getJSON<ConversationSummary>(`/api/conversations/${convId}`),
+	getConv: (convId: string) => {
+		// Synthetic DM conv (`dm-<agentId>`) has no DB row until the first user
+		// message — the server is designed to 404 these. Short-circuit before
+		// fetching so the inevitable 404 doesn't spam the devtools Console.
+		// Callers (`ChatPane` / `MembersListView` / `AgentDetailView`) already
+		// `.catch(() => {})` this, so reject keeps the existing fallback path.
+		if (convId.startsWith("dm-")) {
+			return Promise.reject(new Error("synthetic dm conv"));
+		}
+		return getJSON<ConversationSummary>(`/api/conversations/${convId}`);
+	},
 	/** Still-open ask-forms (agent questions awaiting an answer) — used to
 	 * re-hydrate the floating panel after a refresh. */
 	openAskForms: (convId: string) =>
@@ -440,7 +480,7 @@ export const api = {
 		id: string,
 		body: { proxy_kind: ProxyKind; proxy: string | null },
 	) =>
-		fetch(`/api/adapters/${id}/proxy`, {
+		fetch(apiUrl(`/api/adapters/${id}/proxy`), {
 			method: "PUT",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
@@ -527,7 +567,7 @@ export const api = {
 			skills: { name: string; instructions: string; description?: string }[];
 		}>,
 	) =>
-		fetch(`/api/contacts/${id}`, {
+		fetch(apiUrl(`/api/contacts/${id}`), {
 			method: "PATCH",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
@@ -545,6 +585,21 @@ export const api = {
 
 	health: () =>
 		getJSON<{ status: string; version: string; time: string }>("/api/health"),
+
+	/** List live services (preview servers / static mounts / containers /
+	 * source zips) owned by this conv. Drives the Services view in the right
+	 * rail. Each service has a `token` (the kill switch) + the kind-specific
+	 * fields (url / download_url / port / image / etc.). */
+	listServices: (convId: string) =>
+		getJSON<{ services: ServiceItem[] }>(
+			`/api/conversations/${convId}/services`,
+		),
+
+	/** Stop + forget a service. Token prefix decides the kind (prev-/stat-/
+	 * ctn-/src-) — server picks the right cleanup (terminate proc, rmtree,
+	 * docker rm -f + rmi, unlink zip). */
+	stopService: (token: string) =>
+		deleteJSON<{ ok: boolean; kind: string }>(`/api/services/${token}`),
 
 	/** Apply a Diff card to the conv's sandbox. Server reconstructs unified
 	 * diff from hunks + git apply + commit. Returns new short sha on success.
@@ -581,7 +636,9 @@ export const api = {
 	/** Read a workspace file as UTF-8 text. */
 	workspaceFileRead: async (wsId: string, path: string) => {
 		const r = await fetch(
-			`/api/workspaces/${wsId}/files/raw?path=${encodeURIComponent(path)}`,
+			apiUrl(
+				`/api/workspaces/${wsId}/files/raw?path=${encodeURIComponent(path)}`,
+			),
 		);
 		if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
 		return {
@@ -592,7 +649,9 @@ export const api = {
 	/** Write a workspace file + auto-commit on main. */
 	workspaceFileWrite: async (wsId: string, path: string, content: string) => {
 		const r = await fetch(
-			`/api/workspaces/${wsId}/files/raw?path=${encodeURIComponent(path)}`,
+			apiUrl(
+				`/api/workspaces/${wsId}/files/raw?path=${encodeURIComponent(path)}`,
+			),
 			{
 				method: "PUT",
 				headers: { "content-type": "text/plain; charset=utf-8" },
@@ -614,27 +673,35 @@ export const api = {
 	 * (even same-origin) while XHR with responseType=arraybuffer succeeds. Same
 	 * behavior in real browsers — this is purely a WebView compatibility choice. */
 	workspaceFileBytesRead: (wsId: string, path: string) => {
-		const url = `/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`;
+		const url = apiUrl(
+			`/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`,
+		);
 		const attempt = () =>
-			new Promise<{ data: ArrayBuffer; modified: number }>((resolve, reject) => {
-				const xhr = new XMLHttpRequest();
-				xhr.open("GET", url, true);
-				xhr.responseType = "arraybuffer";
-				xhr.timeout = 30000;
-				xhr.onload = () => {
-					if (xhr.status >= 200 && xhr.status < 300) {
-						resolve({
-							data: xhr.response as ArrayBuffer,
-							modified: Number(xhr.getResponseHeader("X-Modified") || "0"),
-						});
-					} else {
-						reject(new Error(`${xhr.status} ${xhr.statusText || "request failed"}`));
-					}
-				};
-				xhr.onerror = () => reject(new Error("network error (xhr)"));
-				xhr.ontimeout = () => reject(new Error("request timed out"));
-				xhr.send();
-			});
+			new Promise<{ data: ArrayBuffer; modified: number }>(
+				(resolve, reject) => {
+					const xhr = new XMLHttpRequest();
+					xhr.open("GET", url, true);
+					xhr.responseType = "arraybuffer";
+					xhr.timeout = 30000;
+					xhr.onload = () => {
+						if (xhr.status >= 200 && xhr.status < 300) {
+							resolve({
+								data: xhr.response as ArrayBuffer,
+								modified: Number(xhr.getResponseHeader("X-Modified") || "0"),
+							});
+						} else {
+							reject(
+								new Error(
+									`${xhr.status} ${xhr.statusText || "request failed"}`,
+								),
+							);
+						}
+					};
+					xhr.onerror = () => reject(new Error("network error (xhr)"));
+					xhr.ontimeout = () => reject(new Error("request timed out"));
+					xhr.send();
+				},
+			);
 		// Retry transient WebView network errors (the dev server juggles HMR +
 		// many module requests; the WebView occasionally drops an in-flight XHR).
 		// Retry only on network/timeout, not on HTTP status errors (4xx/5xx).
@@ -662,7 +729,9 @@ export const api = {
 		body: Blob | ArrayBuffer,
 	) => {
 		const r = await fetch(
-			`/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`,
+			apiUrl(
+				`/api/workspaces/${wsId}/files/blob?path=${encodeURIComponent(path)}`,
+			),
 			{
 				method: "PUT",
 				headers: { "content-type": "application/octet-stream" },
@@ -678,7 +747,7 @@ export const api = {
 	},
 	/** URL for embedding a workspace HTML file in an iframe. */
 	workspacePreviewUrl: (wsId: string, file: string) =>
-		`/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`,
+		apiUrl(`/api/workspaces/${wsId}/preview?file=${encodeURIComponent(file)}`),
 
 	/** Read a workspace file as raw bytes (for binary doc preview: docx/xlsx/pptx).
 	 * Reuses the byte-faithful /files/download endpoint — its Content-Disposition:
@@ -686,14 +755,22 @@ export const api = {
 	 * text /files/raw endpoint can't serve these (it rejects non-UTF-8 + caps at 1MB). */
 	workspaceFileBytes: async (wsId: string, path: string) => {
 		const r = await fetch(
-			`/api/workspaces/${wsId}/files/download?path=${encodeURIComponent(path)}`,
+			apiUrl(
+				`/api/workspaces/${wsId}/files/download?path=${encodeURIComponent(path)}`,
+			),
 		);
 		if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
 		return r.arrayBuffer();
 	},
 	/** Commit history of a workspace branch (newest first). ``graph`` returns the
 	 * full set (merge nodes + parents) for the tree view. */
-	workspaceCommits: (wsId: string, ref = "main", limit = 80, skip = 0, graph = false) =>
+	workspaceCommits: (
+		wsId: string,
+		ref = "main",
+		limit = 80,
+		skip = 0,
+		graph = false,
+	) =>
 		getJSON<{ commits: CommitMeta[] }>(
 			`/api/workspaces/${wsId}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}&skip=${skip}${graph ? "&graph=true" : ""}`,
 		),
@@ -718,7 +795,7 @@ export const api = {
 	/** Zip + download selected paths (files and/or dirs). Uses fetch POST then
 	 * blob-URL because <a download> can't carry a JSON body. */
 	downloadWorkspaceSelection: async (wsId: string, paths: string[]) => {
-		const r = await fetch(`/api/workspaces/${wsId}/archive`, {
+		const r = await fetch(apiUrl(`/api/workspaces/${wsId}/archive`), {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ paths }),

@@ -45,11 +45,12 @@ export function RightPreviewFile({
 	const _k = docKind(path, "");
 	const isSlides = _k === "slides";
 	const isBinary = _k === "workbook" || _k === "word";
-	// Mobile renders images directly (<img>) and never needs the text fetch for
-	// them — the raw text endpoint would 415 on binary image bytes.
+	// Images render directly via <img> (desktop AND mobile) — never text-fetched,
+	// since the raw text endpoint 415s on binary image bytes. (Was mobile-only,
+	// so desktop image previews hit /files/raw → 415 → "无法预览".)
 	const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path);
 	const mobile = isMobile();
-	const skipImageFetch = isImage && mobile;
+	const skipImageFetch = isImage;
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: filesTick is the reload trigger.
 	useEffect(() => {
@@ -80,15 +81,17 @@ export function RightPreviewFile({
 				const ep = mobile ? "blob" : "raw";
 				const base = (() => {
 					try {
-						return new URL(
-							`/api/workspaces/${workspaceId}/files/${ep}`,
-							window.location.href,
-						).href;
+						return assetUrl(
+							`/api/workspaces/${encodeURIComponent(workspaceId)}/files/${ep}?path=${encodeURIComponent(path)}`,
+						);
 					} catch {
 						return `/files/${ep}`;
 					}
 				})();
-				if (alive) setError(`${String(e?.name ?? "")} ${String(e?.message ?? e)}\n${base}`);
+				if (alive)
+					setError(
+						`${String(e?.name ?? "")} ${String(e?.message ?? e)}\n${base}`,
+					);
 			})
 			.finally(() => {
 				if (alive) setLoading(false);
@@ -96,7 +99,15 @@ export function RightPreviewFile({
 		return () => {
 			alive = false;
 		};
-	}, [workspaceId, path, filesTick, isBinary, isSlides, skipImageFetch, mobile]);
+	}, [
+		workspaceId,
+		path,
+		filesTick,
+		isBinary,
+		isSlides,
+		skipImageFetch,
+		mobile,
+	]);
 
 	// Routing — order matters: pptx + binary docs render WITHOUT a text fetch
 	// (their previewers fetch bytes themselves), so route them before the
@@ -108,16 +119,21 @@ export function RightPreviewFile({
 		// DocPreviewPane → WorkbookPreview fetches the .xlsx bytes itself.
 		return <DocPreviewPane workspaceId={workspaceId} path={path} content="" />;
 	}
-	// Mobile image preview — render the bytes directly via <img> (same-origin
+	// Image preview — render the bytes directly via <img> (same-origin
 	// /files/blob through the Vite proxy; assetUrl honors any server override).
-	if (mobile && isImage) {
+	// /files/blob now serves the real image media-type so the <img> renders.
+	if (isImage) {
 		const src = assetUrl(
 			`/api/workspaces/${encodeURIComponent(workspaceId)}/files/blob?path=${encodeURIComponent(path)}`,
 		);
 		return (
 			<div className="h-full w-full overflow-auto bg-[var(--color-surface-2)] grid place-items-center p-3">
 				{/* biome-ignore lint/a11y/useAltText: filename alt below */}
-				<img src={src} alt={path} className="max-w-full h-auto object-contain" />
+				<img
+					src={src}
+					alt={path}
+					className="max-w-full h-auto object-contain"
+				/>
 			</div>
 		);
 	}
@@ -137,13 +153,23 @@ export function RightPreviewFile({
 	if (mobile) {
 		// Markdown (incl. Marp source) → lightweight react-markdown.
 		if (/\.(md|markdown|mdx|marp)$/i.test(path)) {
-			return <MobileMarkdownView content={content} />;
+			return (
+				<MobileMarkdownView
+					content={content}
+					workspaceId={workspaceId}
+					path={path}
+				/>
+			);
 		}
 		// csv/tsv (table) + html (rendered) — these DocPreviewPane renderers are
 		// light and work fine in the WebView.
 		if (/\.(csv|tsv|html?)$/i.test(path)) {
 			return (
-				<DocPreviewPane workspaceId={workspaceId} path={path} content={content} />
+				<DocPreviewPane
+					workspaceId={workspaceId}
+					path={path}
+					content={content}
+				/>
 			);
 		}
 		// Everything else that's UTF-8 text (code / json / yaml / txt / logs / …)
@@ -301,7 +327,10 @@ function PptxRender({
 			{err ? (
 				<div className="h-full grid place-items-center">
 					<div className="text-center max-w-[320px]">
-						<FileX2 size={28} className="text-[var(--color-fg-4)] mx-auto mb-3" />
+						<FileX2
+							size={28}
+							className="text-[var(--color-fg-4)] mx-auto mb-3"
+						/>
 						<div className="text-[13px] font-medium text-[var(--color-fg)] mb-1 truncate">
 							{basename(path)}
 						</div>

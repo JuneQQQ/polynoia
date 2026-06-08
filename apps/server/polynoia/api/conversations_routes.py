@@ -165,7 +165,14 @@ async def get_open_ask_forms(conv_id: str):
     open_forms = []
     for i, m in enumerate(msgs):
         payload = m.get("payload") or {}
-        if payload.get("kind") == "ask-form" and i > last_user_idx:
+        # Open = ask-form after the last user reply AND not already answered.
+        # Blocking ask_user no longer writes a `you` message (the answer is
+        # stamped onto the card payload), so `answered` is the signal there.
+        if (
+            payload.get("kind") == "ask-form"
+            and i > last_user_idx
+            and not payload.get("answered")
+        ):
             open_forms.append({
                 "id": m.get("id"),
                 "agent_id": m.get("sender_id"),

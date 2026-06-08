@@ -1496,18 +1496,88 @@ class _RequestProjectAccessTool(_ToolBase):
             return {"kind": "error", "error": f"transport failure: {e}"}
 
 
+class _ExposeTool(_ToolBase):
+    name = "expose"
+    description = (
+        "Deploy the conv's sandbox via one of four backends and return a URL/"
+        "download — does NOT emit any chat card by itself. Pair with `present` "
+        "(pass the returned URL/download as a `links` entry) when you want the "
+        "user to see + click the result.\n\n"
+        "Targets:\n"
+        "  · preview   — spin up an ephemeral HTTP server on a random port, "
+        "auto-shuts down after 30 min. Best for instant 'open the HTML' previews "
+        "of static sandboxes.\n"
+        "  · static    — copy the sandbox into a persistent mount served at "
+        "/api/deploy/static/<token>/. Survives server restart. Good for "
+        "longer-lived static demos.\n"
+        "  · container — docker build the sandbox (Dockerfile or auto-generated "
+        "nginx:alpine) + docker run on a random host port. Use ONLY for projects "
+        "that genuinely need a server (framework apps, backends) — overkill for "
+        "pure HTML. Requires a working docker daemon.\n"
+        "  · source    — zip the sandbox and return a one-shot download URL.\n\n"
+        "Returns ``{ok, token, target, url?|download_url?, download_name?, "
+        "download_bytes?, log?}`` on success, ``{ok:false, error, log?}`` on "
+        "failure. The user can manage running services from the Services tab.\n\n"
+        "When the user asked 'how to deploy' but didn't say which target, prefer "
+        "`ask_user` first to let them pick — don't guess."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "enum": ["preview", "static", "container", "source"],
+                "description": "Which backend to deploy via (see the tool description).",
+            },
+        },
+        "required": ["target"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        target = str(args.get("target") or "").strip().lower()
+        if target not in ("preview", "static", "container", "source"):
+            return {"kind": "error", "error": f"target must be one of preview/static/container/source, got {target!r}"}
+        base = os.environ.get("POLYNOIA_API_BASE")
+        if not base:
+            return {"kind": "error", "error": "expose needs POLYNOIA_API_BASE (no server context)"}
+        try:
+            async with httpx.AsyncClient(
+                base_url=base, timeout=240.0, trust_env=False,
+            ) as client:
+                r = await client.post(
+                    f"/api/conversations/{ctx.conv_id}/expose",
+                    json={"target": target},
+                )
+                r.raise_for_status()
+                data = r.json()
+        except (httpx.RequestError, httpx.HTTPError) as e:
+            return {"kind": "error", "error": f"transport failure: {e}"}
+        ctx.append_audit("agent.expose", {"target": target, "token": data.get("token"), "ok": data.get("ok")})
+        return data
+
+
 class _PresentTool(_ToolBase):
     name = "present"
     description = (
         "Show the user-facing DELIVERABLES you produced as ONE panel in the chat — "
-        "a one-line note plus a clickable file list (preview / download).\n\n"
+        "a one-line note plus a list of file rows (preview / download) and/or "
+        "external link rows (open / download).\n\n"
         "Present only what the USER actually opens to consume the result:\n"
         "  · a runnable/standalone HTML page (a demo, a report, a slide deck)\n"
         "  · documents — Markdown / PPTX / DOCX / XLSX / PDF / CSV\n"
         "  · images / diagrams / generated data files\n"
+        "  · a deployed/exposed URL (preview server, container, static site)\n"
+        "  · a download URL (a built zip the user can fetch)\n"
         "Do NOT present the SOURCE TREE of a code project — the user builds/runs "
         "that locally, and the per-file diff cards already show every code change. "
         "For a code deliverable, present AT MOST the README + the single runnable "
+        "entry (e.g. a built index.html) — or for a framework project that can't "
+        "be opened by clicking the HTML, run a deploy via `expose` and present "
+        "its URL as a link instead. Listing 20 .ts/.py source files is noise.\n\n"
+        "Pass `paths` (a list) for sandbox files and/or `links` for external URLs; "
+        "`message` is the one-line hand-off note. At least one of paths/links is "
+        "required. Call this ONCE (not per file). Prefer it over pasting file "
+        "contents into your reply."
         "entry (e.g. a built index.html), or skip `present` entirely and just say in "
         "one line how to run it. Listing 20 .ts/.py source files is noise.\n\n"
         "Pass `paths` (a list) to bundle the SELECTED deliverables into one panel, or "
@@ -1529,9 +1599,32 @@ class _PresentTool(_ToolBase):
                 "description": "Workspace-relative file paths to bundle into one panel",
             },
             "path": {"type": "string", "description": "A single workspace-relative file path"},
+            "links": {
+                "type": "array",
+                "description": (
+                    "External URLs to show alongside files: a deployed preview/container "
+                    "URL (kind=web, opens in browser) or a download URL (kind=download, "
+                    "triggers a download)."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "The link target (http(s) URL or absolute /api/... path)"},
+                        "label": {"type": "string", "description": "Human label, e.g. '预览(临时 30 分钟)' or 'source.zip'"},
+                        "kind": {
+                            "type": "string",
+                            "enum": ["web", "download"],
+                            "description": "web = clickable, opens new tab; download = triggers file download",
+                        },
+                        "bytes": {"type": "integer", "description": "Download size in bytes, when known"},
+                        "note": {"type": "string", "description": "Short hint, e.g. 'container · port 8080'"},
+                    },
+                    "required": ["url"],
+                },
+            },
             "message": {
                 "type": "string",
-                "description": "One-line note to the user shown above the files (what was delivered)",
+                "description": "One-line note to the user shown above the entries (what was delivered)",
             },
         },
     }
@@ -1550,21 +1643,42 @@ class _PresentTool(_ToolBase):
             r = str(p or "").strip().lstrip("/")
             if r and r not in rels:
                 rels.append(r)
-        if not rels:
-            return {"error": "path or paths required"}
+        # Validate links (forwarded as-is; server re-validates).
+        raw_links = args.get("links") or []
+        links: list[dict[str, Any]] = []
+        if isinstance(raw_links, list):
+            for entry in raw_links:
+                if not isinstance(entry, dict):
+                    continue
+                url = str(entry.get("url") or "").strip()
+                if not url:
+                    continue
+                link: dict[str, Any] = {"url": url}
+                if entry.get("label"):
+                    link["label"] = str(entry["label"])
+                kind = str(entry.get("kind") or "web").lower()
+                link["kind"] = kind if kind in ("web", "download") else "web"
+                if isinstance(entry.get("bytes"), int) and entry["bytes"] > 0:
+                    link["bytes"] = entry["bytes"]
+                if entry.get("note"):
+                    link["note"] = str(entry["note"])
+                links.append(link)
+        if not rels and not links:
+            return {"error": "paths or links required"}
         # Verify each file exists in this agent's sandbox before showing.
-        missing = [
-            r for r in rels
-            if not (ctx._resolve_read(r).exists() and not ctx._resolve_read(r).is_dir())
-        ]
-        if missing:
-            return {"error": f"file not found: {', '.join(missing)}"}
-        # Capture in git BEFORE emitting cards. Untracked side-products (e.g. a CSV
-        # produced by running a script via the bash tool) would otherwise stay in
-        # the worktree, never merge to main, and the card's src URL would 404
-        # because the download endpoint reads from main. No-op if nothing pending.
-        with contextlib.suppress(Exception):
-            await ctx.git_commit(turn_id=None, message_suffix=f"present {', '.join(rels)}")
+        if rels:
+            missing = [
+                r for r in rels
+                if not (ctx._resolve_read(r).exists() and not ctx._resolve_read(r).is_dir())
+            ]
+            if missing:
+                return {"error": f"file not found: {', '.join(missing)}"}
+            # Capture in git BEFORE emitting cards. Untracked side-products (e.g. a
+            # CSV produced via bash) would otherwise stay in the worktree, never
+            # merge to main, and the card's src URL would 404 because the download
+            # endpoint reads from main. No-op if nothing pending.
+            with contextlib.suppress(Exception):
+                await ctx.git_commit(turn_id=None, message_suffix=f"present {', '.join(rels)}")
         # Workspace address: a project workspace_id when in one, else the contact's
         # private per-conv sandbox (conv:<conv_id>) — matches the preview pane.
         ws_id = os.environ.get("POLYNOIA_WORKSPACE_ID") or f"conv:{ctx.conv_id}"
@@ -1583,6 +1697,7 @@ class _PresentTool(_ToolBase):
                     "agent_id": ctx.turn_agent_id or ctx.agent_id,
                     "ws": ws_id,
                     "paths": rels,
+                    "links": links,
                     "message": args.get("message") or args.get("caption"),
                 })
                 r.raise_for_status()
@@ -1595,8 +1710,8 @@ class _PresentTool(_ToolBase):
         if data.get("deferred"):
             return {"presented": False, "deferred": True,
                     "note": data.get("note"), "paths": rels}
-        ctx.append_audit("agent.present", {"paths": rels, "ws": ws_id})
-        return {"presented": True, "paths": rels}
+        ctx.append_audit("agent.present", {"paths": rels, "links": [l.get("url") for l in links], "ws": ws_id})
+        return {"presented": True, "paths": rels, "links": [l.get("url") for l in links]}
 
 
 # Markers that must NEVER survive into a resolution — a left-over conflict
@@ -1747,7 +1862,7 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
         _BashTool, _GrepTool, _GlobTool,
         _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
         _AskUserTool, _RequestProjectAccessTool, _PresentTool,
-        _ResolveConflictTool,
+        _ResolveConflictTool, _ExposeTool,
     ]
 }
 
@@ -1781,6 +1896,11 @@ _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + 
 # ONLY (the neutral arbiter that holds the contract + every member's intent) — a
 # worker self-resolving its own branch is judge-and-party (biased toward whoever
 # merged later). In AUTO mode the orchestrator resolves; in MANUAL the user does.
+_ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}
+# Deploy/publish — orchestrator AND builders may need to expose a preview URL,
+# container or source zip while wrapping up. Pairs with `present` (the agent
+# surfaces the returned URL via a `links` entry on the deliverable panel).
+_EXPOSE   = {"expose"}
 _ORCHESTRATE = {"dispatch", "discuss", "resolve_conflict"}
 # `present` (surface deliverables as a card) is available to BUILDERS too, not
 # just the orchestrator: a solo agent must be able to hand off what it built, and
@@ -1795,6 +1915,11 @@ _DELIVER = {"present"}
 # the single audited write path, and delegation is dispatch/discuss not a blocking call.
 
 # ── Functional tiers (role names map onto these) ────────────────
+_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _EXPOSE
+# Builders do NOT resolve conflicts — that's the orchestrator's call (neutral
+# arbiter). Workers just build + report; a conflict on their branch is escalated
+# to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _EXPOSE
 _TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _DELIVER
 # Builders do NOT resolve conflicts — that's the orchestrator's call (neutral
 # arbiter). Workers just build + report; a conflict on their branch is escalated

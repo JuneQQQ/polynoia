@@ -27,8 +27,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { type AdapterProbe, api } from "../lib/api";
+import {
+	flushServerConfig,
+	getServerOverride,
+	setServerUrl,
+} from "../lib/runtime-config";
 import type { ProxyKind } from "../lib/types";
-import { getServerOverride, setServerUrl } from "../lib/runtime-config";
 
 type ProxyCfg = { proxy: string | null; proxy_kind: ProxyKind };
 
@@ -382,11 +386,16 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 
 function ServerSection() {
 	const current = getServerOverride();
-	const [mode, setMode] = useState<"local" | "remote">(current ? "remote" : "local");
-	const [url, setUrl] = useState(current || "http://10.2.255.109:7780");
+	const [mode, setMode] = useState<"local" | "remote">(
+		current ? "remote" : "local",
+	);
+	const [url, setUrl] = useState(current || "http://127.0.0.1:7780");
 	const [expanded, setExpanded] = useState(false);
 	const [saving, setSaving] = useState(false);
-	const [test, setTest] = useState<{ kind: "idle" | "ok" | "err" | "testing"; msg: string }>({
+	const [test, setTest] = useState<{
+		kind: "idle" | "ok" | "err" | "testing";
+		msg: string;
+	}>({
 		kind: "idle",
 		msg: "",
 	});
@@ -412,13 +421,19 @@ function ServerSection() {
 				msg: `v${health.version ?? "?"} · ${n} 个 agent · 服务器时间 ${health.time ? health.time.slice(11, 19) : ""}`,
 			});
 		} catch (e) {
-			setTest({ kind: "err", msg: "连接失败: " + String((e as Error).message || e) });
+			setTest({
+				kind: "err",
+				msg: "连接失败: " + String((e as Error).message || e),
+			});
 		}
 	}
 
-	function save() {
+	async function save() {
 		setSaving(true);
 		setServerUrl(mode === "remote" ? effectiveBase() : "");
+		// Await native Preferences write before reload — otherwise the URL can be
+		// lost on Capacitor due to the async write racing window.location.reload.
+		await flushServerConfig();
 		setTimeout(() => window.location.reload(), 400);
 	}
 
@@ -434,7 +449,10 @@ function ServerSection() {
 				<span className="ml-auto text-[10.5px] text-[var(--color-fg-4)] font-mono">
 					{mode === "local" ? "local" : url.replace(/^https?:\/\//, "")}
 				</span>
-				<ChevronDown size={11} className={`transition-transform duration-200 ${expanded ? "rotate-180" : ""}`} />
+				<ChevronDown
+					size={11}
+					className={`transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+				/>
 			</button>
 			{expanded && (
 				<div
@@ -448,7 +466,10 @@ function ServerSection() {
 					>
 						<button
 							type="button"
-							onClick={() => { setMode("local"); setTest({ kind: "idle", msg: "" }); }}
+							onClick={() => {
+								setMode("local");
+								setTest({ kind: "idle", msg: "" });
+							}}
 							className={`flex-1 text-[11px] font-medium transition-all duration-150 ${
 								mode === "local"
 									? "bg-[var(--color-accent)] text-white"
@@ -459,7 +480,10 @@ function ServerSection() {
 						</button>
 						<button
 							type="button"
-							onClick={() => { setMode("remote"); setTest({ kind: "idle", msg: "" }); }}
+							onClick={() => {
+								setMode("remote");
+								setTest({ kind: "idle", msg: "" });
+							}}
 							className={`flex-1 text-[11px] font-medium transition-all duration-150 ${
 								mode === "remote"
 									? "bg-[var(--color-accent)] text-white"
@@ -482,7 +506,7 @@ function ServerSection() {
 								setUrl(e.target.value);
 								setTest({ kind: "idle", msg: "" });
 							}}
-							placeholder="http://10.2.255.109:7780"
+							placeholder="http://127.0.0.1:7780"
 							className="w-full text-[11px] px-2 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] font-mono outline-none focus:border-[var(--color-accent)]"
 						/>
 					)}
@@ -496,7 +520,9 @@ function ServerSection() {
 										: "text-[var(--color-fg-3)] bg-[var(--color-surface-2)]"
 							}`}
 						>
-							{test.kind === "testing" && <Loader2 size={10} className="animate-spin" />}
+							{test.kind === "testing" && (
+								<Loader2 size={10} className="animate-spin" />
+							)}
 							{test.kind === "ok" && <Check size={10} />}
 							{test.kind === "err" && <X size={10} />}
 							{test.msg}

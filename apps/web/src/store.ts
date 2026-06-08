@@ -428,6 +428,12 @@ type Store = {
 	terminalOpen: boolean;
 	toggleTerminal: () => void;
 
+	/** Services view replaces the file tree in the right rail — lists running
+	 * preview/static/container/source artifacts for the active conv. Reset on
+	 * conv switch. */
+	servicesView: boolean;
+	toggleServicesView: () => void;
+
 	/** Legacy pending-edit cursor. Index into the active conv's pending list;
 	 * clamped by consumers. Reset on conv switch. */
 	reviewIndex: number;
@@ -584,6 +590,7 @@ export const useStore = create<Store>((set, get) => ({
 	diffSplit: true,
 	reviewIndex: 0,
 	terminalOpen: false,
+	servicesView: false,
 
 	openCodeFile: null,
 	setOpenCodeFile: (f) => set({ openCodeFile: f }),
@@ -642,6 +649,7 @@ export const useStore = create<Store>((set, get) => ({
 			commitsTabOpen: false,
 			reviewIndex: 0,
 			terminalOpen: false,
+			servicesView: false,
 		}),
 	openCommitsTab: () =>
 		set({ commitsTabOpen: true, activeCenterTab: COMMITS_TAB }),
@@ -655,7 +663,16 @@ export const useStore = create<Store>((set, get) => ({
 		})),
 	setDiffSplit: (v) => set({ diffSplit: v }),
 	setReviewIndex: (i) => set({ reviewIndex: Math.max(0, i) }),
-	toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
+	toggleTerminal: () =>
+		set((s) => ({
+			terminalOpen: !s.terminalOpen,
+			servicesView: s.terminalOpen ? s.servicesView : false,
+		})),
+	toggleServicesView: () =>
+		set((s) => ({
+			servicesView: !s.servicesView,
+			terminalOpen: s.servicesView ? s.terminalOpen : false,
+		})),
 
 	// Left sidebar full-collapse (persisted). VS Code Cmd+B idiom.
 	sidebarCollapsed:
@@ -720,7 +737,13 @@ export const useStore = create<Store>((set, get) => ({
 		} catch {}
 		set({ activeWorkspaceId: id });
 	},
-	setActiveConv: (id) => set({ activeConvId: id, view: "chat" }),
+	setActiveConv: (id) =>
+		set({
+			activeConvId: id,
+			view: "chat",
+			servicesView: false,
+			terminalOpen: false,
+		}),
 	setReplyingTo: (value) => set({ replyingTo: value }),
 	setComposerDraft: (value) => set({ composerDraft: value }),
 	setView: (v) => set({ view: v }),

@@ -19,55 +19,70 @@ import type { CapacitorConfig } from "@capacitor/cli";
  *     use adb reverse / iOS USB tunneling.
  */
 const config: CapacitorConfig = {
-	appId: "com.polynoia.mobile",
-	appName: "Polynoia",
-	// Tells Capacitor where the web build sits, relative to apps/mobile/.
-	// Sync copies this dir into the native projects.
-	webDir: "../web/dist",
-	bundledWebRuntime: false,
-	server: {
-		// For local dev with `--livereload --external`, override at CLI:
-		//   cap run android --livereload --external --port=5173
-		// For prod, the bundled webDir is used.
-		androidScheme: "https",
-		iosScheme: "https",
-		// Allow Capacitor's https://localhost origin to connect to the Polynoia
-		// API server. Phone must reach that host (LAN IP or tunnel).
-		allowNavigation: [
-			"127.0.0.1",
-			"localhost",
-			"*.polynoia.local",
-			"*.polynoia.app",
-		],
-	},
-	plugins: {
-		SplashScreen: {
-			launchShowDuration: 800,
-			launchAutoHide: false,
-			launchFadeOutDuration: 200,
-			backgroundColor: "#14110c",
-			androidScaleType: "CENTER_CROP",
-		},
-		Keyboard: {
-			// Native resize keeps the WebView bottom exactly above the keyboard.
-			// The previous "none" + CSS keyboard-height path left gaps on Android.
-			resize: "native",
-			resizeOnFullScreen: true,
-		},
-	},
-	android: {
-		backgroundColor: "#14110c",
-		// The app shell loads from https://localhost (androidScheme "https"), but
-		// the Polynoia backend is frequently a plain-HTTP LAN box (e.g.
-		// http://10.2.255.109:7780). Without this the WebView blocks those fetches
-		// as mixed content → "Failed to fetch". Pairs with usesCleartextTraffic in
-		// AndroidManifest.xml (OS-level cleartext permit). iOS allows it via ATS.
-		allowMixedContent: true,
-	},
-	ios: {
-		backgroundColor: "#14110c",
-		contentInset: "automatic",
-	},
+  appId: "com.polynoia.mobile",
+  appName: "Polynoia",
+  // Tells Capacitor where the web build sits, relative to apps/mobile/.
+  // Sync copies this dir into the native projects.
+  webDir: "../web/dist",
+  bundledWebRuntime: false,
+  server: {
+    // WebView loads the web app from the dev box's vite server instead of the
+    // baked-in bundle. After this is committed and Xcode rebuilds once, future
+    // web changes flow over HMR — no more Xcode rebuilds. Phone must be on the
+    // same LAN as 10.2.255.109 (verified reachable from iOS Safari).
+    // To go back to the bundled-snapshot mode, comment out `url` + `cleartext`.
+    url: "http://10.2.255.109:5173",
+    cleartext: true,
+    androidScheme: "https",
+    iosScheme: "https",
+    // Allow Capacitor's https://localhost origin to connect to the Polynoia
+    // API server. Phone must reach that host (LAN IP or tunnel).
+    allowNavigation: [
+      "127.0.0.1",
+      "localhost",
+      "10.2.255.109",
+      "*.polynoia.local",
+      "*.polynoia.app",
+    ],
+  },
+  plugins: {
+    SplashScreen: {
+      // launchAutoHide false → the splash stays up until initNative() calls
+      // SplashScreen.hide() AFTER React's first paint, eliminating the white
+      // flash between an 800ms auto-hide and the app actually rendering on a cold
+      // start. backgroundColor matches android.backgroundColor + the app bg so
+      // the splash→app handoff has no color jump; fade-out softens it.
+      launchShowDuration: 800,
+      launchAutoHide: false,
+      launchFadeOutDuration: 200,
+      backgroundColor: "#14110c",
+      androidScaleType: "CENTER_CROP",
+    },
+    Keyboard: {
+      // "native": the OS resizes the WebView to exactly above the keyboard so the
+      // composer is always flush against it (no gap / fling). The old "none" +
+      // CSS --kb-h slide mis-estimated the keyboard height across devices.
+      resize: "native",
+      resizeOnFullScreen: true,
+    },
+  },
+  android: {
+    backgroundColor: "#14110c",
+    // The app shell loads from https://localhost (androidScheme "https"), but
+    // the Polynoia backend is frequently a plain-HTTP LAN box (e.g.
+    // http://10.2.255.109:7780). Without this the WebView blocks those fetches
+    // as mixed content → "Failed to fetch". Pairs with usesCleartextTraffic in
+    // AndroidManifest.xml (OS-level cleartext permit). iOS allows it via ATS.
+    allowMixedContent: true,
+  },
+  ios: {
+    backgroundColor: "#14110c",
+    contentInset: "automatic",
+    // Disable the WKWebView's own scroll: inner overflow:auto / 100dvh shells
+    // still scroll, but dragging the page edge no longer rubber-bands the whole
+    // document down. Pairs with overscroll-behavior:none in index.css.
+    scrollEnabled: false,
+  },
 };
 
 export default config;

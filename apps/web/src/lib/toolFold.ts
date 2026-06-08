@@ -24,11 +24,16 @@ export function classifyFoldable(
 	kind: string | undefined,
 	name?: string,
 ): FoldClass {
-	if (kind === "reasoning") return { foldable: true, isTool: false, drop: false };
+	if (kind === "reasoning")
+		return { foldable: true, isTool: false, drop: false };
 	if (kind === "terminal") return { foldable: true, isTool: true, drop: false };
 	if (kind === "tool-call") {
 		const nm = cleanToolName(name ?? "").toLowerCase();
 		if (nm === "bash" || nm === "shell")
+			return { foldable: false, isTool: false, drop: true };
+		// ask_user surfaces as the friendly ask-form card + answer panel; its raw
+		// tool-call (a JSON dump of the questions) is redundant noise → drop it.
+		if (nm === "ask_user" || nm === "ask")
 			return { foldable: false, isTool: false, drop: true };
 		if (nm === "write" || nm === "filewrite" || nm === "apply_patch")
 			return { foldable: false, isTool: false, drop: false };

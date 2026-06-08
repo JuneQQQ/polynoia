@@ -6,13 +6,19 @@
  */
 import { Loader2, RefreshCw, ServerCrash } from "lucide-react";
 import { useState } from "react";
-import { getServerHttpBase } from "../lib/runtime-config";
+import {
+	flushServerConfig,
+	getServerHttpBase,
+	isCapacitor,
+	setServerUrl,
+} from "../lib/runtime-config";
 import { useStore } from "../store";
 
 export function ServerUnreachable() {
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
 	const base = getServerHttpBase() || "本机默认 (同源 / 代理)";
+	const mobile = isCapacitor();
 
 	const retry = async () => {
 		if (retrying) return;
@@ -26,8 +32,24 @@ export function ServerUnreachable() {
 		}
 	};
 
+	// Escape hatch: a wrong server URL must NOT brick the app. Clear the saved
+	// address and reload → App falls back to ConnectServerScreen so the user can
+	// re-enter one. (Mobile only; on web there's no connect screen.)
+	const reselect = async () => {
+		setServerUrl("");
+		await flushServerConfig().catch(() => {});
+		window.location.reload();
+	};
+
 	return (
-		<div className="pn-m-atmos min-h-[100dvh] grid place-items-center px-6 bg-[var(--color-bg)]">
+		<div
+			className="pn-m-atmos min-h-[100dvh] grid place-items-center px-6 bg-[var(--color-bg)]"
+			style={{
+				paddingTop: "var(--pn-status-safe-top, env(safe-area-inset-top))",
+				paddingBottom:
+					"var(--pn-status-safe-bottom, env(safe-area-inset-bottom))",
+			}}
+		>
 			<div className="modal-card anim-modal-in relative w-full max-w-[420px] px-7 py-8 text-center">
 				<div
 					className="mx-auto mb-4 grid place-items-center w-12 h-12 rounded-full"
@@ -60,6 +82,15 @@ export function ServerUnreachable() {
 					)}
 					{retrying ? "重试中…" : "重试连接"}
 				</button>
+				{mobile && (
+					<button
+						type="button"
+						onClick={reselect}
+						className="mt-2.5 w-full text-[12.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] underline underline-offset-2 transition-colors"
+					>
+						换个服务器地址
+					</button>
+				)}
 			</div>
 		</div>
 	);

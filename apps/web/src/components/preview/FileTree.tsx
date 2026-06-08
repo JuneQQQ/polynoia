@@ -13,6 +13,7 @@ import {
 	GitCommitHorizontal,
 	Loader2,
 	RefreshCw,
+	Server,
 	SquareTerminal,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -51,6 +52,7 @@ export function FileTree({
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 	const toggleTerminal = useStore((s) => s.toggleTerminal);
 	const terminalOpen = useStore((s) => s.terminalOpen);
+	const toggleServicesView = useStore((s) => s.toggleServicesView);
 	const openCommits = useStore((s) => s.openCommitsTab);
 
 	const togglePath = useCallback((path: string) => {
@@ -173,6 +175,15 @@ return (
 					aria-label="打开提交历史"
 				>
 					<GitCommitHorizontal size={11} />
+				</button>
+				<button
+					type="button"
+					onClick={toggleServicesView}
+					className="p-0.5 rounded transition-colors text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
+					title="查看运行中的服务"
+					aria-label="查看运行中的服务"
+				>
+					<Server size={11} />
 				</button>
 				<button
 					type="button"

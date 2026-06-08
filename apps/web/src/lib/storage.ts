@@ -25,6 +25,16 @@ const NATIVE = isCapacitorNative();
 // Synchronous cache for the native path (populated by prefetchStorage).
 const cache = new Map<string, string>();
 
+// Tracks in-flight native writes so callers can `await storage.flush()` before
+// destructive page navigation (a too-fast reload would race the async Preferences
+// write and either lose the new value or revive an old one when `prefetchStorage`
+// reads from disk on next boot). Off-Capacitor stays a no-op.
+const pendingWrites = new Set<Promise<unknown>>();
+function trackNativeWrite(p: Promise<unknown>): void {
+  pendingWrites.add(p);
+  void p.finally(() => pendingWrites.delete(p));
+}
+
 // Lazily-loaded Preferences plugin (only ever imported on native, so the web
 // bundle code-splits it into a chunk that is never fetched off-Capacitor).
 type PrefsApi = {
@@ -62,7 +72,9 @@ export const storage = {
   setItem(key: string, value: string): void {
     if (NATIVE) {
       cache.set(key, value);
-      void prefs().then(({ api }) => api.set({ key, value })).catch(() => {});
+      trackNativeWrite(
+        prefs().then(({ api }) => api.set({ key, value })).catch(() => {}),
+      );
       return;
     }
     try {
@@ -74,7 +86,9 @@ export const storage = {
   removeItem(key: string): void {
     if (NATIVE) {
       cache.delete(key);
-      void prefs().then(({ api }) => api.remove({ key })).catch(() => {});
+      trackNativeWrite(
+        prefs().then(({ api }) => api.remove({ key })).catch(() => {}),
+      );
       return;
     }
     try {
@@ -82,6 +96,14 @@ export const storage = {
     } catch {
       /* storage unavailable */
     }
+  },
+  /** Resolve when all in-flight native Preferences writes have settled. Call
+   * before navigation that destroys the JS context (e.g. window.location.reload)
+   * so the new value is durable. No-op off-Capacitor. */
+  async flush(): Promise<void> {
+    if (!NATIVE) return;
+    if (pendingWrites.size === 0) return;
+    await Promise.all([...pendingWrites]);
   },
 };
 

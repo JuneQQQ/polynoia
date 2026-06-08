@@ -11,6 +11,7 @@ import {
 	FolderTree,
 	GitMerge,
 	GitPullRequestArrow,
+	Server,
 	X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -19,6 +20,7 @@ import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
 import { FileTree } from "./FileTree";
 import { RightPreviewFile } from "./RightPreviewFile";
+import { ServicesView } from "./ServicesView";
 import { TerminalTab } from "./TerminalTab";
 
 export function PreviewPane() {
@@ -29,6 +31,8 @@ export function PreviewPane() {
 	const closePreview = useStore((s) => s.closePreview);
 	const activeConvId = useStore((s) => s.activeConvId);
 	const terminalOpen = useStore((s) => s.terminalOpen);
+	const servicesView = useStore((s) => s.servicesView);
+	const toggleServicesView = useStore((s) => s.toggleServicesView);
 	// No 文件/预览 toggle anymore: clicking a file in the tree previews it
 	// directly (sets previewFile); a back arrow returns to the tree.
 	const openPreviewFile = useStore((s) => s.openPreviewFile);
@@ -149,6 +153,16 @@ export function PreviewPane() {
 						size={14}
 						className="text-[var(--color-green)] flex-shrink-0"
 					/>
+				) : servicesView ? (
+					<button
+						type="button"
+						onClick={toggleServicesView}
+						title="返回文件列表"
+						aria-label="返回文件列表"
+						className="p-0.5 -ml-0.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-2)] flex-shrink-0"
+					>
+						<ArrowLeft size={15} />
+					</button>
 				) : previewFile ? (
 					<button
 						type="button"
@@ -171,16 +185,31 @@ export function PreviewPane() {
 							? "合并冲突 · 待解决"
 							: reviewing
 								? "代码评审 · 待接受改动"
-								: previewFile
-									? (previewFile.split("/").pop() ?? previewFile)
-									: (wsName ?? "工作区")}
+								: servicesView
+									? "运行中的服务"
+									: previewFile
+										? (previewFile.split("/").pop() ?? previewFile)
+										: (wsName ?? "工作区")}
 					</div>
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)] truncate">
-						{previewFile && !hasConflict && !reviewing
-							? previewFile
-							: "main · 工作目录"}
+						{servicesView
+							? `conv · ${activeConvId?.slice(0, 8) ?? "—"}`
+							: previewFile && !hasConflict && !reviewing
+								? previewFile
+								: "main · 工作目录"}
 					</div>
 				</div>
+				{!hasConflict && !reviewing && !servicesView && (
+					<button
+						type="button"
+						onClick={toggleServicesView}
+						title="运行中的服务"
+						aria-label="运行中的服务"
+						className="p-1 hover:bg-[var(--color-line)] rounded text-[var(--color-fg-3)]"
+					>
+						<Server size={13} />
+					</button>
+				)}
 				<button
 					type="button"
 					onClick={closePreview}
@@ -204,6 +233,8 @@ export function PreviewPane() {
 						<ConflictResolvePane convId={activeConvId} />
 					) : reviewing && activeConvId ? (
 						<DiffReviewPane convId={activeConvId} />
+					) : servicesView && activeConvId ? (
+						<ServicesView convId={activeConvId} />
 					) : !workspaceId ? (
 						<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
 							无工作区
