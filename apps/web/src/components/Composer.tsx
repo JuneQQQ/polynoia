@@ -659,11 +659,6 @@ export function Composer({
 					</div>
 				)}
 
-				{/* Live agent-running status — docked just above the input box (inside
-            the composer chrome), so it rides with the composer instead of
-            floating over / hiding message content. */}
-				{statusSlot}
-
 				{/* Unified composer — ChatGPT/Claude style: one rounded container with
             the textarea on top and all controls (attach · mode · send) docked
             along its bottom edge. Focus lifts the whole box with an accent ring.
@@ -683,6 +678,11 @@ export function Composer({
 							: "border-[var(--color-line-strong)]"
 					}`}
 				>
+					{/* Live agent-running status — part of the composer panel, not a
+            floating overlay. Keeping it inside this chrome prevents it from
+            visually colliding with the last message while agents stream. */}
+					{statusSlot}
+
 					<textarea
 						ref={taRef}
 						value={text}

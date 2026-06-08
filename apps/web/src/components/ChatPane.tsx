@@ -1040,7 +1040,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						onToggleMergeMode={toggleMergeMode}
 						statusSlot={
 							activeAgents.length > 0 ? (
-								<div className="anim-fade-up mb-2 flex flex-wrap items-center justify-center gap-1.5 px-1 text-[11.5px]">
+								<div className="-mx-2.5 -mt-2 mb-1.5 flex flex-wrap items-center gap-1.5 rounded-t-[21px] border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/72 px-3 py-2 text-[11.5px] anim-fade-up">
 									{activeAgents.map((a) => {
 										const agent = agents.find((x) => x.id === a.id);
 										const label =
@@ -1054,9 +1054,8 @@ export function ChatPane({ convId, members, title }: Props) {
 												type="button"
 												key={a.id}
 												onClick={() => wsRef.current?.abort(a.id)}
-												className="group inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
+												className="group inline-flex items-center gap-1 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)]/72 py-0.5 pl-1.5 pr-2 shadow-sm transition hover:border-[var(--color-red)] hover:bg-[var(--color-red-soft)]"
 												title={`点击中断 ${agent?.name ?? a.id}`}
-												style={{ background: agent?.bg ?? "var(--color-line)" }}
 											>
 												<Loader2
 													size={10}
@@ -1088,7 +1087,7 @@ export function ChatPane({ convId, members, title }: Props) {
 										<button
 											type="button"
 											onClick={() => wsRef.current?.abort()}
-											className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
+											className="ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[var(--color-red)] transition hover:bg-[var(--color-red-soft)]"
 											title="全部中断"
 										>
 											<Square size={10} /> 全部停止

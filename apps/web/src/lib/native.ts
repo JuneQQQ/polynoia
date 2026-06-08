@@ -64,26 +64,16 @@ export async function initNative(): Promise<void> {
 			SplashScreen.hide(),
 		),
 		import("@capacitor/keyboard").then(({ Keyboard }) => {
-			// resize "none": do NOT let the WebView auto-resize on keyboard — that
-			// reflow is INSTANT (jarring). Instead expose the keyboard height as a CSS
-			// var and let the mobile root animate its padding-bottom via a transition,
-			// so the composer slides up SMOOTHLY in sync with the keyboard.
-			Keyboard.setResizeMode?.({ mode: "none" as never }).catch(() => {});
-			// UNITS: @capacitor/keyboard reports `keyboardHeight` in DEVICE pixels on
-			// Android (CSS points on iOS). The composer offset (--kb-h) is CSS px, so
-			// on Android we must divide by devicePixelRatio — otherwise --kb-h is ~dpr×
-			// too tall and the composer is flung to the top with a huge black gap.
-			const cap = (globalThis as { Capacitor?: { getPlatform?: () => string } })
-				.Capacitor;
-			const isAndroid = cap?.getPlatform?.() === "android";
-			const toCss = (h: number) =>
-				isAndroid ? Math.round(h / (window.devicePixelRatio || 1)) : h;
-			const setKb = (h: number) =>
-				document.documentElement.style.setProperty("--kb-h", `${toCss(h)}px`);
-			Keyboard.addListener("keyboardWillShow", (info) =>
-				setKb(info.keyboardHeight),
-			).catch(() => {});
-			Keyboard.addListener("keyboardWillHide", () => setKb(0)).catch(() => {});
+			// resize "native": let the OS shrink the WebView to exactly above the
+			// keyboard. The composer (pinned to the layout bottom) is then ALWAYS
+			// flush against the keyboard top — no gap, no fling. The previous "none"
+			// + CSS --kb-h slide kept mis-estimating the keyboard height across
+			// devices (device-px vs CSS-px, nav-bar inset), leaving a gap. Native
+			// resize is exact + device-agnostic. --kb-h is forced to 0 so layouts
+			// that still reference it (chat/home paddingBottom) fall back to the
+			// safe-area inset only.
+			Keyboard.setResizeMode?.({ mode: "native" as never }).catch(() => {});
+			document.documentElement.style.setProperty("--kb-h", "0px");
 		}),
 	]).catch(() => {});
 }

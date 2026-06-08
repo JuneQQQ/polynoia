@@ -54,9 +54,10 @@ const config: CapacitorConfig = {
       androidScaleType: "CENTER_CROP",
     },
     Keyboard: {
-      // "none": we animate the composer up ourselves (CSS transition on
-      // --kb-h) for a smooth slide instead of the instant body-resize jump.
-      resize: "none",
+      // "native": the OS resizes the WebView to exactly above the keyboard so the
+      // composer is always flush against it (no gap / fling). The old "none" +
+      // CSS --kb-h slide mis-estimated the keyboard height across devices.
+      resize: "native",
       resizeOnFullScreen: true,
     },
   },
