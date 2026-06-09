@@ -999,6 +999,14 @@ body.polynoia-resizing * {
 	body::after {
 		display: none;
 	} /* mesh 静态本就无害,但减少绘制 */
+	/* 例外:加载转圈(Loader2 .animate-spin)是**功能性状态指示**,不是装饰动效。
+	   被上面的通配 reset 砍成转 1 次会"冻住像卡死",反而误导。这里按 WCAG 对
+	   essential motion 的豁免精神让它照转;装饰性大动画(页面切换/呼吸/marquee)
+	   仍被压掉。类选择器 .animate-spin(0,1,0)+ !important 胜过通配 *(0,0,0)。 */
+	.animate-spin {
+		animation-duration: 1s !important;
+		animation-iteration-count: infinite !important;
+	}
 }
 
 /* ─────────────────────────────────────────────────────────────────
