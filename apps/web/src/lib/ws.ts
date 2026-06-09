@@ -53,7 +53,10 @@ export class ConvWebSocket {
       // Server origin from runtime-config (local default or a configured remote
       // server) — see lib/runtime-config.ts.
       this.ws = new WebSocket(`${getServerWsBase()}/ws/conv/${this.convId}`);
-      this.ws.onopen = () => resolve();
+      this.ws.onopen = () => {
+        this.queryAgentStatus();
+        resolve();
+      };
       this.ws.onerror = (e) => {
         // React 18 Strict Mode double-mount triggers immediate cleanup before
         // open — that's expected, not a real error. Only surface to caller

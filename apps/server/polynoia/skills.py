@@ -31,6 +31,7 @@ from pathlib import Path
 from polynoia.settings import settings
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+BUILTIN_SKILLS_DIR = Path(__file__).resolve().parent / "builtin_skills"
 
 
 def _safe_name(name: str) -> str:
@@ -61,17 +62,64 @@ def _parse_skill_md(folder: Path) -> dict:
     return meta
 
 
+def read_skill_instructions(name: str) -> dict | None:
+    """Load a bound skill's metadata and body from its SKILL.md.
+
+    This is the inline-prompt fallback for adapters or sessions that do not
+    expose native skill discovery to the model.
+    """
+    folder = find_skill_dir(name)
+    if folder is None:
+        return None
+    md = folder / "SKILL.md"
+    if not md.is_file():
+        return None
+    text = md.read_text("utf-8", errors="replace")
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            body = text[end + 4:].lstrip()
+    return {**_parse_skill_md(folder), "instructions": body.strip(), "path": str(folder)}
+
+
 def list_skills() -> list[dict]:
-    """Installed skills: [{name, description, path}]."""
-    root = settings.skills_dir
-    if not root.exists():
-        return []
-    out: list[dict] = []
-    for d in sorted(root.iterdir()):
+    """Available skills: built-ins plus installed packages.
+
+    User-installed skills with the same name override bundled ones.
+    """
+    out: dict[str, dict] = {}
+    for d in _iter_skill_dirs(BUILTIN_SKILLS_DIR):
+        m = _parse_skill_md(d)
+        out[m["name"]] = {**m, "path": str(d), "builtin": True}
+    for d in _iter_skill_dirs(settings.skills_dir):
         if d.is_dir() and not d.name.startswith("."):
             m = _parse_skill_md(d)
-            out.append({**m, "path": str(d)})
-    return out
+            out[m["name"]] = {**m, "path": str(d), "builtin": False}
+    return sorted(out.values(), key=lambda s: s["name"])
+
+
+def _iter_skill_dirs(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return [
+        d for d in sorted(root.iterdir())
+        if d.is_dir() and not d.name.startswith(".") and (d / "SKILL.md").is_file()
+    ]
+
+
+def find_skill_dir(name: str) -> Path | None:
+    """Resolve an available skill folder by safe name."""
+    safe = _safe_name(name)
+    if not safe:
+        return None
+    installed = settings.skills_dir / safe
+    if installed.is_dir():
+        return installed
+    builtin = BUILTIN_SKILLS_DIR / safe
+    if builtin.is_dir():
+        return builtin
+    return None
 
 
 def _find_skill_dirs(root: Path) -> list[Path]:
@@ -137,7 +185,7 @@ async def install_skill(source: str, name: str | None = None) -> list[dict]:
             )
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 proc.kill()
                 raise ValueError("git clone timed out (180s)") from None
             if proc.returncode != 0:

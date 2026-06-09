@@ -2254,21 +2254,20 @@ async def rewind_conversation(conv_id: str, body: dict):
 
     async with SessionLocal() as session:
         conv = await storage_repo.get_conversation(session, conv_id)
-        if conv is None:
-            raise HTTPException(404, "conversation not found")
         target = await session.get(MessageRow, from_msg_id)
         if target is None or target.conv_id != conv_id:
             raise HTTPException(404, "message not in this conversation")
         target_code_sha = target.code_sha
+        workspace_id = conv.workspace_id if conv is not None else None
 
     restored: str | None = None
     undo_sha: str | None = None
     # Workspace conv with a stamped checkpoint → restore main first. If this
     # fails we abort BEFORE touching messages (no half-rewind: either both or
     # neither). Non-workspace convs (DMs) just drop messages.
-    if conv.workspace_id and target_code_sha:
+    if workspace_id and target_code_sha:
         await get_pool().close_all()
-        sb = Sandbox.open_workspace_if_exists(conv.workspace_id)
+        sb = Sandbox.open_workspace_if_exists(workspace_id)
         if sb is None:
             raise HTTPException(404, "workspace not materialized")
         result = await sb.restore_main_to(target_code_sha)

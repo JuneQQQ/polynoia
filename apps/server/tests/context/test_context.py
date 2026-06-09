@@ -22,6 +22,7 @@ from polynoia.context import build_context_for_turn
 from polynoia.domain.entities import (
     Agent,
     AgentSetup,
+    AgentSkill,
     Conversation,
     Workspace,
     new_ulid,
@@ -153,6 +154,27 @@ async def test_identity_layer_always_present(clean_db) -> None:
     assert "你是 孤独 Agent" in prompt  # persona injected via system_prompt
     assert "# 当前用户消息" in prompt
     assert "你好" in prompt
+
+
+@pytest.mark.asyncio
+async def test_bound_skill_name_only_is_injected_from_skill_package(clean_db) -> None:
+    """Contact editor stores bound skills by name; identity must still expose
+    the package so the agent can answer what skills it has."""
+    a = await _seed_agent("Deck Agent")
+    a.skills = [AgentSkill(name="ppt-master", instructions="")]
+    async with db_module.SessionLocal() as session:
+        await upsert_agent(session, a)
+        await session.commit()
+    conv = await _seed_conv("技能确认", members=["you", a.id], direct=True)
+
+    async with db_module.SessionLocal() as db:
+        prompt = await build_context_for_turn(
+            db, agent_id=a.id, conv_id=conv.id, user_text="你有什么 skill?"
+        )
+
+    assert "## 你已装配的技能" in prompt
+    assert "### ppt-master" in prompt
+    assert "PPT Master" in prompt
 
 
 @pytest.mark.asyncio
