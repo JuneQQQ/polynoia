@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 一键重置本地 Polynoia 库:整库清空 + 重建 schema + 重种 6 个 testkit 测试用例。
-# 幂等(每次跑完都是干净的 6 个用例)。会清掉所有现有会话(含任何旧 run)。
+# 一键重置本地 Polynoia 库:整库清空 + 重建 schema + 重种 testkit 测试用例。
+# 幂等(每次跑完都是干净的 testkit 用例集)。会清掉所有现有会话(含任何旧 run)。
 # macOS 上 direct-creds 自动开启,重启后 claude/agent 仍能登录运行。
 #
 #   bash scripts/testkit/reset.sh
@@ -40,10 +40,19 @@ for i in $(seq 1 20); do
   sleep 1
 done
 
-echo "→ 重种 6 个测试用例"
-"$PY" "$REPO/scripts/testkit/_more_seed.py" >/dev/null
+echo "→ 重种 testkit 测试用例"
+MANIFEST_OUT="/tmp/polynoia_testkit_manifest.jsonl"
+"$PY" "$REPO/scripts/testkit/_more_seed.py" > "$MANIFEST_OUT"
 
 CONVS="$(sqlite3 ~/.polynoia/polynoia.db 'SELECT count(*) FROM conversations')"
 AGENTS="$(sqlite3 ~/.polynoia/polynoia.db "SELECT name || ':' || json_extract(setup, '$.adapter_id') || '/' || json_extract(setup, '$.model') FROM agents WHERE custom = 1 ORDER BY name")"
-echo "✓ 重置完成 — $CONVS 个会话(干净的 6 个 testkit 用例)"
+"$PY" - <<PYEOF
+import json
+from pathlib import Path
+path = Path("$MANIFEST_OUT")
+line = next((ln for ln in path.read_text().splitlines() if ln.startswith("MANIFEST=")), "")
+items = json.loads(line.split("=", 1)[1]) if line else []
+print("  用例(" + str(len(items)) + "): " + ", ".join(item["key"] for item in items))
+PYEOF
+echo "✓ 重置完成 — $CONVS 个会话(干净的 testkit 用例)"
 echo "$AGENTS"

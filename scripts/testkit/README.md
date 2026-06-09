@@ -14,8 +14,8 @@
 
 | 脚本 | 作用 |
 |---|---|
-| **`reset.sh`** | **一键重置**:停服 → 整库清空+重建 schema → 重启服务器 → 重种 6 个用例。幂等。`bash scripts/testkit/reset.sh` |
-| `_more_seed.py` | 造一批综合测试会话(办公/编程/数据/多agent协作),每个建独立 workspace + 会话,任务预填为首条消息。**只持久化、不自动跑 agent。** |
+| **`reset.sh`** | **一键重置**:停服 → 整库清空+重建 schema → 重启服务器 → 重种完整 testkit 用例集。幂等。`bash scripts/testkit/reset.sh` |
+| `_more_seed.py` | 造一批综合测试会话(办公/编程/数据/多 agent 协作 + 路由/合并/diff 边界),每个建独立 workspace + 会话,任务预填为首条消息。**只持久化、不自动跑 agent。** |
 | `_drive.py <关键词\|id>` | 把某个已种子的会话**真跑起来**:从 DB 找到会话→读出预填任务→经 WS 发给 agent→实时打印关键帧(diff/bash/tasks/present/error),turn 空闲即停。 |
 | `_office_seed.py` | 早先的办公 4 件套(PPT/Excel/Word/落地页),打印 manifest。 |
 | `_office_drive.py <key>` | 驱动办公件套,读 `/tmp/office_manifest.json`。 |
@@ -33,8 +33,18 @@ $PY scripts/testkit/_more_seed.py
 # 2) 跑其中一个(按标题片段或会话 id),同时可在 web UI 打开实时看
 $PY scripts/testkit/_drive.py 2048
 $PY scripts/testkit/_drive.py 会议纪要
+$PY scripts/testkit/_drive.py 顺序依赖接力
+$PY scripts/testkit/_drive.py 合并冲突
 $PY scripts/testkit/_drive.py 01KTEN3DY9Q2XX2PCWC3TBF065
 ```
+
+## 当前覆盖
+
+- 常规产物:旅行 HTML、会议纪要 Markdown、预算 XLSX、2048 网页游戏、pandas 分析报告。
+- 多 agent:PRD 分章并行。
+- @ 路由:@ 多人顺序依赖、@ 单人仍由协调器调度、未知 @ 不触发 agent。
+- 合并/diff:同文件同区域冲突、单聊产物同步到 main、连续修改的 diff/历史记录。
+- 错误恢复:读取不存在文件后继续完成可交付文件。
 
 ## 加自己的用例
 

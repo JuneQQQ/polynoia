@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Seed MORE test-case conversations (additive — never wipes the DB, never touches
-「我的世界」). Builds a small reusable team, then creates a workspace + conv per
-scenario and pre-fills the task as the first 「you」message (visible, but does NOT
-auto-run agents — POST /api/messages only persists). Prints a manifest so any case
-can be driven later over WS.
+"""Seed test-case conversations (additive; reset.sh wipes before calling this).
 
-Coverage: office/life (travel HTML, meeting-notes Markdown, budget XLSX), a non-MC
-program (2048 HTML game), data (pandas report), and a multi-agent burst (PRD by
-chapters) — a spread across non-programming + programming + collaboration paths.
+Builds a reusable four-agent team, then creates one workspace + conversation per
+scenario and pre-fills the task as the first "you" message. It never auto-runs
+agents; the user/driver sends the message over WS later.
+
+Coverage intentionally mixes normal demos with regression/edge cases:
+- office/life artifacts: HTML, Markdown, XLSX;
+- programming artifacts: 2048 single-file game, pandas report;
+- multi-agent orchestration: PRD burst;
+- routing regressions: multi-@ with sequential dependency, single @ through the
+  coordinator, unknown @ mention ignored;
+- merge/diff regressions: same-file conflict pressure, single-agent main sync,
+  repeated edits for diff/history cards.
 """
 import json
 import urllib.error
@@ -55,7 +60,7 @@ TEAM = [
 ]
 
 # Each case: (key, title, who → "solo:<role>" or "group", task)
-CASES = [
+CORE_CASES = [
     ("travel", "关西亲子游 · 行程页", "solo:designer",
      "做一个 5 天日本关西(大阪/京都/奈良)亲子游行程,输出一个单页、自包含、可直接双击打开的 HTML"
      "(内联 CSS+少量 JS,不依赖外网):每日时间线卡片、交通方式、餐饮推荐、一个总预算表格(分类+合计)、"
@@ -86,6 +91,41 @@ CASES = [
      "非功能需求(性能/安全/可用性)、里程碑与排期。每章规格写全,最后合并成一份结构完整的 prd.md 并 present。"
      "注意:共享文件(prd.md 的骨架/目录)只由一个人建,其他人填各自章节,避免合并冲突。"),
 ]
+
+
+EDGE_CASES = [
+    ("mention_seq", "@路由 · 顺序依赖接力", "group",
+     "这是 @ 路由回归测试。@文澜 @制图 协作一个极小任务,但必须严格顺序执行:"
+     "第一阶段只让文澜创建 sections/qa-mention-alpha.md,内容只写一行 alpha ready;"
+     "等第一阶段完成并合并到 main 后,第二阶段再让制图读取该文件,并创建 sections/qa-mention-beta.md,"
+     "内容只写一行 beta saw alpha ready。不要 present,最后由阿核说明两个文件是否都在 main。"
+     "如果你要派活,必须分阶段 dispatch;不要让两人并发。"),
+    ("mention_single", "@路由 · 单点名仍走协调器", "group",
+     "这是单 @ 路由回归测试。请 @制图 做一个极小的单文件 HTML:sections/qa-single-at.html,"
+     "页面只需要显示“single at routed through orchestrator”和一个按钮。注意:虽然用户点名制图,"
+     "仍应由阿核作为协调器决定是否 dispatch,不要把正文 @ 当成派活。完成后 present 这个 HTML。"),
+    ("mention_unknown", "@路由 · 未知成员忽略", "group",
+     "这是未知 @ 边界测试。请 @不存在的成员 @文澜 起草 sections/qa-unknown-mention.md,"
+     "内容说明只有真实群成员会被解析,未知 @ 不应触发任何 agent。最终只需要一个 Markdown 文件,"
+     "不要 present,阿核汇报即可。"),
+    ("conflict_same_file", "合并冲突 · 同文件同区域", "group",
+     "这是冲突处理回归测试。请故意让文澜和制图并行修改同一个文件 sections/qa-conflict.md 的同一行:"
+     "文澜写“owner = writer”,制图写“owner = designer”。不要提前规避冲突;让系统暴露真实冲突,"
+     "然后由阿核按冲突卡流程选择一个最终版本并说明处理结果。"),
+    ("single_main_sync", "单聊合并 · main 同步", "solo:designer",
+     "这是单聊 main 同步回归测试。创建 sections/qa-single-main-sync.md,内容三行:"
+     "title: single main sync / agent: 制图 / status: created。完成后 report,不要 present。"),
+    ("diff_history", "Diff/历史 · 连续修改", "solo:designer",
+     "这是 diff 与提交历史回归测试。先创建 qa-history-smoke.md,写 3 行初始内容;"
+     "然后在同一轮里修改它两次:第一次追加 line two,第二次把标题改成 QA History Smoke Final。"
+     "目标是产生可检查的 diff/历史记录;完成后 report,不要 present。"),
+    ("readonly_recovery", "工具错误 · 读取不存在文件后恢复", "solo:generalist",
+     "这是错误恢复边界测试。先尝试读取 missing/does-not-exist.md,确认失败后不要停;"
+     "随后创建 sections/qa-recovery.md,内容写明 recovered after missing file。完成后 report。"),
+]
+
+
+CASES = CORE_CASES + EDGE_CASES
 
 
 def main():
