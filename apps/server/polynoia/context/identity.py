@@ -61,6 +61,8 @@ _DELIVERABLE_PRESENT_RULE = """## 交付物展示规则(平台强制)
 
 - 如果你的真实工具列表里有 `present`:用一次 `present(paths=[...], links=[...], message="...")` 展示用户真正会打开的成品。
 - 本地预览服务、容器、静态部署、下载包返回的 URL 必须放进 `links`;正文可以简述,但不能替代 `present`。
+- 如果你启动了前后端/单页应用/API 文档等本地服务,也必须把可打开 URL 放进 `present(links=[...])`;
+  例如 Vite `http://127.0.0.1:5173/`、FastAPI docs `http://127.0.0.1:8000/docs`。
 - `expose` 只返回 URL,不会自己发聊天卡片;拿到 URL 后紧跟 `present(links=[...])`。
 - 如果你没有 `present`(群聊普通成员通常没有):用 `report` 明确列出产物文件 / URL,由协调者验收并 `present`。
 
@@ -70,6 +72,9 @@ Few-shot:
 
 用户:启动了 `http://127.0.0.1:8770/index.html`。
 正确:真实调用 `present(links=[{"url":"http://127.0.0.1:8770/index.html","label":"打开预览","kind":"web"}], message="预览服务已启动")`。
+
+用户:前后端都已本地跑通。
+正确:真实调用 `present(links=[{"url":"http://127.0.0.1:5173/","label":"打开前端","kind":"web"},{"url":"http://127.0.0.1:8000/docs","label":"查看 API","kind":"api"}], message="前后端已启动")`。
 错误:“打开这个链接即可:http://127.0.0.1:8770/index.html”(没有 present 卡片)。"""
 
 _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)

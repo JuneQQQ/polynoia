@@ -131,7 +131,7 @@ function CodeBlock({
 	const isInline = !hasLang && !isMultiline;
 	if (isInline) {
 		return (
-			<code className="mx-[1px] px-1.5 py-[1.5px] rounded-[5px] font-mono text-[0.85em] leading-none align-[0.06em] bg-[var(--color-code-bg)] text-[var(--color-code-fg)] border border-[var(--color-accent)]/15 break-words">
+			<code className="mx-[1px] rounded-md border border-[var(--color-line)] bg-[var(--color-code-bg)] px-1.5 py-[2px] align-[0.04em] font-mono text-[0.84em] leading-none text-[var(--color-code-fg)] box-decoration-clone break-words">
 				{children}
 			</code>
 		);
@@ -139,9 +139,16 @@ function CodeBlock({
 	const lang = /language-(\w+)/.exec(className ?? "")?.[1];
 	const text = raw.replace(/\n$/, "");
 	return (
-		<div className="relative group border border-[var(--color-line)] rounded-lg overflow-hidden bg-[var(--color-surface-3)] shadow-[var(--shadow-sm)] my-2">
-			<div className="flex items-center gap-2 px-3 py-1 border-b border-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] mono">
-				<span className="uppercase tracking-wider">{lang || "text"}</span>
+		<div className="group relative my-2.5 overflow-hidden rounded-lg border border-[var(--color-line-2)] bg-[var(--color-code-block-bg)] shadow-[var(--shadow-sm)]">
+			<div className="flex h-8 items-center gap-2 border-b border-[var(--color-line)] bg-[var(--color-code-header-bg)] px-3 text-[10.5px] text-[var(--color-fg-3)] mono">
+				<span className="flex items-center gap-1.5" aria-hidden>
+					<span className="h-2 w-2 rounded-full bg-[var(--color-red)]/70" />
+					<span className="h-2 w-2 rounded-full bg-[var(--color-amber)]/70" />
+					<span className="h-2 w-2 rounded-full bg-[var(--color-green)]/70" />
+				</span>
+				<span className="rounded bg-[var(--color-surface)]/70 px-1.5 py-[1px] uppercase tracking-[0.14em] text-[var(--color-fg-3)]">
+					{lang || "text"}
+				</span>
 				<button
 					type="button"
 					onClick={() => {
@@ -149,14 +156,19 @@ function CodeBlock({
 						setCopied(true);
 						setTimeout(() => setCopied(false), 1500);
 					}}
-					className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-[var(--color-line)] transition opacity-0 group-hover:opacity-100"
+					className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-[var(--color-fg-3)] transition hover:bg-[var(--color-line)] hover:text-[var(--color-fg)]"
 				>
 					{copied ? <Check size={10} /> : <Copy size={10} />}
 					{copied ? "已复制" : "复制"}
 				</button>
 			</div>
-			<pre className="mono text-[12px] leading-[1.55] p-3 overflow-x-auto m-0">
-				<code className={className}>{children}</code>
+			<pre
+				className="m-0 max-h-[460px] overflow-auto px-3.5 py-3 font-mono text-[12.5px] leading-[1.65] text-[var(--color-fg-2)]"
+				style={{ tabSize: 2 }}
+			>
+				<code className={`${className ?? ""} block min-w-max whitespace-pre bg-transparent`}>
+					{children}
+				</code>
 			</pre>
 		</div>
 	);

@@ -19,7 +19,7 @@ import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { isMobile } from "../../lib/platform";
 import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
-import { MessageView } from "../MessageView";
+import { isRenderableMessagePayload, MessageView } from "../MessageView";
 
 /** A reasoning payload's body shape (mirrors ReasoningPart.bodyText). */
 type ReasoningBody = Array<{ c?: string | Array<{ text?: string }> }>;
@@ -70,6 +70,20 @@ export function ToolCallGroup({
 	// ReasoningPart's own auto-open-while-streaming behavior.
 	const anyStreaming = useStore((s) =>
 		msgIds.some((id) => selectIsMessageStreaming(s, convId, id)),
+	);
+	const visibleMsgIds = useStore(
+		useShallow((s) => {
+			const cs = s.convs.get(convId);
+			if (!cs) return [];
+			return msgIds.filter((id) => {
+				const msg = cs.msgById.get(id);
+				if (!msg) return false;
+				return isRenderableMessagePayload(
+					msg.payload,
+					selectIsMessageStreaming(s, convId, id),
+				);
+			});
+		}),
 	);
 	// Collapsed summary + the sender's avatar (all members share one sender).
 	// Return only PRIMITIVES from the selector — a fresh array/object would defeat
@@ -129,6 +143,7 @@ export function ToolCallGroup({
 	// But once the user has manually toggled, honor THAT (so 收起 actually sticks
 	// mid-run instead of being overridden by `running`/`anyStreaming`).
 	const expanded = userTouched.current ? open : open || anyStreaming || running;
+	if (visibleMsgIds.length === 0 || toolCount === 0) return null;
 
 	const inner = (
 		<>
@@ -164,7 +179,7 @@ export function ToolCallGroup({
 				<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
 					{/* Natural stream order — reasoning and tool calls interleaved as
 					    they actually happened. No reordering. */}
-					{msgIds.map((id, i) => (
+					{visibleMsgIds.map((id, i) => (
 						<MessageView
 							key={id}
 							convId={convId}

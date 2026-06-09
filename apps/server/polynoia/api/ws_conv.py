@@ -298,12 +298,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             _present_clause = (
                 "\n\n# 展示交付物(由你统一展示,要**精选**)\n"
                 "核对通过后,用**一次** `present(paths=[...])` 把**用户真正会打开看的**最终"
-                "交付物展示给用户(从 main 读取)。**只选可看/可下的成品**:可运行的 HTML 页、"
-                "文档(Markdown/PPTX/DOCX/XLSX/PDF/CSV)、图片/数据文件。\n"
+                "交付物展示给用户(从 main 读取);如果你启动了本地前端/API/预览服务,用 "
+                "`present(links=[...])` 展示 URL,不要只把 `http://127.0.0.1:5173/` "
+                "写进正文。**只选可看/可下/可打开的成品**:可运行的 HTML 页、"
+                "文档(Markdown/PPTX/DOCX/XLSX/PDF/CSV)、图片/数据文件、本地服务链接。\n"
                 "**如果产物是一个代码工程,不要把整棵源码树都 present**(用户在本地构建运行,"
                 "每个文件的改动 diff 卡已经展示过了)——至多 present README + 唯一可运行入口"
-                "(如打包出的 index.html),或干脆不 present、只用一句话说明怎么跑。罗列 20 个 "
-                ".ts/.py 源文件是噪音。一个产物只展示一次;失败/未交付的不要 present。"
+                "(如打包出的 index.html),或 present 已启动的前端/API 链接。罗列 20 个 "
+                ".ts/.py 源文件是噪音。一个产物只展示一次;失败/未交付的不要 present。\n"
+                "例:前后端已跑通时调用 "
+                "`present(links=[{\"url\":\"http://127.0.0.1:5173/\",\"label\":\"打开前端\","
+                "\"kind\":\"web\"},{\"url\":\"http://127.0.0.1:8000/docs\","
+                "\"label\":\"查看 API\",\"kind\":\"api\"}], message=\"前后端已启动\")`。"
             )
             if _allow_dispatch:
                 # Verify-AND-advance turn: the plan isn't done, so this turn may
@@ -770,8 +776,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             parts.append(
                 "刚有交付物合并进 main:" + "、".join(paths)
                 + "。用**一次** `present(paths=[...])` 把其中**用户真正会打开看的成品**展示给"
-                "用户(可运行 HTML / 文档 / 图片;**代码工程别全列源码树**,至多 README + 可运行"
-                "入口,diff 卡已展示过改动),配一句一行说明。"
+                "用户(可运行 HTML / 文档 / 图片;如果你启动了本地前端/API/预览服务,用 "
+                "`present(links=[...])` 展示 URL;**代码工程别全列源码树**,至多 README + "
+                "可运行入口或已启动服务链接,diff 卡已展示过改动),配一句一行说明。"
             )
         if drain.conflicted:
             # AUTO mode = hands-off: the orchestrator resolves the merge itself
