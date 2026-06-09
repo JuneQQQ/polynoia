@@ -1535,6 +1535,19 @@ async def present_file(body: dict):
     if not conv_id or not ws or not paths:
         return {"error": "conv_id + ws + path(s) required"}, 400
     agent_id = (body.get("agent_id") or "system").strip()
+    async with SessionLocal() as _session:
+        _conv = await storage_repo.get_conversation(_session, conv_id)
+    if (
+        _conv is not None
+        and _conv.group
+        and agent_id != _conv.orchestrator_member_id
+    ):
+        return {
+            "ok": True,
+            "deferred": True,
+            "note": "已记录;群聊交付物会由协调者验收后从 main 统一展示。"
+                    "你现在只需用 report 报告产出的文件,不要自己 present。",
+        }
     # Orchestrator-presents (user's choice): a worker mid-burst must NOT surface
     # its own file — the card would stream from its unmerged branch, and the user
     # asked that deliverables be shown by the COORDINATOR after merge, from main.

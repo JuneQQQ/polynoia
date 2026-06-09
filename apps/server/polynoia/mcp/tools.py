@@ -1574,21 +1574,14 @@ class _PresentTool(_ToolBase):
         "entry (e.g. a built index.html) — or for a framework project that can't "
         "be opened by clicking the HTML, run a deploy via `expose` and present "
         "its URL as a link instead. Listing 20 .ts/.py source files is noise.\n\n"
-        "Pass `paths` (a list) for sandbox files and/or `links` for external URLs; "
-        "`message` is the one-line hand-off note. At least one of paths/links is "
-        "required. Call this ONCE (not per file). Prefer it over pasting file "
-        "contents into your reply."
-        "entry (e.g. a built index.html), or skip `present` entirely and just say in "
-        "one line how to run it. Listing 20 .ts/.py source files is noise.\n\n"
-        "Pass `paths` (a list) to bundle the SELECTED deliverables into one panel, or "
-        "`path` for one; `message` is the one-line hand-off note. Paths are relative "
-        "to your working dir. Call this ONCE (not per file). Prefer it over pasting "
-        "file contents into your reply.\n\n"
-        "DISPATCHED WORKERS: if you are executing a sub-task handed to you by an "
-        "orchestrator (mid-burst), do NOT call `present` — just `report` the files "
-        "you produced. The orchestrator presents the merged result from main at "
-        "summary; a worker's present is suppressed anyway. Use `present` on a solo "
-        "turn, or as the orchestrator's final hand-off."
+        "Pass `paths` (a list) to bundle the SELECTED deliverables into one panel "
+        "and/or `links` for external URLs; `path` is accepted for one file. "
+        "`message` is the one-line hand-off note. Paths are relative to your "
+        "working dir. At least one of paths/links is required. Call this ONCE "
+        "(not per file). Prefer it over pasting file contents into your reply.\n\n"
+        "This tool is for solo/direct agents and group orchestrators. Regular "
+        "group members do not receive it; they should `report` produced files so "
+        "the coordinator can validate the main result and present once."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -1881,6 +1874,7 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 #   · can-shell     → `bash`
 #   · orchestrator? → dispatch/discuss/present  (delegate + present; NO report)
 #   · worker?       → report + request_project_access  (verdict; NO orchestrate)
+#   · group worker? → worker tools, but NO present; the coordinator presents
 # So coder == generalist and designer == writer by construction (same tier) —
 # they differ only by what their system prompt says, not what they can touch.
 #
@@ -1892,22 +1886,18 @@ _ASK      = {"ask_user"}                           # block + ask the user a ques
 _MUTATE   = {"write", "edit"}                      # file-mutation: full write + targeted edit
 _SHELL    = {"bash", "run_background", "wait"}     # shell: run + background jobs
 _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
-# delegate + present + resolve merge conflicts. resolve_conflict is ORCHESTRATOR-
+# delegate + resolve merge conflicts. resolve_conflict is ORCHESTRATOR-
 # ONLY (the neutral arbiter that holds the contract + every member's intent) — a
 # worker self-resolving its own branch is judge-and-party (biased toward whoever
 # merged later). In AUTO mode the orchestrator resolves; in MANUAL the user does.
-_ORCHESTRATE = {"dispatch", "discuss", "present", "resolve_conflict"}
+_ORCHESTRATE = {"dispatch", "discuss", "resolve_conflict"}
 # Deploy/publish — orchestrator AND builders may need to expose a preview URL,
 # container or source zip while wrapping up. Pairs with `present` (the agent
 # surfaces the returned URL via a `links` entry on the deliverable panel).
 _EXPOSE   = {"expose"}
-_ORCHESTRATE = {"dispatch", "discuss", "resolve_conflict"}
-# `present` (surface deliverables as a card) is available to BUILDERS too, not
-# just the orchestrator: a solo agent must be able to hand off what it built, and
-# in a burst the /present endpoint already DEFERS a mid-burst worker's card (the
-# file still rides into main; the orchestrator presents from main at summary). The
-# tool description steers dispatched workers to `report` instead — capability is
-# granted, etiquette is prompted.
+# `present` (surface deliverables as a card) is available to direct/solo builders
+# and orchestrators. Group members do not get it: they report files and the
+# coordinator validates + presents the canonical main result.
 _DELIVER = {"present"}
 # Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
 # self-report). resolve_conflict stays orchestrator-only (neutral arbiter). The
@@ -1920,11 +1910,9 @@ _TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL |
 # arbiter). Workers just build + report; a conflict on their branch is escalated
 # to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
 _TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _EXPOSE
-_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _DELIVER
-# Builders do NOT resolve conflicts — that's the orchestrator's call (neutral
-# arbiter). Workers just build + report; a conflict on their branch is escalated
-# to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
-_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _DELIVER
+_TIER_ORCHESTRATOR = _TIER_ORCHESTRATOR | _DELIVER
+_TIER_BUILDER      = _TIER_BUILDER | _DELIVER
+_TIER_GROUP_MEMBER = _TIER_BUILDER - _DELIVER
 _TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
 _TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
 _TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write
@@ -1933,6 +1921,7 @@ ROLE_TOOLS: dict[str, set[str]] = {
     "orchestrator": _TIER_ORCHESTRATOR,
     "coder":        _TIER_BUILDER,
     "generalist":   _TIER_BUILDER,          # == coder (default for back-compat)
+    "group_member": _TIER_GROUP_MEMBER,     # runtime-only: group workers report, coordinator presents
     "designer":     _TIER_BUILDER_NOSHELL,
     "writer":       _TIER_BUILDER_NOSHELL,  # == designer (docs vs HTML/CSS — prompt-only diff)
     "critic":       _TIER_AUDITOR,

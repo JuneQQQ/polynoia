@@ -117,6 +117,8 @@ async def test_non_orchestrator_member_gets_no_protocol(clean_db) -> None:
             s, agent_id=w1.id, conv_id=cid, user_text="hi"
         )
     assert "你是本群聊的协调器" not in prompt
+    assert "你是**群聊成员**" in prompt
+    assert "用 `report` 交付,不要自己 `present`" in prompt
 
 
 @pytest.mark.asyncio
@@ -136,3 +138,5 @@ async def test_dm_orchestrator_field_unset_no_protocol(clean_db) -> None:
             s, agent_id=solo.id, conv_id=cid, user_text="hi"
         )
     assert "你是本群聊的协调器" not in prompt
+    assert "你是**群聊成员**" not in prompt
+    assert "你能读写文件、改代码、跑命令。" in prompt

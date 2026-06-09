@@ -72,18 +72,25 @@ async def build_context_for_turn(
     member_role = member_role_for(cur_conv, agent_id)
 
     # 2. Build each layer
-    # Effective tool capability is decided by ONE structural fact: is this agent
-    # the conv's designated orchestrator. Pass it so the identity banner's
-    # tool-discipline blurb matches the toolset the pool actually grants
-    # (effective_tool_role), instead of the persona-label agent.tool_role.
+    # Effective tool capability is decided by structural conversation facts:
+    # designated orchestrator vs regular group member vs direct chat. Pass them
+    # so the identity banner's tool-discipline blurb matches the toolset the
+    # pool actually grants (effective_tool_role), instead of the persona-label
+    # agent.tool_role.
     _is_orch = bool(
         cur_conv is not None
         and cur_conv.group
         and cur_conv.orchestrator_member_id == agent_id
     )
+    _is_group = bool(cur_conv is not None and cur_conv.group)
     layers: list[ContextLayer] = []
     layers.append(
-        build_identity_layer(agent, member_role=member_role, is_orchestrator=_is_orch)
+        build_identity_layer(
+            agent,
+            member_role=member_role,
+            is_orchestrator=_is_orch,
+            is_group=_is_group,
+        )
     )
 
     # L2 — platform orchestration protocol for the conv's DESIGNATED

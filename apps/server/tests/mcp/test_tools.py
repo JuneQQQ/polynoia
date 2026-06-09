@@ -222,3 +222,21 @@ def test_designer_role_can_write_and_edit():
     assert "write" in names
     assert "edit" in names
     assert not ({"apply_patch", "revert"} & names)
+
+
+def test_direct_builder_can_present_but_group_member_cannot():
+    """Solo/direct builders can hand off their own deliverables; group members
+    report files and the coordinator presents the validated main result."""
+    from polynoia.mcp.tools import tools_for_role
+
+    direct = set(tools_for_role("generalist").keys())
+    group_member = set(tools_for_role("group_member").keys())
+    orchestrator = set(tools_for_role("orchestrator").keys())
+
+    assert "present" in direct
+    assert "present" in orchestrator
+    assert "present" not in group_member
+    assert "report" in group_member
+    assert "write" in group_member
+    assert "bash" in group_member
+    assert "dispatch" not in group_member

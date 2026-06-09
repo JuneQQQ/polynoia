@@ -32,6 +32,7 @@ _ROLE_TOOLS_DESC: dict[str, str] = {
     "designer": "你能读写文件,但**不能跑命令**(无终端)。",
     "writer": "你能读写文件,但**不能跑命令**。",
     "generalist": "你能读写文件、改代码、跑命令。",
+    "group_member": "你是**群聊成员**:能读写文件、改代码、跑命令;完成后用 `report` 交付,不要自己 `present`。",
     "advisory": "当前为**只读咨询**:能看不能改、不跑命令、不落盘。",
 }
 
@@ -53,7 +54,11 @@ _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)
 
 
 def build_identity_layer(
-    agent: Agent, *, member_role: str | None = None, is_orchestrator: bool = False
+    agent: Agent,
+    *,
+    member_role: str | None = None,
+    is_orchestrator: bool = False,
+    is_group: bool = False,
 ) -> ContextLayer:
     """Render L1 identity block for the given agent.
 
@@ -64,10 +69,12 @@ def build_identity_layer(
     persona global).
 
     ``is_orchestrator`` is whether this agent is the current conv's DESIGNATED
-    orchestrator. The tool-discipline blurb is keyed off the EFFECTIVE tool role
-    (effective_tool_role) — the same source the adapter pool uses to gate the
-    real toolset — NOT the persona-label ``agent.tool_role``, so the prompt can't
-    tell the agent it can't write/run while the pool grants it the full toolset."""
+    orchestrator. ``is_group`` distinguishes regular group members from direct
+    chats, because group members report to the coordinator while direct agents
+    may present their own deliverables. The tool-discipline blurb is keyed off
+    the EFFECTIVE tool role (effective_tool_role) — the same source the adapter
+    pool uses to gate the real toolset — NOT the persona-label ``agent.tool_role``,
+    so the prompt can't drift from the actual toolset."""
     from polynoia.tool_policy import effective_tool_role
     setup = agent.setup
     adapter_id = setup.adapter_id if setup else None
@@ -94,7 +101,10 @@ def build_identity_layer(
     # we don't double it. New user-created agents (one-line personas) get it free.
     persona_raw = agent.system_prompt or ""
     if "工具使用纪律" not in persona_raw:
-        role = effective_tool_role(is_orchestrator=is_orchestrator)
+        role = effective_tool_role(
+            is_orchestrator=is_orchestrator,
+            is_group=is_group,
+        )
         parts.append("")
         parts.append("## 工具与纪律")
         parts.append(_ROLE_TOOLS_DESC.get(role, _ROLE_TOOLS_DESC["generalist"]))

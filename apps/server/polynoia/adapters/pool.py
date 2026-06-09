@@ -169,13 +169,16 @@ class AdapterPool:
             # project's code into every DM. A DM now sees zero project files;
             # project access is opt-in via the approval flow (request_project_access).
             in_project = conv is not None and conv.workspace_id is not None
-            # Tools follow ONE structural fact (polynoia/tool_policy.py): the
-            # designated orchestrator gets the orchestrator toolset, everyone
-            # else gets the full builder set. No per-contact / per-conv / per-
-            # project configuration. Agent.tool_role is just a persona label.
+            # Tools follow structural conversation facts (polynoia/tool_policy.py):
+            # the designated orchestrator gets orchestration tools, non-orchestrator
+            # group members get builder tools without present, and direct/solo chats
+            # keep the full builder set. Agent.tool_role is just a persona label.
             from polynoia.tool_policy import effective_tool_role
 
-            effective_role = effective_tool_role(is_orchestrator=is_conv_orch)
+            effective_role = effective_tool_role(
+                is_orchestrator=is_conv_orch,
+                is_group=bool(conv is not None and conv.group),
+            )
             system_prompt = agent.system_prompt
             read_only_ws_id: str | None = None
             if not in_project:
