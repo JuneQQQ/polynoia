@@ -171,6 +171,7 @@ class Conversation(BaseModel):
     last_message_at: datetime | None = None
     unread: int = 0
     draft_text: str = ""
+    draft_attachments: list[dict] = []
     # Manual: per-edit user approval before write+commit (Cursor-style).
     # Auto:   orchestrator merges agent branches into main automatically
     #         after all sub-tasks finish.

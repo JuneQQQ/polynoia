@@ -140,6 +140,11 @@ export type TerminalPayload = {
 	command: string;
 	output: string;
 	running: boolean;
+	mode?: "blocking" | "background";
+	label?: string | null;
+	process_id?: string | null;
+	pid?: number | null;
+	pgid?: number | null;
 	exit_code?: number | null;
 	truncated?: boolean;
 };

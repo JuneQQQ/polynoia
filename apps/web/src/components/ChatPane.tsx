@@ -181,7 +181,7 @@ export function ChatPane({ convId, members, title }: Props) {
 	// padding always clears it — otherwise the latest (still-answering) message
 	// sits behind the status bar. See the composer overlay's ref below.
 	const composerRef = useRef<HTMLDivElement>(null);
-	const [composerH, setComposerH] = useState(112);
+	const [composerH, setComposerH] = useState(mobile ? 84 : 112);
 	useEffect(() => {
 		const el = composerRef.current;
 		if (!el || typeof ResizeObserver === "undefined") return;
@@ -1216,11 +1216,16 @@ export function ChatPane({ convId, members, title }: Props) {
 						draftText={
 							convSummary?.id === convId ? convSummary.draft_text : undefined
 						}
+						draftAttachments={
+							convSummary?.id === convId
+								? convSummary.draft_attachments
+								: undefined
+						}
 						statusSlot={
 							activeAgents.length > 0 ? (
-								<div className="anim-fade-up mb-2 border-b border-[var(--color-line)] pb-2">
-									<div className="flex flex-wrap items-center gap-1.5 px-1 text-[11.5px]">
-										<span className="mr-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)]">
+								<div className={`anim-fade-up border-b border-[var(--color-line)] ${mobile ? "mb-1 pb-1" : "mb-2 pb-2"}`}>
+									<div className={`flex flex-wrap items-center px-1 ${mobile ? "gap-1 text-[10.5px]" : "gap-1.5 text-[11.5px]"}`}>
+										<span className={`${mobile ? "mr-0.5 text-[9px]" : "mr-1 text-[10px]"} font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)]`}>
 											Agent
 										</span>
 										{activeAgents.map((a) => {

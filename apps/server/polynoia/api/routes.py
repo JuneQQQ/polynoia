@@ -563,6 +563,7 @@ async def create_conversation_endpoint(body: dict):
           "member_roles": {agent_id: role},     # optional, per-conv role labels
           "orchestrator_member_id": str|null,   # optional, designated coordinator
           "draft_text": str,                     # optional, input-box draft
+          "draft_attachments": list,             # optional, already-uploaded composer files
           "id": str,                            # optional, ULID auto-generated
         }
     """
@@ -578,6 +579,9 @@ async def create_conversation_endpoint(body: dict):
     member_roles = body.get("member_roles") or {}
     if not isinstance(member_roles, dict):
         member_roles = {}
+    from polynoia.api.conversations_routes import _sanitize_draft_attachments
+
+    draft_attachments = _sanitize_draft_attachments(body.get("draft_attachments") or [])
     # Clean: only keep entries for members in this conv (no rogue keys)
     member_roles = {
         k: str(v).strip() for k, v in member_roles.items() if k in members and str(v).strip()
@@ -608,6 +612,7 @@ async def create_conversation_endpoint(body: dict):
         member_roles=member_roles,
         orchestrator_member_id=orchestrator_member_id,
         draft_text=str(body.get("draft_text") or ""),
+        draft_attachments=draft_attachments,
         last_message_at=None,
         merge_mode="auto",
     )
@@ -1519,11 +1524,25 @@ async def post_terminal_card(conv_id: str, body: dict):
     output = str(body.get("output") or "")
     truncated = len(output) > _MAX
     exit_code = body.get("exit_code")
+    mode = str(body.get("mode") or "blocking")
+    if mode not in ("blocking", "background"):
+        mode = "blocking"
+    process_id = str(body.get("process_id") or term_id)
+    pid = body.get("pid")
+    pgid = body.get("pgid")
+    cwd = body.get("cwd")
+    label = body.get("label")
+    running = bool(body.get("running", True))
     payload = {
         "kind": "terminal",
         "command": str(body.get("command") or ""),
         "output": output[-_MAX:],
-        "running": bool(body.get("running", True)),
+        "running": running,
+        "mode": mode,
+        "label": str(label) if label else None,
+        "process_id": process_id,
+        "pid": int(pid) if isinstance(pid, int) else None,
+        "pgid": int(pgid) if isinstance(pgid, int) else None,
         "exit_code": int(exit_code) if isinstance(exit_code, int) else None,
         "truncated": truncated,
     }
@@ -1535,12 +1554,62 @@ async def post_terminal_card(conv_id: str, body: dict):
             payload=payload,
             msg_id=term_id,
         )
+        status = (
+            "running"
+            if running
+            else ("exited" if payload["exit_code"] == 0 else "failed")
+        )
+        await storage_repo.upsert_process_run(
+            session,
+            process_id=process_id,
+            conv_id=conv_id,
+            message_id=term_id,
+            agent_id=sender_id,
+            command=payload["command"],
+            mode=mode,
+            status=status,
+            output_tail=payload["output"],
+            cwd=str(cwd) if cwd else None,
+            label=str(label) if label else None,
+            pid=payload["pid"],
+            pgid=payload["pgid"],
+            exit_code=payload["exit_code"],
+        )
         await session.commit()
     frame = encode_polynoia_card(
         "terminal", payload, term_id, sender_id=sender_id, sender_label=sender_id
     )
     await _broadcast_to_conv(conv_id, frame)
     return {"ok": True, "id": term_id}
+
+
+@router.get("/api/conversations/{conv_id}/process-runs")
+async def list_process_runs(conv_id: str):
+    async with SessionLocal() as session:
+        runs = await storage_repo.list_process_runs(session, conv_id)
+    return {"processes": runs}
+
+
+@router.delete("/api/process-runs/{process_id}")
+async def stop_process_run(process_id: str):
+    async with SessionLocal() as session:
+        run = await storage_repo.get_process_run(session, process_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="process not found")
+        pgid = run.get("pgid")
+        pid = run.get("pid")
+        killed = False
+        if pgid:
+            with suppress(Exception):
+                os.killpg(int(pgid), 15)
+                killed = True
+        elif pid:
+            with suppress(Exception):
+                os.kill(int(pid), 15)
+                killed = True
+        await storage_repo.mark_process_run_killed(session, process_id)
+        await session.commit()
+    return {"ok": True, "killed": killed}
 
 
 # ── Manual-mode Pending Edits (Phase A) ──────────────────────────────

@@ -591,7 +591,12 @@ class _BashTool(_ToolBase):
         "Do NOT use pkill/killall or `kill -1` / `kill -<pgid>` — the sandbox "
         "shares the host process space, so name-pattern/broadcast kills hit the "
         "host (they're blocked). To stop something you started, save its PID "
-        "(`mycmd & PID=$!`) and `kill \"$PID\"`."
+        "(`mycmd & PID=$!`) and `kill \"$PID\"`.\n\n"
+        "Use `blocking=false` ONLY for persistent commands the user should manage "
+        "from the right rail, such as `npm run dev -- --host 0.0.0.0`, `pnpm dev`, "
+        "`uvicorn ...`, or a long-lived watcher. The command card will be linked "
+        "to a managed process entry. Normal tests/builds/scripts should keep the "
+        "default `blocking=true`."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -601,6 +606,15 @@ class _BashTool(_ToolBase):
                 "type": "number",
                 "default": 30,
                 "description": "Max seconds of NO OUTPUT before kill (IDLE, not total). Streaming commands run as long as they're active; raise it for intentionally-silent long commands.",
+            },
+            "blocking": {
+                "type": "boolean",
+                "default": True,
+                "description": "true = wait for completion; false = start a persistent/background process and return immediately.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Short human label for a non-blocking process, e.g. 'Vue dev server'.",
             },
         },
         "required": ["command"],
@@ -622,9 +636,12 @@ class _BashTool(_ToolBase):
                 ),
             }
         timeout = float(args.get("timeout", 30))
+        blocking = bool(args.get("blocking", True))
+        label = str(args.get("label") or "").strip() or None
         base = os.environ.get("POLYNOIA_API_BASE")
         sender_id = ctx.turn_agent_id or ctx.agent_id
         term_id = "term-" + uuid.uuid4().hex
+        process_id = term_id
 
         loop = asyncio.get_event_loop()
         last_activity = loop.time()  # reset on every output line → drives idle timeout
@@ -674,10 +691,16 @@ class _BashTool(_ToolBase):
                         f"/api/conversations/{ctx.conv_id}/terminal-card",
                         json={
                             "term_id": term_id,
+                            "process_id": process_id,
                             "command": cmd,
                             "sender_id": sender_id,
                             "output": output,
                             "running": running,
+                            "mode": "blocking" if blocking else "background",
+                            "label": label,
+                            "pid": proc.pid,
+                            "pgid": os.getpgid(proc.pid),
+                            "cwd": str(ctx.sandbox.root),
                             "exit_code": exit_code,
                         },
                     )
@@ -702,6 +725,33 @@ class _BashTool(_ToolBase):
             asyncio.create_task(_pump(proc.stderr, err_parts)),
         ]
         throttle = asyncio.create_task(_throttle())
+
+        async def _monitor_background() -> None:
+            try:
+                while proc.returncode is None:
+                    await asyncio.sleep(5)
+                    await _post_card(running=True, exit_code=None)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+            finally:
+                throttle.cancel()
+                with contextlib.suppress(Exception):
+                    await throttle
+                exit_code = proc.returncode if proc.returncode is not None else -1
+                await _post_card(running=False, exit_code=exit_code)
+
+        if not blocking:
+            asyncio.create_task(_monitor_background())
+            return {
+                "kind": "started",
+                "command": cmd,
+                "blocking": False,
+                "process_id": process_id,
+                "pid": proc.pid,
+                "pgid": os.getpgid(proc.pid),
+                "label": label,
+                "note": "后台进程已托管,可在右侧运行面板停止或定位到命令卡片。",
+            }
 
         def _kill_tree() -> None:
             # Kill the whole process group (shell + npm + children), then the proc

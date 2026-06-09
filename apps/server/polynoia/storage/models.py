@@ -159,6 +159,9 @@ class ConversationRow(Base):
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     unread: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     draft_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    draft_attachments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     # Merge gate. Manual is retained only for legacy rows; new conversations
     # are pinned to auto by the API.
     merge_mode: Mapped[str] = mapped_column(String(16), default="auto", nullable=False)
@@ -233,6 +236,33 @@ class MessageRow(Base):
     conversation: Mapped[ConversationRow] = relationship(
         "ConversationRow", back_populates="messages"
     )
+
+
+class ProcessRunRow(Base):
+    __tablename__ = "process_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    cwd: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    mode: Mapped[str] = mapped_column(String(16), default="blocking", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="starting", nullable=False)
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pgid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tail: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    log_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ConvMemoryRow(Base):

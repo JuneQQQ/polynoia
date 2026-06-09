@@ -36,6 +36,7 @@ from polynoia.storage.models import (
     PendingAccessRow,
     PendingEditRow,
     PinRow,
+    ProcessRunRow,
     ProviderRow,
     ServerRow,
     WorkspaceRow,
@@ -285,6 +286,7 @@ def _conv_from_row(r: ConversationRow) -> Conversation:
         last_message_at=r.last_message_at,
         unread=r.unread,
         draft_text=r.draft_text or "",
+        draft_attachments=r.draft_attachments or [],
         merge_mode=r.merge_mode,  # type: ignore[arg-type]
     )
 
@@ -295,9 +297,10 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
         return False
     # If MessageRow / PinRow have FK without cascade, delete dependents first.
     # Cheapest: cascade via raw delete.
-    from polynoia.storage.models import MessageRow, PinRow
+    from polynoia.storage.models import MessageRow, PinRow, ProcessRunRow
     await session.execute(MessageRow.__table__.delete().where(MessageRow.conv_id == conv_id))
     await session.execute(PinRow.__table__.delete().where(PinRow.conv_id == conv_id))
+    await session.execute(ProcessRunRow.__table__.delete().where(ProcessRunRow.conv_id == conv_id))
     await session.delete(row)
     await session.flush()
     return True
@@ -395,6 +398,7 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
         orchestrator_member_id=c.orchestrator_member_id,
         pinned=c.pinned, archived=c.archived, unread=c.unread,
         draft_text=c.draft_text or "",
+        draft_attachments=c.draft_attachments or [],
         last_message_at=c.last_message_at,
         merge_mode=c.merge_mode,
     ))
@@ -441,6 +445,17 @@ async def set_draft_text(session: AsyncSession, conv_id: str, draft_text: str) -
     if row is None:
         return False
     row.draft_text = draft_text
+    await session.flush()
+    return True
+
+
+async def set_draft_attachments(
+    session: AsyncSession, conv_id: str, draft_attachments: list[dict[str, Any]]
+) -> bool:
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False
+    row.draft_attachments = draft_attachments
     await session.flush()
     return True
 
@@ -693,6 +708,108 @@ async def delete_message(session: AsyncSession, msg_id: str) -> bool:
     if row is None:
         return False
     await session.delete(row)
+    await session.flush()
+    return True
+
+
+def _process_run_dict(r: ProcessRunRow) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "conv_id": r.conv_id,
+        "message_id": r.message_id,
+        "agent_id": r.agent_id,
+        "command": r.command,
+        "cwd": r.cwd,
+        "label": r.label,
+        "mode": r.mode,
+        "status": r.status,
+        "pid": r.pid,
+        "pgid": r.pgid,
+        "exit_code": r.exit_code,
+        "output_tail": r.output_tail,
+        "log_path": r.log_path,
+        "started_at": r.started_at.isoformat() + "Z" if r.started_at else None,
+        "ended_at": r.ended_at.isoformat() + "Z" if r.ended_at else None,
+        "last_heartbeat_at": (
+            r.last_heartbeat_at.isoformat() + "Z" if r.last_heartbeat_at else None
+        ),
+    }
+
+
+async def upsert_process_run(
+    session: AsyncSession,
+    *,
+    process_id: str,
+    conv_id: str,
+    message_id: str,
+    agent_id: str,
+    command: str,
+    mode: str,
+    status: str,
+    output_tail: str = "",
+    cwd: str | None = None,
+    label: str | None = None,
+    pid: int | None = None,
+    pgid: int | None = None,
+    exit_code: int | None = None,
+) -> dict[str, Any]:
+    now = datetime.utcnow()
+    row = await session.get(ProcessRunRow, process_id)
+    if row is None:
+        row = ProcessRunRow(
+            id=process_id,
+            conv_id=conv_id,
+            message_id=message_id,
+            agent_id=agent_id,
+            command=command,
+            cwd=cwd,
+            label=label,
+            mode=mode,
+            status=status,
+            pid=pid,
+            pgid=pgid,
+            exit_code=exit_code,
+            output_tail=output_tail,
+            last_heartbeat_at=now,
+        )
+        session.add(row)
+    else:
+        row.command = command or row.command
+        row.cwd = cwd or row.cwd
+        row.label = label or row.label
+        row.mode = mode or row.mode
+        row.status = status
+        row.pid = pid if pid is not None else row.pid
+        row.pgid = pgid if pgid is not None else row.pgid
+        row.exit_code = exit_code
+        row.output_tail = output_tail
+        row.last_heartbeat_at = now
+    if status in ("exited", "failed", "killed", "lost") and row.ended_at is None:
+        row.ended_at = now
+    await session.flush()
+    return _process_run_dict(row)
+
+
+async def list_process_runs(session: AsyncSession, conv_id: str) -> list[dict[str, Any]]:
+    res = await session.execute(
+        select(ProcessRunRow)
+        .where(ProcessRunRow.conv_id == conv_id)
+        .order_by(ProcessRunRow.started_at.desc(), ProcessRunRow.id.desc())
+    )
+    return [_process_run_dict(r) for r in res.scalars().all()]
+
+
+async def get_process_run(session: AsyncSession, process_id: str) -> dict[str, Any] | None:
+    row = await session.get(ProcessRunRow, process_id)
+    return _process_run_dict(row) if row else None
+
+
+async def mark_process_run_killed(session: AsyncSession, process_id: str) -> bool:
+    row = await session.get(ProcessRunRow, process_id)
+    if row is None:
+        return False
+    row.status = "killed"
+    row.ended_at = datetime.utcnow()
     await session.flush()
     return True
 

@@ -127,25 +127,28 @@ export type CommitDiff = {
 	truncated: boolean;
 };
 
-/** One running deploy/expose service. The 4 kinds share fields loosely — UI
- * branches on `kind` for the right icon + secondary action (open / download /
- * copy URL). `alive=false` happens for preview servers whose subprocess died.
- */
-export type ServiceItem = {
-	token: string;
-	kind: "preview" | "static" | "container" | "source";
-	conv_id?: string | null;
-	url?: string | null;
-	download_url?: string | null;
-	name?: string | null;
-	port?: number | null;
-	size?: number | null;
-	container_id?: string | null;
-	image?: string | null;
-	alive: boolean;
-	created_at?: string | null;
-	ttl_seconds?: number | null;
+export type ProcessRunItem = {
+	id: string;
+	conv_id: string;
+	message_id: string;
+	agent_id: string;
+	command: string;
+	cwd?: string | null;
+	label?: string | null;
+	mode: "blocking" | "background";
+	status: "starting" | "running" | "exited" | "failed" | "killed" | "lost";
+	pid?: number | null;
+	pgid?: number | null;
+	exit_code?: number | null;
+	output_tail?: string | null;
+	log_path?: string | null;
+	started_at?: string | null;
+	ended_at?: string | null;
+	last_heartbeat_at?: string | null;
 };
+
+/** Back-compat alias for older imports; semantically this is now ProcessRun. */
+export type ServiceItem = ProcessRunItem;
 
 async function getJSON<T>(path: string): Promise<T> {
 	const res = await fetch(BASE + path);
@@ -227,6 +230,7 @@ export type ConversationSummary = {
 	archived: boolean;
 	unread: number;
 	draft_text: string;
+	draft_attachments: DraftAttachment[];
 	last_message_at: string | null;
 	created_at: string;
 	updated_at: string;
@@ -246,6 +250,15 @@ export type ConversationSummary = {
 		tool?: string;
 		message?: string;
 	}>;
+};
+
+export type DraftAttachment = {
+	id?: string;
+	kind: "image" | "file";
+	src: string;
+	name: string;
+	media_type?: string | null;
+	size_bytes?: number | null;
 };
 
 export const api = {
@@ -340,6 +353,7 @@ export const api = {
 		orchestrator_member_id?: string | null;
 		/** Initial input-box draft for this conversation. */
 		draft_text?: string;
+		draft_attachments?: DraftAttachment[];
 	}) => postJSON<ConversationSummary>("/api/conversations", body),
 	deleteConv: (convId: string) =>
 		deleteJSON<{ ok: boolean }>(`/api/conversations/${convId}`),
@@ -439,6 +453,11 @@ export const api = {
 		patchJSON<{ ok: boolean }>(`/api/conversations/${convId}/draft`, {
 			draft_text: draftText,
 		}),
+	setConvDraftAttachments: (convId: string, attachments: DraftAttachment[]) =>
+		patchJSON<{ ok: boolean }>(
+			`/api/conversations/${convId}/draft_attachments`,
+			{ draft_attachments: attachments },
+		),
 	/** Replace per-member role assignments for a group conv. Server appends
 	 * a system-event message describing the diff, which agents pick up via
 	 * L4 history on the next turn. Returns the updated conv summary. */
@@ -588,20 +607,15 @@ export const api = {
 	health: () =>
 		getJSON<{ status: string; version: string; time: string }>("/api/health"),
 
-	/** List live services (preview servers / static mounts / containers /
-	 * source zips) owned by this conv. Drives the Services view in the right
-	 * rail. Each service has a `token` (the kill switch) + the kind-specific
-	 * fields (url / download_url / port / image / etc.). */
+	/** List managed bash process runs owned by this conv. */
 	listServices: (convId: string) =>
-		getJSON<{ services: ServiceItem[] }>(
-			`/api/conversations/${convId}/services`,
+		getJSON<{ processes: ProcessRunItem[] }>(
+			`/api/conversations/${convId}/process-runs`,
 		),
 
-	/** Stop + forget a service. Token prefix decides the kind (prev-/stat-/
-	 * ctn-/src-) — server picks the right cleanup (terminate proc, rmtree,
-	 * docker rm -f + rmi, unlink zip). */
-	stopService: (token: string) =>
-		deleteJSON<{ ok: boolean; kind: string }>(`/api/services/${token}`),
+	/** Stop a managed process run. */
+	stopService: (processId: string) =>
+		deleteJSON<{ ok: boolean; killed: boolean }>(`/api/process-runs/${processId}`),
 
 	/** Apply a Diff card to the conv's sandbox. Server reconstructs unified
 	 * diff from hunks + git apply + commit. Returns new short sha on success.

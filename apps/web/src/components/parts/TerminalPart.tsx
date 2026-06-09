@@ -83,8 +83,11 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 				<span className="font-mono font-semibold text-[11.5px] flex-shrink-0">
 					bash
 				</span>
+				<span className="rounded bg-[var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-[var(--color-fg-3)]">
+					{payload.mode === "background" ? "background" : "blocking"}
+				</span>
 				<span className="font-mono text-[11px] text-[var(--color-fg-3)] truncate flex-1">
-					{payload.command}
+					{payload.label ? `${payload.label} · ${payload.command}` : payload.command}
 				</span>
 				<span
 					className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ml-auto"
