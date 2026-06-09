@@ -26,12 +26,13 @@ const config: CapacitorConfig = {
   webDir: "../web/dist",
   bundledWebRuntime: false,
   server: {
-    // WebView loads the web app from the dev box's vite server instead of the
-    // baked-in bundle. After this is committed and Xcode rebuilds once, future
-    // web changes flow over HMR — no more Xcode rebuilds. Phone must be on the
-    // same LAN as 10.12.48.166 (verified reachable from iOS Safari).
-    // To go back to the bundled-snapshot mode, comment out `url` + `cleartext`.
-    url: "http://10.12.48.166:5173",
+    // WebView loads the web app from the dev box's Vite server instead of the
+    // baked-in bundle. For Android physical devices we use:
+    //   adb reverse tcp:5173 tcp:5173
+    // so 127.0.0.1:5173 inside the phone reaches the Mac, even when Wi-Fi
+    // subnets differ. To go back to bundled-snapshot mode, comment out
+    // `url` + `cleartext`.
+    url: "http://127.0.0.1:5173",
     cleartext: true,
     androidScheme: "https",
     iosScheme: "https",
