@@ -7,7 +7,7 @@ import {
 	RotateCcw,
 	Undo2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import type { DiffPayload } from "../../lib/types";
 import { useConvScope } from "./_context";
@@ -74,6 +74,20 @@ export function DiffPart({
 	const [revertSha, setRevertSha] = useState<string | null>(null);
 	const [revBusy, setRevBusy] = useState(false);
 	const [confirmRevert, setConfirmRevert] = useState(false);
+	const confirmRef = useRef<HTMLButtonElement>(null);
+	// Dismiss the「确认撤销?」state on any click outside the confirm button — so
+	// the user isn't stuck in it. The listener is attached in an effect (after
+	// the opening click has finished bubbling), so it never self-cancels; the
+	// ref guard lets the confirm button's own click through to actually revert.
+	useEffect(() => {
+		if (!confirmRevert) return;
+		const onDocClick = (e: MouseEvent) => {
+			if (confirmRef.current?.contains(e.target as Node)) return;
+			setConfirmRevert(false);
+		};
+		document.addEventListener("click", onDocClick);
+		return () => document.removeEventListener("click", onDocClick);
+	}, [confirmRevert]);
 	// Set when reverse-apply can't land because the file moved on (conflict
 	// merge etc.) — switches the card from a doomed 撤销 to a commit-history CTA.
 	const [divergedRevert, setDivergedRevert] = useState(false);
@@ -279,6 +293,7 @@ export function DiffPart({
 									{confirmRevert ? (
 										<button
 											type="button"
+											ref={confirmRef}
 											onClick={() => {
 												setConfirmRevert(false);
 												revert();
