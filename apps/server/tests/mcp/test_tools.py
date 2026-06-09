@@ -172,15 +172,25 @@ async def test_commit_carries_agent_identity(ctx):
 def test_dispatch_tool_schema_accepts_contract():
     """ADR-014: the dispatch tool exposes an optional batch-level `contract`
     so the orchestrator can lock a shared spec for all sub-tasks."""
-    schema = TOOL_REGISTRY["dispatch"].input_schema
+    tool = TOOL_REGISTRY["dispatch"]
+    schema = tool.input_schema
     props = schema["properties"]
     assert "contract" in props, "dispatch must expose a `contract` field"
     assert props["contract"]["type"] == "string"
+    assert "do NOT call `remember`" in tool.description
+    assert "do NOT also call remember(kind=contract)" in props["contract"]["description"]
     # `tasks` is required (the actual assignments); contract/title are extras.
     # (A tasks-less call yields the SDK's standard "'tasks' is a required
     #  property" validation error, which the model reliably recovers from — a
     #  custom execute-level error made it loop instead, so we keep it strict.)
     assert schema["required"] == ["tasks"]
+
+
+def test_remember_tool_contract_is_not_for_dispatch_contracts():
+    desc = TOOL_REGISTRY["remember"].description
+    assert "ONLY when it is not part of a dispatch batch" in desc
+    assert "dispatch.contract" in desc
+    assert "records it automatically" in desc
 
 
 # ── Role-gated tool exposure (ADR-013 + location gate) ───────────

@@ -55,7 +55,8 @@ def build_orchestrator_protocol_layer(
         "不要把 A/B 放进同一批并行 dispatch。必须先派前一阶段,合并到 main 后,"
         "再在下一轮派后续阶段;前一批不是整体最后一步时,记得 `need_continue=true`。",
         "- 子任务需互通(共享接口 / 字段 / 文件名)时,把规格写进 dispatch 的 `contract`,"
-        "它会原样发给每个成员。",
+        "它会原样发给每个成员,并由平台自动写入共享记忆供后续回合读取。"
+        "**不要**为了同一批派活再提前调用 `remember(kind=contract)`;那会产生重复契约。",
         "- **派活说明 / contract 里只用相对文件名**(如 `proposal.docx`、`src/app.py`),"
         "**绝不**写 `/home/...` 这类绝对路径或 `worktrees/ag-xxx/` 路径:每个成员在**自己**的工作目录里干活,"
         "你给的绝对路径会让他们写进别人的目录、成果合并不进来(白干)。验收时你可以用 bash 看绝对路径,"

@@ -67,6 +67,9 @@ def test_protocol_layer_content() -> None:
     assert "@" in c and "不算数" in c
     # Orchestrator may now do hands-on work itself (not dispatch-only).
     assert "亲自动手" in c
+    assert "dispatch 的 `contract`" in c
+    assert "自动写入共享记忆" in c
+    assert "remember(kind=contract)" in c
     assert "阿码" in c and "阿写" in c
     # The user-assigned role is surfaced + labelled as the user's assignment;
     # a teammate with no configured role is shown as 未指定.
