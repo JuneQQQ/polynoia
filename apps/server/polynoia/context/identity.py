@@ -9,7 +9,6 @@ from __future__ import annotations
 from polynoia.context._types import ContextLayer
 from polynoia.domain.entities import Agent
 
-
 _PLATFORM_BLOCK = (
     "你跑在 **Polynoia** — 一个 IM 形态的多 agent 协作平台。同一对话里可能有多个 "
     "agent 和用户共处。来自其他 agent 的消息会带 `[@agent_name]` 前缀;你的回复直接说话即可,"
@@ -173,18 +172,21 @@ def build_identity_layer(
     # Contact-level skills (capability/prompt presets bound to this agent). Each
     # skill's instructions are injected here so the agent actually has the
     # ability — bound per-contact via the contact editor.
-    skills = [
-        s for s in (getattr(agent, "skills", None) or [])
-        if (s.instructions or "").strip()
-    ]
+    skills = getattr(agent, "skills", None) or []
     if skills:
+        from polynoia.skills import read_skill_instructions
+
         parts.append("")
         parts.append("## 你已装配的技能")
         for s in skills:
+            fallback = read_skill_instructions(s.name) or {}
+            desc = s.description or fallback.get("description")
+            instructions = (s.instructions or "").strip() or fallback.get("instructions", "")
             parts.append(f"### {s.name}")
-            if s.description:
-                parts.append(f"_{s.description}_")
-            parts.append(s.instructions.strip())
+            if desc:
+                parts.append(f"_{desc}_")
+            if instructions:
+                parts.append(instructions.strip())
 
     return ContextLayer.make(
         kind="identity",

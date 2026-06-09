@@ -114,7 +114,7 @@ export function NewContactModal({
 	// Skills: a contact binds installed skill PACKAGES by name (placed into its
 	// sandbox at spawn). Install new ones from a git URL / local path.
 	const [installedSkills, setInstalledSkills] = useState<
-		{ name: string; description: string }[]
+		{ name: string; description: string; builtin?: boolean }[]
 	>([]);
 	const [boundSkills, setBoundSkills] = useState<Set<string>>(
 		() => new Set((editing?.skills ?? []).map((s) => s.name)),
@@ -511,23 +511,31 @@ export function NewContactModal({
 											))}
 										</div>
 									)}
-									{installedSkills.length > 0 ? (
-										<div className="relative">
+									<div className="flex gap-2">
+										<div className="relative flex-1 min-w-0">
+											<input
+												type="text"
+												value={skillSrc}
+												onChange={(e) => {
+													setSkillSrc(e.target.value);
+													setSkillBusy("idle");
+												}}
+												placeholder={
+													boundSkills.size > 0
+														? `已选择 ${boundSkills.size} 个 skill；也可粘贴地址安装`
+														: "GitHub 地址或本地路径:https://github.com/org/repo.git"
+												}
+												className="w-full text-[12px] pl-2.5 pr-9 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
+											/>
 											<button
 												type="button"
 												onClick={() => setSkillMenuOpen((v) => !v)}
-												className="w-full flex items-center justify-between gap-2 text-left text-[12.5px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)]"
+												aria-label={skillMenuOpen ? "收起 skill 列表" : "展开 skill 列表"}
+												className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 grid place-items-center rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] transition"
 											>
-												<span>
-													{boundSkills.size > 0
-														? `已选择 ${boundSkills.size} 个 skill`
-														: "选择已安装 skill"}
-												</span>
 												<ChevronDown
-													size={14}
-													className={`text-[var(--color-fg-3)] transition-transform ${
-														skillMenuOpen ? "rotate-180" : ""
-													}`}
+													size={15}
+													className={`transition-transform ${skillMenuOpen ? "rotate-180" : ""}`}
 												/>
 											</button>
 											{skillMenuOpen && (
@@ -539,79 +547,79 @@ export function NewContactModal({
 														onClick={() => setSkillMenuOpen(false)}
 														className="fixed inset-0 z-[61] cursor-default bg-transparent"
 													/>
-													<div className="absolute left-0 right-0 top-[calc(100%+6px)] z-[62] max-h-56 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)] p-1">
-														{installedSkills.map((s) => {
-															const on = boundSkills.has(s.name);
-															return (
-																<div
-																	key={s.name}
-																	className="group flex items-stretch gap-1 rounded hover:bg-[var(--color-surface-2)]"
-																>
-																	<button
-																		type="button"
-																		onClick={() =>
-																			setBoundSkills((b) => {
-																				const n = new Set(b);
-																				n.has(s.name)
-																					? n.delete(s.name)
-																					: n.add(s.name);
-																				return n;
-																			})
-																		}
-																		className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-2"
+													<div className="absolute z-[62] mt-1 w-full max-h-64 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
+													{installedSkills.length > 0 ? (
+														<div className="py-1">
+															{installedSkills.map((s) => {
+																const on = boundSkills.has(s.name);
+																return (
+																	<div
+																		key={s.name}
+																		className={`group flex items-stretch gap-1 transition-colors ${
+																			on
+																				? "bg-[var(--color-accent)]/10"
+																				: "hover:bg-[var(--color-surface-2)]"
+																		}`}
 																	>
-																		<span
-																			className={`mt-0.5 w-4 h-4 rounded border grid place-items-center flex-shrink-0 ${
-																				on
-																					? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
-																					: "border-[var(--color-line-strong)]"
-																			}`}
+																		<button
+																			type="button"
+																			onClick={() =>
+																				setBoundSkills((b) => {
+																					const n = new Set(b);
+																					n.has(s.name) ? n.delete(s.name) : n.add(s.name);
+																					return n;
+																				})
+																			}
+																			className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-2"
 																		>
-																			{on && <Check size={11} />}
-																		</span>
-																		<span className="min-w-0">
-																			<span className="block text-[12.5px] font-mono text-[var(--color-fg)] truncate">
-																				{s.name}
+																			<span
+																				className={`mt-0.5 w-4 h-4 rounded border grid place-items-center flex-shrink-0 ${
+																					on
+																						? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+																						: "border-[var(--color-line-strong)]"
+																				}`}
+																			>
+																				{on && <Check size={11} />}
 																			</span>
-																			{s.description && (
-																				<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
-																					{s.description}
+																			<span className="min-w-0">
+																				<span className="block text-[12.5px] font-mono text-[var(--color-fg)] truncate">
+																					{s.name}
 																				</span>
-																			)}
-																		</span>
-																	</button>
-																	<button
-																		type="button"
-																		onClick={() => removeSkill(s.name)}
-																		title={`卸载 skill「${s.name}」`}
-																		aria-label={`卸载 ${s.name}`}
-																		className="px-2 grid place-items-center rounded-r text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
-																	>
-																		<Trash2 size={13} />
-																	</button>
-																</div>
-															);
-														})}
+																				{s.description && (
+																					<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
+																						{s.description}
+																					</span>
+																				)}
+																			</span>
+																		</button>
+																		{s.builtin ? (
+																			<span className="px-2 grid place-items-center text-[10px] text-[var(--color-fg-4)]">
+																				内置
+																			</span>
+																		) : (
+																			<button
+																				type="button"
+																				onClick={() => removeSkill(s.name)}
+																				title={`卸载 skill「${s.name}」`}
+																				aria-label={`卸载 ${s.name}`}
+																				className="px-2 grid place-items-center text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
+																			>
+																				<Trash2 size={13} />
+																			</button>
+																		)}
+																	</div>
+																);
+															})}
+														</div>
+													) : (
+														<p className="px-2.5 py-2 text-[11.5px] text-[var(--color-fg-3)]">
+															还没有已安装的 skill。可直接粘贴 GitHub 地址或本地路径安装。
+														</p>
+													)}
 													</div>
 												</>
 											)}
 										</div>
-									) : (
-										<p className="text-[11.5px] text-[var(--color-fg-3)]">
-											还没有已安装的 skill。可直接粘贴 GitHub 地址或本地路径安装。
-										</p>
-									)}
-									<div className="flex gap-2">
-										<input
-											type="text"
-											value={skillSrc}
-											onChange={(e) => {
-												setSkillSrc(e.target.value);
-												setSkillBusy("idle");
-											}}
-											placeholder="GitHub 地址或本地路径:https://github.com/org/repo.git"
-											className="flex-1 text-[12px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
-										/>
 										<button
 											type="button"
 											onClick={installSkill}
