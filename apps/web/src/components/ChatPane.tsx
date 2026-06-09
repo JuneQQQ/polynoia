@@ -2,6 +2,7 @@ import { Loader2, PanelRight, Square } from "lucide-react";
 import {
 	useCallback,
 	useEffect,
+	Fragment,
 	useLayoutEffect,
 	useMemo,
 	useRef,
@@ -139,6 +140,9 @@ export function ChatPane({ convId, members, title }: Props) {
 	const [convSummary, setConvSummary] = useState<ConversationSummary | null>(
 		null,
 	);
+	const [regeneratingTurnId, setRegeneratingTurnId] = useState<string | null>(
+		null,
+	);
 	const refreshConversationSnapshot = useCallback(async () => {
 		const [convRes, messagesRes] = await Promise.allSettled([
 			api.getConv(convId),
@@ -212,7 +216,7 @@ export function ChatPane({ convId, members, title }: Props) {
 					applyChunkToConv(convId, {
 						kind: "text-start",
 						partId: chunk.id,
-						messageId: `msg-${chunk.id}`,
+						messageId: chunk.message_id ?? `msg-${chunk.id}`,
 						senderId: chunk.sender_id ?? null,
 					});
 					break;
@@ -297,6 +301,21 @@ export function ChatPane({ convId, members, title }: Props) {
 						// a real response arrived). Drop it so it doesn't linger.
 						const d = (chunk as any).data;
 						if (d?.id) useStore.getState().removeMessage(convId, d.id);
+					} else if (chunk.type === "data-message-updated") {
+						const d = (chunk as any).data;
+						if (d?.id && d?.payload) {
+							useStore.setState((s) => {
+								const cs = s.convs.get(convId);
+								if (!cs) return {};
+								const msg = cs.msgById.get(d.id);
+								if (!msg) return {};
+								const msgById = new Map(cs.msgById);
+								msgById.set(d.id, { ...msg, payload: d.payload });
+								const convs = new Map(s.convs);
+								convs.set(convId, { ...cs, msgById });
+								return { convs };
+							});
+						}
 					} else if (chunk.type === "data-conv-rewound") {
 						// Another tab (or our own POST that beat the response) rewound
 						// the conv: drop the msg at from_msg_id + all later. Idempotent —
@@ -675,21 +694,40 @@ export function ChatPane({ convId, members, title }: Props) {
 	}, [messages.length]);
 
 	// Listen for "regenerate" events fired by MessageView's action button.
-	// The event carries (convId, text) — we filter on convId and resend
-	// via this conv's WS. Using a window event avoids threading wsRef
-	// through prop drilling.
+	// The event carries (convId, msgId, senderId, text). Regenerate reuses the
+	// prior user prompt without adding another user bubble, and asks the server
+	// to stream the replacement into the clicked agent message id.
+	// Using a window event avoids threading wsRef through prop drilling.
 	useEffect(() => {
 		const onRegen = (ev: Event) => {
-			const ce = ev as CustomEvent<{ convId: string; text: string }>;
+			const ce = ev as CustomEvent<{
+				convId: string;
+				msgId: string;
+				senderId: string;
+				text: string;
+			}>;
 			if (!ce.detail || ce.detail.convId !== convId) return;
-			// Pass the pre-allocated id so the server's human-echo (same id) dedups
-			// against this optimistic bubble instead of appending a duplicate.
-			const rid = appendUserMessage(convId, ce.detail.text);
-			wsRef.current?.sendUserMessage(ce.detail.text, members, undefined, rid);
+			const turn = findAgentTurnByMessageId(ce.detail.msgId);
+			if (turn) void regenerateAgentTurn(turn);
 		};
 		window.addEventListener("polynoia:regenerate", onRegen);
 		return () => window.removeEventListener("polynoia:regenerate", onRegen);
-	}, [convId, members, appendUserMessage]);
+	}, [convId, messages, regeneratingTurnId]);
+
+	useEffect(() => {
+		const onEditResend = (ev: Event) => {
+			const ce = ev as CustomEvent<{
+				convId: string;
+				msgId: string;
+				text: string;
+			}>;
+			if (!ce.detail || ce.detail.convId !== convId) return;
+			void resendEditedUserMessage(ce.detail.msgId, ce.detail.text);
+		};
+		window.addEventListener("polynoia:edit-user-message", onEditResend);
+		return () =>
+			window.removeEventListener("polynoia:edit-user-message", onEditResend);
+	}, [convId, members, messages]);
 
 	// Per-lane stop: a burst lane (TasksBurstPart) dispatches this to terminate
 	// just that worker (Agent-level). Same window-event idiom as regenerate to
@@ -909,6 +947,301 @@ export function ChatPane({ convId, members, title }: Props) {
 		return { groupFirstIds: firsts, groupedSkip: skip, firstOfRun };
 	}, [burstSig, convId, claimedSet, burstByAnchorId]);
 
+	const agentActionMsgIds = useMemo(() => {
+		const out = new Set<string>();
+		let lastAgentVisibleId: string | null = null;
+		let lastAgentSender: string | null = null;
+		const flush = () => {
+			if (lastAgentVisibleId) out.add(lastAgentVisibleId);
+			lastAgentVisibleId = null;
+			lastAgentSender = null;
+		};
+		for (const m of messages) {
+			if (m.sender_id === "you") {
+				flush();
+				continue;
+			}
+			if (m.sender_id === "system") continue;
+			if (claimedSet.has(m.id) || groupedSkip.has(m.id)) continue;
+			if (burstByAnchorId.has(m.id) || groupFirstIds.has(m.id)) {
+				if (lastAgentSender && lastAgentSender !== m.sender_id) flush();
+				lastAgentSender = m.sender_id;
+				continue;
+			}
+			if (lastAgentSender && lastAgentSender !== m.sender_id) flush();
+			lastAgentSender = m.sender_id;
+			lastAgentVisibleId = m.id;
+		}
+		flush();
+		return out;
+	}, [messages, claimedSet, groupedSkip, burstByAnchorId, groupFirstIds]);
+
+	const [quoteMenu, setQuoteMenu] = useState<{
+		x: number;
+		y: number;
+		text: string;
+		msgId?: string;
+	} | null>(null);
+
+	useEffect(() => {
+		let timer: number | null = null;
+		const openFromSelection = () => {
+			const host = bodyRef.current;
+			const sel = window.getSelection();
+			const selected = sel?.toString().trim();
+			if (!host || !sel || !selected || sel.rangeCount === 0) {
+				setQuoteMenu(null);
+				return;
+			}
+			if (!host.contains(sel.anchorNode) || !host.contains(sel.focusNode)) {
+				setQuoteMenu(null);
+				return;
+			}
+			const range = sel.getRangeAt(0);
+			const rect = range.getBoundingClientRect();
+			if (!rect.width && !rect.height) return;
+			const node =
+				sel.anchorNode instanceof Element
+					? sel.anchorNode
+					: sel.anchorNode?.parentElement;
+			const msgEl = node?.closest("[data-msg-id]") as HTMLElement | null;
+			setQuoteMenu({
+				x: Math.min(rect.left + rect.width / 2, window.innerWidth - 150),
+				y: Math.max(rect.top - 38, 8),
+				text: selected,
+				msgId: msgEl?.dataset.msgId,
+			});
+		};
+		const onSelectionChange = () => {
+			if (timer != null) window.clearTimeout(timer);
+			timer = window.setTimeout(openFromSelection, 80);
+		};
+		const onScroll = () => openFromSelection();
+		document.addEventListener("selectionchange", onSelectionChange);
+		window.addEventListener("scroll", onScroll, true);
+		return () => {
+			if (timer != null) window.clearTimeout(timer);
+			document.removeEventListener("selectionchange", onSelectionChange);
+			window.removeEventListener("scroll", onScroll, true);
+		};
+	}, []);
+
+	const textFromMessage = (m: Message | undefined): string => {
+		const p = m?.payload as
+			| {
+					kind?: string;
+					body?: Array<{
+						c: string | Array<{ type?: string; text?: string }>;
+					}>;
+			  }
+			| undefined;
+		if (!p || p.kind !== "text" || !Array.isArray(p.body)) return "";
+		return p.body
+			.map((b) => {
+				if (typeof b.c === "string") return b.c;
+				if (Array.isArray(b.c)) {
+					return b.c
+						.map((seg) =>
+							typeof seg === "object" && seg && "text" in seg
+								? (seg.text ?? "")
+								: "",
+						)
+						.join("");
+				}
+				return "";
+			})
+			.join("\n")
+			.trim();
+	};
+
+	const clearAgentTurnForRegenerate = (
+		first: Message,
+		ids: string[],
+	): void => {
+		useStore.setState((s) => {
+			const cs = s.convs.get(convId);
+			if (!cs) return {};
+			const remove = new Set(ids.filter((id) => id !== first.id));
+			const nextById = new Map(cs.msgById);
+			for (const id of remove) nextById.delete(id);
+			nextById.set(first.id, {
+				...first,
+				payload: { kind: "text", body: [{ t: "p", c: "" }] },
+				created_at: new Date().toISOString(),
+			});
+			const nextStreaming = new Map(cs.streamingTexts);
+			for (const [key, val] of nextStreaming) {
+				if (remove.has(val.messageId) || val.messageId === first.id) {
+					nextStreaming.delete(key);
+				}
+			}
+			const nextConvs = new Map(s.convs);
+			nextConvs.set(convId, {
+				...cs,
+				messageOrder: cs.messageOrder.filter((id) => !remove.has(id)),
+				msgById: nextById,
+				streamingTexts: nextStreaming,
+			});
+			return { convs: nextConvs };
+		});
+	};
+
+	const regenerateAgentTurn = async (turn: {
+		user: Message;
+		first: Message;
+		ids: string[];
+	}) => {
+		if (regeneratingTurnId) return;
+		const text = textFromMessage(turn.user);
+		if (!text) return;
+		setRegeneratingTurnId(turn.first.id);
+		clearAgentTurnForRegenerate(turn.first, turn.ids);
+		const results = await Promise.allSettled(
+			turn.ids.map((id) => api.deleteMessage(convId, id, { silent: true })),
+		);
+		for (const r of results) {
+			if (r.status === "rejected") {
+				console.warn("failed to delete old regenerated turn message", r.reason);
+			}
+		}
+		wsRef.current?.sendUserMessage(text, members, undefined, undefined, {
+			regenerate: true,
+			regenerateMsgId: turn.first.id,
+			regenerateSenderId: turn.first.sender_id,
+		});
+		window.setTimeout(() => setRegeneratingTurnId(null), 1500);
+	};
+
+	const findAgentTurnByMessageId = (msgId: string) => {
+		const idx = messages.findIndex((m) => m.id === msgId);
+		if (idx < 0) return null;
+		const current = messages[idx];
+		if (current.sender_id === "you" || current.sender_id === "system") return null;
+		let user: Message | null = null;
+		for (let i = idx - 1; i >= 0; i--) {
+			if (messages[i].sender_id === "you") {
+				user = messages[i];
+				break;
+			}
+		}
+		if (!user) return null;
+		let start = idx;
+		for (let i = idx - 1; i >= 0; i--) {
+			if (messages[i].sender_id === "you") break;
+			if (messages[i].sender_id !== "system") start = i;
+		}
+		const ids: string[] = [];
+		let first: Message | null = null;
+		for (let i = start; i < messages.length; i++) {
+			const m = messages[i];
+			if (m.sender_id === "you") break;
+			if (m.sender_id === "system") continue;
+			first ??= m;
+			ids.push(m.id);
+		}
+		return first && ids.length ? { user, first, ids } : null;
+	};
+
+	const resendEditedUserMessage = async (msgId: string, text: string) => {
+		const idx = messages.findIndex((m) => m.id === msgId);
+		const user = messages[idx];
+		if (idx < 0 || !user || user.sender_id !== "you" || !text.trim()) return;
+		const ids: string[] = [];
+		let first: Message | null = null;
+		for (let i = idx + 1; i < messages.length; i++) {
+			const m = messages[i];
+			if (m.sender_id === "you") break;
+			if (m.sender_id === "system") continue;
+			first ??= m;
+			ids.push(m.id);
+		}
+		useStore.setState((s) => {
+			const cs = s.convs.get(convId);
+			if (!cs) return {};
+			const msg = cs.msgById.get(msgId);
+			if (!msg) return {};
+			const remove = new Set(ids.filter((id) => id !== first?.id));
+			const msgById = new Map(cs.msgById);
+			msgById.set(msgId, {
+				...msg,
+				payload: { kind: "text", body: [{ t: "p", c: text.trim() }] },
+			});
+			for (const id of remove) msgById.delete(id);
+			if (first) {
+				msgById.set(first.id, {
+					...first,
+					payload: { kind: "text", body: [{ t: "p", c: "" }] },
+					created_at: new Date().toISOString(),
+				});
+			}
+			const streamingTexts = new Map(cs.streamingTexts);
+			for (const [key, val] of streamingTexts) {
+				if (remove.has(val.messageId) || val.messageId === first?.id) {
+					streamingTexts.delete(key);
+				}
+			}
+			const convs = new Map(s.convs);
+			convs.set(convId, {
+				...cs,
+				messageOrder: cs.messageOrder.filter((id) => !remove.has(id)),
+				msgById,
+				streamingTexts,
+			});
+			return { convs };
+		});
+		await api.updateMessage(convId, msgId, text.trim());
+		if (ids.length) {
+			await Promise.allSettled(
+				ids.map((id) => api.deleteMessage(convId, id, { silent: true })),
+			);
+		}
+		wsRef.current?.sendUserMessage(text.trim(), members, undefined, undefined, {
+			regenerate: true,
+			regenerateMsgId: first?.id,
+			regenerateSenderId: first?.sender_id,
+		});
+	};
+
+	const senderLabelFor = (m: Message | undefined): string => {
+		if (!m) return "选中内容";
+		if (m.sender_id === "you") return "我";
+		if (m.sender_id === "system") return "System";
+		return agents.find((a) => a.id === m.sender_id)?.name ?? "Agent";
+	};
+
+	const openSelectionQuoteMenu = (ev: React.MouseEvent<HTMLDivElement>) => {
+		const sel = window.getSelection();
+		const selected = sel?.toString().trim();
+		if (!sel || !selected || sel.rangeCount === 0) return;
+		const host = ev.currentTarget;
+		if (!host.contains(sel.anchorNode) || !host.contains(sel.focusNode)) return;
+		ev.preventDefault();
+		const node =
+			sel.anchorNode instanceof Element
+				? sel.anchorNode
+				: sel.anchorNode?.parentElement;
+		const msgEl = node?.closest("[data-msg-id]") as HTMLElement | null;
+		setQuoteMenu({
+			x: ev.clientX,
+			y: ev.clientY,
+			text: selected,
+			msgId: msgEl?.dataset.msgId,
+		});
+	};
+
+	const quoteSelectedText = () => {
+		if (!quoteMenu) return;
+		const msg = quoteMenu.msgId
+			? useStore.getState().convs.get(convId)?.msgById.get(quoteMenu.msgId)
+			: undefined;
+		useStore.getState().setReplyingTo({
+			convId,
+			msgId: quoteMenu.msgId ?? `selection-${Date.now()}`,
+			snippet: quoteMenu.text.slice(0, 120),
+			senderLabel: senderLabelFor(msg),
+		});
+	};
+
 	return (
 		<main
 			className={`flex-1 min-h-0 flex flex-col min-w-0 bg-[var(--color-bg)] relative overflow-hidden ${mobile ? "pn-mobile-chat" : ""}`}
@@ -1013,9 +1346,11 @@ export function ChatPane({ convId, members, title }: Props) {
             so it doesn't displace the message list when streaming starts/ends. */}
 
 				<ConvScopeProvider value={{ convId, inWorkspace, members }}>
-					<div
-						ref={bodyRef}
-						className={`absolute inset-0 overflow-y-auto py-4 ${mobile ? "pn-mobile-chat-scroll" : ""}`}
+						<div
+							ref={bodyRef}
+							onMouseUp={openSelectionQuoteMenu}
+							onContextMenu={openSelectionQuoteMenu}
+							className={`absolute inset-0 overflow-y-auto py-4 ${mobile ? "pn-mobile-chat-scroll" : ""}`}
 						// Clear the floating composer + running-status strip, so the
 						// message being answered always sits ABOVE the status bar.
 						style={{
@@ -1058,46 +1393,50 @@ export function ChatPane({ convId, members, title }: Props) {
             sub-agent messages are claimed into lanes (rendered inside
             TasksBurstPart), not the linear stream. Membership comes from the
             memoized burstByAnchorId/claimedSet above (delta-invariant). */}
-							{messages.map((m, i) => {
-								if (claimedSet.has(m.id)) return null; // rendered in a lane
-								if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
-								const group = groupFirstIds.get(m.id);
-								if (group) {
-									return (
-										<ToolCallGroup
-											key={m.id}
-											convId={convId}
-											msgIds={group}
-											showAvatar={firstOfRun.has(m.id)}
-										/>
-									);
-								}
-								const burst = burstByAnchorId.get(m.id);
-								if (burst) {
-									return (
-										<TasksBurstPart
-											key={m.id}
-											payload={m.payload as TasksPayload}
-											burstInfo={burst}
-											convId={convId}
-										/>
-									);
-								}
+									{messages.map((m) => {
+										if (claimedSet.has(m.id)) return null; // rendered in a lane
+										if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
+										const group = groupFirstIds.get(m.id);
+										if (group) {
+											return (
+												<Fragment key={m.id}>
+													<ToolCallGroup
+														convId={convId}
+														msgIds={group}
+														showAvatar={firstOfRun.has(m.id)}
+													/>
+												</Fragment>
+											);
+										}
+									const burst = burstByAnchorId.get(m.id);
+										if (burst) {
+											return (
+												<Fragment key={m.id}>
+													<TasksBurstPart
+														payload={m.payload as TasksPayload}
+													burstInfo={burst}
+													convId={convId}
+												/>
+											</Fragment>
+										);
+									}
 								// Normal linear MessageView. Avatar hidden (grouped) unless this
 								// is the FIRST avatar-bearing element of its sender's run — see
 								// firstOfRun, computed over the visible render sequence, so a fold
 								// between two same-sender messages doesn't re-show the avatar.
-								const isGrouped = !firstOfRun.has(m.id);
-								return (
-									<MessageView
-										key={m.id}
-										convId={convId}
-										msgId={m.id}
-										isGrouped={isGrouped}
-									/>
-								);
-							})}
-							{pendingAgentPlaceholders.map((a) => {
+									const isGrouped = !firstOfRun.has(m.id);
+										return (
+											<Fragment key={m.id}>
+								<MessageView
+									convId={convId}
+												msgId={m.id}
+												isGrouped={isGrouped}
+												showAgentActions={agentActionMsgIds.has(m.id)}
+											/>
+										</Fragment>
+									);
+								})}
+								{pendingAgentPlaceholders.map((a) => {
 								const agent = agents.find((x) => x.id === a.id);
 								const label =
 									a.status === "starting"
@@ -1114,10 +1453,26 @@ export function ChatPane({ convId, members, title }: Props) {
 										mobile={mobile}
 									/>
 								);
-							})}
+								})}
+							</div>
+							{quoteMenu && (
+								<div
+									className="fixed z-[80] min-w-[120px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg p-1"
+									style={{ left: quoteMenu.x, top: quoteMenu.y }}
+									onMouseDown={(ev) => ev.preventDefault()}
+									onClick={(ev) => ev.stopPropagation()}
+								>
+									<button
+										type="button"
+										className="w-full text-left px-2 py-1.5 rounded-sm text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)]"
+										onClick={quoteSelectedText}
+									>
+										选择引用内容
+									</button>
+								</div>
+							)}
 						</div>
-					</div>
-				</ConvScopeProvider>
+					</ConvScopeProvider>
 			</div>
 
 			{/* Floating composer — overlays the bottom of the message area so chat

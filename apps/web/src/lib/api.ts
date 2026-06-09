@@ -345,6 +345,15 @@ export const api = {
 	}) => postJSON<ConversationSummary>("/api/conversations", body),
 	deleteConv: (convId: string) =>
 		deleteJSON<{ ok: boolean }>(`/api/conversations/${convId}`),
+	deleteMessage: (convId: string, msgId: string, options?: { silent?: boolean }) =>
+		deleteJSON<{ ok: boolean }>(
+			`/api/conversations/${convId}/messages/${msgId}${options?.silent ? "?silent=true" : ""}`,
+		),
+	updateMessage: (convId: string, msgId: string, text: string) =>
+		patchJSON<{ ok: boolean }>(
+			`/api/conversations/${convId}/messages/${msgId}`,
+			{ text },
+		),
 	/** Single-conv summary fetch. Returns the same shape as the list endpoint. */
 	/** Upload an attachment (raw bytes) → returns a server URL to reference in
 	 * the message payload (instead of inlining base64). */

@@ -8,7 +8,6 @@
 import {
 	Copy,
 	CornerUpLeft,
-	History,
 	Pin,
 	PinOff,
 	RefreshCw,
@@ -49,9 +48,18 @@ type Props = {
 	 * name (lane header already shows the agent), tighter padding. Payload
 	 * + action row (reply/copy/pin/regenerate) still rendered. */
 	compact?: boolean;
+	/** Show the agent-level action row only on the final visible message of one
+	 * agent turn, not on every intermediate step/tool/result message. */
+	showAgentActions?: boolean;
 };
 
-function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
+function MessageViewInner({
+	convId,
+	msgId,
+	isGrouped,
+	compact,
+	showAgentActions,
+}: Props) {
 	// Per-message subscription: ChatPane gives us stable ids, store mutates
 	// msgById entries in place; this hook only fires when THIS message changes.
 	const msg = useStore((s) => selectMessageById(s, convId, msgId));
@@ -77,6 +85,45 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 	const agent = isSystem
 		? undefined
 		: agents.find((a) => a.id === msg.sender_id);
+	const textFromPayload = (payload: Message["payload"]): string => {
+		const p = payload as {
+			kind?: string;
+			body?: Array<{ c: string | Array<{ type?: string; text?: string }> }>;
+		};
+		if (p.kind !== "text" || !Array.isArray(p.body)) return "";
+		return p.body
+			.map((b) => {
+				if (typeof b.c === "string") return b.c;
+				if (Array.isArray(b.c)) {
+					return b.c
+						.map((seg) =>
+							typeof seg === "object" && seg && "text" in seg
+								? (seg.text ?? "")
+								: "",
+						)
+						.join("");
+				}
+				return "";
+			})
+			.join("\n");
+	};
+	const [editing, setEditing] = useState(false);
+	const [editText, setEditText] = useState("");
+	const beginEdit = () => {
+		if (!isYou || msg.payload.kind !== "text") return;
+		setEditText(textFromPayload(msg.payload));
+		setEditing(true);
+	};
+	const saveEdit = () => {
+		const next = editText.trim();
+		if (!next) return;
+		setEditing(false);
+		window.dispatchEvent(
+			new CustomEvent("polynoia:edit-user-message", {
+				detail: { convId, msgId: msg.id, text: next },
+			}),
+		);
+	};
 
 	// System events (role changes, etc.) are NOT participants — render them as a
 	// quiet centered timeline marker (hairline + muted mono) rather than a
@@ -249,22 +296,24 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 								minute: "2-digit",
 							})}
 						</span>
-						<MessageActions
-							msgId={msg.id}
-							convId={convId}
-							pinned={msg.pinned ?? false}
-							isYou={isYou}
-						/>
+						{isYou && (
+							<MessageActions
+								msgId={msg.id}
+								convId={convId}
+								pinned={msg.pinned ?? false}
+							/>
+						)}
 					</div>
 				)}
 				{isGrouped && !compact && (
 					<div className="flex justify-end min-h-3 -mt-0.5 -mb-1">
-						<MessageActions
-							msgId={msg.id}
-							convId={convId}
-							pinned={msg.pinned ?? false}
-							isYou={isYou}
-						/>
+						{isYou && (
+							<MessageActions
+								msgId={msg.id}
+								convId={convId}
+								pinned={msg.pinned ?? false}
+							/>
+						)}
 					</div>
 				)}
 				{/* Reply target header — small clickable chip pointing to original */}
@@ -282,17 +331,174 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 						<span className="truncate opacity-70">{replyTargetSnippet}</span>
 					</button>
 				)}
-				<MessagePart
-					payload={
-						isStreaming && isEmptyStreamingTextPayload(msg.payload)
-							? { kind: "typing", note: "正在回复…" }
-							: msg.payload
-					}
-					isStreaming={isStreaming}
-					convId={convId}
-					msgId={msg.id}
-				/>
+				<div onDoubleClick={beginEdit}>
+					{editing ? (
+						<div className="space-y-2">
+							<textarea
+								value={editText}
+								onChange={(e) => setEditText(e.target.value)}
+								autoFocus
+								className="w-full min-h-[96px] resize-y rounded border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+								onKeyDown={(e) => {
+									if ((e.metaKey || e.ctrlKey) && e.key === "Enter") saveEdit();
+									if (e.key === "Escape") setEditing(false);
+								}}
+							/>
+							<div className="flex justify-end gap-2">
+								<button
+									type="button"
+									onClick={() => setEditing(false)}
+									className="px-2 py-1 text-[12px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
+								>
+									取消
+								</button>
+								<button
+									type="button"
+									onClick={saveEdit}
+									className="px-2 py-1 rounded-sm text-[12px] bg-[var(--color-accent)] text-white"
+								>
+									重新发送
+								</button>
+							</div>
+						</div>
+					) : (
+						<MessagePart
+							payload={
+								isStreaming && isEmptyStreamingTextPayload(msg.payload)
+									? { kind: "typing", note: "正在回复…" }
+									: msg.payload
+							}
+							isStreaming={isStreaming}
+							convId={convId}
+							msgId={msg.id}
+						/>
+					)}
+				</div>
+				{!isYou && !isSystem && showAgentActions && (
+					<AgentMessageActions
+						msgId={msg.id}
+						convId={convId}
+						pinned={msg.pinned ?? false}
+					/>
+				)}
 			</div>
+		</div>
+	);
+}
+
+function AgentMessageActions({
+	msgId,
+	convId,
+	pinned,
+}: {
+	msgId: string;
+	convId: string;
+	pinned: boolean;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [copied, setCopied] = useState(false);
+
+	const currentMessage = () =>
+		useStore.getState().convs.get(convId)?.msgById.get(msgId);
+
+	const payloadText = () => {
+		const m = currentMessage();
+		if (!m) return "";
+		const p = m.payload as { kind: string; body?: Array<{ c: string }> };
+		if (p.kind === "text" && Array.isArray(p.body)) {
+			return p.body.map((b) => b.c).join("\n");
+		}
+		return JSON.stringify(m.payload, null, 2);
+	};
+
+	const reply = () => {
+		const m = currentMessage();
+		if (!m) return;
+		const agentsList = useStore.getState().agents;
+		useStore.getState().setReplyingTo({
+			convId,
+			msgId,
+			snippet: payloadText().slice(0, 120),
+			senderLabel: agentsList.find((a) => a.id === m.sender_id)?.name ?? "Agent",
+		});
+	};
+
+	const copy = async () => {
+		try {
+			await navigator.clipboard.writeText(payloadText());
+			setCopied(true);
+			setTimeout(() => setCopied(false), 1200);
+		} catch {
+			// ignore
+		}
+	};
+
+	const regenerate = () => {
+		const m = currentMessage();
+		if (!m) return;
+		window.dispatchEvent(
+			new CustomEvent("polynoia:regenerate", {
+				detail: { convId, msgId, senderId: m.sender_id, text: "" },
+			}),
+		);
+	};
+
+	const togglePin = async () => {
+		if (busy) return;
+		setBusy(true);
+		const next = !pinned;
+		useStore.setState((s) => {
+			const cs = s.convs.get(convId);
+			if (!cs) return {};
+			const m = cs.msgById.get(msgId);
+			if (!m) return {};
+			const msgById = new Map(cs.msgById);
+			msgById.set(msgId, { ...m, pinned: next });
+			const convs = new Map(s.convs);
+			convs.set(convId, { ...cs, msgById });
+			return { convs };
+		});
+		try {
+			if (next) await api.pinMessage(msgId);
+			else await api.unpinMessage(msgId);
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const buttonClass =
+		"grid h-5 w-5 place-items-center rounded-sm text-[var(--color-fg-4)] opacity-0 transition group-hover/msg:opacity-70 hover:opacity-100 hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]";
+
+	return (
+		<div className="mt-1 flex items-center gap-0.5">
+			<button type="button" onClick={reply} title="引用" className={buttonClass}>
+				<Reply size={11} />
+			</button>
+			<button
+				type="button"
+				onClick={copy}
+				title={copied ? "已复制" : "复制"}
+				className={buttonClass}
+			>
+				<Copy size={11} />
+			</button>
+			<button
+				type="button"
+				onClick={regenerate}
+				title="重做这一轮"
+				className={buttonClass}
+			>
+				<RefreshCw size={11} />
+			</button>
+			<button
+				type="button"
+				onClick={togglePin}
+				disabled={busy}
+				title={pinned ? "取消置顶" : "置顶消息"}
+				className={`${buttonClass} ${pinned ? "opacity-100 text-[var(--color-accent)]" : ""}`}
+			>
+				{pinned ? <PinOff size={11} /> : <Pin size={11} />}
+			</button>
 		</div>
 	);
 }
@@ -301,17 +507,13 @@ function MessageActions({
 	msgId,
 	convId,
 	pinned,
-	isYou,
 }: {
 	msgId: string;
 	convId: string;
 	pinned: boolean;
-	/** Hides "regenerate" for user messages (only makes sense on agent output). */
-	isYou: boolean;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [copied, setCopied] = useState(false);
-	const [regenBusy, setRegenBusy] = useState(false);
 
 	// Extract pure text from the message payload — only TEXT and TOOL-CALL
 	// kinds expose a string we can put in clipboard meaningfully. Cards
@@ -334,41 +536,6 @@ function MessageActions({
 		} catch {
 			// ignore — older browsers may not have clipboard API
 		}
-	};
-
-	// Regenerate — only makes sense on AGENT output. Finds the immediately
-	// preceding USER message in this conv and re-fires it via the conv's
-	// WS connection. UI removes the current agent message optimistically.
-	const regenerate = async () => {
-		if (regenBusy) return;
-		const cs = useStore.getState().convs.get(convId);
-		if (!cs) return;
-		const order = cs.messageOrder;
-		const idx = order.indexOf(msgId);
-		if (idx <= 0) return;
-		// Walk back to find the most recent "you" message
-		let text = "";
-		for (let i = idx - 1; i >= 0; i--) {
-			const prev = cs.msgById.get(order[i]);
-			if (prev && prev.sender_id === "you") {
-				// Avoid the discriminated-union narrowing dance — cast once.
-				const p = prev.payload as { kind: string; body?: Array<{ c: string }> };
-				if (p.kind === "text" && Array.isArray(p.body)) {
-					text = p.body.map((b) => b.c).join("\n");
-				}
-				break;
-			}
-		}
-		if (!text.trim()) return;
-		setRegenBusy(true);
-		// Re-fire via ChatPane's WebSocket — we surface that via a window event
-		// so we don't have to thread the ws ref through MessageView.
-		window.dispatchEvent(
-			new CustomEvent("polynoia:regenerate", {
-				detail: { convId, text },
-			}),
-		);
-		setTimeout(() => setRegenBusy(false), 1500);
 	};
 
 	// Optimistic update — flip the store entry's pinned flag immediately so
@@ -437,9 +604,6 @@ function MessageActions({
 		});
 	};
 
-	// 回到这个对话 (Cursor-checkpoint restore). Only meaningful when this message
-	// carries a code_sha (workspace conv). Hard-reset main to that sha after a
-	// confirm that lists what gets undone; offer an inline undo on success.
 	const codeSha = useStore
 		.getState()
 		.convs.get(convId)
@@ -448,57 +612,9 @@ function MessageActions({
 	const [restoreBusy, setRestoreBusy] = useState(false);
 	const [undoSha, setUndoSha] = useState<string | null>(null);
 
-	const restoreHere = async () => {
-		if (!workspaceId || !codeSha || restoreBusy) return;
-		setRestoreBusy(true);
-		try {
-			const pv = await api.restorePreview(workspaceId, codeSha, convId);
-			if (!pv.ok) {
-				window.alert(`无法回退:${pv.error ?? "未知错误"}`);
-				return;
-			}
-			if (pv.blocked) {
-				window.alert("有 Agent 正在本对话里干活,先等它完成或取消再回退。");
-				return;
-			}
-			if (pv.commits === 0) {
-				window.alert("代码已经在这个状态了,无需回退。");
-				return;
-			}
-			// Agent commits are authored by the persona id; map id/name/handle →
-			// display name so the dialog reads "(顾屿、沈昭)" not raw ULIDs. The
-			// system merge identity (polynoia-agent) → "系统".
-			const roster = useStore.getState().agents;
-			const nameOf = (a: string) =>
-				roster.find((x) => x.id === a || x.name === a || x.handle === a)
-					?.name ?? (a === "polynoia-agent" ? "系统" : a);
-			const who = pv.authors.length
-				? `(${pv.authors.map(nameOf).join("、")})`
-				: "";
-			const fileList =
-				pv.files.slice(0, 8).join("、") + (pv.files.length > 8 ? " …" : "");
-			const ok = window.confirm(
-				`回到这个对话:将把代码回退到此刻,撤销之后的 ${pv.commits} 处改动${who}。\n` +
-					`涉及文件:${fileList || "(无)"}\n\n会先存一个可撤销快照。继续?`,
-			);
-			if (!ok) return;
-			const res = await api.restoreWorkspace(workspaceId, codeSha, convId);
-			if (res.ok) {
-				useStore.getState().bumpWorkspaceFiles();
-				setUndoSha(res.undo_sha);
-				window.setTimeout(() => setUndoSha(null), 12_000);
-			}
-		} catch (e) {
-			window.alert(`回退失败:${e}`);
-		} finally {
-			setRestoreBusy(false);
-		}
-	};
-
-	// 从此处重来 — user messages only. Different semantic from restoreHere:
-	// also DELETES this msg + every later one in the conv. Atomic on the
-	// server: workspace restores FIRST (must succeed) before messages drop,
-	// so a half-rewind can't happen. After success the user can re-send.
+	// 从此处重来 — user messages only. It deletes this message and every later
+	// one in the conv. If this message has a workspace checkpoint, the server
+	// restores that checkpoint first so code and timeline stay aligned.
 	const rewindHere = async () => {
 		if (restoreBusy) return;
 		// Light preview when we have a workspace + checkpoint — surfaces the
@@ -636,21 +752,6 @@ function MessageActions({
 			>
 				<Copy size={11} />
 			</button>
-			{!isYou && (
-				<button
-					type="button"
-					onClick={regenerate}
-					disabled={regenBusy}
-					title="重新生成"
-					className={`p-0.5 rounded-sm transition-opacity duration-200 ${
-						regenBusy
-							? "opacity-70 text-[var(--color-accent)]"
-							: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
-					}`}
-				>
-					<RefreshCw size={11} className={regenBusy ? "animate-spin" : ""} />
-				</button>
-			)}
 			<button
 				type="button"
 				onClick={togglePin}
@@ -664,53 +765,23 @@ function MessageActions({
 			>
 				{pinned ? <PinOff size={11} /> : <Pin size={11} />}
 			</button>
-			{/* User msgs: 「从此处重来」(rewind = code restore + truncate timeline).
-			    Agent msgs: 「回滚至此」(code-only restore, timeline kept). Two
-			    different semantics — user wants to redo from this point vs.
-			    pin code state to an agent's snapshot. User-msg button is
-			    timeline-aware so it doesn't need a workspace; non-workspace
-			    DMs still get the truncate-only flavor. Agent-msg button needs
-			    a workspace + codeSha (code rollback is its only purpose). */}
-			{isYou ? (
-				<button
-					type="button"
-					onClick={rewindHere}
-					disabled={restoreBusy}
-					title={
-						workspaceId && codeSha
-							? "从此处重来:删除这条及之后的对话,代码回退到此刻"
-							: "从此处重来:删除这条及之后的对话"
-					}
-					// Icon-only + hover-reveal, matching the sibling pin/regen buttons —
-					// inline with them, not a prominent always-on pill. Full label lives
-					// in the title tooltip.
-					className={`p-0.5 rounded-sm transition-opacity duration-200 ${
-						restoreBusy
-							? "opacity-90 text-[var(--color-accent)]"
-							: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
-					}`}
-				>
-					<RotateCcw size={11} className={restoreBusy ? "animate-spin" : ""} />
-				</button>
-			) : (
-				codeSha &&
-				workspaceId && (
-					<button
-						type="button"
-						onClick={restoreHere}
-						disabled={restoreBusy}
-						title="回滚至此:把工作区代码恢复到你发这条消息时的状态"
-						className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-							restoreBusy
-								? "text-[var(--color-accent)] bg-[var(--color-accent-soft)]"
-								: "text-[var(--color-fg-3)] bg-[var(--color-surface-2)] hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
-						}`}
-					>
-						<History size={10} />
-						回滚至此
-					</button>
-				)
-			)}
+			<button
+				type="button"
+				onClick={rewindHere}
+				disabled={restoreBusy}
+				title={
+					workspaceId && codeSha
+						? "从此处重来:删除这条及之后的对话,代码回退到此刻"
+						: "从此处重来:删除这条及之后的对话"
+				}
+				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
+					restoreBusy
+						? "opacity-90 text-[var(--color-accent)]"
+						: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
+				}`}
+			>
+				<RotateCcw size={11} className={restoreBusy ? "animate-spin" : ""} />
+			</button>
 			{undoSha && (
 				<button
 					type="button"

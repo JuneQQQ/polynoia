@@ -832,6 +832,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         burst_card_id: str | None = None,
         burst_task_id: str | None = None,
         is_dispatcher: bool = False,
+        replace_text_msg_id: str | None = None,
     ) -> None:
         """Run one turn against one agent, streaming chunks to the send queue.
 
@@ -994,6 +995,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # reach the richer persist below), so there's no double-write.
             _trace_flushed = False
 
+            def _with_replacement_text_id(chunk: str) -> str:
+                if not replace_text_msg_id or not chunk.startswith("data: "):
+                    return chunk
+                try:
+                    payload = json.loads(chunk[len("data: ") :])
+                except Exception:
+                    return chunk
+                if payload.get("type") == "text-start":
+                    payload["message_id"] = replace_text_msg_id
+                    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+                return chunk
+
             async def _flush_partial_trace() -> None:
                 nonlocal _trace_flushed
                 if _trace_flushed:
@@ -1013,10 +1026,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 msg_id=_mid,
                             )
                         if partial:
-                            await storage_repo.append_message(
-                                _pdb, conv_id=conv_id, sender_id=agent_id,
-                                payload={"kind": "text", "body": [{"t": "p", "c": partial}]},
-                            )
+                            payload = {"kind": "text", "body": [{"t": "p", "c": partial}]}
+                            if replace_text_msg_id:
+                                await storage_repo.upsert_message(
+                                    _pdb, conv_id=conv_id, sender_id=agent_id,
+                                    payload=payload, msg_id=replace_text_msg_id,
+                                )
+                            else:
+                                await storage_repo.append_message(
+                                    _pdb, conv_id=conv_id, sender_id=agent_id,
+                                    payload=payload,
+                                )
                         await _pdb.commit()
 
             try:
@@ -1227,6 +1247,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                     )
                                     if _mid:
                                         _live_set_message_id(conv_id, agent_id, _mid)
+                            chunk = _with_replacement_text_id(chunk)
                             _live_note_chunk(conv_id, agent_id, chunk)
                             await emit(chunk)
                         await emit_agent_status(agent_id, "idle")
@@ -1436,10 +1457,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             payload=_coerce_tool_state(p, "completed"), msg_id=_mid,
                         )
                     if full_text:
-                        await storage_repo.append_message(
-                            _persist_db, conv_id=conv_id, sender_id=agent_id,
-                            payload={"kind": "text", "body": [{"t": "p", "c": full_text}]},
-                        )
+                        payload = {"kind": "text", "body": [{"t": "p", "c": full_text}]}
+                        if replace_text_msg_id:
+                            await storage_repo.upsert_message(
+                                _persist_db, conv_id=conv_id, sender_id=agent_id,
+                                payload=payload, msg_id=replace_text_msg_id,
+                            )
+                        else:
+                            await storage_repo.append_message(
+                                _persist_db, conv_id=conv_id, sender_id=agent_id,
+                                payload=payload,
+                            )
                     await _persist_db.commit()
 
             if tasks_payloads:
@@ -1912,6 +1940,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     async def dispatch_user_message(
         text: str, members: list[str], in_reply_to: str | None = None,
         msg_id: str | None = None,
+        persist_user: bool = True,
+        regenerate_msg_id: str | None = None,
+        regenerate_sender_id: str | None = None,
     ) -> None:
         """Fan-out a user message to all relevant agents based on members.
 
@@ -1943,7 +1974,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # Without this, both the frontend lazy-load and the context assembler
         # think the conv is empty.
         persisted_user_id: str | None = None
-        if text.strip():
+        if persist_user and text.strip():
             user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
             # Stamp the code checkpoint: workspace main HEAD *before* this turn's
             # work, so「回到这个对话」on this message restores to that point.
@@ -2058,7 +2089,15 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 await emit_chain_link(caller="you", callee=direct_target, depth=0)
                 _spawn_turn(
                     conv_id, direct_target,
-                    run_adapter_turn(direct_target, text),
+                    run_adapter_turn(
+                        direct_target,
+                        text,
+                        replace_text_msg_id=(
+                            regenerate_msg_id
+                            if direct_target == regenerate_sender_id
+                            else None
+                        ),
+                    ),
                 )
                 return
 
@@ -2074,7 +2113,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             )
             _spawn_turn(
                 conv_id, orch_id,
-                run_adapter_turn(orch_id, orch_text, is_dispatcher=True),
+                run_adapter_turn(
+                    orch_id,
+                    orch_text,
+                    is_dispatcher=True,
+                    replace_text_msg_id=(
+                        regenerate_msg_id
+                        if orch_id == regenerate_sender_id
+                        else None
+                    ),
+                ),
             )
             return
 
@@ -2126,7 +2174,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # agent while its first turn runs just blocks on the per-agent lock; the
         # earlier task keeps its strong ref via _conv_inflight.
         for agent_id in targets:
-            _spawn_turn(conv_id, agent_id, run_adapter_turn(agent_id, text))
+            _spawn_turn(
+                conv_id,
+                agent_id,
+                run_adapter_turn(
+                    agent_id,
+                    text,
+                    replace_text_msg_id=(
+                        regenerate_msg_id
+                        if agent_id == regenerate_sender_id
+                        else None
+                    ),
+                ),
+            )
 
     # ── Main receive loop ───────────────────────────────────────
     try:
@@ -2178,6 +2238,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # entry and the DB row sharing one identity; without it rewind /
                 # reply / pin on freshly-sent messages 404 until next refresh.
                 client_msg_id: str | None = (msg.get("msg_id") or None)
+                regenerate = bool(msg.get("regenerate"))
+                regenerate_msg_id: str | None = (msg.get("regenerate_msg_id") or None)
+                regenerate_sender_id: str | None = (
+                    msg.get("regenerate_sender_id") or None
+                )
                 # Don't await — dispatch returns when fan-out is queued, the
                 # actual streams continue in the background. Tracked conv-scoped
                 # (not just locally) so it isn't GC'd AND so the disconnect-prune
@@ -2187,7 +2252,15 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 _spawn_dispatcher(
                     conv_id,
                     dispatch_user_message(
-                        text, members, in_reply_to, msg_id=client_msg_id,
+                        text,
+                        members,
+                        in_reply_to,
+                        msg_id=client_msg_id,
+                        persist_user=not regenerate,
+                        regenerate_msg_id=regenerate_msg_id if regenerate else None,
+                        regenerate_sender_id=(
+                            regenerate_sender_id if regenerate else None
+                        ),
                     ),
                 )
                 continue

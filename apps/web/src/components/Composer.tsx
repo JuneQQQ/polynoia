@@ -148,7 +148,13 @@ export function Composer({
 		setText(composerDraft.text);
 		setComposerDraft(null);
 		// Defer focus to next tick so the textarea is rendered + sized.
-		window.setTimeout(() => taRef.current?.focus(), 0);
+		window.setTimeout(() => {
+			const ta = taRef.current;
+			if (!ta) return;
+			ta.focus();
+			const end = ta.value.length;
+			ta.setSelectionRange(end, end);
+		}, 0);
 	}, [composerDraft, convId, setComposerDraft]);
 	// Only show reply chip when the global state targets THIS conv.
 	const replyingTo =
@@ -535,35 +541,6 @@ export function Composer({
 					</div>
 				)}
 
-				{/* Reply chip — appears above the textarea when user clicked Reply
-            on a message. Shows sender + snippet + close. Consumed by ChatPane
-            via the global replyingTo store state (cleared after send). */}
-				{replyingTo && (
-					<div className="mb-2 flex items-center gap-2 px-2.5 py-1.5 rounded-sm bg-[var(--color-accent-soft)] border-l-2 border-[var(--color-accent)] text-[11.5px] anim-fade-up">
-						<Reply
-							size={11}
-							className="text-[var(--color-accent)] flex-shrink-0"
-						/>
-						<span className="text-[var(--color-accent)] font-medium flex-shrink-0">
-							回复
-						</span>
-						<span className="font-medium text-[var(--color-fg-2)] flex-shrink-0">
-							{replyingTo.senderLabel}
-						</span>
-						<span className="text-[var(--color-fg-3)] truncate min-w-0 flex-1">
-							{replyingTo.snippet}
-						</span>
-						<button
-							type="button"
-							onClick={() => setReplyingTo(null)}
-							className="flex-shrink-0 p-0.5 rounded-sm hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
-							title="取消回复"
-						>
-							<X size={11} />
-						</button>
-					</div>
-				)}
-
 				{/* Workspace-file attachment chips — drag-dropped from the right
             FileTree. Each chip shows name + ×; on send each becomes its own
             file message (BEFORE the user text). Distinct from paperclip/paste
@@ -674,6 +651,33 @@ export function Composer({
               floating strip. This keeps it visually attached to the input and
               lets the measured composer height reserve the correct scroll room. */}
 					{statusSlot}
+					{/* Reply chip lives inside the composer box so selected quotes feel
+              like part of the draft, not a separate strip above it. */}
+					{replyingTo && (
+						<div className="mb-2 flex items-center gap-2 px-2.5 py-1.5 rounded-sm bg-[var(--color-accent-soft)] border-l-2 border-[var(--color-accent)] text-[11.5px] anim-fade-up">
+							<Reply
+								size={11}
+								className="text-[var(--color-accent)] flex-shrink-0"
+							/>
+							<span className="text-[var(--color-accent)] font-medium flex-shrink-0">
+								回复
+							</span>
+							<span className="font-medium text-[var(--color-fg-2)] flex-shrink-0">
+								{replyingTo.senderLabel}
+							</span>
+							<span className="text-[var(--color-fg-3)] truncate min-w-0 flex-1">
+								{replyingTo.snippet}
+							</span>
+							<button
+								type="button"
+								onClick={() => setReplyingTo(null)}
+								className="flex-shrink-0 p-0.5 rounded-sm hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
+								title="取消回复"
+							>
+								<X size={11} />
+							</button>
+						</div>
+					)}
 					<textarea
 						ref={taRef}
 						value={text}
