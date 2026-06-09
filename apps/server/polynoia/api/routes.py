@@ -781,6 +781,66 @@ async def clear_conv(conv_id: str):
     return {"ok": True, "removed": removed}
 
 
+@router.delete("/api/conversations/{conv_id}/messages/{msg_id}")
+async def delete_conv_message(conv_id: str, msg_id: str, silent: bool = False):
+    """Delete one agent message from a conversation.
+
+    Used by "regenerate": the old agent output is replaced by a fresh turn,
+    while the triggering user message remains in history. User-authored
+    messages are refused so this endpoint cannot silently erase the prompt.
+    """
+    if _conv_has_running_agent(conv_id):
+        raise HTTPException(409, "an agent is still running — finish or cancel it first")
+    async with SessionLocal() as session:
+        row = await session.get(MessageRow, msg_id)
+        if row is None or row.conv_id != conv_id:
+            raise HTTPException(404, "message not in this conversation")
+        if row.sender_id == "you":
+            raise HTTPException(400, "cannot delete user messages")
+        ok = await storage_repo.delete_message(session, msg_id)
+        await session.commit()
+    if ok and not silent:
+        await _broadcast_to_conv(
+            conv_id,
+            'data: {"type":"data-message-removed","data":{"id":'
+            + json.dumps(msg_id)
+            + "}}\n\n",
+        )
+    return {"ok": ok}
+
+
+@router.patch("/api/conversations/{conv_id}/messages/{msg_id}")
+async def update_conv_message(conv_id: str, msg_id: str, body: dict):
+    """Update one user text message in-place.
+
+    Used by inline edit/resend. Only user-authored text is editable here; agent
+    outputs must be regenerated instead of manually rewritten.
+    """
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text required")
+    if _conv_has_running_agent(conv_id):
+        raise HTTPException(409, "an agent is still running — finish or cancel it first")
+    payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
+    async with SessionLocal() as session:
+        row = await session.get(MessageRow, msg_id)
+        if row is None or row.conv_id != conv_id:
+            raise HTTPException(404, "message not in this conversation")
+        if row.sender_id != "you":
+            raise HTTPException(400, "only user messages are editable")
+        await storage_repo.update_message_payload(session, msg_id, payload)
+        await session.commit()
+    await _broadcast_to_conv(
+        conv_id,
+        'data: {"type":"data-message-updated","data":{"id":'
+        + json.dumps(msg_id)
+        + ',"payload":'
+        + json.dumps(payload, ensure_ascii=False)
+        + "}}\n\n",
+    )
+    return {"ok": True}
+
+
 @router.post("/api/conversations/{conv_id}/dispatch")
 async def record_dispatch(conv_id: str, body: dict):
     """Record a `dispatch` MCP tool call from an orchestrator's in-flight turn.

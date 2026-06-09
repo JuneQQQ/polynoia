@@ -1064,9 +1064,12 @@ export const useStore = create<Store>((set, get) => ({
 				text: "",
 				kind: partKind,
 			});
+			const order = cur.messageOrder.includes(action.messageId)
+				? cur.messageOrder
+				: [...cur.messageOrder, action.messageId];
 			convs.set(convId, {
 				...cur,
-				messageOrder: [...cur.messageOrder, action.messageId],
+				messageOrder: order,
 				msgById: nextById,
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,

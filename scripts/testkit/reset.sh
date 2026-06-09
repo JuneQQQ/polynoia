@@ -11,7 +11,7 @@
 #   bash scripts/testkit/reset.sh
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO="${POLYNOIA_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SRV="$REPO/apps/server"
 WEB="$REPO/apps/web"
 PY="$SRV/.venv/bin/python"
