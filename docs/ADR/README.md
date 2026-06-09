@@ -36,3 +36,7 @@
 | 015 | [Closed-loop collaboration: recall / report / critic](ADR-015-closed-loop-collaboration.md) | accepted | 2026-05-30 |
 | 016 | [Enhanced CodeMirror over Monaco](ADR-016-codemirror-over-monaco.md) | accepted | 2026-05-30 |
 | 017 | [Group orchestrator self-enabling (conv designation grants dispatch + protocol)](ADR-017-forced-orchestrator-role.md) | accepted | 2026-05-31 |
+| 018 | [No RuFlo-style hook framework; prefer lightweight extraction](ADR-018-no-hook-framework.md) | accepted | 2026-05-31 |
+| 019 | [Agent-level memory + scenario context](ADR-019-agent-level-memory-and-scenario-context.md) | accepted | 2026-05-31 |
+| 020 | [Capacitor mobile shell over React Native rewrite](ADR-020-capacitor-over-react-native.md) | accepted | 2026-06-03 |
+| 021 | [Codex adapter app-server JSON-RPC streaming](ADR-021-codex-app-server-streaming.md) | accepted | 2026-05-31 |

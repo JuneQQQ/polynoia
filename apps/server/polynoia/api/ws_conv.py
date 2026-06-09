@@ -8,6 +8,7 @@ mutated in place (never rebound), so the cross-module binding stays valid. This
 is a pure move: no signature / call-timing / return-handling change, per
 docs/design/conflict-closed-loop-CHARTER.md (the load-bearing merge region).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,7 +59,10 @@ from polynoia.api.routes import (
     _extract_tasks_blocks,
     _gather_turn_images,
     _live_clear_agent,
+    _live_clear_retry_notice,
     _live_note_chunk,
+    _live_note_retry_notice,
+    _live_note_status,
     _live_resume_frames,
     _live_set_message_id,
     _maybe_prune_conv,
@@ -146,7 +150,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     # Refresh-safe stream resume: if an agent is streaming RIGHT NOW, hand this
     # freshly-connected client the accumulated content so it can render the
     # in-progress message immediately and then keep appending live deltas (the
-    #思考块 used to render half on refresh because only post-attach deltas arrived).
+    # 思考块 used to render half on refresh because only post-attach deltas arrived).
     for _frame in _live_resume_frames(conv_id):
         with suppress(Exception):
             await send_queue.put(_frame)
@@ -167,6 +171,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
     async def emit_agent_status(agent_id: str, status: str, extra: dict | None = None) -> None:
         """Emit a polynoia-private agent.status chunk for UI status chips."""
+        _live_note_status(conv_id, agent_id, status, extra)
         payload: dict = {"agent_id": agent_id, "status": status}
         if extra:
             payload.update(extra)
@@ -220,8 +225,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         await emit(
             'data: {"type":"data-tasks","data":'
             + json.dumps(payload, ensure_ascii=False)
-            + ',"id":' + json.dumps(tp_id)
-            + ',"sender_id":' + json.dumps(reg["orch"])
+            + ',"id":'
+            + json.dumps(tp_id)
+            + ',"sender_id":'
+            + json.dumps(reg["orch"])
             + "}\n\n"
         )
         if is_last:
@@ -250,8 +257,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # something to do — a presentable deliverable, a merge conflict, a
             # failed sub-task, a merge error, OR an unfinished multi-phase plan.
             if not (
-                drain.deliverables or drain.conflicted or failed_n
-                or merge_failed or _allow_dispatch
+                drain.deliverables
+                or drain.conflicted
+                or failed_n
+                or merge_failed
+                or _allow_dispatch
             ):
                 log.info(
                     "burst %s: clean, nothing to present/resolve/continue → no summary",
@@ -270,7 +280,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             _contract = (reg.get("contract") or "").strip()
             _contract_clause = (
                 f"\n\n# 本批接口契约(逐条核对各产物是否符合,不符就明确指出)\n{_contract}"
-                if _contract else ""
+                if _contract
+                else ""
             )
             # Closed-loop verification (RuFlo): direct the orchestrator to
             # cross-check each teammate's self-reported verdict (recorded via the
@@ -281,14 +292,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             _verify_clause = (
                 "\n\n# 验收(闭环)\n"
                 "上方共享记忆里有每位队友用 `report` 提交的自评 verdict(status + "
-                "deliverables + contract_ok)。逐条核对:① 有没有人没 report(按\"未验证\"对待,"
+                'deliverables + contract_ok)。逐条核对:① 有没有人没 report(按"未验证"对待,'
                 "点名要求补);② 自评 contract_ok 的,用 `read` 抽查产物是否真符合契约,别盲信;"
-                "③ 任何 partial/failed/未验证项必须在汇总里**显式点出**,不要笼统说\"已完成\"。"
+                '③ 任何 partial/failed/未验证项必须在汇总里**显式点出**,不要笼统说"已完成"。'
             )
             _escalation = (
                 "**有失败/未验证项——这是问题汇报,不是庆功。明确说清哪条没成、影响什么、下一步建议。**"
-                if failed_n else
-                "谁交付了什么(文件名),以及任何风险/漏项。"
+                if failed_n
+                else "谁交付了什么(文件名),以及任何风险/漏项。"
             )
             # Orchestrator-presents (user's choice): the workers' files are now
             # merged into main and this fresh summary turn's worktree is synced to
@@ -317,15 +328,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     "(若下一阶段仍不是最后一步,继续带 need_continue=true);任何失败/未达标项,"
                     "把返工 re-dispatch 回去;"
                     "③ **只有整体计划全部完成时**,才改为 present + 向用户收尾并停止——"
-                    "现在别 present 尚未完成的整体成果。"
-                    + _verify_clause
-                    + _contract_clause
+                    "现在别 present 尚未完成的整体成果。" + _verify_clause + _contract_clause
                 )
             else:
                 nudge = (
                     "上面这批并行子任务已全部结束"
                     f"({done_n} 成功" + (f"、{failed_n} 失败" if failed_n else "") + ")"
-                    "。请用 1-3 句话向用户收尾汇总:" + _escalation
+                    "。请用 1-3 句话向用户收尾汇总:"
+                    + _escalation
                     + "不要重复实现细节,**不要再调 dispatch 派活**,只汇报。"
                     + _verify_clause
                     + _present_clause
@@ -333,12 +343,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 )
             log.info(
                 "burst %s: spawning %s turn for orchestrator %s",
-                tp_id, "advance" if _allow_dispatch else "summary", orch_id,
+                tp_id,
+                "advance" if _allow_dispatch else "summary",
+                orch_id,
             )
             _spawn_turn(
-                conv_id, orch_id,
+                conv_id,
+                orch_id,
                 run_adapter_turn(
-                    orch_id, nudge, depth=1, parent_agent_id=None,
+                    orch_id,
+                    nudge,
+                    depth=1,
+                    parent_agent_id=None,
                     inject_history=True,
                     # need_continue ⇒ this turn MAY dispatch the next phase;
                     # otherwise terminal (summary only — prevents the old burst
@@ -370,7 +386,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             return
         reg["synthesized"] = True
         participants = set(reg.get("participants") or ())
-        _conv_discussions.pop(conv_id, None)   # remove BEFORE await → no double-fire
+        _conv_discussions.pop(conv_id, None)  # remove BEFORE await → no double-fire
         # A lone participant never warranted a discussion → no summary.
         if len(participants) < 2:
             return
@@ -390,25 +406,39 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         )
         log.info(
             "discussion %s settled → synthesis by %s (participants=%d)",
-            conv_id, synth_id, len(participants),
+            conv_id,
+            synth_id,
+            len(participants),
         )
         _spawn_turn(
-            conv_id, synth_id,
+            conv_id,
+            synth_id,
             run_adapter_turn(
-                synth_id, nudge, depth=1, parent_agent_id=None,
-                inject_history=True, suppress_dispatch=True,
+                synth_id,
+                nudge,
+                depth=1,
+                parent_agent_id=None,
+                inject_history=True,
+                suppress_dispatch=True,
             ),
         )
 
     async def _run_discussion_turn(
-        target: str, text: str, *, depth: int, parent_agent_id: str | None,
+        target: str,
+        text: str,
+        *,
+        depth: int,
+        parent_agent_id: str | None,
     ) -> None:
         """Run a discussion (mention-chain) turn, then ALWAYS settle the session
         — even if the turn raises — so a failed turn can't leak the in-flight
         count and stall the synthesis."""
         try:
             await run_adapter_turn(
-                target, text, depth=depth, parent_agent_id=parent_agent_id,
+                target,
+                text,
+                depth=depth,
+                parent_agent_id=parent_agent_id,
                 inject_history=True,
             )
         finally:
@@ -416,7 +446,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 await _settle_discussion_turn()
 
     async def _surface_conflict(
-        ws_id: str, branch: str, author: str, files: list[dict], orch_id: str,
+        ws_id: str,
+        branch: str,
+        author: str,
+        files: list[dict],
+        orch_id: str,
         base_agents: list[str] | None = None,
     ) -> str:
         """Freeze a real merge conflict into a durable ConflictRow + a `conflict`
@@ -427,34 +461,50 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         card_msg_id = f"conflict-{uuid.uuid4().hex[:12]}"
         async with SessionLocal() as db:
             cid = await storage_repo.create_conflict(
-                db, conv_id=conv_id, workspace_id=ws_id, branch=branch,
-                agent_id=author, files=files, card_msg_id=card_msg_id,
+                db,
+                conv_id=conv_id,
+                workspace_id=ws_id,
+                branch=branch,
+                agent_id=author,
+                files=files,
+                card_msg_id=card_msg_id,
                 base_agents=base_agents,
             )
             crow = await storage_repo.get_conflict(db, cid)
             payload = ConflictPayload(
-                conflict_id=cid, conv_id=conv_id, branch=branch, agent_id=author,
+                conflict_id=cid,
+                conv_id=conv_id,
+                branch=branch,
+                agent_id=author,
                 base_agents=base_agents,
-                status="open", files=[ConflictFile(**f) for f in files],
+                status="open",
+                files=[ConflictFile(**f) for f in files],
                 created_at=crow.created_at if crow else datetime.utcnow(),
             ).model_dump(mode="json")
             await storage_repo.append_message(
-                db, conv_id=conv_id, sender_id=orch_id,
-                payload=payload, msg_id=card_msg_id,
+                db,
+                conv_id=conv_id,
+                sender_id=orch_id,
+                payload=payload,
+                msg_id=card_msg_id,
             )
             await storage_repo.add_conv_memory(
-                db, conv_id=conv_id, author_agent_id=author, kind="conflict",
+                db,
+                conv_id=conv_id,
+                author_agent_id=author,
+                kind="conflict",
                 content=(
-                    f"分支 `{branch}` 合并 main 冲突,{len(files)} 个文件待解决"
-                    f"(conflict {cid})。"
+                    f"分支 `{branch}` 合并 main 冲突,{len(files)} 个文件待解决(conflict {cid})。"
                 ),
             )
             await db.commit()
         await emit(
             'data: {"type":"data-conflict","data":'
             + json.dumps(payload, ensure_ascii=False)
-            + ',"id":' + json.dumps(card_msg_id)
-            + ',"sender_id":' + json.dumps(orch_id)
+            + ',"id":'
+            + json.dumps(card_msg_id)
+            + ',"sender_id":'
+            + json.dumps(orch_id)
             + "}\n\n"
         )
         return cid
@@ -466,10 +516,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     # forgets to call the `present` MCP tool — the user still sees a clickable
     # card without depending on agent self-discipline.
     _PREVIEWABLE_EXTS = {
-        ".pptx", ".docx", ".xlsx", ".pdf",
-        ".md", ".markdown", ".mdx",
-        ".html", ".htm",
-        ".csv", ".tsv",
+        ".pptx",
+        ".docx",
+        ".xlsx",
+        ".pdf",
+        ".md",
+        ".markdown",
+        ".mdx",
+        ".html",
+        ".htm",
+        ".csv",
+        ".tsv",
     }
 
     async def _emit_agent_file_cards(
@@ -543,10 +600,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 size = None
             payload = {
                 "kind": "file",
-                "src": (
-                    f"/api/workspaces/{ws_id}/files/download"
-                    f"?path={quote(path)}"
-                ),
+                "src": (f"/api/workspaces/{ws_id}/files/download?path={quote(path)}"),
                 "name": name,
                 "media_type": None,
                 "size_bytes": size,
@@ -555,8 +609,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             mid = f"auto-{new_ulid()}"
             async with SessionLocal() as _db:
                 await storage_repo.append_message(
-                    _db, conv_id=conv_id, sender_id=author,
-                    payload=payload, msg_id=mid,
+                    _db,
+                    conv_id=conv_id,
+                    sender_id=author,
+                    payload=payload,
+                    msg_id=mid,
                 )
                 await _db.commit()
             # Mark as seen so a subsequent branch merging the same file
@@ -566,8 +623,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             await emit(
                 'data: {"type":"data-file","data":'
                 + json.dumps(payload, ensure_ascii=False)
-                + ',"id":' + json.dumps(mid)
-                + ',"sender_id":' + json.dumps(author)
+                + ',"id":'
+                + json.dumps(mid)
+                + ',"sender_id":'
+                + json.dumps(author)
                 + "}\n\n"
             )
 
@@ -672,7 +731,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         conflicted = True
                         files = detail.get("files", [])
                         cid = await _surface_conflict(
-                            ws_id, b, author, files, orch_id,
+                            ws_id,
+                            b,
+                            author,
+                            files,
+                            orch_id,
                             base_agents=list(merged_authors),
                         )
                         # AUTO mode → spawn the ORCHESTRATOR (neutral arbiter) to
@@ -700,14 +763,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         if cid and _conv and _conv.merge_mode == "auto" and _true_orch:
                             nudge = _build_conflict_fix_prompt(cid, b, author, files)
                             if nudge is not None:
-                                _spawn_turn(conv_id, orch_id, run_adapter_turn(
-                                    orch_id, nudge, depth=1, parent_agent_id=None,
-                                    inject_history=True, suppress_dispatch=True,
-                                ))
+                                _spawn_turn(
+                                    conv_id,
+                                    orch_id,
+                                    run_adapter_turn(
+                                        orch_id,
+                                        nudge,
+                                        depth=1,
+                                        parent_agent_id=None,
+                                        inject_history=True,
+                                        suppress_dispatch=True,
+                                    ),
+                                )
                     elif status == "error":
-                        log.warning(
-                            "merge: %s → error: %s", b, detail.get("message", "")
-                        )
+                        log.warning("merge: %s → error: %s", b, detail.get("message", ""))
                 except Exception:
                     log.exception("drain: branch %s failed; skipping", b)
                     continue
@@ -733,11 +802,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # The owners of this drain are exactly the burst's workers — all done by
         # is_last. Scope the pre-merge worktree commit to them so an unrelated
         # agent running a concurrent (non-burst) turn isn't swept in mid-write.
-        owners = {
-            t["agent"]
-            for t in (reg.get("payload") or {}).get("tasks", [])
-            if t.get("agent")
-        }
+        owners = {t["agent"] for t in (reg.get("payload") or {}).get("tasks", []) if t.get("agent")}
         # _drain_unmerged_branches auto-suppresses file-cards for group convs
         # (orchestrator-presents) — a burst is always a group, so the merged
         # worker files are surfaced by the orchestrator's summary panel, not here.
@@ -768,7 +833,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         if drain.deliverables:
             paths = list(dict.fromkeys(p for _a, p in drain.deliverables))
             parts.append(
-                "刚有交付物合并进 main:" + "、".join(paths)
+                "刚有交付物合并进 main:"
+                + "、".join(paths)
                 + "。用**一次** `present(paths=[...])` 把其中**用户真正会打开看的成品**展示给"
                 "用户(可运行 HTML / 文档 / 图片;**代码工程别全列源码树**,至多 README + 可运行"
                 "入口,diff 卡已展示过改动),配一句一行说明。"
@@ -810,13 +876,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         nudge = "（系统提示)子任务已结束。" + " ".join(parts)
         log.info(
             "handoff → orchestrator %s (merged=%d deliverables=%d conflict=%s failed=%d)",
-            orch_id, drain.merged, len(drain.deliverables), drain.conflicted, failed,
+            orch_id,
+            drain.merged,
+            len(drain.deliverables),
+            drain.conflicted,
+            failed,
         )
         _spawn_turn(
-            conv_id, orch_id,
+            conv_id,
+            orch_id,
             run_adapter_turn(
-                orch_id, nudge, depth=1, parent_agent_id=None,
-                inject_history=True, suppress_dispatch=True,
+                orch_id,
+                nudge,
+                depth=1,
+                parent_agent_id=None,
+                inject_history=True,
+                suppress_dispatch=True,
             ),
         )
         return True
@@ -854,7 +929,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # means this turn will WAIT below until the agent's current turn finishes.
         log.info(
             "run_adapter_turn ENTER agent=%s depth=%s suppress_dispatch=%s burst=%s locked=%s lock_id=%s",
-            agent_id, depth, suppress_dispatch, burst_card_id, lock.locked(), id(lock),
+            agent_id,
+            depth,
+            suppress_dispatch,
+            burst_card_id,
+            lock.locked(),
+            id(lock),
         )
         # Queued-message feedback: if the agent is already mid-turn, THIS turn
         # blocks on the lock below until that one ends. For a user-typed message
@@ -870,15 +950,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             with suppress(Exception):
                 await emit(
                     'data: {"type":"data-error","data":'
-                    + json.dumps({
-                        "kind": "error",
-                        "message": "⏳ 已收到 · 排队中(对方正在处理上一条)…",
-                        "agent_id": agent_id,
-                        "reason": "queued",
-                        "retryable": False,
-                    })
-                    + ',"id":' + json.dumps(_queued_notice_id)
-                    + ',"sender_id":' + json.dumps(agent_id)
+                    + json.dumps(
+                        {
+                            "kind": "error",
+                            "message": "⏳ 已收到 · 排队中(对方正在处理上一条)…",
+                            "agent_id": agent_id,
+                            "reason": "queued",
+                            "retryable": False,
+                        }
+                    )
+                    + ',"id":'
+                    + json.dumps(_queued_notice_id)
+                    + ',"sender_id":'
+                    + json.dumps(agent_id)
                     + "}\n\n"
                 )
         async with lock:
@@ -887,7 +971,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 with suppress(Exception):
                     await emit(
                         'data: {"type":"data-message-removed","data":{"id":'
-                        + json.dumps(_queued_notice_id) + "}}\n\n"
+                        + json.dumps(_queued_notice_id)
+                        + "}}\n\n"
                     )
             # ── Turn-start worktree sync (disposable-branch model) ──────────
             # Hard-reset this agent's worktree to the latest workspace `main` so
@@ -902,11 +987,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             with suppress(Exception):
                 async with SessionLocal() as _sdb:
                     _sconv = await storage_repo.get_conversation(_sdb, conv_id)
-                    _sws = (
-                        _sconv.workspace_id
-                        if (_sconv and _sconv.workspace_id)
-                        else None
-                    )
+                    _sws = _sconv.workspace_id if (_sconv and _sconv.workspace_id) else None
                     _has_open_conflict = bool(_sws) and any(
                         r.branch == f"agent/{agent_id}/conv-{conv_id}"
                         and r.status in ("open", "resolving")
@@ -929,6 +1010,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # See docs/design/context-system.md for the full model.
             if inject_history:
                 from polynoia.context import build_context_for_turn
+
                 async with SessionLocal() as ctx_db:
                     prompt = await build_context_for_turn(
                         ctx_db,
@@ -966,8 +1048,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         await storage_repo.delete_message(_tdb, mid)
                     else:
                         await storage_repo.upsert_message(
-                            _tdb, conv_id=conv_id, sender_id=agent_id,
-                            payload=payload, msg_id=mid,
+                            _tdb,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
+                            payload=payload,
+                            msg_id=mid,
                         )
                     await _tdb.commit()
 
@@ -1008,13 +1093,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             # Turn died (abort/error) → any still-running tool is
                             # now error, never a frozen 进行中 on reload.
                             await storage_repo.upsert_message(
-                                _pdb, conv_id=conv_id, sender_id=agent_id,
+                                _pdb,
+                                conv_id=conv_id,
+                                sender_id=agent_id,
                                 payload=_coerce_tool_state(_p, "error"),
                                 msg_id=_mid,
                             )
                         if partial:
                             await storage_repo.append_message(
-                                _pdb, conv_id=conv_id, sender_id=agent_id,
+                                _pdb,
+                                conv_id=conv_id,
+                                sender_id=agent_id,
                                 payload={"kind": "text", "body": [{"t": "p", "c": partial}]},
                             )
                         await _pdb.commit()
@@ -1039,6 +1128,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     if not _retry_shown or _retry_cleared:
                         return
                     _retry_cleared = True
+                    _live_clear_retry_notice(conv_id, agent_id)
                     with suppress(Exception):
                         await emit(
                             'data: {"type":"data-message-removed","data":{"id":'
@@ -1056,9 +1146,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             agent_id, "error", {"message": "adapter unavailable"}
                         )
                         await _persist_and_emit_error(
-                            emit, conv_id=conv_id, sender_id=agent_id,
+                            emit,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
                             message=f"{agent_id} 无法启动(adapter 不可用)",
-                            reason="unavailable", retryable=True,
+                            reason="unavailable",
+                            retryable=True,
                         )
                         # A dispatched worker that can't get a session must STILL
                         # flip its burst lane to failed — otherwise the lane stays
@@ -1087,7 +1180,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # lane forever.
                         agen = adapter_events_to_chunks(
                             _tap_text_into(
-                                events_iter, response_buffer, tool_parts,
+                                events_iter,
+                                response_buffer,
+                                tool_parts,
                                 on_tool_part=_persist_tool_part,
                             ),
                             agent_id=agent_id,
@@ -1119,9 +1214,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                     _AGENT_IDLE_TIMEOUT_MIDTURN + attempt * 60.0,
                                 )
                             )
-                            _done, _ = await asyncio.wait(
-                                {anext_task}, timeout=_idle_window
-                            )
+                            _done, _ = await asyncio.wait({anext_task}, timeout=_idle_window)
                             if not _done:
                                 # Idle window elapsed; the __anext__() task is
                                 # STILL alive. Distinguish 'model backend hung'
@@ -1144,13 +1237,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 waiting = _conv_has_open_ask(conv_id)
                                 if not waiting:
                                     async with SessionLocal() as _wd_sess:
-                                        waiting = (
-                                            await storage_repo.has_waiting_pending_edits(
-                                                _wd_sess, conv_id
-                                            )
-                                            or await storage_repo.has_waiting_pending_access(
-                                                _wd_sess, conv_id
-                                            )
+                                        waiting = await storage_repo.has_waiting_pending_edits(
+                                            _wd_sess, conv_id
+                                        ) or await storage_repo.has_waiting_pending_access(
+                                            _wd_sess, conv_id
                                         )
                                 # A long-running bash streams to /terminal-card (not
                                 # the adapter chunk stream this watchdog sees) and
@@ -1204,9 +1294,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 # the failure 回显 survives a refresh (BUG: an
                                 # upstream 401/429 used to vanish on reload).
                                 await _persist_and_emit_error(
-                                    emit, conv_id=conv_id, sender_id=agent_id,
+                                    emit,
+                                    conv_id=conv_id,
+                                    sender_id=agent_id,
                                     message=_error_text_from_chunk(chunk),
-                                    reason="turn_failed", retryable=True,
+                                    reason="turn_failed",
+                                    retryable=True,
                                 )
                                 continue
                             # Refine the status pill by what's flowing now:
@@ -1222,9 +1315,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             # text/reasoning parts for refresh-safe stream-resume.
                             if chunk.startswith('data: {"type":"start"'):
                                 with suppress(Exception):
-                                    _mid = json.loads(chunk[len("data: ") :]).get(
-                                        "message_id"
-                                    )
+                                    _mid = json.loads(chunk[len("data: ") :]).get("message_id")
                                     if _mid:
                                         _live_set_message_id(conv_id, agent_id, _mid)
                             _live_note_chunk(conv_id, agent_id, chunk)
@@ -1246,7 +1337,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         break  # success
                     except asyncio.CancelledError:
                         raise
-                    except Exception:
+                    except Exception as exc:
+                        non_retryable_startup = isinstance(exc, FileNotFoundError) or (
+                            "CLI 未找到" in str(exc)
+                        )
+                        if non_retryable_startup:
+                            await _clear_retry_notice()
+                            raise
                         # Hung backend (incl. the idle-timeout RuntimeError) with
                         # NOTHING streamed yet → auto-retry up to _TURN_RETRIES with
                         # INCREASING backoff, and SHOW each retry to the user from
@@ -1256,13 +1353,26 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # in place); show only the progress, not the backoff seconds.
                         if attempt < _TURN_RETRIES and not emitted_any:
                             wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+                            retry_message = f"⏳ 无响应,自动重试中({attempt + 1}/{_TURN_RETRIES})"
+                            log.warning(
+                                "agent retry conv=%s agent=%s attempt=%s/%s wait=%ss error=%s",
+                                conv_id,
+                                agent_id,
+                                attempt + 1,
+                                _TURN_RETRIES,
+                                wait,
+                                exc,
+                            )
+                            _live_note_retry_notice(
+                                conv_id, agent_id, _retry_notice_id, retry_message
+                            )
                             with suppress(Exception):
                                 await emit(
                                     'data: {"type":"data-error","data":'
                                     + json.dumps(
                                         {
                                             "kind": "error",
-                                            "message": f"⏳ 无响应,自动重试中({attempt + 1}/{_TURN_RETRIES})",
+                                            "message": retry_message,
                                             "agent_id": agent_id,
                                             "reason": "timeout",
                                             "retryable": False,
@@ -1309,8 +1419,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # (neutral tone, not a red error — reason="aborted").
                 await _flush_partial_trace()
                 await _persist_and_emit_error(
-                    emit, conv_id=conv_id, sender_id=agent_id,
-                    message=f"{agent_id} 的回复已被中断", reason="aborted", retryable=True,
+                    emit,
+                    conv_id=conv_id,
+                    sender_id=agent_id,
+                    message=f"{agent_id} 的回复已被中断",
+                    reason="aborted",
+                    retryable=True,
                 )
                 # If this was a burst worker, flip its lane to failed BEFORE
                 # re-raising — otherwise its task_id stays in reg["pending"]
@@ -1343,8 +1457,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # 回显 on reload instead of looking like a silent stop.
                 await _flush_partial_trace()
                 await _persist_and_emit_error(
-                    emit, conv_id=conv_id, sender_id=agent_id,
-                    message=f"{agent_id}: {exc}", reason="exception", retryable=True,
+                    emit,
+                    conv_id=conv_id,
+                    sender_id=agent_id,
+                    message=f"{agent_id}: {exc}",
+                    reason="exception",
+                    retryable=True,
                 )
                 # A hung/errored session must NOT be reused (it would re-hang or
                 # hit a half-broken client). Interrupt + evict so the next turn
@@ -1383,7 +1501,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 frame = (
                     'data: {"type":"data-ask-form","data":'
                     + json.dumps(af, ensure_ascii=False)
-                    + ',"sender_id":' + json.dumps(agent_id)
+                    + ',"sender_id":'
+                    + json.dumps(agent_id)
                     + "}\n\n"
                 )
                 await emit(frame)
@@ -1395,7 +1514,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     async with SessionLocal() as _af_db:
                         for af in ask_forms:
                             await storage_repo.append_message(
-                                _af_db, conv_id=conv_id, sender_id=agent_id,
+                                _af_db,
+                                conv_id=conv_id,
+                                sender_id=agent_id,
                                 payload={
                                     "kind": "ask-form",
                                     "title": af.get("title", ""),
@@ -1414,7 +1535,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # Emit tasks card BEFORE persisting the trailing text so the
             # WS chunk arrives in stream order with the rest of the turn.
             full_text, tasks_payloads = _extract_tasks_blocks(
-                full_text, mention_resolver=resolver,
+                full_text,
+                mention_resolver=resolver,
             )
 
             # Persist this turn's trace (tool-call/diff rows in stream order,
@@ -1432,12 +1554,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # Clean turn end → any tool left at running/pending is
                         # completed (never a frozen 进行中 on reload).
                         await storage_repo.upsert_message(
-                            _persist_db, conv_id=conv_id, sender_id=agent_id,
-                            payload=_coerce_tool_state(p, "completed"), msg_id=_mid,
+                            _persist_db,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
+                            payload=_coerce_tool_state(p, "completed"),
+                            msg_id=_mid,
                         )
                     if full_text:
                         await storage_repo.append_message(
-                            _persist_db, conv_id=conv_id, sender_id=agent_id,
+                            _persist_db,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
                             payload={"kind": "text", "body": [{"t": "p", "c": full_text}]},
                         )
                     await _persist_db.commit()
@@ -1449,14 +1576,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         frame = (
                             'data: {"type":"data-tasks","data":'
                             + json.dumps(tp, ensure_ascii=False)
-                            + ',"id":' + json.dumps(tp_id)
-                            + ',"sender_id":' + json.dumps(agent_id)
+                            + ',"id":'
+                            + json.dumps(tp_id)
+                            + ',"sender_id":'
+                            + json.dumps(agent_id)
                             + "}\n\n"
                         )
                         await emit(frame)
                         await storage_repo.append_message(
-                            _db, conv_id=conv_id, sender_id=agent_id,
-                            payload=tp, msg_id=tp_id,
+                            _db,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
+                            payload=tp,
+                            msg_id=tp_id,
                         )
                     await _db.commit()
 
@@ -1490,13 +1622,15 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         _m_title = (_b.get("title") or "").strip()
                     if _b.get("need_continue"):
                         _m_need_continue = True
-                _merged_batches = [{
-                    "title": _m_title,
-                    "contract": "\n\n".join(_m_contracts),
-                    "tasks": _m_tasks,
-                    "need_continue": _m_need_continue,
-                    "author_agent_id": _raw_batches[0].get("author_agent_id", ""),
-                }]
+                _merged_batches = [
+                    {
+                        "title": _m_title,
+                        "contract": "\n\n".join(_m_contracts),
+                        "tasks": _m_tasks,
+                        "need_continue": _m_need_continue,
+                        "author_agent_id": _raw_batches[0].get("author_agent_id", ""),
+                    }
+                ]
                 # A real burst is being built → its completion (_merge_burst_to_main)
                 # owns the merge; the post-turn drain below stands down for this turn.
                 _burst_started = True
@@ -1529,15 +1663,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     label = str(raw_t.get("label") or raw_t.get("agent") or "task")[:120]
                     task_id = f"t-{uuid.uuid4().hex[:8]}"
                     spawn_list.append((worker_id, note, task_id))
-                    display_tasks.append({
-                        "id": task_id,
-                        "state": "run",
-                        "agent": worker_id,
-                        "label": label,
-                        "note": (note[:300] or None),
-                        "context_refs": [],
-                        "retry_count": 0,
-                    })
+                    display_tasks.append(
+                        {
+                            "id": task_id,
+                            "state": "run",
+                            "agent": worker_id,
+                            "label": label,
+                            "note": (note[:300] or None),
+                            "context_refs": [],
+                            "retry_count": 0,
+                        }
+                    )
                 if not display_tasks:
                     continue
                 tp = {
@@ -1551,22 +1687,30 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 await emit(
                     'data: {"type":"data-tasks","data":'
                     + json.dumps(tp, ensure_ascii=False)
-                    + ',"id":' + json.dumps(tp_id)
-                    + ',"sender_id":' + json.dumps(batch_author)
+                    + ',"id":'
+                    + json.dumps(tp_id)
+                    + ',"sender_id":'
+                    + json.dumps(batch_author)
                     + "}\n\n"
                 )
                 async with SessionLocal() as _db:
                     await storage_repo.append_message(
-                        _db, conv_id=conv_id, sender_id=batch_author,
-                        payload=tp, msg_id=tp_id,
+                        _db,
+                        conv_id=conv_id,
+                        sender_id=batch_author,
+                        payload=tp,
+                        msg_id=tp_id,
                     )
                     # Seed the contract into shared memory (ADR-014) so EVERY
                     # subsequent turn — workers AND the summary — sees it via the
                     # shared-memory layer, not just this batch's spawn prompts.
                     if contract:
                         await storage_repo.add_conv_memory(
-                            _db, conv_id=conv_id, author_agent_id=batch_author,
-                            kind="contract", content=contract,
+                            _db,
+                            conv_id=conv_id,
+                            author_agent_id=batch_author,
+                            kind="contract",
+                            content=contract,
                         )
                     await _db.commit()
                 # Register the burst so worker completions can flip lane state
@@ -1590,7 +1734,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 for worker_id, note, task_id in spawn_list:
                     if depth + 1 >= _MAX_MENTION_CHAIN_DEPTH:
                         await _persist_and_emit_error(
-                            emit, conv_id=conv_id, sender_id=agent_id,
+                            emit,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
                             message=(
                                 f"派发链路深度达到上限 {_MAX_MENTION_CHAIN_DEPTH}"
                                 f"({agent_id}),已停止继续派发"
@@ -1613,9 +1759,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         with contextlib.suppress(Exception):
                             await _mark_burst_task(tp_id, task_id, "failed")
                         continue
-                    await emit_chain_link(
-                        caller=batch_author, callee=worker_id, depth=depth + 1
-                    )
+                    await emit_chain_link(caller=batch_author, callee=worker_id, depth=depth + 1)
                     # Hand the shared contract to the teammate verbatim, ahead
                     # of their own task, so all parallel deliverables interlock.
                     worker_text = note or "开始你被指派的任务。"
@@ -1631,11 +1775,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         "\n\n# 收尾(必须)\n"
                         "完成后调用 `report` 工具自评交付:status(ok/partial/failed)、"
                         "deliverables(产物文件名+一句话)、contract_ok(是否符合上面的契约)。"
-                        "这是你向 Orchestrator 的正式交付确认——没有它,你的产物按\"未验证\"对待。\n"
+                        '这是你向 Orchestrator 的正式交付确认——没有它,你的产物按"未验证"对待。\n'
                         "执行中若需确认最新契约或队友已交付的接口,用 `recall` 查共享记忆。"
                     )
                     _spawn_turn(
-                        conv_id, worker_id,
+                        conv_id,
+                        worker_id,
                         run_adapter_turn(
                             worker_id,
                             worker_text,
@@ -1677,8 +1822,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 _reg = _conv_discussions.get(conv_id)
                 if _reg is None:
                     _reg = _conv_discussions[conv_id] = {
-                        "budget": _DISCUSSION_TURN_BUDGET, "inflight": 0,
-                        "participants": {agent_id}, "seeder": agent_id,
+                        "budget": _DISCUSSION_TURN_BUDGET,
+                        "inflight": 0,
+                        "participants": {agent_id},
+                        "seeder": agent_id,
                         "synthesized": False,
                     }
                 _seed: list[str] = []
@@ -1696,14 +1843,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 for _pid in _seed:
                     await emit_chain_link(caller=agent_id, callee=_pid, depth=1)
                     _spawn_turn(
-                        conv_id, _pid,
+                        conv_id,
+                        _pid,
                         _run_discussion_turn(
-                            _pid, _seed_nudge, depth=1, parent_agent_id=agent_id,
+                            _pid,
+                            _seed_nudge,
+                            depth=1,
+                            parent_agent_id=agent_id,
                         ),
                     )
 
             mentioned = _parse_mentions(
-                full_text, exclude={agent_id}, resolver=resolver,
+                full_text,
+                exclude={agent_id},
+                resolver=resolver,
             )
             sandbox.append_timeline(
                 role="agent",
@@ -1715,7 +1868,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             )
             log.info(
                 "run_adapter_turn DONE agent=%s depth=%s text_len=%d tool_parts=%d lock_id=%s",
-                agent_id, depth, len(full_text), len(tool_parts), id(lock),
+                agent_id,
+                depth,
+                len(full_text),
+                len(tool_parts),
+                id(lock),
             )
             # (Turn text + tool-call rows were already persisted ABOVE, before
             # any tasks card / worker spawn — so on reload the orchestrator's
@@ -1755,7 +1912,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # discussion budget/in-flight ATOMICALLY here, so a fast early target
             # can't drain in-flight to 0 mid-fan-out and fire synthesis prematurely
             # (mirrors burst pre-populating `pending` before any worker runs).
-            _to_spawn: list[tuple[str, bool]] = []   # (target, is_discussion_turn)
+            _to_spawn: list[tuple[str, bool]] = []  # (target, is_discussion_turn)
             if not _depth_capped:
                 _fanout = 0
                 for target in _raw_targets:
@@ -1788,7 +1945,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # they always settle.
             if _depth_capped:
                 await _persist_and_emit_error(
-                    emit, conv_id=conv_id, sender_id=agent_id,
+                    emit,
+                    conv_id=conv_id,
+                    sender_id=agent_id,
                     message=(
                         f"@提及链路深度达到上限 {_MAX_MENTION_CHAIN_DEPTH}"
                         f"({agent_id}),已停止继续接力"
@@ -1796,9 +1955,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     reason="depth_limit",
                 )
             for target, _is_disc in _to_spawn:
-                await emit_chain_link(
-                    caller=agent_id, callee=target, depth=depth + 1
-                )
+                await emit_chain_link(caller=agent_id, callee=target, depth=depth + 1)
                 # The chained turn sees the SAME conv timeline (now including
                 # the caller's reply, which we just appended). We pass a tiny
                 # nudge as `text` so the callee knows it was just mentioned.
@@ -1811,18 +1968,25 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # execution against any other turn for the same agent.
                 if _is_disc:
                     _spawn_turn(
-                        conv_id, target,
+                        conv_id,
+                        target,
                         _run_discussion_turn(
-                            target, nudge, depth=depth + 1,
+                            target,
+                            nudge,
+                            depth=depth + 1,
                             parent_agent_id=agent_id,
                         ),
                     )
                 else:
                     _spawn_turn(
-                        conv_id, target,
+                        conv_id,
+                        target,
                         run_adapter_turn(
-                            target, nudge, depth=depth + 1,
-                            parent_agent_id=agent_id, inject_history=True,
+                            target,
+                            nudge,
+                            depth=depth + 1,
+                            parent_agent_id=agent_id,
+                            inject_history=True,
                         ),
                     )
 
@@ -1846,13 +2010,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 if not turn_failed and _empty_deliverable:
                     with suppress(Exception):
                         await _persist_and_emit_error(
-                            emit, conv_id=conv_id, sender_id=agent_id,
+                            emit,
+                            conv_id=conv_id,
+                            sender_id=agent_id,
                             message="本轮没有产生任何输出,任务未交付(可重试)",
-                            reason="empty_turn", retryable=True,
+                            reason="empty_turn",
+                            retryable=True,
                         )
                 with suppress(Exception):
                     await _mark_burst_task(
-                        burst_card_id, burst_task_id,
+                        burst_card_id,
+                        burst_task_id,
                         "failed" if (turn_failed or _empty_deliverable) else "done",
                     )
 
@@ -1889,7 +2057,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         log.info(
                             "post-turn drain: conv=%s agent=%s dispatcher=%s "
                             "burst_started=%s → merged=%d",
-                            conv_id, agent_id, is_dispatcher, _burst_started,
+                            conv_id,
+                            agent_id,
+                            is_dispatcher,
+                            _burst_started,
                             drain.merged,
                         )
                         # Hand a single non-burst sub-agent's deliverable/conflict
@@ -1905,12 +2076,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             and not _conv_discussions.get(conv_id)
                         ):
                             with suppress(Exception):
-                                await _maybe_handoff_to_orchestrator(
-                                    drain, source_agent=agent_id
-                                )
+                                await _maybe_handoff_to_orchestrator(drain, source_agent=agent_id)
 
     async def dispatch_user_message(
-        text: str, members: list[str], in_reply_to: str | None = None,
+        text: str,
+        members: list[str],
+        in_reply_to: str | None = None,
         msg_id: str | None = None,
     ) -> None:
         """Fan-out a user message to all relevant agents based on members.
@@ -1954,8 +2125,13 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # the row instead of 404'ing on the client's `u-<uuid>` placeholder.
             async with SessionLocal() as db:
                 uid = await storage_repo.append_message(
-                    db, conv_id=conv_id, sender_id="you", payload=user_payload,
-                    in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
+                    db,
+                    conv_id=conv_id,
+                    sender_id="you",
+                    payload=user_payload,
+                    in_reply_to=in_reply_to,
+                    code_sha=code_sha,
+                    msg_id=msg_id,
                 )
                 persisted_user_id = uid
                 await db.commit()
@@ -1967,8 +2143,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # suppress-guarded — never breaks the dispatch path below.
             with suppress(Exception):
                 echo = encode_polynoia_card(
-                    "text", user_payload, msg_id or uid,
-                    sender_id="you", sender_label="你",
+                    "text",
+                    user_payload,
+                    msg_id or uid,
+                    sender_id="you",
+                    sender_label="你",
                 )
                 await _broadcast_to_conv(conv_id, echo)
 
@@ -1980,7 +2159,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # orchestrator by design and fall through to the 1:1 path below.
         if conv and conv.group and not use_orch:
             await _persist_and_emit_error(
-                emit, conv_id=conv_id, sender_id="system",
+                emit,
+                conv_id=conv_id,
+                sender_id="system",
                 message=(
                     "本群聊没有可用的协调者。群聊必须指定一位协调者来拆解、并行调度任务"
                     "(去中心化群聊已不再支持)。请在群成员设置里指定一位协调者。"
@@ -2057,7 +2238,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             if direct_target:
                 await emit_chain_link(caller="you", callee=direct_target, depth=0)
                 _spawn_turn(
-                    conv_id, direct_target,
+                    conv_id,
+                    direct_target,
                     run_adapter_turn(direct_target, text),
                 )
                 return
@@ -2073,7 +2255,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 agent_by_id=agent_by_id,
             )
             _spawn_turn(
-                conv_id, orch_id,
+                conv_id,
+                orch_id,
                 run_adapter_turn(orch_id, orch_text, is_dispatcher=True),
             )
             return
@@ -2110,7 +2293,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
         if not targets:
             await _persist_and_emit_error(
-                emit, conv_id=conv_id, sender_id="system",
+                emit,
+                conv_id=conv_id,
+                sender_id="system",
                 message=(
                     "本对话没有 adapter 联系人。请先在「新建联系人」里基于已接入的 "
                     "适配器(Claude Code / Codex / OpenCode)创建联系人,或者把 "
@@ -2135,9 +2320,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await emit(
-                    'data: {"type":"error","error_text":"invalid json"}\n\n'
-                )
+                await emit('data: {"type":"error","error_text":"invalid json"}\n\n')
                 continue
 
             kind = msg.get("kind")
@@ -2177,7 +2360,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # Optional client-pre-allocated id — keeps the optimistic store
                 # entry and the DB row sharing one identity; without it rewind /
                 # reply / pin on freshly-sent messages 404 until next refresh.
-                client_msg_id: str | None = (msg.get("msg_id") or None)
+                client_msg_id: str | None = msg.get("msg_id") or None
                 # Don't await — dispatch returns when fan-out is queued, the
                 # actual streams continue in the background. Tracked conv-scoped
                 # (not just locally) so it isn't GC'd AND so the disconnect-prune
@@ -2187,7 +2370,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 _spawn_dispatcher(
                     conv_id,
                     dispatch_user_message(
-                        text, members, in_reply_to, msg_id=client_msg_id,
+                        text,
+                        members,
+                        in_reply_to,
+                        msg_id=client_msg_id,
                     ),
                 )
                 continue

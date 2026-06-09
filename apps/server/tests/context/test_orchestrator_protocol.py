@@ -167,3 +167,6 @@ async def test_tool_call_format_rule_survives_custom_discipline(clean_db) -> Non
     assert "## 工具调用格式(平台强制)" in prompt
     assert "**不要**在普通回复里打印" in prompt
     assert '{"name":"write"' in prompt
+    assert "## 交付物展示规则(平台强制)" in prompt
+    assert 'present(links=[{"url":"http://127.0.0.1:8770/index.html"' in prompt
+    assert "没有 present 卡片" in prompt

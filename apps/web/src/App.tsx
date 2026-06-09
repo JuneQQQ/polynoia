@@ -356,14 +356,17 @@ export function App() {
 	}, []);
 
 	useEffect(() => {
-		const onArchived = (ev: Event) => {
+		const onConvRemoved = (ev: Event) => {
 			const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
 			if (!convId) return;
 			setActiveConv((cur) => (cur?.id === convId ? null : cur));
 		};
-		window.addEventListener("polynoia:conv-archived", onArchived);
-		return () =>
-			window.removeEventListener("polynoia:conv-archived", onArchived);
+		window.addEventListener("polynoia:conv-archived", onConvRemoved);
+		window.addEventListener("polynoia:conv-deleted", onConvRemoved);
+		return () => {
+			window.removeEventListener("polynoia:conv-archived", onConvRemoved);
+			window.removeEventListener("polynoia:conv-deleted", onConvRemoved);
+		};
 	}, []);
 
 	const globalContactModals = (

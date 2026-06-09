@@ -1,78 +1,58 @@
-课题：AgentHub - 多 Agent 协作平台
+# AgentHub 课题要求与交付映射
 
----
-课题背景
-通过对话式交互创建网页、Workflow 等产物。本课题要求学生构建一个该业务的简化实战版：多 Agent 协作平台（AgentHub）。
-平台采用 IM 聊天作为核心交互范式。用户像使用飞书/微信一样，通过新建对话、发送消息的方式与不同 AI Agent 进行交互。每个 Agent 就是一个"聊天对象"，用户可以：
-- 新建对话：创建一个新的聊天会话，选择或指定要对话的 Agent（如 Claude Code、Codex、OpenCode 等）
-- 多会话并行：同时开启多个对话窗口，分别与不同 Agent 交流不同任务（类似 IM 的多个聊天窗口）
-- 群聊协作：在一个对话中 @ 多个 Agent，由主 Agent（Orchestrator）自动协调分工，多个 Agent 像群聊成员一样依次回复各自的产出
-- 上下文连续：每个对话保持完整的聊天历史，Agent 能基于历史消息理解上下文，支持多轮迭代修改
-- 产物内联：Agent 的回复不仅是文字，还可以内联展示代码 Diff、网页预览卡片、文件附件等富媒体产物，用户可直接在聊天流中预览和操作
-平台同时接入市面主流 Agent 平台（Claude Code、Codex、OpenCode 等），通过统一的适配器层屏蔽 API 差异，并支持用户自建 Agent。所有 Agent 产出（代码、网页、文档、PPT 等）支持实时预览、代码二次编辑和一键部署发布。
+本文是官方提交用的课题说明、验收映射与 AI 协作材料索引。原始课题要求是“构建一个 IM 形态的多 Agent 协作平台”,本仓库实现名为 **Polynoia**,对外课题代号 **AgentHub**。
 
----
-核心功能
-1. IM 聊天式交互（核心体验）
-功能
-说明
-对话列表
-左侧会话列表，支持新建/置顶/归档/搜索，按最近活跃排序
-单聊模式
-1v1 与单个 Agent 对话，适合明确任务（如"用 Claude Code 写一个 React 组件"）
-群聊模式
-一个对话中包含多个 Agent，通过 @ 指定或由 Orchestrator 自动分派，Agent 依次回复
-消息类型
-文本、代码块、图片、文件附件、网页预览卡片、Diff 视图卡片、部署状态卡片（可选）
-消息操作
-回复、引用、重新生成、复制代码、一键应用 Diff、展开预览
-上下文管理
-聊天历史自动作为上下文传递给 Agent，支持手动 pin 关键消息作为长期上下文
-2. 主 Agent 协调器（Orchestrator）
-- 在群聊模式下，自动理解用户意图，将复杂任务拆解并分派给合适的子 Agent
-- 子 Agent 完成后，Orchestrator 聚合产出并在聊天流中汇报结果
-- 支持并行调度、失败降级、代码冲突处理
-3. 多 Agent 接入
-- 统一适配器层，至少接入 2 个主流 Agent 平台（Claude Code + Codex / OpenCode）
-- 支持用户自建 Agent（对话式创建，设定 System Prompt + 工具集）
-- 每个 Agent 在聊天列表中显示为独立的"联系人"，有头像、名称、能力标签
-4. 产物预览与编辑
-- Agent 回复中内联产物预览卡片（网页 iframe、文档渲染、【P2】PPT 浏览）
-- 点击卡片展开全屏预览 / 代码编辑器
-- 【P2】支持 Diff 视图、版本历史、对话式局部修改（选中代码 → 在聊天中描述修改）
-【P2】5. 部署发布
-- 聊天中直接发送"部署"指令，Agent 返回部署状态卡片
-- 一键生成预览 URL / 静态站点部署 / 容器化部署 / 源码打包下载
-【P2】6. 多端支持
-平台
-定位
-Web 端
-主力端，完整 IM 体验 + 代码编辑 + 全功能
-桌面端
-本地文件访问、系统通知、Agent 进程管理
-移动端
-轻量 IM 体验：查看对话、审批确认、产物预览
+## 1. 课题背景
 
----
-考察要点
-维度
-权重
-评判要点
-AI 协作能力
-30%
+AgentHub 通过对话式交互创建网页、文档、代码、Workflow 等产物。平台采用 IM 聊天作为核心交互范式:用户像使用飞书/微信一样,通过新建对话、发送消息的方式与不同 AI Agent 协作。
 
-沉淀出和ai协作的Spec、skill、rules等协作规范
+核心体验包括:
 
-功能完整度
-25%
-IM 核心体验是否流畅、多 Agent 调度是否跑通
-生成效果质量
-20%
-聊天 UI 体验、产物预览效果
-代码理解度
-15%
-答辩时能否解释架构选型和核心逻辑
-创新与产品感
-10%
-超预期功能点或体验优化、详细的产品设计方案
-交付物：产品设计文档 + 技术文档 + 可运行 Demo + AI 协作开发记录  + 3 分钟 Demo 视频
+- 新建对话:创建聊天会话,选择 Claude Code、Codex、OpenCode 或自建 Agent。
+- 多会话并行:不同会话承载不同任务,保留各自上下文。
+- 群聊协作:在一个对话中 @ 多个 Agent,由 Orchestrator 自动拆解、派活、验收与合并。
+- 上下文连续:会话历史、项目上下文、成员职责、共享记忆共同组成 Agent 的运行上下文。
+- 产物内联:Agent 回复可以展示文本、工具调用、代码 Diff、文件、网页预览、Office 文档、提交历史等富媒体卡片。
+- 统一适配器:Claude Code / Codex / OpenCode 通过统一适配器层接入,用户也可以创建自定义 Agent。
+
+## 2. 功能验收映射
+
+| 官方要求 | 本仓库实现 | 关键文件/文档 |
+|---|---|---|
+| IM 聊天式交互 | 会话列表、单聊、群聊、@ 提及、回复/引用/重试、归档、移动端轻量 IM | `apps/web/src/components/ChatPane.tsx`, `apps/web/src/components/Sidebar.tsx`, `docs/testing/manual-test-cases.md` |
+| 主 Agent 协调器 | Orchestrator 作为真实 Agent,可 dispatch 子任务、并行 burst、验收 clean merge、处理失败 | `apps/server/polynoia/orchestrator/`, `apps/server/polynoia/api/ws_conv.py`, `docs/ADR/ADR-001-orchestrator-is-an-agent.md` |
+| 多 Agent 接入 | Claude Code、Codex、OpenCode 适配器;联系人与 Adapter 解耦;支持自建 Agent | `apps/server/polynoia/adapters/`, `docs/ADR/ADR-008-contact-adapter-decoupling.md` |
+| 产物预览与编辑 | Markdown、HTML、CSV/XLSX、DOCX/PPTX 预览;代码编辑;Diff 卡;提交历史;present 链接 | `apps/web/src/components/preview/`, `apps/web/src/components/parts/`, `docs/design/preview-system-and-evolution.md` |
+| 部署发布 | `present` 工具统一展示产物和链接;静态产物可通过后端路由访问 | `apps/server/polynoia/mcp/tools.py`, `docs/diagrams/present-flow-orchestrator.md` |
+| 多端支持 | Web 主力端、Tauri 桌面端、Capacitor 移动端复用同一 Web 构建 | `apps/desktop/`, `apps/mobile/`, `docs/ADR/ADR-020-capacitor-over-react-native.md` |
+| 代码冲突处理 | 每个 Agent 独立 worktree,合并到 workspace main;冲突卡人工解决 | `apps/server/polynoia/sandbox/_core.py`, `docs/design/conflict-closed-loop-2026-05-30.md` |
+
+## 3. 考察要点对应
+
+| 维度 | 权重 | 交付证据 |
+|---|---:|---|
+| AI 协作能力 | 30% | `CLAUDE.md`, `docs/ai-collaboration.md`, `docs/superpowers/specs/`, `docs/ADR/`, `docs/research/`, `scripts/testkit/` |
+| 功能完整度 | 25% | Web/桌面/移动端 Demo,多 Agent 群聊,Orchestrator,产物卡片,Diff/历史/回退 |
+| 生成效果质量 | 20% | IM UI、右侧工作区预览、Office/HTML/Markdown 预览、移动端适配 |
+| 代码理解度 | 15% | ADR、设计文档、测试用例、架构图、清晰模块划分 |
+| 创新与产品感 | 10% | 群聊式多 Agent 协作、上下文分层、工作区共享 Git、冲突闭环、present 产物链路 |
+
+## 4. AI 协作材料索引
+
+- 项目级 AI 协作规则:`CLAUDE.md`
+- AI 协作方法论与证据链:`docs/ai-collaboration.md`
+- 完整产品/技术 Spec:`docs/superpowers/specs/2026-05-23-polynoia-design.md`
+- 架构决策记录:`docs/ADR/`
+- 调研综合:`docs/research/00-SYNTHESIS.md`
+- 手动测试案例:`docs/testing/manual-test-cases.md`
+- 上线准备/回归测试种子:`scripts/testkit/reset.sh`, `scripts/testkit/_more_seed.py`
+
+## 5. 官方提交建议
+
+提交时建议展示以下路径:
+
+1. 启动 Web Demo,演示单聊和群聊。
+2. 群聊中让 Orchestrator 拆分任务,多个 Agent 并行产出文件。
+3. 打开右侧工作区,展示文件树、预览、Diff 和提交历史。
+4. 触发或回放冲突案例,展示冲突卡解决流程。
+5. 展示 `docs/ai-collaboration.md` 和 ADR,说明 AI 协作规范不是口头描述,而是沉淀为可复用流程。

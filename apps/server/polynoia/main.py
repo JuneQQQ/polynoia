@@ -40,7 +40,8 @@ async def lifespan(_app: FastAPI):
         _reaped = await reap_orphan_tool_calls(_s)
     if _reaped:
         logging.getLogger("polynoia.main").info(
-            "reaped %d orphan tool-call(s) left at running/pending", _reaped,
+            "reaped %d orphan tool-call(s) left at running/pending",
+            _reaped,
         )
     # Hydrate custom-workspace locations into the sandbox resolver so agents on
     # any conv resolve the right real dir + integration branch after a restart
@@ -92,8 +93,11 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        # Local/mobile dev server: allow any browser/WebView origin. The app
+        # does not use cookie auth, so we can keep credentials disabled and
+        # return the standards-compliant wildcard header.
+        allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

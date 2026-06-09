@@ -763,6 +763,17 @@ export const useStore = create<Store>((set, get) => ({
 		const nextById =
 			mode === "replace" ? new Map<string, Message>() : new Map(cur.msgById);
 		const existingOrder = mode === "replace" ? [] : cur.messageOrder;
+		const liveMessageIds =
+			mode === "replace"
+				? new Set([...cur.streamingTexts.values()].map((v) => v.messageId))
+				: new Set<string>();
+		const shouldKeepLiveOnly = (msg: Message) => {
+			if (mode !== "replace") return false;
+			if (liveMessageIds.has(msg.id)) return true;
+			if (msg.id.startsWith("retry-") || msg.id.startsWith("queued-"))
+				return true;
+			return false;
+		};
 		// Dedupe in case the server returns msgs already in store (race
 		// between WS streaming + REST refetch on conv-switch).
 		const newOrder: string[] = [];
@@ -779,13 +790,25 @@ export const useStore = create<Store>((set, get) => ({
 			});
 			newOrder.push(m.id);
 		}
+		const liveOrder: string[] = [];
+		if (mode === "replace") {
+			for (const id of cur.messageOrder) {
+				if (nextById.has(id)) continue;
+				const msg = cur.msgById.get(id);
+				if (!msg || !shouldKeepLiveOnly(msg)) continue;
+				nextById.set(id, msg);
+				liveOrder.push(id);
+			}
+		}
 		convs.set(convId, {
 			...cur,
 			msgById: nextById,
 			// For 'prepend', newOrder is older messages — prepend before existing.
 			// For 'replace', cur state is gone — newOrder IS the order.
 			messageOrder:
-				mode === "replace" ? newOrder : [...newOrder, ...existingOrder],
+				mode === "replace"
+					? [...newOrder, ...liveOrder]
+					: [...newOrder, ...existingOrder],
 			hasMoreOlder: hasMore,
 			loadingOlder: false,
 		});

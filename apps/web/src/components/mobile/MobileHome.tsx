@@ -40,6 +40,7 @@ import {
 import {
 	type ReactNode,
 	createContext,
+	useCallback,
 	useContext,
 	useEffect,
 	useMemo,
@@ -689,33 +690,41 @@ function ChatListScreen({ onSelectConv }: Props) {
 	const [q, setQ] = useState("");
 	const [sort, setSort] = useState<SortMode>("recent");
 
-	useEffect(() => {
-		const load = () =>
-			api
-				.conversations()
-				.then((list) =>
-					setConvs(
-						list
-							.filter((c) => !c.archived)
-							.sort((a, b) =>
-								(b.last_message_at ?? b.created_at).localeCompare(
-									a.last_message_at ?? a.created_at,
-								),
+	const load = useCallback(() => {
+		api
+			.conversations()
+			.then((list) =>
+				setConvs(
+					list
+						.filter((c) => !c.archived)
+						.sort((a, b) =>
+							(b.last_message_at ?? b.created_at).localeCompare(
+								a.last_message_at ?? a.created_at,
 							),
-					),
-				)
-				.catch(() => setConvs([]));
+						),
+				),
+			)
+			.catch(() => setConvs([]));
+	}, []);
+
+	useEffect(() => {
 		load();
 		// Near-realtime cross-device sync: refresh the chat list on the foreground
 		// poll (~5s) and on app resume, so new messages/convs from other devices
 		// surface within seconds.
 		window.addEventListener("polynoia:resync", load);
 		window.addEventListener("polynoia:resync-lists", load);
+		window.addEventListener("polynoia:conv-updated", load);
+		window.addEventListener("polynoia:conv-archived", load);
+		window.addEventListener("polynoia:conv-deleted", load);
 		return () => {
 			window.removeEventListener("polynoia:resync", load);
 			window.removeEventListener("polynoia:resync-lists", load);
+			window.removeEventListener("polynoia:conv-updated", load);
+			window.removeEventListener("polynoia:conv-archived", load);
+			window.removeEventListener("polynoia:conv-deleted", load);
 		};
-	}, []);
+	}, [load]);
 
 	const agentFor = (c: ConversationSummary) =>
 		agents.find((a) => a.id === c.members.find((m) => m !== "you"));
@@ -1112,12 +1121,26 @@ function ProjectConvsScreen({
 	const agents = useStore((st) => st.agents);
 	const [convs, setConvs] = useState<ConversationSummary[]>([]);
 
-	useEffect(() => {
+	const load = useCallback(() => {
 		api
 			.conversations({ workspaceId: ws.id })
 			.then((list) => setConvs(list.filter((c) => !c.archived)))
 			.catch(() => setConvs([]));
 	}, [ws.id]);
+
+	useEffect(() => {
+		load();
+		window.addEventListener("polynoia:resync-lists", load);
+		window.addEventListener("polynoia:conv-updated", load);
+		window.addEventListener("polynoia:conv-archived", load);
+		window.addEventListener("polynoia:conv-deleted", load);
+		return () => {
+			window.removeEventListener("polynoia:resync-lists", load);
+			window.removeEventListener("polynoia:conv-updated", load);
+			window.removeEventListener("polynoia:conv-archived", load);
+			window.removeEventListener("polynoia:conv-deleted", load);
+		};
+	}, [load]);
 
 	return (
 		<>

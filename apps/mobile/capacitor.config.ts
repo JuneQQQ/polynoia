@@ -29,9 +29,9 @@ const config: CapacitorConfig = {
     // WebView loads the web app from the dev box's vite server instead of the
     // baked-in bundle. After this is committed and Xcode rebuilds once, future
     // web changes flow over HMR — no more Xcode rebuilds. Phone must be on the
-    // same LAN as 10.2.255.109 (verified reachable from iOS Safari).
+    // same LAN as 10.12.48.166 (verified reachable from iOS Safari).
     // To go back to the bundled-snapshot mode, comment out `url` + `cleartext`.
-    url: "http://10.2.255.109:5173",
+    url: "http://10.12.48.166:5173",
     cleartext: true,
     androidScheme: "https",
     iosScheme: "https",
@@ -40,7 +40,7 @@ const config: CapacitorConfig = {
     allowNavigation: [
       "127.0.0.1",
       "localhost",
-      "10.2.255.109",
+      "10.12.48.166",
       "*.polynoia.local",
       "*.polynoia.app",
     ],
@@ -70,7 +70,7 @@ const config: CapacitorConfig = {
     backgroundColor: "#14110c",
     // The app shell loads from https://localhost (androidScheme "https"), but
     // the Polynoia backend is frequently a plain-HTTP LAN box (e.g.
-    // http://10.2.255.109:7780). Without this the WebView blocks those fetches
+    // http://10.12.48.166:7780). Without this the WebView blocks those fetches
     // as mixed content → "Failed to fetch". Pairs with usesCleartextTraffic in
     // AndroidManifest.xml (OS-level cleartext permit). iOS allows it via ATS.
     allowMixedContent: true,

@@ -9,7 +9,7 @@
  * Reuses Sidebar 的 conv item 视觉风格,但带 unread badge + last message 时间。
  */
 import { Inbox, Pin, Pyramid } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
 
@@ -34,7 +34,7 @@ export function InboxView({ onOpenConv }: Props) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
@@ -51,11 +51,27 @@ export function InboxView({ onOpenConv }: Props) {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    reload();
-  }, []);
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const onListChanged = () => {
+      void reload();
+    };
+    window.addEventListener("polynoia:conv-updated", onListChanged);
+    window.addEventListener("polynoia:conv-archived", onListChanged);
+    window.addEventListener("polynoia:conv-deleted", onListChanged);
+    window.addEventListener("polynoia:resync-lists", onListChanged);
+    return () => {
+      window.removeEventListener("polynoia:conv-updated", onListChanged);
+      window.removeEventListener("polynoia:conv-archived", onListChanged);
+      window.removeEventListener("polynoia:conv-deleted", onListChanged);
+      window.removeEventListener("polynoia:resync-lists", onListChanged);
+    };
+  }, [reload]);
 
   const renderConv = (c: ConversationSummary, kind: "pinned" | "unread") => {
     const memberAgents = c.members

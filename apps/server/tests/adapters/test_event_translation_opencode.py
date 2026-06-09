@@ -1,4 +1,5 @@
 """Unit tests for `_translate_acp_stream_to_pap` — the OpenCode ACP→PAP translator."""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +10,7 @@ import pytest
 
 from polynoia.adapters.opencode import (
     _opencode_config_content,
+    _opencode_executable,
     _translate_acp_stream_to_pap,
 )
 from polynoia.domain.messages import TextPayload, ToolCallPayload
@@ -46,6 +48,21 @@ def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
         "codesearch",
     ):
         assert permission[builtin] == "deny"
+
+
+def test_opencode_executable_uses_agent_path(tmp_path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "opencode"
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    exe.chmod(0o755)
+
+    assert _opencode_executable({"PATH": str(bin_dir)}) == str(exe)
+
+
+def test_opencode_executable_has_clear_error_for_missing_cli() -> None:
+    with pytest.raises(FileNotFoundError, match="OpenCode CLI 未找到"):
+        _opencode_executable({"PATH": ""})
 
 
 @pytest.mark.asyncio
@@ -93,8 +110,8 @@ async def test_translate_tool_then_text(
         "part.completed",  # tool running (initial)
         "part.completed",  # tool running (in_progress update)
         "part.completed",  # tool completed
-        "part.started",    # text part
-        "part.delta",      # text delta
+        "part.started",  # text part
+        "part.delta",  # text delta
         "part.completed",  # text final
     ]
 
@@ -190,8 +207,15 @@ async def test_translate_unknown_update_type_skipped() -> None:
         {
             "jsonrpc": "2.0",
             "method": "session/update",
-            "params": {"sessionId": "s", "update": {"sessionUpdate": "usage_update",
-                "used": 1, "size": 100, "cost": {"amount": 0, "currency": "USD"}}},
+            "params": {
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "used": 1,
+                    "size": 100,
+                    "cost": {"amount": 0, "currency": "USD"},
+                },
+            },
         },
         {"jsonrpc": "2.0", "method": "some_other_method", "params": {}},
     ]
@@ -214,14 +238,26 @@ async def test_translate_agent_thought_chunk_to_reasoning() -> None:
         {
             "jsonrpc": "2.0",
             "method": "session/update",
-            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
-                "messageId": "m1", "content": {"type": "text", "text": "let me "}}},
+            "params": {
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "messageId": "m1",
+                    "content": {"type": "text", "text": "let me "},
+                },
+            },
         },
         {
             "jsonrpc": "2.0",
             "method": "session/update",
-            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
-                "messageId": "m1", "content": {"type": "text", "text": "think"}}},
+            "params": {
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "messageId": "m1",
+                    "content": {"type": "text", "text": "think"},
+                },
+            },
         },
     ]
     events = await _collect(
@@ -229,7 +265,10 @@ async def test_translate_agent_thought_chunk_to_reasoning() -> None:
     )
     # start(reasoning) + delta + delta + completed(reasoning)
     assert [e.type for e in events] == [
-        "part.started", "part.delta", "part.delta", "part.completed",
+        "part.started",
+        "part.delta",
+        "part.delta",
+        "part.completed",
     ]
     assert events[0].part.kind == "reasoning"
     assert events[1].delta == {"text": "let me "}
@@ -246,14 +285,29 @@ async def test_thought_folds_incrementally_when_tool_starts() -> None:
     # folding). So the reasoning part.completed must arrive BEFORE the tool card.
     stream = [
         {
-            "jsonrpc": "2.0", "method": "session/update",
-            "params": {"sessionId": "s", "update": {"sessionUpdate": "agent_thought_chunk",
-                "messageId": "t1", "content": {"type": "text", "text": "I'll read the file"}}},
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "messageId": "t1",
+                    "content": {"type": "text", "text": "I'll read the file"},
+                },
+            },
         },
         {
-            "jsonrpc": "2.0", "method": "session/update",
-            "params": {"sessionId": "s", "update": {"sessionUpdate": "tool_call",
-                "toolCallId": "tc1", "title": "read", "rawInput": {"path": "x.py"}}},
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc1",
+                    "title": "read",
+                    "rawInput": {"path": "x.py"},
+                },
+            },
         },
     ]
     events = await _collect(
@@ -263,7 +317,7 @@ async def test_thought_folds_incrementally_when_tool_starts() -> None:
     # reasoning start + delta, then reasoning COMPLETED (folded), THEN the tool card
     assert types == ["part.started", "part.delta", "part.completed", "part.completed"]
     assert events[0].part.kind == "reasoning"
-    assert events[2].part.kind == "reasoning"      # thought folded first…
+    assert events[2].part.kind == "reasoning"  # thought folded first…
     assert events[2].part.body[0].c == "I'll read the file"
-    assert events[3].part.kind == "tool-call"      # …before the tool executes
+    assert events[3].part.kind == "tool-call"  # …before the tool executes
     assert events[3].part.name == "read"

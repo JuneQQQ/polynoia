@@ -4,6 +4,7 @@ Errors used to be live-only WS chunks that vanished on refresh. These lock in
 that they now persist as first-class `error` messages, and that an orphaned
 burst card (server restart mid-flight) recovers its stuck lanes on reload.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,9 +23,7 @@ from polynoia.storage.db import Base, SessionLocal, engine
 @pytest.fixture
 async def fresh_db(monkeypatch, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(
-        "polynoia.settings.settings.db_url", f"sqlite+aiosqlite:///{db_path}"
-    )
+    monkeypatch.setattr("polynoia.settings.settings.db_url", f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await bootstrap_db()
@@ -51,6 +50,35 @@ def test_error_payload_in_discriminated_union() -> None:
     assert p.retryable is True
 
 
+def test_live_resume_replays_status_retry_notice_and_stream() -> None:
+    routes._conv_live.clear()
+    cid = "conv-live"
+    agent = "agentX"
+    routes._live_note_status(cid, agent, "streaming", {"phase": "thinking"})
+    routes._live_note_retry_notice(
+        cid, agent, f"retry-{cid}-{agent}-d0", "⏳ 无响应,自动重试中(1/5)"
+    )
+    routes._live_set_message_id(cid, agent, "msg-live")
+    routes._live_note_chunk(cid, agent, 'data: {"type":"text-start","id":"p1"}\n\n')
+    routes._live_note_chunk(cid, agent, 'data: {"type":"text-delta","id":"p1","delta":"hello"}\n\n')
+
+    frames = routes._live_resume_frames(cid)
+    assert any('"type": "data-agent-status"' in f for f in frames)
+    assert any('"phase": "thinking"' in f for f in frames)
+    retry = next(f for f in frames if '"type": "data-error"' in f)
+    assert f"retry-{cid}-{agent}-d0" in retry
+    assert "自动重试中(1/5)" in retry
+    resume = next(f for f in frames if '"type": "data-stream-resume"' in f)
+    assert "msg-live" in resume
+    assert "hello" in resume
+
+    routes._live_clear_retry_notice(cid, agent)
+    frames = routes._live_resume_frames(cid)
+    assert not any('"type": "data-error"' in f for f in frames)
+    routes._live_clear_agent(cid, agent)
+    assert routes._live_resume_frames(cid) == []
+
+
 # ── _persist_and_emit_error ──────────────────────────────────────
 
 
@@ -69,8 +97,12 @@ async def test_error_persists_and_emits_with_matching_id(fresh_db) -> None:
         frames.append(f)
 
     await routes._persist_and_emit_error(
-        emit, conv_id=cid, sender_id="agentX",
-        message="401 unauthorized", reason="turn_failed", retryable=True,
+        emit,
+        conv_id=cid,
+        sender_id="agentX",
+        message="401 unauthorized",
+        reason="turn_failed",
+        retryable=True,
     )
 
     # 1) a data-error frame went out live
@@ -88,7 +120,7 @@ async def test_error_persists_and_emits_with_matching_id(fresh_db) -> None:
     assert errs[0]["sender_id"] == "agentX"
 
     # 3) live frame id == persisted message id → dedup on reconnect-then-hydrate
-    body = json.loads(live[0][len("data: "):].strip())
+    body = json.loads(live[0][len("data: ") :].strip())
     assert body["id"] == errs[0]["id"]
     assert body["data"]["agent_id"] == "agentX"
 
@@ -101,8 +133,11 @@ async def test_system_error_has_null_agent(fresh_db) -> None:
         pass
 
     await routes._persist_and_emit_error(
-        emit, conv_id=cid, sender_id="system",
-        message="本对话没有 adapter 联系人", reason="unavailable",
+        emit,
+        conv_id=cid,
+        sender_id="system",
+        message="本对话没有 adapter 联系人",
+        reason="unavailable",
     )
     async with SessionLocal() as db:
         msgs, _ = await storage_repo.list_messages(db, cid, limit=50)
@@ -119,8 +154,7 @@ def _tasks_payload(states: dict[str, str]) -> dict:
         "kind": "tasks",
         "title": "burst",
         "tasks": [
-            {"id": tid, "state": st, "agent": "a", "label": "x"}
-            for tid, st in states.items()
+            {"id": tid, "state": st, "agent": "a", "label": "x"} for tid, st in states.items()
         ],
     }
 
@@ -131,7 +165,9 @@ async def test_orphaned_burst_lanes_recovered_on_reload(fresh_db, monkeypatch) -
     tp_id = "tasks-orphan1"
     async with SessionLocal() as db:
         await storage_repo.append_message(
-            db, conv_id=cid, sender_id="orch",
+            db,
+            conv_id=cid,
+            sender_id="orch",
             payload=_tasks_payload({"t1": "done", "t2": "run", "t3": "pending"}),
             msg_id=tp_id,
         )
@@ -159,7 +195,11 @@ async def test_live_burst_not_coerced(fresh_db, monkeypatch) -> None:
     payload = _tasks_payload({"t1": "run"})
     async with SessionLocal() as db:
         await storage_repo.append_message(
-            db, conv_id=cid, sender_id="orch", payload=payload, msg_id=tp_id,
+            db,
+            conv_id=cid,
+            sender_id="orch",
+            payload=payload,
+            msg_id=tp_id,
         )
         await db.commit()
 

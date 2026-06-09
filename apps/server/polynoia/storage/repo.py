@@ -755,6 +755,115 @@ async def list_workspace_memory(
     return list(res.scalars().all())
 
 
+def _message_row_dict(r: MessageRow) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "conv_id": r.conv_id,
+        "sender_id": r.sender_id,
+        "payload": r.payload,
+        "pinned": bool(r.pinned),
+        "in_reply_to": r.in_reply_to,
+        "code_sha": r.code_sha,
+        "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+    }
+
+
+def _task_assignees(payload: dict[str, Any]) -> set[str]:
+    if payload.get("kind") != "tasks":
+        return set()
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return set()
+    return {
+        str(t.get("agent"))
+        for t in tasks
+        if isinstance(t, dict) and t.get("agent")
+    }
+
+
+async def _with_burst_anchor_context(
+    session: AsyncSession,
+    conv_id: str,
+    rows: list[MessageRow],
+) -> list[MessageRow]:
+    """Keep paginated pages from cutting off the `tasks` card that owns a burst.
+
+    The frontend groups worker messages into burst lanes only after it sees the
+    preceding `tasks` card. If the latest page starts inside a long burst, the
+    anchor sits just outside the page and the UI renders no burst until the user
+    scrolls far enough to lazy-load older rows. Pull the contiguous context range
+    from that anchor to the page start so hydration can render the burst
+    immediately without creating pagination gaps.
+    """
+    if not rows:
+        return rows
+
+    first = rows[0]
+    older_stmt = (
+        select(MessageRow)
+        .where(MessageRow.conv_id == conv_id)
+        .where(MessageRow.created_at < first.created_at)
+        .order_by(MessageRow.created_at.desc(), MessageRow.id.desc())
+        .limit(400)
+    )
+    older_desc = list((await session.execute(older_stmt)).scalars().all())
+    if not older_desc:
+        return rows
+
+    older = list(reversed(older_desc))
+    page_ids = {r.id for r in rows}
+    loaded_ids = set(page_ids)
+    older_index = {r.id: i for i, r in enumerate(older)}
+
+    active: dict[str, Any] | None = None
+    earliest_context_idx: int | None = None
+
+    for r in [*older, *rows]:
+        payload = r.payload if isinstance(r.payload, dict) else {}
+        assignees = _task_assignees(payload)
+        if assignees:
+            active = {
+                "anchor_id": r.id,
+                "owner": r.sender_id,
+                "assignees": assignees,
+                "claimed": False,
+            }
+            continue
+
+        if not active:
+            continue
+
+        if r.sender_id == active["owner"]:
+            if active["claimed"]:
+                active = None
+            continue
+
+        if r.sender_id in active["assignees"]:
+            active["claimed"] = True
+            anchor_id = str(active["anchor_id"])
+            if r.id in page_ids and anchor_id not in loaded_ids:
+                idx = older_index.get(anchor_id)
+                if idx is not None:
+                    earliest_context_idx = (
+                        idx
+                        if earliest_context_idx is None
+                        else min(earliest_context_idx, idx)
+                    )
+                    loaded_ids.add(anchor_id)
+
+    if earliest_context_idx is None:
+        return rows
+
+    merged: list[MessageRow] = []
+    seen: set[str] = set()
+    for r in [*older[earliest_context_idx:], *rows]:
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        merged.append(r)
+    return merged
+
+
 async def list_messages(
     session: AsyncSession,
     conv_id: str,
@@ -795,19 +904,9 @@ async def list_messages(
     has_more = len(rows) > limit
     rows = rows[:limit]
     rows.reverse()  # ascending for client rendering
-    return [
-        {
-            "id": r.id,
-            "conv_id": r.conv_id,
-            "sender_id": r.sender_id,
-            "payload": r.payload,
-            "pinned": bool(r.pinned),
-            "in_reply_to": r.in_reply_to,
-            "code_sha": r.code_sha,
-            "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
-        }
-        for r in rows
-    ], has_more
+    if has_more:
+        rows = await _with_burst_anchor_context(session, conv_id, rows)
+    return [_message_row_dict(r) for r in rows], has_more
 
 
 async def set_message_pinned(

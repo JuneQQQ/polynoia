@@ -85,13 +85,14 @@ make dev          # 后端 :7780 + 前端 :5173(Ctrl-C 全停)
 python3 scripts/seed_demo.py          # 5 个角色 + 1 个工作区 + 1 个群聊
 ```
 
-或灌入**场景测试用例**(办公文档 / 网页小游戏 / 全栈 / 数据分析 / 冲突演练 / 人工审阅):
+或灌入官方提交用的**上线准备 testkit**:
 
 ```bash
-python3 scripts/scenarios/seed_all.py # 每个场景一个工作区
+bash scripts/testkit/reset.sh # 清库 + 灌入上线 / @ 路由 / 合并 / diff 用例
 ```
 
-每个场景脚本头部都写清了「发什么 / 预期什么」。
+这批用例覆盖 Release Notes、QA 检查表、状态页、埋点验收报告、Go-live 群聊协作、
+@ 路由、冲突处理、main 同步、Diff/历史和工具错误恢复。
 
 ### 常用命令
 
@@ -127,7 +128,7 @@ docs/
 **MessagePart 注册表**分派消息 —— 一条消息可同时含 text + diff + status 多个 part。
 
 完整模型见[设计 spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) 与
-[上下文构成系统](docs/context-system.html)。
+[上下文构成系统](docs/design/context-system.md)。
 
 ## 技术栈
 
@@ -138,7 +139,8 @@ docs/
 ## 协作与 AI 共创
 
 本项目把 AI 当作一等协作者来开发。规范见 [`CLAUDE.md`](CLAUDE.md)(项目级 AI 协作规范),
-决策记录在 [`docs/ADR/`](docs/ADR/),调研综合见
+决策记录在 [`docs/ADR/`](docs/ADR/),官方提交用的 AI 协作说明见
+[`docs/ai-collaboration.md`](docs/ai-collaboration.md),调研综合见
 [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)。提交遵循
 [Conventional Commits](https://www.conventionalcommits.org/)。
 

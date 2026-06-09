@@ -1,6 +1,7 @@
 # testkit — 测试用例工具集
 
-给 Polynoia 造测试场景(会话+任务)并把它们真跑起来的脚本。**全部纯增量**,不会清库、不碰已有会话(如「我的世界」)。
+给 Polynoia 造测试场景(会话+任务)并把它们真跑起来的脚本。当前默认用例面向官方提交前的
+**AgentHub 上线准备**:既能演示真实业务产物,也覆盖 @ 路由、合并、Diff/历史和错误恢复。
 
 ## 前提
 
@@ -15,7 +16,7 @@
 | 脚本 | 作用 |
 |---|---|
 | **`reset.sh`** | **一键重置**:停服 → 整库清空+重建 schema → 重启服务器 → 重种完整 testkit 用例集。幂等。`bash scripts/testkit/reset.sh` |
-| `_more_seed.py` | 造一批综合测试会话(办公/编程/数据/多 agent 协作 + 路由/合并/diff 边界),每个建独立 workspace + 会话,任务预填为首条消息。**只持久化、不自动跑 agent。** |
+| `_more_seed.py` | 造一批上线准备测试会话(发布页/Release Notes/QA 表/状态页/埋点报告/Go-live 协作 + 路由/合并/diff 边界),每个建独立 workspace + 会话,任务预填为首条消息。**只持久化、不自动跑 agent。** |
 | `_drive.py <关键词\|id>` | 把某个已种子的会话**真跑起来**:从 DB 找到会话→读出预填任务→经 WS 发给 agent→实时打印关键帧(diff/bash/tasks/present/error),turn 空闲即停。 |
 | `_office_seed.py` | 早先的办公 4 件套(PPT/Excel/Word/落地页),打印 manifest。 |
 | `_office_drive.py <key>` | 驱动办公件套,读 `/tmp/office_manifest.json`。 |
@@ -31,9 +32,9 @@ PY=apps/server/.venv/bin/python
 $PY scripts/testkit/_more_seed.py
 
 # 2) 跑其中一个(按标题片段或会话 id),同时可在 web UI 打开实时看
-$PY scripts/testkit/_drive.py 2048
-$PY scripts/testkit/_drive.py 会议纪要
-$PY scripts/testkit/_drive.py 顺序依赖接力
+$PY scripts/testkit/_drive.py 发布页
+$PY scripts/testkit/_drive.py Release
+$PY scripts/testkit/_drive.py 上线依赖接力
 $PY scripts/testkit/_drive.py 单点名直达
 $PY scripts/testkit/_drive.py 合并冲突
 $PY scripts/testkit/_drive.py 01KTEN3DY9Q2XX2PCWC3TBF065
@@ -41,8 +42,8 @@ $PY scripts/testkit/_drive.py 01KTEN3DY9Q2XX2PCWC3TBF065
 
 ## 当前覆盖
 
-- 常规产物:旅行 HTML、会议纪要 Markdown、预算 XLSX、2048 网页游戏、pandas 分析报告。
-- 多 agent:PRD 分章并行。
+- 常规产物:上线发布页 HTML、Release Notes Markdown、QA 检查表 XLSX、状态页 HTML、埋点验收报告。
+- 多 agent:Go-live 协作包分章并行。
 - @ 路由:@ 多人顺序依赖走协调器、@ 单人直达并 clean merge 后由协调器轻量验收、未知 @ 不触发 agent。
 - 合并/diff:同文件同区域冲突、单聊产物同步到 main、连续修改的 diff/历史记录。
 - 错误恢复:读取不存在文件后继续完成可交付文件。

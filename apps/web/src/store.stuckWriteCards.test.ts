@@ -9,13 +9,12 @@ import { useStore } from "./store";
 
 const s = () => useStore.getState();
 
-function tc(
-	id: string,
-	sender: string,
-	state: string,
-	name: string,
-): Message {
-	return { id, sender_id: sender, payload: { kind: "tool-call", state, name } } as unknown as Message;
+function tc(id: string, sender: string, state: string, name: string): Message {
+	return {
+		id,
+		sender_id: sender,
+		payload: { kind: "tool-call", state, name },
+	} as unknown as Message;
 }
 
 function seedConv(
@@ -86,5 +85,77 @@ describe("markStuckWriteCardsInterrupted", () => {
 		seedConv("c", [tc("w", "dead", "completed", "write")], new Map());
 		s().markStuckWriteCardsInterrupted("c", RECONNECT_AT);
 		expect(get("c", "w")?.state).toBe("completed");
+	});
+});
+
+describe("hydrateMessages live-only preservation", () => {
+	beforeEach(() => {
+		useStore.setState({ convs: new Map() });
+	});
+
+	it("replace hydration keeps retry notices and active stream placeholders", () => {
+		const retry = {
+			id: "retry-c-agent-d0",
+			conv_id: "c",
+			sender_id: "agent",
+			payload: {
+				kind: "error",
+				message: "⏳ 无响应,自动重试中(1/5)",
+				reason: "timeout",
+			},
+			created_at: "live",
+		} as unknown as Message;
+		const stream = {
+			id: "msg-p1",
+			conv_id: "c",
+			sender_id: "agent",
+			payload: { kind: "text", body: [{ t: "p", c: "partial" }] },
+			created_at: "live",
+		} as unknown as Message;
+		useStore.setState((st) => {
+			const convs = new Map(st.convs);
+			convs.set("c", {
+				msgById: new Map([
+					[retry.id, retry],
+					[stream.id, stream],
+				]),
+				messageOrder: [retry.id, stream.id],
+				streamingTexts: new Map([
+					[
+						"agent::p1",
+						{
+							messageId: stream.id,
+							senderId: "agent",
+							text: "partial",
+							kind: "text",
+						},
+					],
+				]),
+				agentStatus: new Map(),
+				hasMoreOlder: true,
+				loadingOlder: false,
+			} as never);
+			return { convs };
+		});
+
+		s().hydrateMessages(
+			"c",
+			[
+				{
+					id: "db-1",
+					conv_id: "c",
+					sender_id: "you",
+					payload: { kind: "text", body: [{ t: "p", c: "persisted" }] },
+					created_at: "db",
+				},
+			],
+			{ mode: "replace", hasMore: false },
+		);
+
+		const cur = s().convs.get("c");
+		expect(cur?.messageOrder).toEqual(["db-1", retry.id, stream.id]);
+		expect(cur?.msgById.get(retry.id)?.payload.kind).toBe("error");
+		expect(cur?.msgById.get(stream.id)?.payload.kind).toBe("text");
+		expect(cur?.streamingTexts.get("agent::p1")?.messageId).toBe(stream.id);
 	});
 });

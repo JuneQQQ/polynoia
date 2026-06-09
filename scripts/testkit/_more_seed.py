@@ -5,12 +5,12 @@ Builds a reusable four-agent team, then creates one workspace + conversation per
 scenario and pre-fills the task as the first "you" message. It never auto-runs
 agents; the user/driver sends the message over WS later.
 
-Coverage intentionally mixes normal demos with regression/edge cases:
-- office/life artifacts: HTML, Markdown, XLSX;
-- programming artifacts: 2048 single-file game, pandas report;
-- multi-agent orchestration: PRD burst;
-- routing regressions: multi-@ with sequential dependency, single @ through the
-  coordinator, unknown @ mention ignored;
+Coverage intentionally uses realistic AgentHub launch-readiness work:
+- launch artifacts: release page, release notes, rollout checklist, telemetry
+  report, QA workbook;
+- multi-agent orchestration: go-live readiness pack split by owner;
+- routing regressions: multi-@ with sequential dependency, single @ direct route,
+  unknown @ mention ignored;
 - merge/diff regressions: same-file conflict pressure, single-agent main sync,
   repeated edits for diff/history cards.
 """
@@ -61,67 +61,70 @@ TEAM = [
 
 # Each case: (key, title, who → "solo:<role>" or "group", task)
 CORE_CASES = [
-    ("travel", "关西亲子游 · 行程页", "solo:designer",
-     "做一个 5 天日本关西(大阪/京都/奈良)亲子游行程,输出一个单页、自包含、可直接双击打开的 HTML"
-     "(内联 CSS+少量 JS,不依赖外网):每日时间线卡片、交通方式、餐饮推荐、一个总预算表格(分类+合计)、"
-     "实用贴士。要响应式、配色温暖、有悬停动效。最后 present 这个 .html。"),
-    ("minutes", "产品评审会 · 会议纪要", "solo:writer",
-     "把下面这段产品评审会转录整理成一份规范的中文会议纪要,写成 meeting-notes.md 并 present。"
-     "结构:会议信息(时间/与会者)、议题概述、关键讨论、结论与决议、行动项表格(事项|负责人|截止)、"
-     "遗留风险。用恰当的标题层级、列表和表格。\n\n转录:\n"
-     "「主持人:今天评审 V2 的搜索改版。小林你先说方案。/ 小林:核心是把筛选从弹窗改成左侧常驻栏,"
-     "实测点击深度从 3 降到 1。但移动端空间不够。/ 设计阿May:移动端我建议折叠成顶部 chips。/ "
-     "数据老周:上版搜索转化 4.2%,目标这版到 6%。埋点要加筛选项点击。/ 主持人:那就定左侧栏+移动端 chips,"
-     "阿May 周五前出移动稿,小林下周三联调,老周补埋点方案。风险是排期紧,QA 只有两天。」"),
-    ("budget", "三口之家 · 月度预算表", "solo:generalist",
-     "造一份某三口之家的月度收支样例数据,用 openpyxl 生成一个真正的 budget.xlsx:一张收支明细表"
-     "(日期/分类/收支/金额),一张按分类的汇总表(用 Excel SUM 公式)、本月结余,以及一个支出占比"
-     "饼图(openpyxl 图表)。数字要合理、分类清晰。最后 present 这个 .xlsx。"),
-    ("game2048", "2048 · 网页小游戏", "solo:designer",
-     "用原生 HTML+CSS+JS 实现一个可玩的 2048 单文件网页游戏:4×4 棋盘、方向键(或滑动)操作、方块合并与"
-     "移动动画、实时计分与最高分、胜利(2048)与失败判定、一键重开。视觉精致、自包含、双击即玩。"
+    ("launch_page", "AgentHub 上线 · 发布页", "solo:designer",
+     "为 AgentHub 的上线准备做一个真实可用的 launch.html 单页发布说明页。要求单文件、自包含、"
+     "移动端优先,内容包括:产品定位、上线范围、核心亮点(多 Agent 群聊、产物预览、Diff/回退、部署链接)、"
+     "目标用户、3 步快速开始、上线风险提示、反馈入口占位。视觉要像正式上线页,不要像 demo。"
      "最后 present 这个 .html。"),
-    ("pandas", "电商订单 · 数据分析报告", "solo:generalist",
-     "自造一份约 200 行的电商订单样例 CSV(订单号/日期/品类/客户/金额),用 pandas 做分析:按品类与按月的"
-     "订单量与销售额、Top5 客户。用 matplotlib 画 2 张图(品类销售额柱状图、月度趋势折线图)保存为 png,"
-     "再写一份 analysis.md 报告(含数据概览、关键发现、结论建议,内嵌图片引用)。最后 present analysis.md。"),
-    ("prd", "项目管理 SaaS · PRD(分章并行)", "group",
-     "群里多位负责人并行起草一份 SaaS 项目管理工具(对标 Linear/Asana)的产品需求文档(PRD)。"
-     "把它拆成若干互不依赖的章节并行交给成员:背景与目标、用户画像与场景、功能需求(核心模块)、"
-     "非功能需求(性能/安全/可用性)、里程碑与排期。每章规格写全,最后合并成一份结构完整的 prd.md 并 present。"
-     "注意:共享文件(prd.md 的骨架/目录)只由一个人建,其他人填各自章节,避免合并冲突。"),
+    ("release_notes", "AgentHub 上线 · Release Notes", "solo:writer",
+     "整理一份正式上线用的 release-notes.md 并 present。"
+     "结构:版本摘要、面向用户的新能力、已修复问题、已知限制、升级/回滚说明、客服/反馈口径。"
+     "内容基于以下事实:本版本支持 Web/桌面/移动轻量查看;支持 Claude Code、Codex、OpenCode 适配器;"
+     "群聊由阿核协调分工;子 Agent 可产出代码 diff、文件、网页预览、Office 文档;已补齐归档列表刷新、"
+     "移动端输入框与键盘间距、重连状态栏避让系统状态栏、工具错误块刷新保留、present 展示部署链接。"),
+    ("qa_workbook", "AgentHub 上线 · QA 检查表", "solo:generalist",
+     "用 openpyxl 生成一个真正的 launch-qa-checklist.xlsx 并 present。"
+     "工作簿至少 3 张表:1) SmokeCases:模块/用例/步骤/预期/负责人/状态/阻塞原因;"
+     "2) RiskRegister:风险/概率/影响/缓解方案/owner/上线前是否必须关闭;"
+     "3) Metrics:上线观测指标/埋点名/阈值/告警渠道。"
+     "用 Excel 公式统计通过率、阻塞数、Must Fix 数;加条件格式或醒目标记。内容要像真实上线检查表。"),
+    ("status_page", "AgentHub 上线 · 状态页组件", "solo:designer",
+     "实现一个单文件 status.html,用于上线当天投屏查看 AgentHub 服务状态。"
+     "页面展示:前端、后端 API、WebSocket、Agent 适配器、文件预览、部署链接 6 个模块的状态卡;"
+     "包含模拟的最近 8 条事件时间线、刷新按钮、轻量筛选(全部/异常/已恢复)。"
+     "不依赖外网,移动端和桌面端都要好看。最后 present 这个 .html。"),
+    ("telemetry_report", "AgentHub 上线 · 埋点验收报告", "solo:generalist",
+     "自造一份约 200 行的 AgentHub 上线前埋点事件 CSV(event_name/user_role/platform/success/latency_ms/timestamp),"
+     "用 pandas 做验收分析:关键漏斗(创建项目→新建对话→发送消息→工具调用→present)、平台成功率、"
+     "P95 延迟、失败 Top 原因。用 matplotlib 画 2 张图并写 telemetry-readiness.md 报告,报告内嵌图片引用。"
+     "最后 present telemetry-readiness.md。"),
+    ("go_live_pack", "AgentHub 上线 · Go-live 协作包", "group",
+     "群里多位负责人并行准备 AgentHub 上线 Go-live 协作包。"
+     "请拆成互不依赖的章节交给成员:发布范围与非目标、上线检查清单、灰度与回滚方案、客服/公告口径、"
+     "上线当天值班与监控。每章落到 sections/ 下独立文件,最后由阿核合并成 go-live.md 并 present。"
+     "注意:共享文件 go-live.md 的骨架/目录只由一个人建,其他人填各自章节,避免合并冲突。"),
 ]
 
 
 EDGE_CASES = [
-    ("mention_seq", "@路由 · 顺序依赖接力", "group",
-     "这是 @ 路由回归测试。@文澜 @制图 协作一个极小任务,但必须严格顺序执行:"
-     "第一阶段只让文澜创建 sections/qa-mention-alpha.md,内容只写一行 alpha ready;"
-     "等第一阶段完成并合并到 main 后,第二阶段再让制图读取该文件,并创建 sections/qa-mention-beta.md,"
-     "内容只写一行 beta saw alpha ready。不要 present,最后由阿核说明两个文件是否都在 main。"
+    ("mention_seq", "@路由 · 上线依赖接力", "group",
+     "这是 @ 路由回归测试,用真实上线准备场景。@文澜 @制图 协作,但必须严格顺序执行:"
+     "第一阶段只让文澜创建 sections/release-copy.md,内容是一段 80 字以内的上线公告文案;"
+     "等第一阶段完成并合并到 main 后,第二阶段再让制图读取该文件,并创建 sections/release-banner.html,"
+     "把这段文案做成一个上线横幅组件。不要 present,最后由阿核说明两个文件是否都在 main。"
      "如果你要派活,必须分阶段 dispatch;不要让两人并发。"),
     ("mention_single", "@路由 · 单点名直达+验收", "group",
-     "这是单 @ 路由回归测试。请 @制图 直接做一个极小的单文件 HTML:sections/qa-single-at.html,"
-     "页面只需要显示“single at direct route”和一个按钮。预期:制图先直达执行并 clean merge 到 main,"
+     "这是单 @ 路由回归测试。请 @制图 直接做一个极小的上线倒计时组件:sections/launch-countdown.html,"
+     "页面只需要显示“AgentHub launch readiness”和一个开始检查按钮。预期:制图先直达执行并 clean merge 到 main,"
      "随后阿核收到轻量验收回合。完成后 present 这个 HTML。"),
     ("mention_unknown", "@路由 · 未知成员忽略", "group",
-     "这是未知 @ 边界测试。请 @不存在的成员 @文澜 起草 sections/qa-unknown-mention.md,"
-     "内容说明只有真实群成员会被解析,未知 @ 不应触发任何 agent。最终只需要一个 Markdown 文件,"
+     "这是未知 @ 边界测试。请 @不存在的成员 @文澜 起草 sections/unknown-mention-policy.md,"
+     "内容说明上线群聊中只有真实群成员会被解析,未知 @ 不应触发任何 agent。最终只需要一个 Markdown 文件,"
      "不要 present。"),
-    ("conflict_same_file", "合并冲突 · 同文件同区域", "group",
-     "这是冲突处理回归测试。请故意让文澜和制图并行修改同一个文件 sections/qa-conflict.md 的同一行:"
-     "文澜写“owner = writer”,制图写“owner = designer”。不要提前规避冲突;让系统暴露真实冲突,"
-     "然后由阿核按冲突卡流程选择一个最终版本并说明处理结果。"),
-    ("single_main_sync", "单聊合并 · main 同步", "solo:designer",
-     "这是单聊 main 同步回归测试。创建 sections/qa-single-main-sync.md,内容三行:"
-     "title: single main sync / agent: 制图 / status: created。完成后 report,不要 present。"),
-    ("diff_history", "Diff/历史 · 连续修改", "solo:designer",
-     "这是 diff 与提交历史回归测试。先创建 qa-history-smoke.md,写 3 行初始内容;"
-     "然后在同一轮里修改它两次:第一次追加 line two,第二次把标题改成 QA History Smoke Final。"
+    ("conflict_same_file", "合并冲突 · 上线口径冲突", "group",
+     "这是冲突处理回归测试。请故意让文澜和制图并行修改同一个文件 sections/launch-owner.md 的同一行:"
+     "文澜写“launch_owner = 文档负责人”,制图写“launch_owner = 前端负责人”。不要提前规避冲突;"
+     "让系统暴露真实冲突,然后由阿核按冲突卡流程选择一个最终版本并说明处理结果。"),
+    ("single_main_sync", "单聊合并 · 上线文件同步", "solo:designer",
+     "这是单聊 main 同步回归测试。创建 sections/single-agent-launch-sync.md,内容三行:"
+     "title: single agent launch sync / agent: 制图 / status: ready。完成后 report,不要 present。"),
+    ("diff_history", "Diff/历史 · 上线清单连续修改", "solo:designer",
+     "这是 diff 与提交历史回归测试。先创建 launch-history-smoke.md,写 3 行初始上线检查项;"
+     "然后在同一轮里修改它两次:第一次追加 rollback checklist,第二次把标题改成 Launch History Smoke Final。"
      "目标是产生可检查的 diff/历史记录;完成后 report,不要 present。"),
-    ("readonly_recovery", "工具错误 · 读取不存在文件后恢复", "solo:generalist",
-     "这是错误恢复边界测试。先尝试读取 missing/does-not-exist.md,确认失败后不要停;"
-     "随后创建 sections/qa-recovery.md,内容写明 recovered after missing file。完成后 report。"),
+    ("readonly_recovery", "工具错误 · 上线缺失文件恢复", "solo:generalist",
+     "这是错误恢复边界测试。先尝试读取 missing/launch-runbook.md,确认失败后不要停;"
+     "随后创建 sections/launch-recovery.md,内容写明 recovered after missing launch runbook。完成后 report。"),
 ]
 
 

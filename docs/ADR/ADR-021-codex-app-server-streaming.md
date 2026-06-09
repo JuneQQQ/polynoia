@@ -1,4 +1,4 @@
-# ADR-017 — Codex adapter: `app-server` JSON-RPC for real streaming (放弃 `exec --json`)
+# ADR-021 — Codex adapter: `app-server` JSON-RPC for real streaming (放弃 `exec --json`)
 
 **日期**:2026-05-31
 **状态**:Accepted

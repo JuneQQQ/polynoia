@@ -1,7 +1,7 @@
 # Codex `app-server` 流式协议时序图
 
 > 场景:解释 CodexAdapter 为什么/怎么从 `codex exec --json`(整段非流式)切到
-> `codex app-server`(token 级流式)的 JSON-RPC v2 长连接。配 [ADR-017](../ADR/ADR-017-codex-app-server-streaming.md)。
+> `codex app-server`(token 级流式)的 JSON-RPC v2 长连接。配 [ADR-021](../ADR/ADR-021-codex-app-server-streaming.md)。
 > 答辩素材:跨人对齐 "Codex 这条 adapter 的 turn 生命周期 + 三层协议映射"。
 
 ## 渲染图

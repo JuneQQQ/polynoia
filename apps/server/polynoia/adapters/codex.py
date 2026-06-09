@@ -67,6 +67,7 @@ Translation map → PAP:
   ``PartCompletedEvent(TextPayload)``
 * ``item.completed`` for ``reasoning`` → P0 skip (no PAP event)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -102,6 +103,14 @@ from polynoia.settings import settings
 log = logging.getLogger(__name__)
 
 ToolCallState = Literal["pending", "running", "completed", "error"]
+
+
+def _friendly_codex_exception(e: Exception) -> str:
+    if isinstance(e, FileNotFoundError):
+        return (
+            "Codex CLI 未找到。请确认已安装 @openai/codex, 且 codex 所在目录在后端服务的 PATH 中。"
+        )
+    return str(e)
 
 
 # ── Polynoia MCP block (the only thing we inject) ────────────────────
@@ -181,9 +190,17 @@ def _codex_appserver_server_request_response(
 
 
 def _polynoia_mcp_block(
-    *, conv_id: str, agent_id: str, pythonpath: str, sandbox_root: str,
-    tool_role: str = "generalist", tools: str = "", api_base: str = "",
-    worktree_root: str = "", workspace_root: str = "", turn_agent_id: str = "",
+    *,
+    conv_id: str,
+    agent_id: str,
+    pythonpath: str,
+    sandbox_root: str,
+    tool_role: str = "generalist",
+    tools: str = "",
+    api_base: str = "",
+    worktree_root: str = "",
+    workspace_root: str = "",
+    turn_agent_id: str = "",
     workspace_id: str = "",
 ) -> str:
     """Build the ``[mcp_servers.polynoia]`` TOML block.
@@ -353,7 +370,9 @@ class CodexAdapter:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
-                workspace_id=workspace_id, conv_id=conv_id, agent_id=agent_id,
+                workspace_id=workspace_id,
+                conv_id=conv_id,
+                agent_id=agent_id,
             )
         elif read_only_workspace_id:
             sandbox = Sandbox.open_workspace_if_exists(
@@ -385,6 +404,7 @@ class CodexAdapter:
         # stale provider (mimo) which doesn't have gpt-5.5 → empty turn.
         if model and existing:
             import re
+
             existing = re.sub(
                 r'^model\s*=\s*"[^"]*"',
                 f'model = "{model}"',
@@ -399,6 +419,7 @@ class CodexAdapter:
         # polynoia package is installed at the polynoia server's source root,
         # NOT inside the sandbox).
         from pathlib import Path as _Path
+
         server_pkg_root = str(_Path(__file__).parent.parent.parent)
         mcp_block = _polynoia_mcp_block(
             conv_id=conv_id,
@@ -408,22 +429,24 @@ class CodexAdapter:
             sandbox_root=str(sandbox.root.parent),
             tool_role=tool_role,
             tools=",".join(tools_whitelist or []),
-            api_base=os.environ.get(
-                "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
-            ),
+            api_base=os.environ.get("POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"),
             worktree_root=(str(sandbox.root) if sandbox.workspace_root else ""),
             workspace_root=(str(sandbox.workspace_root) if sandbox.workspace_root else ""),
             workspace_id=(sandbox.workspace_id or ""),
         )
-        config_path.write_text(
-            _merge_mcp_into_config(existing, mcp_block), encoding="utf-8"
-        )
+        config_path.write_text(_merge_mcp_into_config(existing, mcp_block), encoding="utf-8")
 
         # ── Proxy egress control (proxy_kind) ───────────────────────
         _env = dict(env or {})
         if proxy_kind == "direct":
-            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                       "http_proxy", "https_proxy", "all_proxy"):
+            for _k in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ):
                 _env.pop(_k, None)
         elif proxy_kind == "custom" and proxy:
             _env["HTTP_PROXY"] = proxy
@@ -498,9 +521,12 @@ class CodexSession:
             "exec",
             "--json",
             "--skip-git-repo-check",
-            "--sandbox", "read-only",
-            "--color", "never",
-            "--cd", str(self._sandbox.root),
+            "--sandbox",
+            "read-only",
+            "--color",
+            "never",
+            "--cd",
+            str(self._sandbox.root),
         ]
         # Only override the model when the contact explicitly pinned one.
         # Otherwise codex uses the model from the user's own config.toml.
@@ -555,7 +581,10 @@ class CodexSession:
         # (file reads, big diffs) exceed 64KB → readline() raises "chunk is
         # longer than limit". 32MB / line is generous but bounded.
         self._as_proc = await asyncio.create_subprocess_exec(
-            "codex", "-c", "model_reasoning_summary=auto", "app-server",
+            "codex",
+            "-c",
+            "model_reasoning_summary=auto",
+            "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -565,10 +594,13 @@ class CodexSession:
         )
         self._client = _AppServerClient(self._as_proc)
         self._client.start()
-        await self._client.request("initialize", {
-            "clientInfo": {"name": "polynoia", "version": "0.1.0"},
-            "capabilities": {"experimentalApi": True},
-        })
+        await self._client.request(
+            "initialize",
+            {
+                "clientInfo": {"name": "polynoia", "version": "0.1.0"},
+                "capabilities": {"experimentalApi": True},
+            },
+        )
         await self._client.notify("initialized", {})
         start_params: dict[str, Any] = {
             "cwd": str(self._sandbox.root),
@@ -634,19 +666,25 @@ class CodexSession:
                     log.warning(
                         "codex app-server turn produced %d events (only TurnStarted) "
                         "— model=%s agent=%s thread=%s turn=%s",
-                        _event_count, self._model, self.agent_id,
-                        self._as_thread_id, self._active_turn_id,
+                        _event_count,
+                        self._model,
+                        self.agent_id,
+                        self._as_thread_id,
+                        self._active_turn_id,
                     )
             except Exception as e:  # surface any connect/RPC error as a turn failure
+                message = _friendly_codex_exception(e)
                 log.warning(
                     "codex app-server turn exception: %s agent=%s model=%s",
-                    e, self.agent_id, self._model,
+                    message,
+                    self.agent_id,
+                    self._model,
                 )
                 if not terminal_from_translator:
                     yield TurnFailedEvent(
                         turn_id=turn_id,
                         task_id=task_id,
-                        error={"subtype": "exception", "message": str(e)},
+                        error={"subtype": "exception", "message": message},
                     )
             finally:
                 self._active_turn_id = None
@@ -746,8 +784,10 @@ class CodexSession:
     async def interrupt(self, task_id: str | None = None) -> None:
         # exec: kill the per-turn subprocess. app-server: cancel the active turn
         # over JSON-RPC (the long-lived connection stays up for the next turn).
-        if self._transport != "exec" and self._client is not None and (
-            self._as_thread_id and self._active_turn_id
+        if (
+            self._transport != "exec"
+            and self._client is not None
+            and (self._as_thread_id and self._active_turn_id)
         ):
             with contextlib.suppress(Exception):
                 await self._client.request(
@@ -887,7 +927,8 @@ class _AppServerClient:
                     response = _codex_appserver_server_request_response(msg)
                     if response is None:
                         response = {
-                            "jsonrpc": "2.0", "id": msg["id"],
+                            "jsonrpc": "2.0",
+                            "id": msg["id"],
                             "error": {"code": -32601, "message": "unhandled by polynoia"},
                         }
                     with contextlib.suppress(Exception):
@@ -995,7 +1036,8 @@ def _v2_item_to_toolcall(item: dict[str, Any]) -> ToolCallPayload | None:
         err = item.get("error") or {}
         result = item.get("result") or {}
         out_text = (
-            _stringify_tool_output(result.get("content")) if result
+            _stringify_tool_output(result.get("content"))
+            if result
             else (err.get("message") if err else None)
         )
         return ToolCallPayload(
@@ -1060,8 +1102,10 @@ async def _translate_appserver_turn(
             if item_id not in text_started:
                 text_started.add(item_id)
                 yield PartStartedEvent(
-                    turn_id=turn_id, task_id=task_id,
-                    message_id=mid, part_id=pid,
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    message_id=mid,
+                    part_id=pid,
                     part=TextPayload(body=[PNTextBlock(c="")]),
                 )
             if delta:
@@ -1077,8 +1121,10 @@ async def _translate_appserver_turn(
             if item_id not in reasoning_started:
                 reasoning_started.add(item_id)
                 yield PartStartedEvent(
-                    turn_id=turn_id, task_id=task_id,
-                    message_id=mid, part_id=pid,
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    message_id=mid,
+                    part_id=pid,
                     part=ReasoningPayload(body=[PNTextBlock(c="")]),
                 )
             if method == "item/reasoning/summaryTextDelta":
@@ -1103,13 +1149,16 @@ async def _translate_appserver_turn(
                     if item_id not in text_started:
                         text_started.add(item_id)
                         yield PartStartedEvent(
-                            turn_id=turn_id, task_id=task_id,
-                            message_id=mid, part_id=pid,
+                            turn_id=turn_id,
+                            task_id=task_id,
+                            message_id=mid,
+                            part_id=pid,
                             part=TextPayload(body=[PNTextBlock(c="")]),
                         )
                 else:  # item/completed → final text
                     yield PartCompletedEvent(
-                        message_id=mid, part_id=pid,
+                        message_id=mid,
+                        part_id=pid,
                         part=TextPayload(body=[PNTextBlock(c=item.get("text") or "")]),
                     )
                 continue
@@ -1123,7 +1172,8 @@ async def _translate_appserver_turn(
                     txt = _v2_reasoning_text(item)
                     if item_id in reasoning_started or txt:
                         yield PartCompletedEvent(
-                            message_id=mid, part_id=pid,
+                            message_id=mid,
+                            part_id=pid,
                             part=ReasoningPayload(body=[PNTextBlock(c=txt)]),
                         )
                 continue
@@ -1153,7 +1203,9 @@ async def _translate_appserver_turn(
             will_retry = params.get("willRetry", True)
             log.warning(
                 "codex error notification: %s willRetry=%s agent=%s",
-                msg, will_retry, turn_id,
+                msg,
+                will_retry,
+                turn_id,
             )
             continue
 
@@ -1164,19 +1216,27 @@ async def _translate_appserver_turn(
             if turn_status == "failed":
                 err = turn_obj.get("error") or {}
                 yield TurnFailedEvent(
-                    turn_id=turn_id, task_id=task_id,
-                    error={"subtype": "turn_failed", "message": (err or {}).get("message", str(err))},
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    error={
+                        "subtype": "turn_failed",
+                        "message": (err or {}).get("message", str(err)),
+                    },
                 )
             else:
                 yield TurnCompletedEvent(
-                    turn_id=turn_id, task_id=task_id, usage=usage, stop_reason="complete",
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    usage=usage,
+                    stop_reason="complete",
                 )
             return
         if method == "turn/failed":
             err = (params.get("turn") or {}).get("error") or params.get("error") or {}
             terminal = True
             yield TurnFailedEvent(
-                turn_id=turn_id, task_id=task_id,
+                turn_id=turn_id,
+                task_id=task_id,
                 error={"subtype": "turn_failed", "message": (err or {}).get("message", "")},
             )
             return
@@ -1185,7 +1245,8 @@ async def _translate_appserver_turn(
 
     if not terminal:
         yield TurnFailedEvent(
-            turn_id=turn_id, task_id=task_id,
+            turn_id=turn_id,
+            task_id=task_id,
             error={"subtype": "process_crash", "message": "codex app-server stream ended"},
         )
 
@@ -1310,7 +1371,7 @@ async def _translate_codex_stream(
                     )
                 elif etype == "item.updated":
                     prev = reasoning_text.get(item_id, "")
-                    suffix = cur[len(prev):] if cur.startswith(prev) else cur
+                    suffix = cur[len(prev) :] if cur.startswith(prev) else cur
                     reasoning_text[item_id] = cur
                     if suffix:
                         yield PartDeltaEvent(

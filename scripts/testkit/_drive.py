@@ -7,8 +7,9 @@ the agents actually run, and logs key frames (diff / terminal / tasks / present 
 error) until the turn goes idle.
 
 Usage:
-    python scripts/_drive.py 2048           # match by title substring
-    python scripts/_drive.py 01KTEN3DY9...  # or by exact conv id
+    python scripts/testkit/_drive.py 发布页        # match by title substring
+    python scripts/testkit/_drive.py Go-live       # match by title substring
+    python scripts/testkit/_drive.py 01KTEN3DY9...  # or by exact conv id
 """
 import asyncio
 import json

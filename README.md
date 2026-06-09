@@ -87,13 +87,15 @@ With `make dev` running, in a second terminal:
 python3 scripts/seed_demo.py          # 5 personas + 1 workspace + 1 group chat
 ```
 
-Or load **scenario test cases** (office docs / web game / fullstack / data / conflict drill / manual review):
+Or load the **launch-readiness testkit** used for submission review:
 
 ```bash
-python3 scripts/scenarios/seed_all.py # builds one workspace per scenario
+bash scripts/testkit/reset.sh # clean DB + seed launch / routing / merge / diff cases
 ```
 
-Each scenario script's header documents exactly what to send and what to expect.
+The seeded cases cover release notes, QA workbook, status page, telemetry report,
+Go-live collaboration, @ routing, conflict handling, main sync, diff/history, and
+tool-error recovery.
 
 ### Handy commands
 
@@ -130,7 +132,7 @@ dispatches messages through a **MessagePart registry** — one message can carry
 status parts together.
 
 See the [design spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) and the
-[context-system overview](docs/context-system.html) for the full model.
+[context-system overview](docs/design/context-system.md) for the full model.
 
 ## Tech stack
 
@@ -142,7 +144,8 @@ See the [design spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) and 
 
 This project is built **with** AI as a first-class collaborator. The conventions live in
 [`CLAUDE.md`](CLAUDE.md) (project-level AI collaboration spec), with decision records in
-[`docs/ADR/`](docs/ADR/) and research synthesis in
+[`docs/ADR/`](docs/ADR/), the submission-facing collaboration summary in
+[`docs/ai-collaboration.md`](docs/ai-collaboration.md), and research synthesis in
 [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
