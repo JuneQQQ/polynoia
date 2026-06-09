@@ -198,6 +198,10 @@ type Store = {
 	/** Did the initial seed fetch reach the server? false → render the boot
 	 * "can't reach server" gate instead of an empty shell. */
 	serverReachable: boolean;
+	/** Has the initial seed probe resolved this session (success OR failure)?
+	 * Distinguishes "not yet checked" from the optimistic `serverReachable`
+	 * default so the native mobile gate can hold on a splash until verified. */
+	connectionProbed: boolean;
 	/** WS link state for the active conv, surfaced as the connection banner. */
 	connectionStatus: "connecting" | "online" | "reconnecting" | "offline";
 
@@ -497,6 +501,7 @@ export const useStore = create<Store>((set, get) => ({
 	servers: [],
 	workspaces: [],
 	serverReachable: true,
+	connectionProbed: false,
 	connectionStatus: "connecting",
 	// Restored on boot so a refresh keeps you on the same project + conversation
 	// (the active conv object itself is persisted by App.tsx).
@@ -717,16 +722,36 @@ export const useStore = create<Store>((set, get) => ({
 	setConnectionStatus: (s) => set({ connectionStatus: s }),
 	reloadSeed: async () => {
 		const { api } = await import("./lib/api");
+		// Cap the probe: iOS WKWebView lets an un-timed fetch to an unreachable
+		// host hang ~60s, during which the optimistic `serverReachable` stays true
+		// and the mobile gate would wrongly admit the user. Race a timeout so the
+		// verdict (and `connectionProbed`) lands fast. The losing fetch is harmless.
+		const PROBE_TIMEOUT_MS = 8000;
 		try {
-			const [providers, agents, servers, workspaces] = await Promise.all([
-				api.providers(),
-				api.agents(),
-				api.servers(),
-				api.workspaces(),
+			const [providers, agents, servers, workspaces] = await Promise.race([
+				Promise.all([
+					api.providers(),
+					api.agents(),
+					api.servers(),
+					api.workspaces(),
+				]),
+				new Promise<never>((_, reject) =>
+					setTimeout(
+						() => reject(new Error("seed probe timed out (8s)")),
+						PROBE_TIMEOUT_MS,
+					),
+				),
 			]);
-			set({ providers, agents, servers, workspaces, serverReachable: true });
+			set({
+				providers,
+				agents,
+				servers,
+				workspaces,
+				serverReachable: true,
+				connectionProbed: true,
+			});
 		} catch (e) {
-			set({ serverReachable: false });
+			set({ serverReachable: false, connectionProbed: true });
 			throw e;
 		}
 	},
