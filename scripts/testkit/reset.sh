@@ -5,8 +5,8 @@
 #   - wipes and rebuilds the local DB schema
 #   - starts backend :7780 and frontend :5173
 #   - seeds realistic deliverable conversations: web games, PPT, DOCX, Excel,
-#     data reports, landing pages, collaboration, conflict, diff/history, and
-#     recovery cases
+#     React/Vue + backend API apps, data reports, office deliverables,
+#     collaboration, conflict, diff/history, and recovery cases
 #
 #   bash scripts/testkit/reset.sh
 set -euo pipefail
@@ -233,20 +233,22 @@ TEAM = [
 
 CASES = [
     (
-        "plane_war_game",
-        "飞机大战网页版游戏",
+        "react_plane_war",
+        "React 飞机大战小游戏",
         "solo:designer",
-        "做一个可直接打开玩的飞机大战网页版小游戏,产物为 plane-war.html。要求单文件自包含,"
-        "Canvas 渲染,支持键盘和移动端触摸拖拽,包含玩家飞机、敌机、子弹、碰撞、分数、生命值、暂停/重新开始。"
-        "视觉要完整,不要只做占位。完成后 present 这个 HTML。",
+        "用 React + Vite 开发一个飞机大战小游戏,不要只写单个 HTML。产物放到 app/ 目录:"
+        "package.json、src/App.jsx、src/main.jsx、src/styles.css。要求 Canvas 或 DOM 动画均可,"
+        "支持键盘和移动端触摸拖拽,包含玩家飞机、敌机、子弹、碰撞、分数、生命值、暂停/重新开始。"
+        "请补一个 README.md 写明 npm install / npm run dev,并 present 可预览入口。",
     ),
     (
-        "landlord_game",
-        "斗地主网页版游戏",
+        "fullstack_issue_tracker",
+        "React + FastAPI 缺陷追踪系统",
         "group",
-        "协作开发一个斗地主网页版小游戏,最终产物为 landlord.html 并 present。阿核负责拆分和最终验收;"
-        "文澜先整理规则、牌型和交互文案;制图实现单文件 HTML/CSS/JS 牌桌界面和基础出牌流程;"
-        "数擎补充牌型判断、胜负计分和测试数据。共享文件只由一个人合并,其余成员写各自模块文件,避免并行改同一文件。",
+        "协作开发一个小型缺陷追踪系统,最终能本地启动前后端并 present。技术要求:"
+        "frontend/ 使用 React + Vite,backend/ 使用 FastAPI。后端提供 Issue 的列表/创建/状态流转 API,"
+        "用 SQLite 或 JSON 文件持久化;前端有列表、筛选、新建弹窗、详情抽屉和状态切换。"
+        "文澜写产品规格和接口契约;数擎实现后端与测试数据;制图实现前端;阿核验收 API 联调、main 同步和 README 启动说明。",
     ),
     (
         "family_budget_xlsx",
@@ -256,11 +258,12 @@ CASES = [
         "支出占比饼图。数字要像真实三口之家月度账单,分类清晰,汇总表使用 Excel SUMIF/SUM 公式,加基本格式和条件标记。",
     ),
     (
-        "startup_pitch_ppt",
-        "AI 教育创业路演 PPT",
-        "solo:writer",
-        "制作一份 10 页左右的 AI 教育创业项目路演 PPTX 并 present。内容包括:封面、痛点、解决方案、"
-        "产品截图占位、市场规模、商业模式、竞品对比、增长策略、财务预测、团队与融资计划。要求视觉统一、标题短、每页信息密度合理。",
+        "vue_inventory_admin",
+        "Vue + Express 库存管理后台",
+        "group",
+        "开发一个库存管理后台,技术栈使用 Vue 3 + Vite 前端和 Express 后端。最终目录包含 frontend/、backend/、README.md。"
+        "后端提供商品 CRUD、库存入库/出库、低库存预警接口,用 JSON 文件模拟数据库;前端包含商品表格、搜索筛选、"
+        "新增/编辑表单、库存流水和低库存高亮。文澜先写接口与验收标准;数擎实现后端;制图实现 Vue 前端;阿核做联调验收并 present。",
     ),
     (
         "rental_contract_docx",
@@ -270,18 +273,36 @@ CASES = [
         "维修责任、违约责任、退租交接、附件清单和签字页。要求版式像正式合同,有标题层级、表格和签署栏。",
     ),
     (
-        "coffee_shop_site",
-        "咖啡店官网",
-        "solo:designer",
-        "做一个本地精品咖啡店官网,产物 coffee-shop.html 并 present。要求首屏有品牌氛围、菜单、门店信息、"
-        "营业时间、预约按钮、移动端适配。不要做营销空壳,页面里要能看到真实菜单和价格。",
+        "startup_pitch_ppt",
+        "AI 教育创业路演 PPT",
+        "solo:writer",
+        "制作一份 10 页左右的 AI 教育创业项目路演 PPTX 并 present。内容包括:封面、痛点、解决方案、"
+        "产品截图占位、市场规模、商业模式、竞品对比、增长策略、财务预测、团队与融资计划。要求视觉统一、标题短、每页信息密度合理。",
     ),
     (
-        "travel_plan_doc",
-        "关西亲子旅行计划",
-        "solo:writer",
-        "写一份关西 6 天 5 晚亲子旅行计划 travel-plan.md 并 present。包含每日行程、交通、餐厅、预算、"
-        "雨天备选、儿童友好提醒和打包清单。内容要具体到景点和时间段。",
+        "ops_status_dashboard",
+        "React + 后端状态页",
+        "group",
+        "做一个上线状态页项目,要求包含 backend/ 和 frontend/。backend/ 提供服务状态、最近事故、订阅邮箱模拟接口;"
+        "frontend/ 用 React + Vite 展示总体状态、组件状态、事故时间线、订阅表单和移动端布局。"
+        "数擎负责 API 和 mock 数据;制图负责前端;文澜负责事故文案和 README;阿核验收前后端联调、错误态和 present。",
+    ),
+    (
+        "upload_doc_review",
+        "合同文档上传审阅系统",
+        "group",
+        "开发一个合同文档上传审阅系统,覆盖真实文件上传链路。frontend/ 用 React + Vite,backend/ 用 FastAPI。"
+        "前端必须支持拖拽上传 DOCX/PDF、上传进度、最大 20MB 限制、上传中刷新/关闭页面警告、失败重试和已上传文件列表。"
+        "后端提供 /upload、/files、/files/{id}/summary 接口,用本地 uploads/ 保存文件并返回模拟摘要/风险点。"
+        "文澜写产品规则和风险点模板;数擎实现上传 API 和文件元数据;制图实现拖拽上传 UI;阿核验收多文件、超限、刷新保护和 present。",
+    ),
+    (
+        "multimodal_receipt_expense",
+        "票据图片识别报销流",
+        "group",
+        "做一个多模态票据报销原型。要求支持上传或拖拽多张发票/小票图片,前端展示缩略图、识别状态、"
+        "可编辑字段(金额/商户/日期/分类)和汇总表;后端提供图片上传、OCR 模拟结果、提交报销单接口。"
+        "可以在 sample-assets/ 生成几张 SVG/PNG 小票样例用于测试,不要依赖外网。数擎做后端和样例数据,制图做前端,文澜写验收说明,阿核验收。",
     ),
     (
         "marketing_page_sequence",
@@ -299,6 +320,13 @@ CASES = [
         "个人简介、联系入口和移动端适配。制图完成后阿核做轻量验收并 present。",
     ),
     (
+        "travel_plan_doc",
+        "关西亲子旅行计划",
+        "solo:writer",
+        "写一份关西 6 天 5 晚亲子旅行计划 travel-plan.md 并 present。包含每日行程、交通、餐厅、预算、"
+        "雨天备选、儿童友好提醒和打包清单。内容要具体到景点和时间段。",
+    ),
+    (
         "sales_analysis_report",
         "电商销售分析报告",
         "group",
@@ -306,18 +334,35 @@ CASES = [
         "品类贡献、复购率和退款率,输出 sales-analysis.md 和两张图。未知成员不应被调度;最终由阿核验收。",
     ),
     (
+        "csv_upload_dashboard",
+        "CSV 上传数据看板",
+        "solo:generalist",
+        "开发一个 CSV 上传数据看板原型,包含 backend/ 和 frontend/。用户上传 sales.csv 后,系统解析字段,"
+        "展示上传进度、字段映射、异常行提示、基础统计和图表。后端限制最大 10MB,返回解析错误行号;"
+        "前端需要支持重新上传、取消上传和刷新保护。最后 present 可运行入口或 README。",
+    ),
+    (
+        "image_to_landing_page",
+        "参考图生成落地页",
+        "solo:designer",
+        "做一个多模态设计任务:在 sample-assets/reference-layout.png 里先生成一张简洁参考图,"
+        "再根据这张参考图实现 landing-from-image.html。页面需说明它从参考图提取了哪些布局元素,"
+        "并实现对应的首屏、卡片区和移动端布局。最后 present HTML。",
+    ),
+    (
         "restaurant_menu_collab",
-        "餐厅菜单页多人改版",
+        "餐厅点餐系统多人改版",
         "group",
-        "协作改版 restaurant-menu.html。为了模拟真实多人编辑冲突,文澜和制图都需要调整同一个菜单标题文案:"
-        "文澜偏品牌叙事,制图偏视觉短标题。不要提前规避冲突;如果出现冲突,由阿核选择更适合页面的一版并说明原因。",
+        "协作改版一个小型餐厅点餐系统。要求 frontend/ React 菜单页 + cart 状态,backend/ 提供菜单与下单接口。"
+        "为了模拟真实多人编辑冲突,文澜和制图都需要调整同一个菜单标题文案:文澜偏品牌叙事,制图偏视觉短标题。"
+        "不要提前规避冲突;如果出现冲突,由阿核选择更适合页面的一版并说明原因,最后 present。",
     ),
     (
         "game_2048",
         "2048 网页小游戏",
         "solo:designer",
-        "做一个 2048 网页小游戏 2048.html 并 present。要求键盘/滑动操作、计分、重新开始、胜利/失败状态、"
-        "移动端适配。完成后确保文件已经同步到 main 工作区。",
+        "做一个 2048 网页小游戏 2048.html 并 present。这是保留的单文件预览烟测用例。要求键盘/滑动操作、"
+        "计分、重新开始、胜利/失败状态、移动端适配。完成后确保文件已经同步到 main 工作区。",
     ),
     (
         "resume_iteration",
@@ -325,6 +370,13 @@ CASES = [
         "solo:designer",
         "制作 personal-resume.html。先完成基础版简历网页,再连续迭代两次:第一次加项目经历和技能标签,"
         "第二次优化移动端排版和配色。最终 present,并保留可检查的提交历史。",
+    ),
+    (
+        "django_like_api_spec",
+        "权限管理 API 设计与实现",
+        "solo:generalist",
+        "实现一个轻量权限管理后端原型,放在 backend/。可用 FastAPI 或 Flask,提供用户、角色、权限、登录模拟和鉴权中间件。"
+        "要求包含 OpenAPI/接口说明、pytest 或脚本级测试、示例数据和 README 启动方式。最后 present README 或 API 文档。",
     ),
     (
         "meeting_notes_recovery",
