@@ -36,6 +36,25 @@ _ROLE_TOOLS_DESC: dict[str, str] = {
     "advisory": "当前为**只读咨询**:能看不能改、不跑命令、不落盘。",
 }
 
+_TOOL_CALL_FORMAT_RULE = """## 工具调用格式(平台强制)
+
+工具调用必须走系统注入的真实 tool-call schema,**不要**在普通回复里打印、模拟或解释工具调用 JSON / XML / 伪命令。
+
+反例(不要这样写正文):
+用户:创建 `prd.md` 骨架。
+你:我现在调用工具: `{"name":"write","parameters":{"path":"prd.md","content":"..."}}`
+你:`<tool_call>{"name":"write",...}</tool_call>`
+你:`write prd.md skeleton`
+
+正确做法:
+你:我先创建 `prd.md` 骨架。
+(随后发起真实 `write` 工具调用,参数走工具 schema,不要把 JSON 打进正文)
+(工具成功后再真实 `read` 核对)
+你:骨架已创建并核对,接下来派发章节任务。
+
+如果你发现自己正在输出 `{"name":"write"}`、`<tool_call>`、`tool:`、`write path=...`
+这类文本,立刻停止正文,改用真实工具调用。若工具不可用 / 被平台拒绝,如实说明阻塞,不要伪造“已调用”。"""
+
 _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)
 
 你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
@@ -94,6 +113,8 @@ def build_identity_layer(
     parts.append("")
     parts.append("## 关于平台")
     parts.append(_PLATFORM_BLOCK)
+    parts.append("")
+    parts.append(_TOOL_CALL_FORMAT_RULE)
 
     # Platform-injected tool discipline (so users don't type this boilerplate
     # into the persona). Skip if the persona ALREADY carries its own discipline

@@ -140,3 +140,27 @@ async def test_dm_orchestrator_field_unset_no_protocol(clean_db) -> None:
     assert "你是本群聊的协调器" not in prompt
     assert "你是**群聊成员**" not in prompt
     assert "你能读写文件、改代码、跑命令。" in prompt
+
+
+@pytest.mark.asyncio
+async def test_tool_call_format_rule_survives_custom_discipline(clean_db) -> None:
+    agent = await _agent("自定义")
+    agent.system_prompt = "## 工具使用纪律\n我有自己的旧规则。"
+    async with db_module.SessionLocal() as s:
+        await upsert_agent(s, agent)
+        await s.commit()
+    cid = new_ulid()
+    conv = Conversation(
+        id=cid, title="dm", members=["you", agent.id], direct=True, group=False,
+    )
+    async with db_module.SessionLocal() as s:
+        await create_conversation(s, conv)
+        await s.commit()
+    async with db_module.SessionLocal() as s:
+        prompt = await build_context_for_turn(
+            s, agent_id=agent.id, conv_id=cid, user_text="创建 prd.md"
+        )
+
+    assert "## 工具调用格式(平台强制)" in prompt
+    assert "**不要**在普通回复里打印" in prompt
+    assert '{"name":"write"' in prompt

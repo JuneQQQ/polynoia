@@ -19,6 +19,7 @@ import {
 import { memo, useState } from "react";
 import { api } from "../lib/api";
 import { isMobile } from "../lib/platform";
+import type { Message } from "../lib/types";
 import {
 	selectIsMessageStreaming,
 	selectMessageById,
@@ -26,6 +27,16 @@ import {
 } from "../store";
 import { MessagePart } from "./parts";
 import { useConvScope } from "./parts/_context";
+
+function isEmptyStreamingTextPayload(payload: Message["payload"]): boolean {
+	if (payload.kind !== "text") return false;
+	return payload.body.every((block) => {
+		if (typeof block.c === "string") return block.c.trim().length === 0;
+		return block.c.every((seg) =>
+			seg.type === "text" ? seg.text.trim().length === 0 : false,
+		);
+	});
+}
 
 type Props = {
 	convId: string;
@@ -262,7 +273,11 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 					</button>
 				)}
 				<MessagePart
-					payload={msg.payload}
+					payload={
+						isStreaming && isEmptyStreamingTextPayload(msg.payload)
+							? { kind: "typing", note: "正在回复…" }
+							: msg.payload
+					}
 					isStreaming={isStreaming}
 					convId={convId}
 					msgId={msg.id}

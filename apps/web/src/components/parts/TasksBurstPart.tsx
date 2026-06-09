@@ -332,22 +332,34 @@ function TasksBurstPartInner({
 								style={{ scrollbarGutter: "stable" }}
 							>
 								{lane.length === 0 ? (
-									// Empty lane: only show "等待开始" while genuinely PENDING/RUNNING.
+									// Empty lane: show a live placeholder while RUNNING, because
+									// the model can spend a long time before its first visible token.
 									// A done/failed lane with no claimed messages must NOT show
 									// "等待开始" (the "Done + 等待开始" contradiction) — show a quiet
 									// terminal note instead.
 									<div className="px-3 py-4 text-[11px] text-[var(--color-fg-4)] italic text-center tracking-wide">
-										{isDone
-											? en
-												? "Done · no output"
-												: "已完成 · 无输出"
-											: t.state === "failed"
-												? en
-													? "Failed"
-													: "已失败"
-												: en
-													? "Waiting to start…"
-													: "等待开始…"}
+										{t.state === "run" ? (
+											<span className="inline-flex items-center gap-1.5 not-italic text-[var(--color-fg-3)]">
+												<Loader2 size={11} className="animate-spin" />
+												{en ? "Running…" : "执行中…"}
+											</span>
+										) : isDone ? (
+											en ? (
+												"Done · no output"
+											) : (
+												"已完成 · 无输出"
+											)
+										) : t.state === "failed" ? (
+											en ? (
+												"Failed"
+											) : (
+												"已失败"
+											)
+										) : en ? (
+											"Waiting to start…"
+										) : (
+											"等待开始…"
+										)}
 									</div>
 								) : (
 									(() => {

@@ -27,6 +27,7 @@ import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
 import { MessageView } from "./MessageView";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
+import { TypingPart } from "./parts/TypingPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
 import { classifyFoldable } from "../lib/toolFold";
 import { ConvScopeProvider } from "./parts/_context";
@@ -36,6 +37,68 @@ type Props = {
 	members: string[];
 	title: string;
 };
+
+function AgentExecutionPlaceholder({
+	agent,
+	agentId,
+	label,
+	mobile,
+}: {
+	agent?: { id: string; name: string; initials: string; color: string };
+	agentId: string;
+	label: string;
+	mobile: boolean;
+}) {
+	return (
+		<div
+			data-agent-placeholder={agentId}
+			className={`anim-fade-up group/msg flex transition-colors duration-200 hover:bg-[var(--color-surface-2)]/25 ${
+				mobile ? "px-2 gap-2" : "px-6 gap-3"
+			} pt-3 pb-1.5`}
+			aria-live="polite"
+		>
+			<div className={`${mobile ? "w-7" : "w-8"} flex-shrink-0`}>
+				<button
+					type="button"
+					onClick={() => agent && useStore.getState().openAgentDetail(agent.id)}
+					className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-all duration-200 group-hover/msg:scale-[1.04]`}
+					style={{ background: agent?.color ?? "var(--color-fg-3)" }}
+					title={`查看 ${agent?.name ?? "Agent"} 详情`}
+				>
+					{agent?.initials ?? "?"}
+				</button>
+			</div>
+			<div className="flex-1 min-w-0">
+				<div className="flex items-baseline gap-2 mb-1">
+					<button
+						type="button"
+						onClick={() =>
+							agent && useStore.getState().openAgentDetail(agent.id)
+						}
+						className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
+						title="查看详情"
+					>
+						{agent?.name ?? "Agent"}
+					</button>
+					<span className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-fg-4)]">
+						执行中
+					</span>
+				</div>
+				<TypingPart payload={{ kind: "typing", note: label }} />
+			</div>
+		</div>
+	);
+}
+
+function messageIsFreshForAgent(
+	message: Message,
+	agentId: string,
+	startedAt: number,
+): boolean {
+	if (message.sender_id !== agentId) return false;
+	const createdAt = Date.parse(message.created_at);
+	return Number.isFinite(createdAt) && createdAt >= startedAt - 1200;
+}
 
 export function ChatPane({ convId, members, title }: Props) {
 	// Mobile: App.tsx owns the chat header (back + title), so ChatPane drops its
@@ -710,14 +773,42 @@ export function ChatPane({ convId, members, title }: Props) {
 			status: AgentStatusValue;
 			phase?: AgentPhase;
 			tool?: string;
+			ts: number;
 		}[] = [];
 		for (const [id, st] of agentStatuses) {
 			if (st.status === "starting" || st.status === "streaming") {
-				out.push({ id, status: st.status, phase: st.phase, tool: st.tool });
+				out.push({
+					id,
+					status: st.status,
+					phase: st.phase,
+					tool: st.tool,
+					ts: st.ts,
+				});
 			}
 		}
 		return out;
 	}, [agentStatuses]);
+
+	const activeBurstAgents = useMemo(() => {
+		const out = new Set<string>();
+		for (const m of messages) {
+			const payload = m.payload;
+			if (payload.kind !== "tasks") continue;
+			for (const task of payload.tasks ?? []) {
+				if (task.state !== "done" && task.state !== "failed") out.add(task.agent);
+			}
+		}
+		return out;
+	}, [messages]);
+
+	const pendingAgentPlaceholders = useMemo(
+		() =>
+			activeAgents.filter((a) => {
+				if (activeBurstAgents.has(a.id)) return false;
+				return !messages.some((m) => messageIsFreshForAgent(m, a.id, a.ts));
+			}),
+		[activeAgents, activeBurstAgents, messages],
+	);
 
 	// Burst membership (which messages fold into the orchestrator's lanes) changes
 	// ONLY when a message is appended — never on streaming text/reasoning deltas.
@@ -1005,6 +1096,24 @@ export function ChatPane({ convId, members, title }: Props) {
 										convId={convId}
 										msgId={m.id}
 										isGrouped={isGrouped}
+									/>
+								);
+							})}
+							{pendingAgentPlaceholders.map((a) => {
+								const agent = agents.find((x) => x.id === a.id);
+								const label =
+									a.status === "starting"
+										? lang === "en"
+											? "Starting…"
+											: "正在启动会话…"
+										: phaseLabel(a.phase, a.tool, lang);
+								return (
+									<AgentExecutionPlaceholder
+										key={`pending-${a.id}`}
+										agent={agent}
+										agentId={a.id}
+										label={label}
+										mobile={mobile}
 									/>
 								);
 							})}
