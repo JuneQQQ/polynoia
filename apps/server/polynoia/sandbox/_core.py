@@ -1828,10 +1828,12 @@ class Sandbox:
         them. Source folders live in ``settings.skills_dir``. Best-effort:
         unknown names are skipped; existing copies are refreshed."""
         dest_root = self.credentials_home / ".claude" / "skills"
+        from polynoia.skills import find_skill_dir
+
         for raw in names:
             name = (raw or "").strip()
-            src = settings.skills_dir / name
-            if not name or not src.is_dir():
+            src = find_skill_dir(name)
+            if not name or src is None or not src.is_dir():
                 continue
             dest = dest_root / name
             with contextlib.suppress(OSError):

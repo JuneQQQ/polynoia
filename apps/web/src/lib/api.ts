@@ -283,7 +283,7 @@ export const api = {
 		),
 	/** Installed skill packages (folder per skill). */
 	listSkills: () =>
-		getJSON<{ name: string; description: string; path: string }[]>(
+		getJSON<{ name: string; description: string; path: string; builtin?: boolean }[]>(
 			"/api/skills",
 		),
 	/** Install skill(s) from a git URL or local path. A source can be a single
