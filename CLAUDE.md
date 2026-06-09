@@ -10,7 +10,7 @@
 
 **Polynoia**(对外品牌 / 课题代号 AgentHub):IM 形态的多 Agent 协作平台。用户像用 Slack/Lark/微信一样和多个 AI Agent 共处一个对话,Orchestrator 自动拆解任务并并行调度。
 
-详细背景看 `rule.md`(课题书),设计语言看 `ui_design/AgentHub-handoff.zip`(可解到 `.scratch/agenthub/` 读)。
+详细背景和官方验收映射看 `rule.md`,AI 协作材料索引看 `docs/ai-collaboration.md`。
 
 ## 2. 仓库结构
 
@@ -147,7 +147,7 @@ make build          # 前后端都 build
 - `apps/mobile/` = **Capacitor 6** 包 `apps/web/dist`(`webDir:"../web/dist"`);**不是 React Native**,**没有 `packages/ui-rn`**。移动布局靠 `apps/web/src/lib/platform.ts:isMobile()` 在同一套组件里自适应(`App.tsx` 已有「抽屉+单列」分支)
 - `packages/*` 目前**为空**:业务逻辑仍在 `apps/web/src/{store.ts,lib/*}`(~85% 纯 TS)。三端只靠 platform 检测 + 一层薄 shim(`runtime-config.ts` 服务器基址 / `storage.ts` 持久化 / `native.ts` Capacitor 插件)区分
 - 移动端范围(rule.md):**轻量 IM** —— 查看对话、发消息/@、审批(pending-edit/ask-form/冲突选边)、**只读**产物预览;**不做**文件树编辑/终端/提交历史/建项目
-- 完整方案见根目录 [`mobile-plan.html`](mobile-plan.html) + ADR「Capacitor over React Native」
+- 完整方案见 ADR「Capacitor over React Native」与 `docs/design/preview-system-and-evolution.md`
 - (历史)早期设想是 RN + `packages/ui-rn`,已废弃 —— Capacitor 复用 web 更贴合「子集、不偏离」
 
 ## 7. Karpathy 协作原则(全局)
@@ -173,6 +173,7 @@ make build          # 前后端都 build
 
 rule.md 评分 30% 在"AI 协作能力 — 沉淀 Spec/skill/rules 等协作规范"。我们以下事项算做沉淀:
 
+- `docs/ai-collaboration.md` — 官方提交用的 AI 协作说明
 - `docs/research/` 全部 — AI 与人合作做出的 20 库深度调研
 - `docs/superpowers/specs/` — 完整设计 spec
 - `docs/ADR/` — 决策记录(为何选 X 不选 Y)

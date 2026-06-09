@@ -120,7 +120,7 @@ export function NewContactModal({
 		() => new Set((editing?.skills ?? []).map((s) => s.name)),
 	);
 	const [skillSrc, setSkillSrc] = useState("");
-	const [skillOpen, setSkillOpen] = useState(false);
+	const [skillMenuOpen, setSkillMenuOpen] = useState(false);
 	const [skillBusy, setSkillBusy] = useState<"idle" | "installing" | "err">("idle");
 	const [skillErr, setSkillErr] = useState("");
 	useEffect(() => {
@@ -489,6 +489,28 @@ export function NewContactModal({
 
 							<Field label="Skill">
 								<div className="space-y-2">
+									{boundSkills.size > 0 && (
+										<div className="flex flex-wrap gap-1.5">
+											{[...boundSkills].map((name) => (
+												<button
+													key={name}
+													type="button"
+													onClick={() =>
+														setBoundSkills((b) => {
+															const n = new Set(b);
+															n.delete(name);
+															return n;
+														})
+													}
+													title={`移除 ${name}`}
+													className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[11.5px] text-[var(--color-accent)]"
+												>
+													<span className="font-mono">{name}</span>
+													<X size={11} />
+												</button>
+											))}
+										</div>
+									)}
 									<div className="flex gap-2">
 										<div className="relative flex-1 min-w-0">
 											<input
@@ -501,23 +523,31 @@ export function NewContactModal({
 												placeholder={
 													boundSkills.size > 0
 														? `已选择 ${boundSkills.size} 个 skill；也可粘贴地址安装`
-														: "skill 地址:https://….git 或 /abs/path"
+														: "GitHub 地址或本地路径:https://github.com/org/repo.git"
 												}
 												className="w-full text-[12px] pl-2.5 pr-9 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
 											/>
 											<button
 												type="button"
-												onClick={() => setSkillOpen((v) => !v)}
-												aria-label={skillOpen ? "收起 skill 列表" : "展开 skill 列表"}
+												onClick={() => setSkillMenuOpen((v) => !v)}
+												aria-label={skillMenuOpen ? "收起 skill 列表" : "展开 skill 列表"}
 												className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 grid place-items-center rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] transition"
 											>
 												<ChevronDown
 													size={15}
-													className={`transition-transform ${skillOpen ? "rotate-180" : ""}`}
+													className={`transition-transform ${skillMenuOpen ? "rotate-180" : ""}`}
 												/>
 											</button>
-											{skillOpen && (
-												<div className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-xl">
+											{skillMenuOpen && (
+												<>
+													<button
+														type="button"
+														aria-hidden
+														tabIndex={-1}
+														onClick={() => setSkillMenuOpen(false)}
+														className="fixed inset-0 z-[61] cursor-default bg-transparent"
+													/>
+													<div className="absolute z-[62] mt-1 w-full max-h-64 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
 													{installedSkills.length > 0 ? (
 														<div className="py-1">
 															{installedSkills.map((s) => {
@@ -552,7 +582,7 @@ export function NewContactModal({
 																				{on && <Check size={11} />}
 																			</span>
 																			<span className="min-w-0">
-																				<span className="text-[12.5px] font-mono text-[var(--color-fg)]">
+																				<span className="block text-[12.5px] font-mono text-[var(--color-fg)] truncate">
 																					{s.name}
 																				</span>
 																				{s.description && (
@@ -583,10 +613,11 @@ export function NewContactModal({
 														</div>
 													) : (
 														<p className="px-2.5 py-2 text-[11.5px] text-[var(--color-fg-3)]">
-															还没有已安装的 skill。
+															还没有已安装的 skill。可直接粘贴 GitHub 地址或本地路径安装。
 														</p>
 													)}
-												</div>
+													</div>
+												</>
 											)}
 										</div>
 										<button

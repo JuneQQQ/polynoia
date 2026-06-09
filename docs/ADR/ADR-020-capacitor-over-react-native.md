@@ -2,7 +2,7 @@
 
 - **状态**:accepted
 - **日期**:2026-06-03
-- **相关**:`apps/mobile/`(Capacitor 6 脚手架)、`apps/web/src/lib/platform.ts:isMobile()`、`apps/desktop/`(Tauri 2,同「壳复用 web」思路)、`mobile-plan.html`(7 阶段落地计划)、CLAUDE.md §6.3、rule.md(移动端范围:轻量 IM)
+- **相关**:`apps/mobile/`(Capacitor 6 脚手架)、`apps/web/src/lib/platform.ts:isMobile()`、`apps/desktop/`(Tauri 2,同「壳复用 web」思路)、CLAUDE.md §6.3、rule.md(移动端范围:轻量 IM)
 
 ## 背景
 
@@ -21,7 +21,7 @@ rule.md 要求移动端是 web/桌面端的**子集**:**查看对话、发消息
 - 三端(web / 桌面 Tauri / 移动 Capacitor)共用一份 React 代码;差异只靠 `isMobile()` + 一层薄 shim(`runtime-config.ts` 服务器基址 / `storage.ts` 持久化 / `native.ts` Capacitor 插件桥)区分。
 - 移动专属的新代码只有**少数表面**:连服务器引导页、审批底部弹层(bottom sheet)、只读产物 modal —— 它们复用底层的 `store` / `api` / `ws` / parts 渲染,不是平行实现。
 - 桌面端/移动端编辑、终端、文件树、提交历史等重交互**在移动端 `isMobile()` 处直接关掉**,而不是「移动端没实现」。
-- `packages/*` 维持为空:业务逻辑仍住在 `apps/web/src`。落地分 7 阶段,详见 `mobile-plan.html`。
+- `packages/*` 维持为空:业务逻辑仍住在 `apps/web/src`。移动端验收场景沉淀在 `docs/testing/manual-test-cases.md`。
 
 ## 为什么
 
@@ -51,7 +51,7 @@ rule.md 要求移动端是 web/桌面端的**子集**:**查看对话、发消息
 
 ## 代价
 
-- **WebView 性能天花板**:长列表滚动、键盘避让、手势返回需逐项调优(已在 `mobile-plan.html` Phase 4 列为原生集成项);极端场景手感弱于原生控件。
+- **WebView 性能天花板**:长列表滚动、键盘避让、手势返回需逐项调优;极端场景手感弱于原生控件。
 - **连服务器是设备级前置**:WebView 拿不到相对 URL / `window.location` 后端基址,必须先有 `runtime-config.ts` + 连服务器引导页(LAN IP → 测 `/api/health` → 持久化),否则移动端连不上后端。这是复用方案独有的一道坎(Phase 0/1)。
 - **CORS**:后端 `cors_origins` 要加 `capacitor://localhost` / `https://localhost`(`allow_credentials=True` 禁用 `*`,需显式列举,见 Phase 5)。
 - **离线/恢复**:WebView 不像原生那样自动管生命周期,WS 重连要在 `resume`/`online` 事件里手动触发。

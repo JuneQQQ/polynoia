@@ -250,6 +250,11 @@ class TerminalPayload(BaseModel):
     command: str
     output: str = ""
     running: bool = True
+    mode: Literal["blocking", "background"] = "blocking"
+    label: str | None = None
+    process_id: str | None = None
+    pid: int | None = None
+    pgid: int | None = None
     exit_code: int | None = None
     truncated: bool = False
 

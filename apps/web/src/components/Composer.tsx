@@ -9,7 +9,7 @@
  */
 import { ArrowUp, FileText, Loader2, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { type DraftAttachment, api } from "../lib/api";
 import { isMobile } from "../lib/platform";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
@@ -40,7 +40,14 @@ type Props = {
 	 * input box (inside the composer chrome) so it never floats over / occludes
 	 * message content. Built by ChatPane (it owns the agent-status state). */
 	statusSlot?: React.ReactNode;
+	/** Persisted per-conversation input draft. */
+	draftText?: string;
+	/** Persisted per-conversation uploaded attachment draft. */
+	draftAttachments?: DraftAttachment[];
 };
+
+const MAX_PENDING_ATTACHMENTS = 12;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 /**
  * Find an "@<query>" token where the caret sits inside it.
@@ -102,6 +109,8 @@ export function Composer({
 	onAttachImage,
 	onAttachFile,
 	statusSlot,
+	draftText,
+	draftAttachments,
 }: Props) {
 	const [text, setText] = useState("");
 	// Mobile: roomier pill, bigger tap targets, and a 16px textarea (anything
@@ -132,6 +141,31 @@ export function Composer({
 	>([]);
 	const attSeq = useRef(0);
 	const anyUploading = pendingAtt.some((a) => a.src === null);
+	const loadedAttachmentDraftConv = useRef<string | null>(null);
+	const persistDraftAttachments = (
+		next: Array<{
+			id: string;
+			kind: "image" | "file";
+			name: string;
+			media_type?: string;
+			size_bytes?: number;
+			src: string | null;
+		}>,
+	) => {
+		if (convId.startsWith("dm-")) return;
+		const ready = next
+			.filter((a) => a.src)
+			.slice(0, MAX_PENDING_ATTACHMENTS)
+			.map((a) => ({
+				id: a.id,
+				kind: a.kind,
+				src: a.src as string,
+				name: a.name,
+				media_type: a.media_type ?? null,
+				size_bytes: a.size_bytes ?? null,
+			}));
+		api.setConvDraftAttachments(convId, ready).catch(() => {});
+	};
 	// Lights up the composer outline while a drag is hovering it.
 	const [isDragOver, setIsDragOver] = useState(false);
 	const agents = useStore((s) => s.agents);
@@ -143,13 +177,66 @@ export function Composer({
 	// user's subsequent edits.
 	const composerDraft = useStore((s) => s.composerDraft);
 	const setComposerDraft = useStore((s) => s.setComposerDraft);
+	const loadedDraftConv = useRef<string | null>(null);
+	useEffect(() => {
+		loadedDraftConv.current = null;
+		loadedAttachmentDraftConv.current = null;
+		setText("");
+		setPendingAtt((prev) => {
+			for (const a of prev) {
+				if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+			}
+			return [];
+		});
+		setPendingFileRefs([]);
+	}, [convId]);
 	useEffect(() => {
 		if (!composerDraft || composerDraft.convId !== convId) return;
 		setText(composerDraft.text);
 		setComposerDraft(null);
 		// Defer focus to next tick so the textarea is rendered + sized.
-		window.setTimeout(() => taRef.current?.focus(), 0);
+		window.setTimeout(() => {
+			const ta = taRef.current;
+			if (!ta) return;
+			ta.focus();
+			const end = ta.value.length;
+			ta.setSelectionRange(end, end);
+		}, 0);
 	}, [composerDraft, convId, setComposerDraft]);
+	useEffect(() => {
+		if (draftText === undefined) return;
+		if (loadedDraftConv.current !== convId) {
+			loadedDraftConv.current = convId;
+			setText((cur) => (cur ? cur : draftText));
+			return;
+		}
+		setText((cur) => (cur ? cur : draftText));
+	}, [convId, draftText]);
+	useEffect(() => {
+		if (convId.startsWith("dm-")) return;
+		const handle = window.setTimeout(() => {
+			api.setConvDraft(convId, text).catch(() => {});
+		}, 350);
+		return () => window.clearTimeout(handle);
+	}, [convId, text]);
+	useEffect(() => {
+		if (draftAttachments === undefined) return;
+		if (loadedAttachmentDraftConv.current === convId) return;
+		loadedAttachmentDraftConv.current = convId;
+		const restored = draftAttachments
+			.filter((a) => a.src)
+			.slice(0, MAX_PENDING_ATTACHMENTS)
+			.map((a, idx) => ({
+				id: a.id || `draft-${idx}-${a.src}`,
+				kind: a.kind,
+				name: a.name || (a.kind === "image" ? "image" : "file"),
+				media_type: a.media_type ?? undefined,
+				size_bytes: a.size_bytes ?? undefined,
+				previewUrl: undefined,
+				src: a.src,
+			}));
+		setPendingAtt(restored);
+	}, [convId, draftAttachments]);
 	// Only show reply chip when the global state targets THIS conv.
 	const replyingTo =
 		replyingToRaw && replyingToRaw.convId === convId ? replyingToRaw : null;
@@ -235,6 +322,9 @@ export function Composer({
 			if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
 		}
 		if (readyAtt.length > 0) setPendingAtt([]);
+		if (readyAtt.length > 0 && !convId.startsWith("dm-")) {
+			api.setConvDraftAttachments(convId, []).catch(() => {});
+		}
 		// Drag-dropped workspace files: emit each as its own file message FIRST,
 		// so it lands in the timeline ahead of the text the agent gets routed.
 		// Uses the same onAttachFile path the paperclip + paste flows already
@@ -258,6 +348,7 @@ export function Composer({
 			onSend(t, replyingTo?.msgId);
 		}
 		setText("");
+		if (!convId.startsWith("dm-")) api.setConvDraft(convId, "").catch(() => {});
 		setMention(null);
 		if (replyingTo) setReplyingTo(null);
 	};
@@ -330,7 +421,11 @@ export function Composer({
 	// /api/files/<id>/raw), but DON'T emit a message — push a pending chip the
 	// user reviews above the textarea and ships on submit. 25MB cap = server's.
 	const stageAttachment = async (file: File) => {
-		if (file.size > 25 * 1024 * 1024) {
+		if (pendingAtt.length >= MAX_PENDING_ATTACHMENTS) {
+			window.alert(`最多保留 ${MAX_PENDING_ATTACHMENTS} 个待发送附件`);
+			return;
+		}
+		if (file.size > MAX_ATTACHMENT_BYTES) {
 			window.alert(`${file.name} 超过 25MB,未上传`);
 			return;
 		}
@@ -351,9 +446,21 @@ export function Composer({
 		]);
 		try {
 			const res = await api.upload(file, file.name || "attachment", convId);
-			setPendingAtt((p) =>
-				p.map((a) => (a.id === id ? { ...a, src: res.url } : a)),
-			);
+			setPendingAtt((p) => {
+				const next = p.map((a) =>
+					a.id === id
+						? {
+								...a,
+								src: res.url,
+								name: res.name || a.name,
+								media_type: res.media_type || a.media_type,
+								size_bytes: res.size_bytes ?? a.size_bytes,
+							}
+						: a,
+				);
+				persistDraftAttachments(next);
+				return next;
+			});
 		} catch {
 			setPendingAtt((p) => p.filter((a) => a.id !== id));
 			if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -365,7 +472,9 @@ export function Composer({
 		setPendingAtt((p) => {
 			const hit = p.find((a) => a.id === id);
 			if (hit?.previewUrl) URL.revokeObjectURL(hit.previewUrl);
-			return p.filter((a) => a.id !== id);
+			const next = p.filter((a) => a.id !== id);
+			persistDraftAttachments(next);
+			return next;
 		});
 	};
 
@@ -460,14 +569,15 @@ export function Composer({
 		}
 	};
 
-	// Auto-grow the textarea with content (ChatGPT/Claude feel), capped at 200px
+	// Auto-grow the textarea with content (ChatGPT/Claude feel), capped before
+	// it starts eating the mobile viewport.
 	// then it scrolls internally. Presentation behavior only.
 	useEffect(() => {
 		const ta = taRef.current;
 		if (!ta) return;
 		ta.style.height = "auto";
-		ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-	}, [text]);
+		ta.style.height = `${Math.min(ta.scrollHeight, mobile ? 76 : 200)}px`;
+	}, [mobile, text]);
 
 	const placeholder = isGroup
 		? "发消息给群聊 · 输入 @ 召唤成员"
@@ -479,7 +589,7 @@ export function Composer({
 		// carries its own surface bg + shadow.
 		<div className="bg-transparent">
 			<div
-				className={`relative ${mobile ? "px-3 pt-2 pb-3" : "px-6 pt-2 pb-3"}`}
+				className={`relative ${mobile ? "px-2 pt-0.5 pb-1.5" : "px-6 pt-2 pb-3"}`}
 			>
 				{/* @-mention picker */}
 				{mention && filtered.length > 0 && (
@@ -532,35 +642,6 @@ export function Composer({
 								</li>
 							))}
 						</ul>
-					</div>
-				)}
-
-				{/* Reply chip — appears above the textarea when user clicked Reply
-            on a message. Shows sender + snippet + close. Consumed by ChatPane
-            via the global replyingTo store state (cleared after send). */}
-				{replyingTo && (
-					<div className="mb-2 flex items-center gap-2 px-2.5 py-1.5 rounded-sm bg-[var(--color-accent-soft)] border-l-2 border-[var(--color-accent)] text-[11.5px] anim-fade-up">
-						<Reply
-							size={11}
-							className="text-[var(--color-accent)] flex-shrink-0"
-						/>
-						<span className="text-[var(--color-accent)] font-medium flex-shrink-0">
-							回复
-						</span>
-						<span className="font-medium text-[var(--color-fg-2)] flex-shrink-0">
-							{replyingTo.senderLabel}
-						</span>
-						<span className="text-[var(--color-fg-3)] truncate min-w-0 flex-1">
-							{replyingTo.snippet}
-						</span>
-						<button
-							type="button"
-							onClick={() => setReplyingTo(null)}
-							className="flex-shrink-0 p-0.5 rounded-sm hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
-							title="取消回复"
-						>
-							<X size={11} />
-						</button>
 					</div>
 				)}
 
@@ -662,7 +743,7 @@ export function Composer({
 					onDrop={handleDrop}
 					className={`border bg-[var(--color-surface)] shadow-[var(--shadow-card)] transition-colors duration-200 focus-within:border-[var(--color-accent)]/55 ${
 						mobile
-							? "rounded-[26px] px-3 pt-2.5 pb-2.5"
+							? "rounded-[18px] px-2 pt-1 pb-1"
 							: "rounded-[22px] px-2.5 pt-2 pb-2"
 					} ${
 						isDragOver
@@ -674,6 +755,33 @@ export function Composer({
               floating strip. This keeps it visually attached to the input and
               lets the measured composer height reserve the correct scroll room. */}
 					{statusSlot}
+					{/* Reply chip lives inside the composer box so selected quotes feel
+              like part of the draft, not a separate strip above it. */}
+					{replyingTo && (
+						<div className="mb-2 flex items-center gap-2 px-2.5 py-1.5 rounded-sm bg-[var(--color-accent-soft)] border-l-2 border-[var(--color-accent)] text-[11.5px] anim-fade-up">
+							<Reply
+								size={11}
+								className="text-[var(--color-accent)] flex-shrink-0"
+							/>
+							<span className="text-[var(--color-accent)] font-medium flex-shrink-0">
+								回复
+							</span>
+							<span className="font-medium text-[var(--color-fg-2)] flex-shrink-0">
+								{replyingTo.senderLabel}
+							</span>
+							<span className="text-[var(--color-fg-3)] truncate min-w-0 flex-1">
+								{replyingTo.snippet}
+							</span>
+							<button
+								type="button"
+								onClick={() => setReplyingTo(null)}
+								className="flex-shrink-0 p-0.5 rounded-sm hover:bg-[var(--color-line)] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
+								title="取消回复"
+							>
+								<X size={11} />
+							</button>
+						</div>
+					)}
 					<textarea
 						ref={taRef}
 						value={text}
@@ -686,12 +794,12 @@ export function Composer({
 						rows={1}
 						className={`w-full resize-none bg-transparent outline-none leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] max-h-[200px] ${
 							mobile
-								? "text-[16px] min-h-[28px] px-2 py-2"
+								? "text-[16px] min-h-[22px] px-1 py-0.5"
 								: "text-[14px] min-h-[40px] px-2 py-1.5"
 						}`}
 					/>
 					{/* Docked control bar — sits INSIDE the box, ChatGPT/Claude-style */}
-					<div className="flex items-center gap-1.5 px-0.5">
+					<div className={`flex items-center px-0.5 ${mobile ? "gap-0.5" : "gap-1.5"}`}>
 						<input
 							ref={fileInputRef}
 							type="file"
@@ -705,11 +813,11 @@ export function Composer({
 							type="button"
 							onClick={() => fileInputRef.current?.click()}
 							className={`grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-all duration-150 ${
-								mobile ? "w-10 h-10" : "w-8 h-8"
+								mobile ? "w-7 h-7" : "w-8 h-8"
 							}`}
 							title="添加附件(也支持粘贴)"
 						>
-							<Paperclip size={mobile ? 20 : 16} />
+							<Paperclip size={mobile ? 17 : 16} />
 						</button>
 						{/* Recipient is already shown in the chat header — no redundant
                 "{name} · 1v1" chip in the composer bar (kept clean). */}
@@ -728,7 +836,7 @@ export function Composer({
 							}
 							title={anyUploading ? "附件上传中…" : "发送 (Enter)"}
 							className={`ml-auto grid place-items-center rounded-full transition-all duration-150 ${
-								mobile ? "w-10 h-10" : "w-8 h-8"
+								mobile ? "w-8 h-8" : "w-8 h-8"
 							} ${
 								!anyUploading &&
 								(
@@ -741,9 +849,9 @@ export function Composer({
 							}`}
 						>
 							{anyUploading ? (
-								<Loader2 size={mobile ? 20 : 17} className="animate-spin" />
+								<Loader2 size={mobile ? 17 : 17} className="animate-spin" />
 							) : (
-								<ArrowUp size={mobile ? 20 : 17} strokeWidth={2.4} />
+								<ArrowUp size={mobile ? 17 : 17} strokeWidth={2.4} />
 							)}
 						</button>
 					</div>

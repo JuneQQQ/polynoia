@@ -788,6 +788,17 @@ export const useStore = create<Store>((set, get) => ({
 		const nextById =
 			mode === "replace" ? new Map<string, Message>() : new Map(cur.msgById);
 		const existingOrder = mode === "replace" ? [] : cur.messageOrder;
+		const liveMessageIds =
+			mode === "replace"
+				? new Set([...cur.streamingTexts.values()].map((v) => v.messageId))
+				: new Set<string>();
+		const shouldKeepLiveOnly = (msg: Message) => {
+			if (mode !== "replace") return false;
+			if (liveMessageIds.has(msg.id)) return true;
+			if (msg.id.startsWith("retry-") || msg.id.startsWith("queued-"))
+				return true;
+			return false;
+		};
 		// Dedupe in case the server returns msgs already in store (race
 		// between WS streaming + REST refetch on conv-switch).
 		const newOrder: string[] = [];
@@ -804,13 +815,25 @@ export const useStore = create<Store>((set, get) => ({
 			});
 			newOrder.push(m.id);
 		}
+		const liveOrder: string[] = [];
+		if (mode === "replace") {
+			for (const id of cur.messageOrder) {
+				if (nextById.has(id)) continue;
+				const msg = cur.msgById.get(id);
+				if (!msg || !shouldKeepLiveOnly(msg)) continue;
+				nextById.set(id, msg);
+				liveOrder.push(id);
+			}
+		}
 		convs.set(convId, {
 			...cur,
 			msgById: nextById,
 			// For 'prepend', newOrder is older messages — prepend before existing.
 			// For 'replace', cur state is gone — newOrder IS the order.
 			messageOrder:
-				mode === "replace" ? newOrder : [...newOrder, ...existingOrder],
+				mode === "replace"
+					? [...newOrder, ...liveOrder]
+					: [...newOrder, ...existingOrder],
 			hasMoreOlder: hasMore,
 			loadingOlder: false,
 		});
@@ -1041,9 +1064,12 @@ export const useStore = create<Store>((set, get) => ({
 				text: "",
 				kind: partKind,
 			});
+			const order = cur.messageOrder.includes(action.messageId)
+				? cur.messageOrder
+				: [...cur.messageOrder, action.messageId];
 			convs.set(convId, {
 				...cur,
-				messageOrder: [...cur.messageOrder, action.messageId],
+				messageOrder: order,
 				msgById: nextById,
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,
@@ -1203,6 +1229,21 @@ export const useStore = create<Store>((set, get) => ({
 			}
 			const cardSender = action.senderId || fallbackSender;
 			let messageId = action.messageId;
+			let prunedStreaming: Map<
+				string,
+				{
+					messageId: string;
+					senderId: string;
+					text: string;
+					kind: "text" | "reasoning";
+				}
+			> | null = null;
+			for (const [key, value] of cur.streamingTexts) {
+				if (value.senderId === cardSender && value.kind === "reasoning") {
+					if (!prunedStreaming) prunedStreaming = new Map(cur.streamingTexts);
+					prunedStreaming.delete(key);
+				}
+			}
 			if (action.cardKind === "tool-call") {
 				const nextToolId = (action.payload as { tool_call_id?: unknown })
 					.tool_call_id;
@@ -1239,6 +1280,7 @@ export const useStore = create<Store>((set, get) => ({
 				convs.set(convId, {
 					...cur,
 					msgById: nextById,
+					...(prunedStreaming ? { streamingTexts: prunedStreaming } : {}),
 					streamTick: cur.streamTick + 1,
 				});
 			} else {
@@ -1253,6 +1295,7 @@ export const useStore = create<Store>((set, get) => ({
 					...cur,
 					messageOrder: [...cur.messageOrder, messageId],
 					msgById: nextById,
+					...(prunedStreaming ? { streamingTexts: prunedStreaming } : {}),
 					streamTick: cur.streamTick + 1,
 				});
 			}

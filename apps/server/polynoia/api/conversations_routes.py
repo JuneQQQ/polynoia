@@ -15,12 +15,90 @@ Mirrors the legacy router pattern (``api/workspace_files.py`` /
 
 from __future__ import annotations
 
+import json
+import re
+
 from fastapi import APIRouter, HTTPException
 
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 
 router = APIRouter()
+
+MAX_DRAFT_ATTACHMENTS = 12
+MAX_DRAFT_ATTACHMENTS_JSON_BYTES = 80_000
+MAX_DRAFT_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+
+def _sanitize_draft_attachments(value: object) -> list[dict]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="draft_attachments must be a list")
+    if len(value) > MAX_DRAFT_ATTACHMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"附件草稿最多保留 {MAX_DRAFT_ATTACHMENTS} 个",
+        )
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="invalid draft attachment")
+        kind = raw.get("kind")
+        if kind not in ("image", "file"):
+            raise HTTPException(status_code=400, detail="invalid attachment kind")
+        src = str(raw.get("src") or "")
+        if not (
+            src.startswith("/api/files/raw?")
+            or re.match(r"^/api/files/[0-9A-Za-z]+/raw$", src)
+        ):
+            raise HTTPException(status_code=400, detail="invalid attachment src")
+        name = str(raw.get("name") or ("image" if kind == "image" else "file")).strip()
+        name = name[:160] or ("image" if kind == "image" else "file")
+        media_type = raw.get("media_type")
+        media_type = str(media_type)[:120] if media_type else None
+        size_bytes = raw.get("size_bytes")
+        if size_bytes is not None:
+            try:
+                size_bytes = int(size_bytes)
+            except Exception:
+                raise HTTPException(status_code=400, detail="invalid attachment size")
+            if size_bytes < 0 or size_bytes > MAX_DRAFT_ATTACHMENT_BYTES:
+                raise HTTPException(status_code=400, detail="attachment size out of range")
+        item = {
+            "id": str(raw.get("id") or src)[:180],
+            "kind": kind,
+            "src": src,
+            "name": name,
+            "media_type": media_type,
+            "size_bytes": size_bytes,
+        }
+        key = item["src"]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+
+    encoded = json.dumps(out, ensure_ascii=False).encode()
+    if len(encoded) > MAX_DRAFT_ATTACHMENTS_JSON_BYTES:
+        raise HTTPException(status_code=400, detail="draft attachments too large")
+    return out
+
+
+def _running_agents_for_conv(conv_id: str) -> list[dict]:
+    # Late import avoids making this CRUD router own the live execution registry.
+    try:
+        from polynoia.api.routes import _conv_live  # type: ignore
+    except Exception:
+        return []
+    out: list[dict] = []
+    for _agent_id, entry in (_conv_live.get(conv_id) or {}).items():
+        status = entry.get("status") or {}
+        if status.get("status") in ("starting", "streaming"):
+            out.append(status)
+    return out
 
 
 @router.get("/api/conversations")
@@ -48,7 +126,12 @@ async def list_conversations(
             unread_only=unread_only,
             q=q,
         )
-        return [r.model_dump(mode="json") for r in rows]
+        out = []
+        for r in rows:
+            item = r.model_dump(mode="json")
+            item["running_agents"] = _running_agents_for_conv(r.id)
+            out.append(item)
+        return out
 
 
 @router.get("/api/conversations/{conv_id}")
@@ -106,6 +189,30 @@ async def unpin_conv(conv_id: str):
 async def mark_conv_read(conv_id: str):
     async with SessionLocal() as session:
         await storage_repo.reset_unread(session, conv_id)
+        await session.commit()
+    return {"ok": True}
+
+
+@router.patch("/api/conversations/{conv_id}/draft")
+async def update_conv_draft(conv_id: str, body: dict):
+    draft = str(body.get("draft_text") or "")
+    if len(draft) > 20000:
+        raise HTTPException(status_code=400, detail="draft_text too long")
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_draft_text(session, conv_id, draft)
+        if not ok:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        await session.commit()
+    return {"ok": True}
+
+
+@router.patch("/api/conversations/{conv_id}/draft_attachments")
+async def update_conv_draft_attachments(conv_id: str, body: dict):
+    attachments = _sanitize_draft_attachments(body.get("draft_attachments") or [])
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_draft_attachments(session, conv_id, attachments)
+        if not ok:
+            raise HTTPException(status_code=404, detail="conversation not found")
         await session.commit()
     return {"ok": True}
 

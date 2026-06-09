@@ -8,8 +8,8 @@
  *
  * Reuses Sidebar 的 conv item 视觉风格,但带 unread badge + last message 时间。
  */
-import { Inbox, Pin, Pyramid } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Inbox, Loader2, Pin, Pyramid } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
 
@@ -29,21 +29,40 @@ function fmtRelTime(iso: string | null): string {
 
 export function InboxView({ onOpenConv }: Props) {
   const agents = useStore((s) => s.agents);
+  const runningSig = useStore((s) => {
+    const ids: string[] = [];
+    for (const [convId, cs] of s.convs) {
+      for (const st of cs.agentStatus.values()) {
+        if (st.status === "starting" || st.status === "streaming") {
+          ids.push(convId);
+          break;
+        }
+      }
+    }
+    return ids.sort().join("|");
+  });
+  const runningIds = useMemo(
+    () => new Set(runningSig ? runningSig.split("|") : []),
+    [runningSig],
+  );
+  const [activeConvs, setActiveConvs] = useState<ConversationSummary[]>([]);
   const [pinnedConvs, setPinnedConvs] = useState<ConversationSummary[]>([]);
   const [unreadConvs, setUnreadConvs] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const [pinned, unread] = await Promise.all([
+      const [active, pinned, unread] = await Promise.all([
+        api.conversations({ archived: false }),
         api.conversations({ pinned: true, archived: false }),
         api.conversations({ unreadOnly: true, archived: false }),
       ]);
       // De-dup (a conv can be both pinned and unread — show in unread group)
       const unreadIds = new Set(unread.map((c) => c.id));
+      setActiveConvs(active);
       setPinnedConvs(pinned.filter((c) => !unreadIds.has(c.id)));
       setUnreadConvs(unread);
     } catch (e) {
@@ -51,13 +70,42 @@ export function InboxView({ onOpenConv }: Props) {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    reload();
   }, []);
 
-  const renderConv = (c: ConversationSummary, kind: "pinned" | "unread") => {
+  const runningConvs = useMemo(() => {
+    if (runningIds.size === 0) return [];
+    return activeConvs.filter((c) => runningIds.has(c.id));
+  }, [activeConvs, runningIds]);
+  const visibleUnreadConvs = useMemo(
+    () => unreadConvs.filter((c) => !runningIds.has(c.id)),
+    [runningIds, unreadConvs],
+  );
+  const visiblePinnedConvs = useMemo(
+    () => pinnedConvs.filter((c) => !runningIds.has(c.id)),
+    [pinnedConvs, runningIds],
+  );
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const onListChanged = () => {
+      void reload();
+    };
+    window.addEventListener("polynoia:conv-updated", onListChanged);
+    window.addEventListener("polynoia:conv-archived", onListChanged);
+    window.addEventListener("polynoia:conv-deleted", onListChanged);
+    window.addEventListener("polynoia:resync-lists", onListChanged);
+    return () => {
+      window.removeEventListener("polynoia:conv-updated", onListChanged);
+      window.removeEventListener("polynoia:conv-archived", onListChanged);
+      window.removeEventListener("polynoia:conv-deleted", onListChanged);
+      window.removeEventListener("polynoia:resync-lists", onListChanged);
+    };
+  }, [reload]);
+
+  const renderConv = (c: ConversationSummary, kind: "pinned" | "unread" | "running") => {
     const memberAgents = c.members
       .filter((m) => m !== "you")
       .map((id) => agents.find((a) => a.id === id))
@@ -92,6 +140,12 @@ export function InboxView({ onOpenConv }: Props) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[13px] font-semibold truncate">{c.title}</span>
+            {kind === "running" && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
+                <Loader2 size={10} className="animate-spin" />
+                运行中
+              </span>
+            )}
             {kind === "pinned" && <Pin size={11} className="text-[var(--color-accent)]" />}
           </div>
           <div className="text-[11px] text-[var(--color-fg-3)] mt-0.5 flex items-center gap-2">
@@ -122,7 +176,7 @@ export function InboxView({ onOpenConv }: Props) {
           <Inbox size={16} className="text-[var(--color-accent)]" />
           <h1 className="text-[15px] font-semibold">待我处理</h1>
           <span className="text-[11px] text-[var(--color-fg-3)] ml-1">
-            {unreadConvs.length + pinnedConvs.length} 项
+            {runningConvs.length + visibleUnreadConvs.length + visiblePinnedConvs.length} 项
           </span>
         </div>
         <button
@@ -145,7 +199,7 @@ export function InboxView({ onOpenConv }: Props) {
             加载失败:{err}
           </div>
         )}
-        {!loading && !err && unreadConvs.length === 0 && pinnedConvs.length === 0 && (
+        {!loading && !err && runningConvs.length === 0 && visibleUnreadConvs.length === 0 && visiblePinnedConvs.length === 0 && (
           <div className="px-5 py-12 text-center text-[12px] text-[var(--color-fg-3)]">
             <div className="flex justify-center mb-3 text-[var(--color-fg-4)]">
               <Pyramid size={28} />
@@ -156,20 +210,28 @@ export function InboxView({ onOpenConv }: Props) {
             <div>没有未读消息也没有钉住的对话。</div>
           </div>
         )}
-        {unreadConvs.length > 0 && (
+        {runningConvs.length > 0 && (
           <section>
             <div className="px-5 pt-3 pb-1.5 text-[10.5px] uppercase tracking-wider font-semibold text-[var(--color-fg-3)]">
-              未读 · {unreadConvs.length}
+              运行中 · {runningConvs.length}
             </div>
-            {unreadConvs.map((c) => renderConv(c, "unread"))}
+            {runningConvs.map((c) => renderConv(c, "running"))}
           </section>
         )}
-        {pinnedConvs.length > 0 && (
+        {visibleUnreadConvs.length > 0 && (
+          <section className={runningConvs.length > 0 ? "mt-2" : undefined}>
+            <div className="px-5 pt-3 pb-1.5 text-[10.5px] uppercase tracking-wider font-semibold text-[var(--color-fg-3)]">
+              未读 · {visibleUnreadConvs.length}
+            </div>
+            {visibleUnreadConvs.map((c) => renderConv(c, "unread"))}
+          </section>
+        )}
+        {visiblePinnedConvs.length > 0 && (
           <section className="mt-2">
             <div className="px-5 pt-3 pb-1.5 text-[10.5px] uppercase tracking-wider font-semibold text-[var(--color-fg-3)]">
-              已钉 · {pinnedConvs.length}
+              已钉 · {visiblePinnedConvs.length}
             </div>
-            {pinnedConvs.map((c) => renderConv(c, "pinned"))}
+            {visiblePinnedConvs.map((c) => renderConv(c, "pinned"))}
           </section>
         )}
       </div>

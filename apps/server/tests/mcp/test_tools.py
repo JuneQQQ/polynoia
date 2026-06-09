@@ -193,6 +193,16 @@ def test_remember_tool_contract_is_not_for_dispatch_contracts():
     assert "records it automatically" in desc
 
 
+def test_present_tool_description_teaches_link_handoff():
+    desc = TOOL_REGISTRY["present"].description
+    assert "URL hand-off rule" in desc
+    assert "present(links=" in desc
+    assert "http://127.0.0.1:5173/" in desc
+    assert "http://127.0.0.1:8000/docs" in desc
+    assert "http://127.0.0.1:8770/index.html" in desc
+    assert "/api/deploy/static/<token>/index.html" in desc
+
+
 # ── Role-gated tool exposure (ADR-013 + location gate) ───────────
 
 

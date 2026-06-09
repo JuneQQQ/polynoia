@@ -37,6 +37,7 @@ OpenCode 1.15.x. The default v1 path already streams via `session/update`
 notifications. acp-next is an agent-side Effect-based refactor; as ACP client
 we are unaffected.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -126,6 +127,15 @@ def _opencode_config_content(model: str | None) -> str:
 def _write_opencode_config(path: Path, model: str | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_opencode_config_content(model), encoding="utf-8")
+
+
+def _opencode_executable(env: dict[str, str]) -> str:
+    path = shutil.which("opencode", path=env.get("PATH"))
+    if path:
+        return path
+    raise FileNotFoundError(
+        "OpenCode CLI 未找到。请确认已安装 opencode, 且 opencode 所在目录在后端服务的 PATH 中。"
+    )
 
 
 def _polynoia_opencode_data_home() -> str:
@@ -218,13 +228,16 @@ class OpenCodeAdapter:
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
-        skills: list[str] | None = None,  # accepted for adapter parity (OpenCode skill placement: P1)
+        skills: list[str]
+        | None = None,  # accepted for adapter parity (OpenCode skill placement: P1)
     ) -> OpenCodeSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
-                workspace_id=workspace_id, conv_id=conv_id, agent_id=agent_id,
+                workspace_id=workspace_id,
+                conv_id=conv_id,
+                agent_id=agent_id,
             )
         elif read_only_workspace_id:
             sandbox = Sandbox.open_workspace_if_exists(
@@ -235,8 +248,14 @@ class OpenCodeAdapter:
         # ── Proxy egress control (proxy_kind) ───────────────────────
         _env = dict(env or {})
         if proxy_kind == "direct":
-            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                       "http_proxy", "https_proxy", "all_proxy"):
+            for _k in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ):
                 _env.pop(_k, None)
         elif proxy_kind == "custom" and proxy:
             _env["HTTP_PROXY"] = proxy
@@ -299,13 +318,16 @@ async def _translate_acp_stream_to_pap(
         Stamps the thinking duration so "思考 N 秒" persists through a refresh."""
         evs = []
         for mid, (pid, acc) in thought_messages.items():
-            evs.append(PartCompletedEvent(
-                message_id=mid, part_id=pid,
-                part=ReasoningPayload(
-                    body=[PNTextBlock(c=acc)],
-                    seconds=_reasoning_seconds(thought_start.get(mid)),
-                ),
-            ))
+            evs.append(
+                PartCompletedEvent(
+                    message_id=mid,
+                    part_id=pid,
+                    part=ReasoningPayload(
+                        body=[PNTextBlock(c=acc)],
+                        seconds=_reasoning_seconds(thought_start.get(mid)),
+                    ),
+                )
+            )
         thought_messages.clear()
         thought_start.clear()
         return evs
@@ -410,7 +432,9 @@ async def _translate_acp_stream_to_pap(
                 name=str(tool_name),
                 input=raw_input if isinstance(raw_input, dict) else {},
                 state="running",
-                summary=_tool_summary(str(tool_name), raw_input if isinstance(raw_input, dict) else None),
+                summary=_tool_summary(
+                    str(tool_name), raw_input if isinstance(raw_input, dict) else None
+                ),
             )
             tool_parts[tool_call_id] = (msg_id, part_id, payload)
             yield PartCompletedEvent(
@@ -568,13 +592,15 @@ class OpenCodeSession:
         # dir. To dodge opencode's slow first-run migration, that dir is seeded
         # ONCE from the host's already-migrated db (+ auth). HOME stays the host
         # HOME; only the data dir is redirected.
-        env = {
-            **os.environ,                        # inherit including HOME
-            **self._env,                         # extra caller env
-            "XDG_DATA_HOME": _polynoia_opencode_data_home(),
-            "POLYNOIA_CONV_ID": self._sandbox.conv_id,
-            "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
-        }
+        env = self._sandbox.env_for_agent(self._env)
+        env.update(
+            {
+                "XDG_DATA_HOME": _polynoia_opencode_data_home(),
+                "POLYNOIA_CONV_ID": self._sandbox.conv_id,
+                "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
+            }
+        )
+        opencode_bin = _opencode_executable(env)
         # CRITICAL: opencode ACP `session/new` ignores any client-supplied
         # model — it uses config's default `model`. We also deny OpenCode's
         # built-in file/shell tools and allow only the registered Polynoia MCP
@@ -592,7 +618,7 @@ class OpenCodeSession:
         # any realistic single-message payload without unbounded memory risk
         # (per-line, not per-stream).
         self._proc = await asyncio.create_subprocess_exec(
-            "opencode",
+            opencode_bin,
             "acp",
             "--cwd",
             self._cwd,
@@ -637,8 +663,12 @@ class OpenCodeSession:
                 {"name": "POLYNOIA_AGENT_ROLE", "value": self._tool_role},
                 {"name": "POLYNOIA_AGENT_TOOLS", "value": ",".join(self._tools_whitelist)},
                 # Lets MCP tools call back into the server (pending-edit gate).
-                {"name": "POLYNOIA_API_BASE", "value": os.environ.get(
-                    "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}")},
+                {
+                    "name": "POLYNOIA_API_BASE",
+                    "value": os.environ.get(
+                        "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
+                    ),
+                },
                 # MCP subprocess might inherit a sandboxed HOME — pin sandbox_root.
                 {"name": "POLYNOIA_SANDBOX_ROOT", "value": str(self._sandbox.root.parent)},
                 # Exact worktree → MCP writes/commits to the agent's branch.
@@ -651,9 +681,15 @@ class OpenCodeSession:
                 # to mask this gap accidentally.)
                 *(
                     [
-                        {"name": "POLYNOIA_WORKSPACE_ID", "value": self._sandbox.workspace_id or ""},
+                        {
+                            "name": "POLYNOIA_WORKSPACE_ID",
+                            "value": self._sandbox.workspace_id or "",
+                        },
                         {"name": "POLYNOIA_WORKTREE_ROOT", "value": str(self._sandbox.root)},
-                        {"name": "POLYNOIA_WORKSPACE_ROOT", "value": str(self._sandbox.workspace_root)},
+                        {
+                            "name": "POLYNOIA_WORKSPACE_ROOT",
+                            "value": str(self._sandbox.workspace_root),
+                        },
                     ]
                     if self._sandbox.workspace_root
                     else []
@@ -669,9 +705,7 @@ class OpenCodeSession:
         result = await self._rpc_request("session/new", new_session_params)
         session_id = result.get("sessionId") if isinstance(result, dict) else None
         if not session_id:
-            raise RuntimeError(
-                f"opencode acp session/new returned no sessionId: {result!r}"
-            )
+            raise RuntimeError(f"opencode acp session/new returned no sessionId: {result!r}")
         self._acp_session_id = session_id
 
     async def _stdout_reader(self) -> None:
@@ -684,9 +718,7 @@ class OpenCodeSession:
                     # EOF — wake any pending futures with an error
                     for fut in self._pending.values():
                         if not fut.done():
-                            fut.set_exception(
-                                RuntimeError("opencode acp subprocess closed stdout")
-                            )
+                            fut.set_exception(RuntimeError("opencode acp subprocess closed stdout"))
                     self._pending.clear()
                     await self._notification_queue.put(_SENTINEL)
                     return
@@ -704,9 +736,7 @@ class OpenCodeSession:
                         if "error" in msg:
                             err = msg["error"]
                             response_fut.set_exception(
-                                RuntimeError(
-                                    f"ACP error {err.get('code')}: {err.get('message')}"
-                                )
+                                RuntimeError(f"ACP error {err.get('code')}: {err.get('message')}")
                             )
                         else:
                             response_fut.set_result(msg.get("result"))

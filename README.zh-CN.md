@@ -5,9 +5,9 @@
 <h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
 
 <p align="center">
-  <strong>像群聊一样,和一整支 AI 编码 Agent 团队协作。</strong><br/>
-  一个对话里多个 Agent —— 编排者拆解任务、并行开工,产物(代码、diff、文档、幻灯片、网页应用)
-  全部在聊天流里直接预览 / 编辑 / 合并。
+  <strong>一个通过聊天协作构建软件的开源多 Agent 工作区。</strong><br/>
+  在同一个 IM 界面中协调 Claude Code、Codex、OpenCode 和自定义 Agent,
+  内联查看产物、预览工作区、追踪提交历史并完成合并。
 </p>
 
 <p align="center">
@@ -59,9 +59,12 @@
 
 ## Polynoia 是什么?
 
-**Polynoia**(课题代号 **AgentHub**)是一个 **IM 形态的多 Agent 协作平台**。你像用
-Slack / 飞书 / 微信一样,和 AI 编码 Agent(**Claude Code、Codex、OpenCode**)打交道:新建对话、
-发消息、拿回富媒体产物。
+Polynoia 是一个面向 Agentic Software Development 的 **IM 形态多 Agent 协作平台**。
+它不把每个编码 Agent 隔离成一个终端会话,而是给它们一个共享工作区、聊天式协调层,
+以及从想法 → 文件 → 预览 → 提交的可审查路径。
+
+你像用 Slack / 飞书 / 微信一样和 AI 编码 Agent(Claude Code、Codex、OpenCode 或自定义
+Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离开聊天流的情况下检查和合并。
 
 - **单聊** —— 把一个明确、聚焦的任务交给单个 Agent。
 - **群聊** —— `@` 多个 Agent,由指定的**编排者(Orchestrator)** 拆解任务、**并行**派活,再验收并合并产物。
@@ -225,11 +228,14 @@ make dev          # 后端 :7780 + 前端 :5173(Ctrl-C 全停)
 python3 scripts/seed_demo.py            # 几个人设 + 1 个工作区 + 1 个群聊
 ```
 
-或加载**场景测试用例** —— 每个都自建工作区,并在脚本头部写明该发什么、该期待什么:
+或灌入官方提交用的**上线准备 testkit**:
 
 ```bash
-python3 scripts/scenarios/seed_all.py   # 办公文档 · 网页小游戏 · 全栈 · 数据分析 · 冲突演练 · 人工审阅
+bash scripts/testkit/reset.sh # 清库 + 灌入上线 / @ 路由 / 合并 / diff 用例
 ```
+
+这批用例覆盖 Release Notes、QA 检查表、状态页、埋点验收报告、Go-live 群聊协作、
+@ 路由、冲突处理、main 同步、Diff/历史和工具错误恢复。
 
 ### 常用命令
 
@@ -261,15 +267,8 @@ docs/
 
 **三层协议:**
 
-| 链路 | 协议 |
-|---|---|
-| Adapter ↔ Server | **PAP** —— NDJSON over stdin/stdout(Claude Agent SDK) |
-| Server ↔ Client | **AI SDK 6** `UIMessageChunk` over SSE/WS(28 chunk + `data-*`) |
-| Client → Server | REST + WS 命令 |
-
-前端经 **MessagePart 注册表**分派消息,所以一条消息能同时承载 文字 + diff + 状态。完整模型见
-[设计 spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) 与
-[context-system 总览](docs/context-system.html)。
+完整模型见[设计 spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) 与
+[上下文构成系统](docs/design/context-system.md)。
 
 ## 技术栈
 
@@ -279,27 +278,10 @@ docs/
 
 ## 仓库结构
 
-```
-polynoia/
-├── apps/            web(Vite+React)· server(FastAPI)· desktop(Tauri)· mobile(Capacitor)
-├── packages/        共享 TS 类型 · 跨平台 core · ui-web · design-tokens
-├── docs/            research · specs · ADR · diagrams
-├── scripts/         演示 + 场景灌库脚本
-├── .skills/         自定义 skill(add-adapter / add-card-type / …)
-└── Makefile         make dev / test / lint / types / build
-```
-
-## 文档与决策
-
-- **设计 spec** —— [`docs/superpowers/specs/2026-05-23-polynoia-design.md`](docs/superpowers/specs/2026-05-23-polynoia-design.md)
-- **调研综合**(20 个库)—— [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)
-- **架构决策记录** —— [`docs/ADR/`](docs/ADR/)(为何编排者是 Agent、为何 ACP 而非 stdout JSON、
-  为何 CodeMirror 而非 Monaco、为何 Capacitor 而非 React Native……)
-
-## 与 AI 协作构建
-
-本项目把 AI 当作一等协作者来构建。协作规范见 [`CLAUDE.md`](CLAUDE.md);决策记录在
-[`docs/ADR/`](docs/ADR/),调研在 [`docs/research/`](docs/research/)。提交遵循
+本项目把 AI 当作一等协作者来开发。规范见 [`CLAUDE.md`](CLAUDE.md)(项目级 AI 协作规范),
+决策记录在 [`docs/ADR/`](docs/ADR/),官方提交用的 AI 协作说明见
+[`docs/ai-collaboration.md`](docs/ai-collaboration.md),调研综合见
+[`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)。提交遵循
 [Conventional Commits](https://www.conventionalcommits.org/)。
 
 

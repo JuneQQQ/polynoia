@@ -36,6 +36,7 @@ from polynoia.storage.models import (
     PendingAccessRow,
     PendingEditRow,
     PinRow,
+    ProcessRunRow,
     ProviderRow,
     ServerRow,
     WorkspaceRow,
@@ -284,6 +285,8 @@ def _conv_from_row(r: ConversationRow) -> Conversation:
         updated_at=r.updated_at,
         last_message_at=r.last_message_at,
         unread=r.unread,
+        draft_text=r.draft_text or "",
+        draft_attachments=r.draft_attachments or [],
         merge_mode=r.merge_mode,  # type: ignore[arg-type]
     )
 
@@ -294,9 +297,10 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
         return False
     # If MessageRow / PinRow have FK without cascade, delete dependents first.
     # Cheapest: cascade via raw delete.
-    from polynoia.storage.models import MessageRow, PinRow
+    from polynoia.storage.models import MessageRow, PinRow, ProcessRunRow
     await session.execute(MessageRow.__table__.delete().where(MessageRow.conv_id == conv_id))
     await session.execute(PinRow.__table__.delete().where(PinRow.conv_id == conv_id))
+    await session.execute(ProcessRunRow.__table__.delete().where(ProcessRunRow.conv_id == conv_id))
     await session.delete(row)
     await session.flush()
     return True
@@ -393,6 +397,8 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
         member_roles=c.member_roles or {},
         orchestrator_member_id=c.orchestrator_member_id,
         pinned=c.pinned, archived=c.archived, unread=c.unread,
+        draft_text=c.draft_text or "",
+        draft_attachments=c.draft_attachments or [],
         last_message_at=c.last_message_at,
         merge_mode=c.merge_mode,
     ))
@@ -432,6 +438,26 @@ async def reset_unread(session: AsyncSession, conv_id: str) -> None:
         .where(ConversationRow.id == conv_id)
         .values(unread=0)
     )
+
+
+async def set_draft_text(session: AsyncSession, conv_id: str, draft_text: str) -> bool:
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False
+    row.draft_text = draft_text
+    await session.flush()
+    return True
+
+
+async def set_draft_attachments(
+    session: AsyncSession, conv_id: str, draft_attachments: list[dict[str, Any]]
+) -> bool:
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False
+    row.draft_attachments = draft_attachments
+    await session.flush()
+    return True
 
 
 async def set_merge_mode(
@@ -686,6 +712,108 @@ async def delete_message(session: AsyncSession, msg_id: str) -> bool:
     return True
 
 
+def _process_run_dict(r: ProcessRunRow) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "conv_id": r.conv_id,
+        "message_id": r.message_id,
+        "agent_id": r.agent_id,
+        "command": r.command,
+        "cwd": r.cwd,
+        "label": r.label,
+        "mode": r.mode,
+        "status": r.status,
+        "pid": r.pid,
+        "pgid": r.pgid,
+        "exit_code": r.exit_code,
+        "output_tail": r.output_tail,
+        "log_path": r.log_path,
+        "started_at": r.started_at.isoformat() + "Z" if r.started_at else None,
+        "ended_at": r.ended_at.isoformat() + "Z" if r.ended_at else None,
+        "last_heartbeat_at": (
+            r.last_heartbeat_at.isoformat() + "Z" if r.last_heartbeat_at else None
+        ),
+    }
+
+
+async def upsert_process_run(
+    session: AsyncSession,
+    *,
+    process_id: str,
+    conv_id: str,
+    message_id: str,
+    agent_id: str,
+    command: str,
+    mode: str,
+    status: str,
+    output_tail: str = "",
+    cwd: str | None = None,
+    label: str | None = None,
+    pid: int | None = None,
+    pgid: int | None = None,
+    exit_code: int | None = None,
+) -> dict[str, Any]:
+    now = datetime.utcnow()
+    row = await session.get(ProcessRunRow, process_id)
+    if row is None:
+        row = ProcessRunRow(
+            id=process_id,
+            conv_id=conv_id,
+            message_id=message_id,
+            agent_id=agent_id,
+            command=command,
+            cwd=cwd,
+            label=label,
+            mode=mode,
+            status=status,
+            pid=pid,
+            pgid=pgid,
+            exit_code=exit_code,
+            output_tail=output_tail,
+            last_heartbeat_at=now,
+        )
+        session.add(row)
+    else:
+        row.command = command or row.command
+        row.cwd = cwd or row.cwd
+        row.label = label or row.label
+        row.mode = mode or row.mode
+        row.status = status
+        row.pid = pid if pid is not None else row.pid
+        row.pgid = pgid if pgid is not None else row.pgid
+        row.exit_code = exit_code
+        row.output_tail = output_tail
+        row.last_heartbeat_at = now
+    if status in ("exited", "failed", "killed", "lost") and row.ended_at is None:
+        row.ended_at = now
+    await session.flush()
+    return _process_run_dict(row)
+
+
+async def list_process_runs(session: AsyncSession, conv_id: str) -> list[dict[str, Any]]:
+    res = await session.execute(
+        select(ProcessRunRow)
+        .where(ProcessRunRow.conv_id == conv_id)
+        .order_by(ProcessRunRow.started_at.desc(), ProcessRunRow.id.desc())
+    )
+    return [_process_run_dict(r) for r in res.scalars().all()]
+
+
+async def get_process_run(session: AsyncSession, process_id: str) -> dict[str, Any] | None:
+    row = await session.get(ProcessRunRow, process_id)
+    return _process_run_dict(row) if row else None
+
+
+async def mark_process_run_killed(session: AsyncSession, process_id: str) -> bool:
+    row = await session.get(ProcessRunRow, process_id)
+    if row is None:
+        return False
+    row.status = "killed"
+    row.ended_at = datetime.utcnow()
+    await session.flush()
+    return True
+
+
 async def add_conv_memory(
     session: AsyncSession,
     *,
@@ -755,6 +883,115 @@ async def list_workspace_memory(
     return list(res.scalars().all())
 
 
+def _message_row_dict(r: MessageRow) -> dict[str, Any]:
+    return {
+        "id": r.id,
+        "conv_id": r.conv_id,
+        "sender_id": r.sender_id,
+        "payload": r.payload,
+        "pinned": bool(r.pinned),
+        "in_reply_to": r.in_reply_to,
+        "code_sha": r.code_sha,
+        "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+    }
+
+
+def _task_assignees(payload: dict[str, Any]) -> set[str]:
+    if payload.get("kind") != "tasks":
+        return set()
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return set()
+    return {
+        str(t.get("agent"))
+        for t in tasks
+        if isinstance(t, dict) and t.get("agent")
+    }
+
+
+async def _with_burst_anchor_context(
+    session: AsyncSession,
+    conv_id: str,
+    rows: list[MessageRow],
+) -> list[MessageRow]:
+    """Keep paginated pages from cutting off the `tasks` card that owns a burst.
+
+    The frontend groups worker messages into burst lanes only after it sees the
+    preceding `tasks` card. If the latest page starts inside a long burst, the
+    anchor sits just outside the page and the UI renders no burst until the user
+    scrolls far enough to lazy-load older rows. Pull the contiguous context range
+    from that anchor to the page start so hydration can render the burst
+    immediately without creating pagination gaps.
+    """
+    if not rows:
+        return rows
+
+    first = rows[0]
+    older_stmt = (
+        select(MessageRow)
+        .where(MessageRow.conv_id == conv_id)
+        .where(MessageRow.created_at < first.created_at)
+        .order_by(MessageRow.created_at.desc(), MessageRow.id.desc())
+        .limit(400)
+    )
+    older_desc = list((await session.execute(older_stmt)).scalars().all())
+    if not older_desc:
+        return rows
+
+    older = list(reversed(older_desc))
+    page_ids = {r.id for r in rows}
+    loaded_ids = set(page_ids)
+    older_index = {r.id: i for i, r in enumerate(older)}
+
+    active: dict[str, Any] | None = None
+    earliest_context_idx: int | None = None
+
+    for r in [*older, *rows]:
+        payload = r.payload if isinstance(r.payload, dict) else {}
+        assignees = _task_assignees(payload)
+        if assignees:
+            active = {
+                "anchor_id": r.id,
+                "owner": r.sender_id,
+                "assignees": assignees,
+                "claimed": False,
+            }
+            continue
+
+        if not active:
+            continue
+
+        if r.sender_id == active["owner"]:
+            if active["claimed"]:
+                active = None
+            continue
+
+        if r.sender_id in active["assignees"]:
+            active["claimed"] = True
+            anchor_id = str(active["anchor_id"])
+            if r.id in page_ids and anchor_id not in loaded_ids:
+                idx = older_index.get(anchor_id)
+                if idx is not None:
+                    earliest_context_idx = (
+                        idx
+                        if earliest_context_idx is None
+                        else min(earliest_context_idx, idx)
+                    )
+                    loaded_ids.add(anchor_id)
+
+    if earliest_context_idx is None:
+        return rows
+
+    merged: list[MessageRow] = []
+    seen: set[str] = set()
+    for r in [*older[earliest_context_idx:], *rows]:
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        merged.append(r)
+    return merged
+
+
 async def list_messages(
     session: AsyncSession,
     conv_id: str,
@@ -795,19 +1032,9 @@ async def list_messages(
     has_more = len(rows) > limit
     rows = rows[:limit]
     rows.reverse()  # ascending for client rendering
-    return [
-        {
-            "id": r.id,
-            "conv_id": r.conv_id,
-            "sender_id": r.sender_id,
-            "payload": r.payload,
-            "pinned": bool(r.pinned),
-            "in_reply_to": r.in_reply_to,
-            "code_sha": r.code_sha,
-            "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
-        }
-        for r in rows
-    ], has_more
+    if has_more:
+        rows = await _with_burst_anchor_context(session, conv_id, rows)
+    return [_message_row_dict(r) for r in rows], has_more
 
 
 async def set_message_pinned(

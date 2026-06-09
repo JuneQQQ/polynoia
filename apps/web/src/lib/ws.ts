@@ -13,6 +13,7 @@ export type UIMessageChunk =
   | {
       type: "text-start";
       id: string;
+      message_id?: string | null;
       sender_id?: string | null;
       sender_label?: string | null;
     }
@@ -115,6 +116,11 @@ export class ConvWebSocket {
     members: string[],
     inReplyTo?: string,
     msgId?: string,
+    options?: {
+      regenerate?: boolean;
+      regenerateMsgId?: string;
+      regenerateSenderId?: string;
+    },
   ) {
     this.ws?.send(JSON.stringify({
       kind: "user_message",
@@ -122,6 +128,13 @@ export class ConvWebSocket {
       members,
       ...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
       ...(msgId ? { msg_id: msgId } : {}),
+      ...(options?.regenerate ? { regenerate: true } : {}),
+      ...(options?.regenerateMsgId
+        ? { regenerate_msg_id: options.regenerateMsgId }
+        : {}),
+      ...(options?.regenerateSenderId
+        ? { regenerate_sender_id: options.regenerateSenderId }
+        : {}),
     }));
   }
 

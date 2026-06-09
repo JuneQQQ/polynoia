@@ -4,7 +4,7 @@
  * 点击 → 跳进 chat;hover → 显示"恢复"按钮 (unarchive,变回 active)。
  */
 import { Archive as ArchiveIcon, ArchiveRestore, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
 import { useStore } from "../../store";
 
@@ -18,6 +18,14 @@ function fmtDate(iso: string | null): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+function sortConvs(rows: ConversationSummary[]): ConversationSummary[] {
+  return [...rows].sort((a, b) =>
+    (b.last_message_at ?? b.updated_at ?? b.created_at).localeCompare(
+      a.last_message_at ?? a.updated_at ?? a.created_at,
+    ),
+  );
+}
+
 export function ArchiveView({ onOpenConv }: Props) {
   const agents = useStore((s) => s.agents);
   const [convs, setConvs] = useState<ConversationSummary[]>([]);
@@ -26,22 +34,69 @@ export function ArchiveView({ onOpenConv }: Props) {
   const [restoring, setRestoring] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
       const list = await api.conversations({ archived: true });
-      setConvs(list);
+      setConvs(sortConvs(list));
     } catch (e) {
       setErr(String(e));
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    reload();
-  }, []);
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    const upsertArchived = (conv: ConversationSummary) => {
+      setLoading(false);
+      setErr(null);
+      setConvs((prev) =>
+        sortConvs([
+          { ...conv, archived: true },
+          ...prev.filter((c) => c.id !== conv.id),
+        ]),
+      );
+    };
+    const onArchived = (ev: Event) => {
+      const detail = (
+        ev as CustomEvent<{ convId?: string; conv?: ConversationSummary }>
+      ).detail;
+      if (detail?.conv) {
+        upsertArchived(detail.conv);
+        return;
+      }
+      if (!detail?.convId) return;
+      api
+        .getConv(detail.convId)
+        .then((conv) => {
+          if (conv.archived) upsertArchived(conv);
+        })
+        .catch(() => {});
+    };
+    const onDeleted = (ev: Event) => {
+      const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
+      if (!convId) return;
+      setConvs((prev) => prev.filter((c) => c.id !== convId));
+    };
+    const onListChanged = () => {
+      void reload();
+    };
+    window.addEventListener("polynoia:conv-archived", onArchived);
+    window.addEventListener("polynoia:conv-deleted", onDeleted);
+    window.addEventListener("polynoia:conv-updated", onListChanged);
+    window.addEventListener("polynoia:resync-lists", onListChanged);
+    return () => {
+      window.removeEventListener("polynoia:conv-archived", onArchived);
+      window.removeEventListener("polynoia:conv-deleted", onDeleted);
+      window.removeEventListener("polynoia:conv-updated", onListChanged);
+      window.removeEventListener("polynoia:resync-lists", onListChanged);
+    };
+  }, [reload]);
 
   const handleRestore = async (convId: string) => {
     setRestoring(convId);
@@ -66,6 +121,9 @@ export function ArchiveView({ onOpenConv }: Props) {
     try {
       await api.deleteConv(conv.id);
       setConvs((prev) => prev.filter((c) => c.id !== conv.id));
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-deleted", { detail: { convId: conv.id } }),
+      );
       window.dispatchEvent(
         new CustomEvent("polynoia:conv-updated", { detail: { convId: conv.id } }),
       );

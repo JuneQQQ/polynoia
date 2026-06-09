@@ -616,15 +616,6 @@ export function Sidebar({
               onOpen={() => onSelectConv(c.id, c.members, c.title)}
               onDeleted={() => {
                 refreshWsConvs();
-                if (activeConvId === c.id) {
-                  // Clear active conv if we just deleted it
-                  useStore.setState({ activeConvId: null });
-                  window.dispatchEvent(
-                    new CustomEvent("polynoia:conv-archived", {
-                      detail: { convId: c.id },
-                    }),
-                  );
-                }
               }}
             />
           ))}
@@ -1429,6 +1420,16 @@ function ConvRow({
     setBusy(true);
     try {
       await api.deleteConv(conv.id);
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-deleted", {
+          detail: { convId: conv.id },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-updated", {
+          detail: { convId: conv.id },
+        }),
+      );
       onDeleted();
     } catch (e) {
       window.alert(`删除失败:${e}`);
@@ -1448,6 +1449,17 @@ function ConvRow({
     setBusy(true);
     try {
       await api.archiveConv(conv.id);
+      const archivedConv = { ...conv, archived: true };
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-archived", {
+          detail: { convId: conv.id, conv: archivedConv },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("polynoia:conv-updated", {
+          detail: { convId: conv.id },
+        }),
+      );
       onDeleted();
     } catch (e) {
       window.alert(`归档失败:${e}`);

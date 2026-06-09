@@ -150,10 +150,14 @@ function TasksBurstPartInner({
 	const laneCount = laneTasks.length;
 
 	return (
-		// Width matches the message TEXT column exactly: left at 68px (px-6 +
-		// avatar w-8 + gap-3) and right at mr-6 (= px-6). No max-w — the card is
-		// flush with the text on both edges; lanes that don't fit scroll inside.
-		<div className="relative ml-[68px] mr-6 my-3 border border-[var(--color-line)] rounded-xl overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)]">
+		// Width matches the message text column. Desktop keeps the avatar column
+		// offset; mobile uses the same left boundary as text content so the burst
+		// card has enough usable width for lanes.
+		<div
+			className={`relative my-3 border border-[var(--color-line)] rounded-xl overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] ${
+				isMobile() ? "ml-9 mr-2" : "ml-[68px] mr-6"
+			}`}
+		>
 			{/* Accent top-rule — signals "this is orchestrator-dispatched work" */}
 			<span
 				aria-hidden

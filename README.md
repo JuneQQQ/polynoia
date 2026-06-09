@@ -5,10 +5,9 @@
 <h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
 
 <p align="center">
-  <strong>Chat with a whole team of AI coding agents — like it's a group IM.</strong><br/>
-  One conversation, many agents. An orchestrator splits the work, they build in parallel,
-  and every result — code, diffs, docs, slides, web apps — is previewable, editable and
-  mergeable right inside the chat.
+  <strong>An open-source multi-agent workspace for building software through chat.</strong><br/>
+  Coordinate Claude Code, Codex, OpenCode, and custom agents in one IM-style interface,
+  with inline artifacts, workspace preview, git history, and guided merges.
 </p>
 
 <p align="center">
@@ -61,9 +60,14 @@
 
 ## What is Polynoia?
 
-**Polynoia** (internal codename **AgentHub**) is an **IM-style multi-agent collaboration
-platform**. You talk to AI coding agents — **Claude Code, Codex, OpenCode** — the same way
-you'd use Slack / Lark / WeChat: start a chat, send a message, get rich results back.
+Polynoia is an **IM-style multi-agent collaboration platform** for agentic software
+development. Instead of treating each coding agent as a separate terminal session,
+Polynoia gives them a shared workspace, a chat-native coordination layer, and a
+reviewable path from idea → files → preview → commit.
+
+You talk to AI coding agents — Claude Code, Codex, OpenCode, or your own custom agents —
+the same way you'd use Slack/Lark/WeChat: start a chat, send a message, get rich
+results back, then inspect and merge the work without leaving the conversation.
 
 - **1:1 chats** — pin a single, well-scoped task to one agent.
 - **Group chats** — `@`-mention several agents; a designated **Orchestrator** decomposes the
@@ -240,12 +244,15 @@ With `make dev` running, in a second terminal:
 python3 scripts/seed_demo.py            # personas + a workspace + a group chat
 ```
 
-Or load **scenario test cases** — each builds its own workspace and documents what to send and
-what to expect:
+Or load the **launch-readiness testkit** used for submission review:
 
 ```bash
-python3 scripts/scenarios/seed_all.py   # office docs · web game · fullstack · data · conflict drill · manual review
+bash scripts/testkit/reset.sh # clean DB + seed launch / routing / merge / diff cases
 ```
+
+The seeded cases cover release notes, QA workbook, status page, telemetry report,
+Go-live collaboration, @ routing, conflict handling, main sync, diff/history, and
+tool-error recovery.
 
 ### Handy commands
 
@@ -277,16 +284,8 @@ docs/
 
 **Three protocol layers:**
 
-| Hop | Protocol |
-|---|---|
-| Adapter ↔ Server | **PAP** — NDJSON over stdin/stdout (Claude Agent SDK) |
-| Server ↔ Client | **AI SDK 6** `UIMessageChunk` over SSE/WS (28 chunk types + `data-*`) |
-| Client → Server | REST + WS commands |
-
-The frontend dispatches messages through a **MessagePart registry**, so one message can carry
-text + diff + status parts together. See the
-[design spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) and the
-[context-system overview](docs/context-system.html) for the full model.
+See the [design spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) and the
+[context-system overview](docs/design/context-system.md) for the full model.
 
 ## Tech stack
 
@@ -316,8 +315,10 @@ polynoia/
 ## Built with AI
 
 This project is built **with** AI as a first-class collaborator. The conventions live in
-[`CLAUDE.md`](CLAUDE.md); decisions are recorded in [`docs/ADR/`](docs/ADR/) and research in
-[`docs/research/`](docs/research/). Commits follow
+[`CLAUDE.md`](CLAUDE.md) (project-level AI collaboration spec), with decision records in
+[`docs/ADR/`](docs/ADR/), the submission-facing collaboration summary in
+[`docs/ai-collaboration.md`](docs/ai-collaboration.md), and research synthesis in
+[`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
 ---

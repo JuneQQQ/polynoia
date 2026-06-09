@@ -40,9 +40,11 @@ import {
 import {
 	type ReactNode,
 	createContext,
+	useCallback,
 	useContext,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 import {
@@ -58,7 +60,7 @@ import {
 	setServerUrl,
 } from "../../lib/runtime-config";
 import type { Agent, Workspace } from "../../lib/types";
-import { useStore } from "../../store";
+import { phaseLabel, useStore } from "../../store";
 import { NewContactModal } from "../NewContactModal";
 
 /* ── 设计稿调色板 ── */
@@ -577,6 +579,152 @@ const scrollStyle: React.CSSProperties = {
 	WebkitOverflowScrolling: "touch",
 };
 
+function PullToRefresh({
+	children,
+	onRefresh,
+}: {
+	children: ReactNode;
+	onRefresh: () => Promise<void> | void;
+}) {
+	const { pal, lang } = useApp();
+	const ref = useRef<HTMLDivElement>(null);
+	const startY = useRef<number | null>(null);
+	const [pull, setPull] = useState(0);
+	const [refreshing, setRefreshing] = useState(false);
+	const threshold = 72;
+	const shown = refreshing ? 58 : pull;
+	const ready = pull >= threshold;
+
+	const reset = () => {
+		startY.current = null;
+		setPull(0);
+	};
+
+	const finishRefresh = async () => {
+		try {
+			await onRefresh();
+		} finally {
+			window.setTimeout(() => {
+				setRefreshing(false);
+				setPull(0);
+			}, 360);
+		}
+	};
+
+	return (
+		<div
+			ref={ref}
+			style={{
+				...scrollStyle,
+				position: "relative",
+				overscrollBehaviorY: "contain",
+			}}
+			onTouchStart={(e) => {
+				if (refreshing) return;
+				if ((ref.current?.scrollTop ?? 0) > 0) return;
+				startY.current = e.touches[0]?.clientY ?? null;
+			}}
+			onTouchMove={(e) => {
+				if (refreshing || startY.current == null) return;
+				if ((ref.current?.scrollTop ?? 0) > 0) {
+					reset();
+					return;
+				}
+				const y = e.touches[0]?.clientY ?? startY.current;
+				const delta = y - startY.current;
+				if (delta <= 0) {
+					setPull(0);
+					return;
+				}
+				if (delta > 8) e.preventDefault();
+				setPull(Math.min(104, delta * 0.48));
+			}}
+			onTouchEnd={() => {
+				if (refreshing) return;
+				if (pull >= threshold) {
+					setRefreshing(true);
+					setPull(58);
+					void finishRefresh();
+				} else {
+					reset();
+				}
+			}}
+			onTouchCancel={reset}
+		>
+			<div
+				aria-hidden
+				style={{
+					position: "absolute",
+					left: 0,
+					right: 0,
+					top: 0,
+					height: 58,
+					display: "flex",
+					alignItems: "center",
+					justifyContent: "center",
+					gap: 9,
+					color: ready || refreshing ? pal.accent : pal.ink3,
+					opacity: shown > 6 ? 1 : 0,
+					transform: `translateY(${shown - 58}px)`,
+					transition: refreshing ? "transform 180ms ease, opacity 160ms ease" : "opacity 120ms ease",
+					pointerEvents: "none",
+				}}
+			>
+				<span
+					style={{
+						width: 28,
+						height: 28,
+						borderRadius: 999,
+						display: "grid",
+						placeItems: "center",
+						background: pal.chip,
+						boxShadow: ready
+							? `0 0 0 1px ${pal.accent}33, 0 8px 24px ${pal.accent}22`
+							: "none",
+						transform: refreshing ? undefined : `rotate(${Math.min(180, pull * 2.2)}deg)`,
+						transition: "box-shadow 160ms ease",
+					}}
+				>
+					<RefreshCw
+						size={16}
+						strokeWidth={2.2}
+						className={refreshing ? "animate-spin" : ""}
+					/>
+				</span>
+				<span
+					style={{
+						fontSize: 12,
+						fontWeight: 700,
+						letterSpacing: 0.5,
+					}}
+				>
+					{refreshing
+						? lang === "en"
+							? "Refreshing"
+							: "刷新中"
+						: ready
+							? lang === "en"
+								? "Release to refresh"
+								: "松开刷新"
+							: lang === "en"
+								? "Pull to refresh"
+								: "下拉刷新"}
+				</span>
+			</div>
+			<div
+				style={{
+					transform: `translateY(${shown}px)`,
+					transition: refreshing || shown === 0 ? "transform 220ms cubic-bezier(.2,.8,.2,1)" : "none",
+					willChange: "transform",
+					minHeight: "100%",
+				}}
+			>
+				{children}
+			</div>
+		</div>
+	);
+}
+
 /* ─────────────────── 消息 ─────────────────── */
 
 type SortMode = "recent" | "unread" | "name";
@@ -689,33 +837,41 @@ function ChatListScreen({ onSelectConv }: Props) {
 	const [q, setQ] = useState("");
 	const [sort, setSort] = useState<SortMode>("recent");
 
-	useEffect(() => {
-		const load = () =>
-			api
-				.conversations()
-				.then((list) =>
-					setConvs(
-						list
-							.filter((c) => !c.archived)
-							.sort((a, b) =>
-								(b.last_message_at ?? b.created_at).localeCompare(
-									a.last_message_at ?? a.created_at,
-								),
-							),
+	const load = useCallback(async () => {
+		try {
+			const list = await api.conversations();
+			setConvs(
+				list
+					.filter((c) => !c.archived)
+					.sort((a, b) =>
+						(b.last_message_at ?? b.created_at).localeCompare(
+							a.last_message_at ?? a.created_at,
+						),
 					),
-				)
-				.catch(() => setConvs([]));
+			);
+		} catch {
+			setConvs([]);
+		}
+	}, []);
+
+	useEffect(() => {
 		load();
 		// Near-realtime cross-device sync: refresh the chat list on the foreground
 		// poll (~5s) and on app resume, so new messages/convs from other devices
 		// surface within seconds.
 		window.addEventListener("polynoia:resync", load);
 		window.addEventListener("polynoia:resync-lists", load);
+		window.addEventListener("polynoia:conv-updated", load);
+		window.addEventListener("polynoia:conv-archived", load);
+		window.addEventListener("polynoia:conv-deleted", load);
 		return () => {
 			window.removeEventListener("polynoia:resync", load);
 			window.removeEventListener("polynoia:resync-lists", load);
+			window.removeEventListener("polynoia:conv-updated", load);
+			window.removeEventListener("polynoia:conv-archived", load);
+			window.removeEventListener("polynoia:conv-deleted", load);
 		};
-	}, []);
+	}, [load]);
 
 	const agentFor = (c: ConversationSummary) =>
 		agents.find((a) => a.id === c.members.find((m) => m !== "you"));
@@ -731,10 +887,18 @@ function ChatListScreen({ onSelectConv }: Props) {
 		const base = k
 			? convs.filter((c) => titleFor(c).toLowerCase().includes(k))
 			: convs;
+		const runningRank = (c: ConversationSummary) =>
+			c.running_agents?.some(
+				(a) => a.status === "starting" || a.status === "streaming",
+			)
+				? 1
+				: 0;
 		// base 已按最近排序(useEffect 里 last_message_at DESC)。
 		// 未读优先:未读数降序;同未读数则保持「最近」次序(V8 sort 稳定)。
 		if (sort === "unread") {
-			return [...base].sort((a, b) => b.unread - a.unread);
+			return [...base].sort(
+				(a, b) => runningRank(b) - runningRank(a) || b.unread - a.unread,
+			);
 		}
 		// 名称:按会话标题拼音 A→Z(localeCompare "zh" 处理中文拼音排序)。
 		if (sort === "name") {
@@ -742,7 +906,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 				titleFor(a).localeCompare(titleFor(b), "zh"),
 			);
 		}
-		return base;
+		return [...base].sort((a, b) => runningRank(b) - runningRank(a));
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [convs, q, agents, sort]);
 
@@ -750,15 +914,20 @@ function ChatListScreen({ onSelectConv }: Props) {
 		<>
 			<LargeHeader
 				title={t.brand}
-				dot
 				rightSlot={<SortMenu mode={sort} setMode={setSort} />}
 			/>
-			<div style={scrollStyle}>
+			<PullToRefresh onRefresh={load}>
 				<SearchInput value={q} onChange={setQ} placeholder={t.searchConv} />
 				{shown.length === 0 && <Empty text={q ? t.noResult : t.noConvs} />}
 				{shown.map((c, i) => {
 					const a = agentFor(c);
 					const ws = wsFor(c);
+					const running = c.running_agents?.find(
+						(x) => x.status === "starting" || x.status === "streaming",
+					);
+					const runningAgent = running
+						? agents.find((x) => x.id === running.agent_id)
+						: undefined;
 					return (
 						<div key={c.id}>
 							<button
@@ -809,9 +978,21 @@ function ChatListScreen({ onSelectConv }: Props) {
 											alignItems: "center",
 											gap: 6,
 											marginTop: 4,
+											minWidth: 0,
+											maxWidth: "100%",
+											overflow: "hidden",
 										}}
 									>
 										{ws && <ProjectChip pal={pal} ws={ws} />}
+										{running && (
+											<RunningChip
+												pal={pal}
+												text={`${runningAgent?.name ?? "Agent"} · ${phaseLabel(
+													running.phase,
+													running.tool,
+												)}`}
+											/>
+										)}
 										<span style={subStyle(pal)}>
 											{a?.tagline ?? a?.role ?? t.members(c.members.length)}
 										</span>
@@ -824,7 +1005,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 					);
 				})}
 				<div style={{ height: 12 }} />
-			</div>
+			</PullToRefresh>
 		</>
 	);
 }
@@ -835,6 +1016,10 @@ function ContactsScreen({ onSelectConv }: Props) {
 	const { pal, t, onNewContact } = useApp();
 	const agents = useStore((st) => st.agents);
 	const [q, setQ] = useState("");
+	const refreshContacts = useCallback(async () => {
+		const list = await api.agents();
+		useStore.setState({ agents: list });
+	}, []);
 
 	const contacts = useMemo(
 		() => agents.filter((a) => a.id !== "you" && a.id !== "system"),
@@ -862,7 +1047,7 @@ function ContactsScreen({ onSelectConv }: Props) {
 	return (
 		<>
 			<LargeHeader title={t.contactsTitle} count={contacts.length} showAdd />
-			<div style={scrollStyle}>
+			<PullToRefresh onRefresh={refreshContacts}>
 				<SearchInput value={q} onChange={setQ} placeholder={t.searchAgent} />
 				{groups.length === 0 && <Empty text={t.noResult} />}
 				{groups.map((g) => (
@@ -971,7 +1156,7 @@ function ContactsScreen({ onSelectConv }: Props) {
 					</div>
 				))}
 				<div style={{ height: 16 }} />
-			</div>
+			</PullToRefresh>
 		</>
 	);
 }
@@ -983,6 +1168,7 @@ function ProjectsScreen({ onSelectConv }: Props) {
 	const workspaces = useStore((st) => st.workspaces);
 	const servers = useStore((st) => st.servers);
 	const setActiveWorkspace = useStore((st) => st.setActiveWorkspace);
+	const reloadSeed = useStore((st) => st.reloadSeed);
 	const [opened, setOpened] = useState<Workspace | null>(null);
 	const [q, setQ] = useState("");
 
@@ -1005,7 +1191,7 @@ function ProjectsScreen({ onSelectConv }: Props) {
 	return (
 		<>
 			<LargeHeader title={t.projectsTitle} count={workspaces.length} />
-			<div style={scrollStyle}>
+			<PullToRefresh onRefresh={reloadSeed}>
 				<SearchInput value={q} onChange={setQ} placeholder={t.searchProject} />
 				<Divider pal={pal} indent={16} margin />
 				<div
@@ -1094,7 +1280,7 @@ function ProjectsScreen({ onSelectConv }: Props) {
 					);
 				})}
 				<div style={{ height: 16 }} />
-			</div>
+			</PullToRefresh>
 		</>
 	);
 }
@@ -1112,12 +1298,26 @@ function ProjectConvsScreen({
 	const agents = useStore((st) => st.agents);
 	const [convs, setConvs] = useState<ConversationSummary[]>([]);
 
-	useEffect(() => {
+	const load = useCallback(() => {
 		api
 			.conversations({ workspaceId: ws.id })
 			.then((list) => setConvs(list.filter((c) => !c.archived)))
 			.catch(() => setConvs([]));
 	}, [ws.id]);
+
+	useEffect(() => {
+		load();
+		window.addEventListener("polynoia:resync-lists", load);
+		window.addEventListener("polynoia:conv-updated", load);
+		window.addEventListener("polynoia:conv-archived", load);
+		window.addEventListener("polynoia:conv-deleted", load);
+		return () => {
+			window.removeEventListener("polynoia:resync-lists", load);
+			window.removeEventListener("polynoia:conv-updated", load);
+			window.removeEventListener("polynoia:conv-archived", load);
+			window.removeEventListener("polynoia:conv-deleted", load);
+		};
+	}, [load]);
 
 	return (
 		<>
@@ -2120,6 +2320,9 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 				borderTop: `0.5px solid ${pal.line}`,
 				background: pal.bgTop,
 				paddingTop: 8,
+				minWidth: 0,
+				maxWidth: "100vw",
+				overflowX: "hidden",
 				paddingBottom:
 					"calc(var(--pn-status-safe-bottom, env(safe-area-inset-bottom)) + 10px)",
 			}}
@@ -2134,6 +2337,8 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 						onClick={() => setTab(id)}
 						style={{
 							flex: 1,
+							minWidth: 0,
+							maxWidth: "25%",
 							border: "none",
 							background: "none",
 							cursor: "pointer",
@@ -2231,6 +2436,41 @@ function UnreadBadge({ pal, n }: { pal: Pal; n: number }) {
 		</span>
 	);
 }
+function RunningChip({ pal, text }: { pal: Pal; text: string }) {
+	return (
+		<span
+			style={{
+				flexShrink: 0,
+				maxWidth: "min(132px, 42vw)",
+				minWidth: 0,
+				display: "inline-flex",
+				alignItems: "center",
+				gap: 5,
+				padding: "2px 7px",
+				borderRadius: 7,
+				background: pal.accentSoft,
+				color: pal.accent,
+				fontSize: 11.5,
+				fontWeight: 600,
+				whiteSpace: "nowrap",
+				overflow: "hidden",
+				textOverflow: "ellipsis",
+			}}
+			title={text}
+		>
+			<RefreshCw size={11} className="animate-spin" style={{ flexShrink: 0 }} />
+			<span
+				style={{
+					minWidth: 0,
+					overflow: "hidden",
+					textOverflow: "ellipsis",
+				}}
+			>
+				{text}
+			</span>
+		</span>
+	);
+}
 function EngineChip({ pal, text }: { pal: Pal; text: string }) {
 	return (
 		<span
@@ -2260,7 +2500,8 @@ function ProjectChip({ pal, ws }: { pal: Pal; ws: Workspace }) {
 				display: "inline-flex",
 				alignItems: "center",
 				gap: 4,
-				maxWidth: 120,
+				maxWidth: "min(120px, 36vw)",
+				minWidth: 0,
 				fontSize: 11,
 				color: pal.ink2,
 				background: `${ws.color}1A`,

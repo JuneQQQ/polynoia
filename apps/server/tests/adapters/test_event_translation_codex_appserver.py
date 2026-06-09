@@ -161,6 +161,7 @@ async def test_reasoning_summary_streams_as_thinking_block() -> None:
     ]
     assert rs[-1].type == "part.completed" and rs[-1].part.kind == "reasoning"
     assert rs[-1].part.body[0].c == "Calculating relative motion."
+    assert rs[-1].part.seconds is not None and rs[-1].part.seconds >= 1
     assert len({e.part_id for e in rs}) == 1  # one thinking part throughout
 
 

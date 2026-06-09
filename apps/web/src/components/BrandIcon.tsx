@@ -82,7 +82,7 @@ function GlyphTriad() {
 					key={d.c}
 					cx={d.x}
 					cy={d.y}
-					r={21}
+					r={16.5}
 					fill={d.c}
 					fillOpacity="0.86"
 					style={{ mixBlendMode: "multiply" }}
@@ -166,7 +166,7 @@ export function BrandIcon({
 	const fill = isWeb ? c.flat : `url(#${gradId})`;
 	const sheen = !isWeb;
 	const ring = platform === "macos";
-	const gScale = platform === "ios" ? 1.08 : 1;
+	const gScale = concept === "triad" ? (platform === "ios" ? 1 : 0.9) : 1;
 	const gTransform =
 		gScale === 1
 			? undefined

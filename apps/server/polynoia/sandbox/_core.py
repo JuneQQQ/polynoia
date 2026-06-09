@@ -1,4 +1,5 @@
 """Per-conversation sandbox: git repo + isolated credential copy + cwd."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +29,7 @@ def _use_direct_creds() -> bool:
     """Backward-compatible wrapper for the centralized credential policy."""
     return use_direct_host_credentials()
 
+
 # ── Custom-workspace registries ──────────────────────────────────────────
 # Keep the sandbox layer storage-agnostic (it never reads the DB). routes.py —
 # which DOES have DB access — hydrates these at startup + on workspace create:
@@ -39,6 +41,41 @@ def _use_direct_creds() -> bool:
 #                            existing auto workspace).
 _WORKSPACE_ROOTS: dict[str, str] = {}
 _WORKSPACE_BRANCHES: dict[str, str] = {}
+
+
+def _agent_subprocess_path() -> str:
+    """PATH for agent subprocesses launched by the app server.
+
+    GUI/LaunchAgent-started servers often do not inherit the user's interactive
+    shell PATH, while Codex/OpenCode are commonly installed under ~/.local/bin,
+    ~/.nvm, Volta, Homebrew, etc. Keep the inherited PATH first, then append
+    known user CLI locations that actually exist.
+    """
+    home = credential_source_home()
+    candidates: list[Path] = [
+        home / ".local" / "bin",
+        home / ".npm-global" / "bin",
+        home / ".volta" / "bin",
+        home / ".bun" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+        Path("/usr/sbin"),
+        Path("/sbin"),
+    ]
+    nvm_versions = home / ".nvm" / "versions" / "node"
+    if nvm_versions.exists():
+        candidates.extend(sorted(nvm_versions.glob("*/bin"), reverse=True))
+
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    seen = set(parts)
+    for p in candidates:
+        s = str(p)
+        if s not in seen and p.exists():
+            parts.append(s)
+            seen.add(s)
+    return os.pathsep.join(parts)
 
 
 def register_workspace_location(
@@ -63,6 +100,7 @@ def integration_branch_for(workspace_id: str | None) -> str:
     """Resolve a workspace's integration branch (default 'main')."""
     return _WORKSPACE_BRANCHES.get(workspace_id or "", "main")
 
+
 def _copy_cred_file(src: Path, dst: Path) -> None:
     """Copy a credential file. Plain overwrite — no special preservation.
 
@@ -73,6 +111,7 @@ def _copy_cred_file(src: Path, dst: Path) -> None:
     those env vars to the first conv that ever opened this workspace and
     misroute every later conv's pending-edit to the wrong UI."""
     shutil.copy2(src, dst)
+
 
 # Local-dependency dirs to keep OUT of git. Policy: each conv/workspace manages
 # deps INSIDE its own working dir — Python via uv (.venv), Node via node_modules,
@@ -88,8 +127,8 @@ _LOCAL_DEPS_GITIGNORE = (
     "dist/\n"
     "build/\n"
     "*.egg-info/\n"
-    "target/\n"        # Rust/Java
-    "vendor/\n"        # Go/PHP
+    "target/\n"  # Rust/Java
+    "vendor/\n"  # Go/PHP
 )
 
 # git 子进程超时 + 非交互 env:卡住的 git(凭据/编辑器提示、慢 filter、异常 stdin
@@ -268,7 +307,10 @@ class Sandbox:
         # silently skip it and the agent's writes never reach main.
         if worktree_dir.exists():
             proc = await asyncio.create_subprocess_exec(
-                "git", "worktree", "list", "--porcelain",
+                "git",
+                "worktree",
+                "list",
+                "--porcelain",
                 cwd=str(ws_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -276,17 +318,13 @@ class Sandbox:
                 env=_git_env(),
             )
             try:
-                wt_out, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=_GIT_TIMEOUT
-                )
+                wt_out, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
             except TimeoutError:
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                raise RuntimeError(
-                    f"git worktree list timed out ({_GIT_TIMEOUT}s)"
-                ) from None
+                raise RuntimeError(f"git worktree list timed out ({_GIT_TIMEOUT}s)") from None
             registered = (
                 f"worktree {worktree_dir}".encode() in wt_out
                 or f"worktree {worktree_dir.resolve()}".encode() in wt_out
@@ -302,16 +340,19 @@ class Sandbox:
                 ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
                 recovered_root = ws_root / "worktrees" / ".recovered"
                 recovered_root.mkdir(parents=True, exist_ok=True)
-                worktree_dir.rename(
-                    recovered_root / f"{worktree_dir.name}-{ts}"
-                )
+                worktree_dir.rename(recovered_root / f"{worktree_dir.name}-{ts}")
 
         if not worktree_dir.exists():
             # Ensure parent exists for git
             worktree_dir.parent.mkdir(parents=True, exist_ok=True)
             # Branch doesn't exist yet → create it at main; -b flag does both
             proc = await asyncio.create_subprocess_exec(
-                "git", "worktree", "add", "-b", branch, str(worktree_dir),
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(worktree_dir),
                 cwd=str(ws_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -319,21 +360,21 @@ class Sandbox:
                 env=_git_env(),
             )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=_GIT_TIMEOUT
-                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
             except TimeoutError:
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                raise RuntimeError(
-                    f"git worktree add timed out ({_GIT_TIMEOUT}s)"
-                ) from None
+                raise RuntimeError(f"git worktree add timed out ({_GIT_TIMEOUT}s)") from None
             if proc.returncode != 0:
                 # Branch might already exist from a previous run; try without -b
                 proc2 = await asyncio.create_subprocess_exec(
-                    "git", "worktree", "add", str(worktree_dir), branch,
+                    "git",
+                    "worktree",
+                    "add",
+                    str(worktree_dir),
+                    branch,
                     cwd=str(ws_root),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -341,21 +382,16 @@ class Sandbox:
                     env=_git_env(),
                 )
                 try:
-                    _o2, e2 = await asyncio.wait_for(
-                        proc2.communicate(), timeout=_GIT_TIMEOUT
-                    )
+                    _o2, e2 = await asyncio.wait_for(proc2.communicate(), timeout=_GIT_TIMEOUT)
                 except TimeoutError:
                     with contextlib.suppress(ProcessLookupError):
                         proc2.kill()
                     with contextlib.suppress(Exception):
                         await asyncio.wait_for(proc2.communicate(), timeout=5.0)
-                    raise RuntimeError(
-                        f"git worktree add timed out ({_GIT_TIMEOUT}s)"
-                    ) from None
+                    raise RuntimeError(f"git worktree add timed out ({_GIT_TIMEOUT}s)") from None
                 if proc2.returncode != 0:
                     raise RuntimeError(
-                        f"git worktree add failed: {stderr.decode()[:200]} / "
-                        f"{e2.decode()[:200]}"
+                        f"git worktree add failed: {stderr.decode()[:200]} / {e2.decode()[:200]}"
                     )
 
         sandbox = cls(
@@ -370,7 +406,7 @@ class Sandbox:
         # (already current); a REUSED one is synced at TURN START by the caller
         # (`Sandbox.reset_worktree_to_main`), which — unlike this path — also
         # runs for POOLED adapter sessions that skip create_workspace_sandbox
-        # entirely. See routes.run_adapter_turn + docs/diagrams/merge-edge-cases.html.
+        # entirely. See routes.run_adapter_turn and ADR-003/ADR-005.
         return sandbox
 
     @classmethod
@@ -426,14 +462,15 @@ class Sandbox:
 
         async def _run(cmd: list[str]) -> tuple[int, str]:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=wt, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL,
+                *cmd,
+                cwd=wt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                stdin=asyncio.subprocess.DEVNULL,
                 env=_git_env(),
             )
             try:
-                out, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=_GIT_TIMEOUT
-                )
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
             except TimeoutError:
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
@@ -503,19 +540,17 @@ class Sandbox:
             return {"ok": False, "error": f"unknown commit: {sha}"}
         head = await self.main_head_sha() or ""
         ib = integration_branch_for(self.workspace_id)
-        _rc, cnt, _ = await self._workspace_run(
-            ["git", "rev-list", "--count", f"{sha}..{ib}"]
-        )
+        _rc, cnt, _ = await self._workspace_run(["git", "rev-list", "--count", f"{sha}..{ib}"])
         commits = int(cnt.strip() or "0") if _rc == 0 else 0
         files = [p for _st, p in await self.files_in_range(sha, ib)]
-        _rc2, alog, _ = await self._workspace_run(
-            ["git", "log", "--format=%an", f"{sha}..{ib}"]
-        )
-        authors = sorted({a.strip() for a in alog.splitlines() if a.strip()}) \
-            if _rc2 == 0 else []
+        _rc2, alog, _ = await self._workspace_run(["git", "log", "--format=%an", f"{sha}..{ib}"])
+        authors = sorted({a.strip() for a in alog.splitlines() if a.strip()}) if _rc2 == 0 else []
         return {
-            "ok": True, "commits": commits, "files": files,
-            "authors": authors, "head": head,
+            "ok": True,
+            "commits": commits,
+            "files": files,
+            "authors": authors,
+            "head": head,
         }
 
     async def restore_main_to(self, sha: str) -> dict:
@@ -541,12 +576,8 @@ class Sandbox:
             )
             undo_sha = undo_sha.strip()
             ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-            await self._workspace_run(
-                ["git", "update-ref", f"refs/polynoia/undo/{ts}", undo_sha]
-            )
-            rc2, _o2, err2 = await self._workspace_run(
-                ["git", "reset", "--hard", sha]
-            )
+            await self._workspace_run(["git", "update-ref", f"refs/polynoia/undo/{ts}", undo_sha])
+            rc2, _o2, err2 = await self._workspace_run(["git", "reset", "--hard", sha])
             if rc2 != 0:
                 return {"ok": False, "error": err2 or "reset failed"}
             return {
@@ -624,9 +655,7 @@ class Sandbox:
             "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "schema_version": 1,
         }
-        (ws_root / ".polynoia" / "manifest.json").write_text(
-            json.dumps(manifest, indent=2)
-        )
+        (ws_root / ".polynoia" / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     @classmethod
     async def _adopt_existing_workspace(cls, ws_root: Path, workspace_id: str) -> None:
@@ -636,9 +665,7 @@ class Sandbox:
         .polynoia/ locally; copies host credentials; writes the manifest. No
         commit to the user's repo, no .gitignore edit.
         """
-        scratch = cls(
-            root=ws_root, conv_id=f"_workspace_{workspace_id}", workspace_id=workspace_id
-        )
+        scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}", workspace_id=workspace_id)
         rc, cur, _ = await scratch._run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
         branch = cur.strip()
         if rc != 0 or not branch or branch == "HEAD":
@@ -650,10 +677,16 @@ class Sandbox:
                 # Unborn repo: an empty base commit so worktrees can branch from it.
                 await scratch._run(["git", "config", "user.email", "agent@polynoia.local"])
                 await scratch._run(["git", "config", "user.name", "polynoia-agent"])
-                await scratch._run([
-                    "git", "commit", "--allow-empty", "-q",
-                    "-m", "polynoia: workspace base",
-                ])
+                await scratch._run(
+                    [
+                        "git",
+                        "commit",
+                        "--allow-empty",
+                        "-q",
+                        "-m",
+                        "polynoia: workspace base",
+                    ]
+                )
         register_workspace_location(workspace_id, integration_branch=branch)
         await cls._exclude_polynoia(ws_root)
         await scratch._copy_host_credentials()
@@ -666,9 +699,7 @@ class Sandbox:
         """Initialize git in a user-chosen real dir that is NOT yet a repo. Like
         the auto bootstrap but never writes a committed .gitignore into the user's
         folder — uses .git/info/exclude instead. Integration branch = 'main'."""
-        scratch = cls(
-            root=ws_root, conv_id=f"_workspace_{workspace_id}", workspace_id=workspace_id
-        )
+        scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}", workspace_id=workspace_id)
         await scratch._run(["git", "init", "-q"])
         await scratch._run(["git", "symbolic-ref", "HEAD", "refs/heads/main"])
         await scratch._run(["git", "config", "core.autocrlf", "false"])
@@ -678,10 +709,16 @@ class Sandbox:
         # Stage + commit whatever the user already has so worktrees branch from a
         # real base (their existing files become the workspace's main).
         await scratch._run(["git", "add", "-A"])
-        await scratch._run([
-            "git", "commit", "--allow-empty", "-q",
-            "-m", "polynoia: workspace base (existing files)",
-        ])
+        await scratch._run(
+            [
+                "git",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "polynoia: workspace base (existing files)",
+            ]
+        )
         register_workspace_location(workspace_id, integration_branch="main")
         await scratch._copy_host_credentials()
         await cls._write_workspace_manifest(
@@ -718,14 +755,18 @@ class Sandbox:
             "*.pyc\n"
             ".pytest_cache/\n"
             ".ruff_cache/\n"
-            ".mypy_cache/\n"
-            + _LOCAL_DEPS_GITIGNORE
+            ".mypy_cache/\n" + _LOCAL_DEPS_GITIGNORE
         )
         await scratch._run(["git", "add", ".gitignore"])
-        await scratch._run([
-            "git", "commit", "-q",
-            "-m", f"polynoia: workspace init for ws {workspace_id}",
-        ])
+        await scratch._run(
+            [
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                f"polynoia: workspace init for ws {workspace_id}",
+            ]
+        )
         # Workspace-shared credentials (single copy reused by every agent)
         await scratch._copy_host_credentials()
         # Manifest
@@ -736,9 +777,7 @@ class Sandbox:
             "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "schema_version": 1,
         }
-        (ws_root / ".polynoia" / "manifest.json").write_text(
-            json.dumps(manifest, indent=2)
-        )
+        (ws_root / ".polynoia" / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     # ── helpers ─────────────────────────────────────────────────
 
@@ -762,15 +801,19 @@ class Sandbox:
             "*.pyc\n"
             ".pytest_cache/\n"
             ".ruff_cache/\n"
-            ".mypy_cache/\n"
-            + _LOCAL_DEPS_GITIGNORE
+            ".mypy_cache/\n" + _LOCAL_DEPS_GITIGNORE
         )
         await self._run(["git", "add", ".gitignore"])
         # Initial commit including .gitignore so the base has it tracked.
-        await self._run([
-            "git", "commit", "-q",
-            "-m", f"polynoia: sandbox init for conv {self.conv_id}",
-        ])
+        await self._run(
+            [
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                f"polynoia: sandbox init for conv {self.conv_id}",
+            ]
+        )
 
     # Allowlist of paths inside each tool's home dir that contain ACTUAL credentials.
     # Everything else (history transcripts, plugin caches, project state, telemetry)
@@ -886,7 +929,8 @@ class Sandbox:
                     if not dst.exists():
                         # First time: copy the whole directory tree.
                         shutil.copytree(
-                            src, dst,
+                            src,
+                            dst,
                             symlinks=False,
                             ignore_dangling_symlinks=True,
                         )
@@ -939,8 +983,11 @@ class Sandbox:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "security", "find-generic-password",
-                "-s", "Claude Code-credentials", "-w",
+                "security",
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -965,9 +1012,7 @@ class Sandbox:
             "schema_version": 1,
             "agents_used": [],
         }
-        (self.root / ".polynoia" / "manifest.json").write_text(
-            json.dumps(manifest, indent=2)
-        )
+        (self.root / ".polynoia" / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     async def _run(self, cmd: list[str]) -> tuple[int, str, str]:
         """Run a shell command inside the sandbox root. Returns (rc, stdout, stderr)."""
@@ -1054,9 +1099,9 @@ class Sandbox:
         cur_path: str | None = None
         for line in out.splitlines():
             if line.startswith("worktree "):
-                cur_path = line[len("worktree "):].strip()
+                cur_path = line[len("worktree ") :].strip()
             elif line.startswith("branch ") and cur_path:
-                branch = line[len("branch "):].strip().removeprefix("refs/heads/")
+                branch = line[len("branch ") :].strip().removeprefix("refs/heads/")
                 if branch.startswith("agent/") and branch.endswith(f"/conv-{conv_id}"):
                     # branch = agent/<agent_id>/conv-<conv_id>
                     agent_of = branch.split("/")[1] if "/" in branch else ""
@@ -1068,11 +1113,15 @@ class Sandbox:
 
     async def _commit_worktree_pending(self, worktree_path: str, branch: str) -> bool:
         """`git add -A && git commit` in one worktree if it has changes."""
+
         async def _run(cmd: list[str]) -> tuple[int, str, str]:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=worktree_path,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL, env=_git_env(),
+                *cmd,
+                cwd=worktree_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=_git_env(),
             )
             try:
                 o, e = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
@@ -1091,10 +1140,17 @@ class Sandbox:
         # Derive the agent id from the branch for the commit author.
         agent_id = branch.split("/")[1] if "/" in branch else "agent"
         author = f"{agent_id} <{agent_id}@polynoia.local>"
-        rc, _o, _e = await _run([
-            "git", "commit", "-q", "--author", author,
-            "-m", "polynoia: capture uncommitted worktree changes",
-        ])
+        rc, _o, _e = await _run(
+            [
+                "git",
+                "commit",
+                "-q",
+                "--author",
+                author,
+                "-m",
+                "polynoia: capture uncommitted worktree changes",
+            ]
+        )
         return rc == 0
 
     async def branch_ahead_of_main(self, branch: str) -> int:
@@ -1119,12 +1175,15 @@ class Sandbox:
         """
         if self.workspace_root is None:
             return []
-        rc, out, _err = await self._workspace_run([
-            "git", "log",
-            f"{integration_branch_for(self.workspace_id)}..{branch}",
-            f"-n{n}",
-            "--pretty=format:%h %s",
-        ])
+        rc, out, _err = await self._workspace_run(
+            [
+                "git",
+                "log",
+                f"{integration_branch_for(self.workspace_id)}..{branch}",
+                f"-n{n}",
+                "--pretty=format:%h %s",
+            ]
+        )
         if rc != 0:
             return []
         return [line for line in out.splitlines() if line.strip()]
@@ -1140,9 +1199,7 @@ class Sandbox:
             return None
         return out.strip() or None
 
-    async def files_in_range(
-        self, base: str, head: str
-    ) -> list[tuple[str, str]]:
+    async def files_in_range(self, base: str, head: str) -> list[tuple[str, str]]:
         """Return ``[(status, path), ...]`` for files changed between
         ``base..head`` on the workspace root.
 
@@ -1153,9 +1210,15 @@ class Sandbox:
         """
         if self.workspace_root is None or not base or not head or base == head:
             return []
-        rc, out, _err = await self._workspace_run([
-            "git", "diff", "--name-status", "-z", f"{base}..{head}",
-        ])
+        rc, out, _err = await self._workspace_run(
+            [
+                "git",
+                "diff",
+                "--name-status",
+                "-z",
+                f"{base}..{head}",
+            ]
+        )
         if rc != 0:
             return []
         # `-z` emits NUL-separated entries; a rename is `R<score>\0<old>\0<new>`,
@@ -1227,7 +1290,10 @@ class Sandbox:
         }
 
     async def workspace_commits(
-        self, ref: str = "main", limit: int = 80, skip: int = 0,
+        self,
+        ref: str = "main",
+        limit: int = 80,
+        skip: int = 0,
         include_all: bool = False,
     ) -> list[dict]:
         """List commits on ``ref`` (newest first) with per-commit +/- stats.
@@ -1246,18 +1312,26 @@ class Sandbox:
         # --numstat lines can be re-associated with their commit unambiguously.
         sep = "\x1e"
         fmt = f"{sep}%H%x09%h%x09%an%x09%ae%x09%aI%x09%P%x09%s"
-        rc, out, _err = await self._workspace_run([
-            # core.quotepath=false → non-ASCII paths emitted verbatim (UTF-8),
-            # not C-quoted, so --numstat paths round-trip correctly.
-            "git", "-c", "core.quotepath=false", "log",
-            f"--skip={skip}", f"-{limit}",
-            "--numstat", f"--pretty=format:{fmt}",
-            # --end-of-options pins `ref` as a revision, never an option — a
-            # dash-prefixed ref (e.g. --all / --reflog) that slipped past the
-            # caller's _REF_RE can't smuggle a git option / disclose other
-            # agents' private branches.
-            "--end-of-options", ref,
-        ])
+        rc, out, _err = await self._workspace_run(
+            [
+                # core.quotepath=false → non-ASCII paths emitted verbatim (UTF-8),
+                # not C-quoted, so --numstat paths round-trip correctly.
+                "git",
+                "-c",
+                "core.quotepath=false",
+                "log",
+                f"--skip={skip}",
+                f"-{limit}",
+                "--numstat",
+                f"--pretty=format:{fmt}",
+                # --end-of-options pins `ref` as a revision, never an option — a
+                # dash-prefixed ref (e.g. --all / --reflog) that slipped past the
+                # caller's _REF_RE can't smuggle a git option / disclose other
+                # agents' private branches.
+                "--end-of-options",
+                ref,
+            ]
+        )
         if rc != 0:
             return []
         commits: list[dict] = []
@@ -1293,10 +1367,17 @@ class Sandbox:
             # (prior main) — the net change the resolution landed, same basis the
             # commit_diff endpoint uses, so the list +/- matches the diff view.
             if is_resolve and files == 0:
-                rc2, out2, _ = await self._workspace_run([
-                    "git", "-c", "core.quotepath=false", "diff", "--numstat",
-                    parents[0], head[0],
-                ])
+                rc2, out2, _ = await self._workspace_run(
+                    [
+                        "git",
+                        "-c",
+                        "core.quotepath=false",
+                        "diff",
+                        "--numstat",
+                        parents[0],
+                        head[0],
+                    ]
+                )
                 if rc2 == 0:
                     for stat_line in out2.splitlines():
                         cols = stat_line.split("\t")
@@ -1314,32 +1395,33 @@ class Sandbox:
                     continue
                 if files == 0 and not is_resolve:
                     continue
-            commits.append({
-                "sha": head[0],
-                "short": head[1],
-                "author": head[2],
-                "email": head[3],
-                "date": head[4],
-                "subject": subject,
-                "parents": parents,
-                "files": files,
-                "additions": adds,
-                "deletions": dels,
-                "is_merge": is_merge,
-                # Where the commit was made: an agent's own worktree branch vs the
-                # workspace `main`. Agent content commits (`agent:…`) AND captured
-                # pending worktree work (`polynoia: capture…`) are BRANCH; merges /
-                # resolves / init / user edits / apply·revert land on main.
-                "lane": (
-                    "branch"
-                    if not is_merge
-                    and (
-                        subject.startswith("agent:")
-                        or subject.startswith("polynoia: capture")
-                    )
-                    else "main"
-                ),
-            })
+            commits.append(
+                {
+                    "sha": head[0],
+                    "short": head[1],
+                    "author": head[2],
+                    "email": head[3],
+                    "date": head[4],
+                    "subject": subject,
+                    "parents": parents,
+                    "files": files,
+                    "additions": adds,
+                    "deletions": dels,
+                    "is_merge": is_merge,
+                    # Where the commit was made: an agent's own worktree branch vs the
+                    # workspace `main`. Agent content commits (`agent:…`) AND captured
+                    # pending worktree work (`polynoia: capture…`) are BRANCH; merges /
+                    # resolves / init / user edits / apply·revert land on main.
+                    "lane": (
+                        "branch"
+                        if not is_merge
+                        and (
+                            subject.startswith("agent:") or subject.startswith("polynoia: capture")
+                        )
+                        else "main"
+                    ),
+                }
+            )
         return commits
 
     async def commit_diff(
@@ -1358,9 +1440,7 @@ class Sandbox:
         empty = {"sha": sha, "parent": None, "files": [], "truncated": False}
         if self.workspace_root is None:
             return empty
-        rc_p, pout, _ = await self._workspace_run(
-            ["git", "rev-parse", "--verify", "-q", f"{sha}^"]
-        )
+        rc_p, pout, _ = await self._workspace_run(["git", "rev-parse", "--verify", "-q", f"{sha}^"])
         parent = pout.strip() if rc_p == 0 else self._EMPTY_TREE
         # quotepath=false so non-ASCII paths come back verbatim (UTF-8); parent
         # and sha are already-resolved hashes (caller-validated hex / empty-tree).
@@ -1382,9 +1462,7 @@ class Sandbox:
         Reads only the object header (cheap), so an oversized blob is detected
         and skipped BEFORE ``git show`` would pull its full contents into memory.
         """
-        rc, out, _ = await self._workspace_run(
-            ["git", "cat-file", "-s", f"{ref}:{fpath}"]
-        )
+        rc, out, _ = await self._workspace_run(["git", "cat-file", "-s", f"{ref}:{fpath}"])
         if rc != 0:
             return -1
         try:
@@ -1412,30 +1490,28 @@ class Sandbox:
             old_size = await self._blob_size(parent, fpath)
             new_size = await self._blob_size(sha, fpath)
             old_exists, new_exists = old_size >= 0, new_size >= 0
-            status = (
-                "added" if not old_exists
-                else "deleted" if not new_exists
-                else "modified"
-            )
+            status = "added" if not old_exists else "deleted" if not new_exists else "modified"
             too_large = old_size > max_blob or new_size > max_blob
             if is_binary or too_large:
-                files.append(self._file_diff_entry(
-                    fpath, status, adds, dels, binary=is_binary, too_large=too_large
-                ))
+                files.append(
+                    self._file_diff_entry(
+                        fpath, status, adds, dels, binary=is_binary, too_large=too_large
+                    )
+                )
                 continue
             old_text = new_text = ""
             if old_exists:
                 _rc, old_text, _ = await self._workspace_run(["git", "show", f"{parent}:{fpath}"])
             if new_exists:
                 _rc, new_text, _ = await self._workspace_run(["git", "show", f"{sha}:{fpath}"])
-            files.append(self._file_diff_entry(
-                fpath, status, adds, dels, old_text=old_text, new_text=new_text
-            ))
+            files.append(
+                self._file_diff_entry(
+                    fpath, status, adds, dels, old_text=old_text, new_text=new_text
+                )
+            )
         return files
 
-    async def working_tree_diff(
-        self, max_files: int = 200, max_blob: int = 512_000
-    ) -> dict:
+    async def working_tree_diff(self, max_files: int = 200, max_blob: int = 512_000) -> dict:
         """Uncommitted changes on the workspace root vs ``HEAD`` (tracked diff +
         untracked files). Usually empty since file writes auto-commit, but
         surfaces native-tool / in-flight edits. Workspace mode.
@@ -1469,16 +1545,14 @@ class Sandbox:
             wt = self.workspace_root / fpath
             new_exists = wt.is_file()
             new_size = wt.stat().st_size if new_exists else -1
-            status = (
-                "added" if not old_exists
-                else "deleted" if not new_exists
-                else "modified"
-            )
+            status = "added" if not old_exists else "deleted" if not new_exists else "modified"
             too_large = old_size > max_blob or new_size > max_blob
             if is_binary or too_large:
-                files.append(self._file_diff_entry(
-                    fpath, status, adds, dels, binary=is_binary, too_large=too_large
-                ))
+                files.append(
+                    self._file_diff_entry(
+                        fpath, status, adds, dels, binary=is_binary, too_large=too_large
+                    )
+                )
                 continue
             old_text = ""
             if old_exists:
@@ -1490,16 +1564,19 @@ class Sandbox:
                 except (UnicodeDecodeError, OSError):
                     files.append(self._file_diff_entry(fpath, status, adds, dels, binary=True))
                     continue
-            files.append(self._file_diff_entry(
-                fpath, status, adds, dels, old_text=old_text, new_text=new_text
-            ))
+            files.append(
+                self._file_diff_entry(
+                    fpath, status, adds, dels, old_text=old_text, new_text=new_text
+                )
+            )
         # Untracked files (whole content is the addition).
         rc_s, sout, _ = await self._workspace_run(
             ["git", "-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"]
         )
         untracked = (
             [ln[3:].strip() for ln in sout.splitlines() if ln.startswith("?? ")]
-            if rc_s == 0 else []
+            if rc_s == 0
+            else []
         )
         for fpath in untracked[: max(0, max_files - len(files))]:
             wt = self.workspace_root / fpath
@@ -1514,9 +1591,9 @@ class Sandbox:
                 files.append(self._file_diff_entry(fpath, "added", 0, 0, binary=True))
                 continue
             adds = len(new_text.splitlines())
-            files.append(self._file_diff_entry(
-                fpath, "added", adds, 0, old_text="", new_text=new_text
-            ))
+            files.append(
+                self._file_diff_entry(fpath, "added", adds, 0, old_text="", new_text=new_text)
+            )
         result["files"] = files
         result["truncated"] = (len(tracked_rows) + len(untracked)) > max_files
         return result
@@ -1537,13 +1614,19 @@ class Sandbox:
             return False, "", "not in workspace mode"
         # Switch the workspace root's HEAD to main first. Worktrees don't
         # interfere — they keep their own checked-out branches.
-        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", integration_branch_for(self.workspace_id)])
+        rc_co, _o, err_co = await self._workspace_run(
+            ["git", "checkout", integration_branch_for(self.workspace_id)]
+        )
         if rc_co != 0:
             return False, "", f"checkout main failed: {err_co.strip()[:200]}"
         argv = ["git", "merge"]
         if no_ff:
             argv.append("--no-ff")
-        argv += ["-m", f"polynoia: merge {branch} into {integration_branch_for(self.workspace_id)}", branch]
+        argv += [
+            "-m",
+            f"polynoia: merge {branch} into {integration_branch_for(self.workspace_id)}",
+            branch,
+        ]
         rc, out, err = await self._workspace_run(argv)
         if rc != 0:
             # Conflict or other failure — abort cleanly so main is untouched.
@@ -1566,9 +1649,7 @@ class Sandbox:
         merging, so we guard on MERGE_HEAD first, then hard-reset any residue."""
         if self.workspace_root is None:
             return
-        rc, _o, _e = await self._workspace_run(
-            ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
-        )
+        rc, _o, _e = await self._workspace_run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"])
         if rc == 0:
             await self._workspace_run(["git", "merge", "--abort"])
         rc, out, _e = await self._workspace_run(["git", "status", "--porcelain"])
@@ -1589,14 +1670,24 @@ class Sandbox:
         if self.workspace_root is None:
             return ("error", {"message": "not in workspace mode"})
         await self._abort_stray_merge()
-        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", integration_branch_for(self.workspace_id)])
+        rc_co, _o, err_co = await self._workspace_run(
+            ["git", "checkout", integration_branch_for(self.workspace_id)]
+        )
         if rc_co != 0:
             return ("error", {"message": f"checkout main failed: {err_co.strip()[:200]}"})
-        rc, out, err = await self._workspace_run([
-            "git", "-c", "merge.conflictStyle=diff3",
-            "merge", "--no-commit", "--no-ff",
-            "-m", f"polynoia: merge {branch} into {integration_branch_for(self.workspace_id)}", branch,
-        ])
+        rc, out, err = await self._workspace_run(
+            [
+                "git",
+                "-c",
+                "merge.conflictStyle=diff3",
+                "merge",
+                "--no-commit",
+                "--no-ff",
+                "-m",
+                f"polynoia: merge {branch} into {integration_branch_for(self.workspace_id)}",
+                branch,
+            ]
+        )
         _rcu, u_out, _eu = await self._workspace_run(
             ["git", "diff", "--name-only", "--diff-filter=U"]
         )
@@ -1662,13 +1753,19 @@ class Sandbox:
         elif ours is None or theirs is None:
             ctype = "modify_delete"  # one side is a tombstone — no text merge
         elif base is None:
-            ctype = "add_add"        # both present, no merge base
+            ctype = "add_add"  # both present, no merge base
         else:
             ctype = "content"
         return {
-            "path": path, "ctype": ctype, "markers": markers,
-            "ours": ours, "theirs": theirs, "base": base,
-            "is_binary": is_binary, "resolution": None, "side": None,
+            "path": path,
+            "ctype": ctype,
+            "markers": markers,
+            "ours": ours,
+            "theirs": theirs,
+            "base": base,
+            "is_binary": is_binary,
+            "resolution": None,
+            "side": None,
             "state": "conflict",
         }
 
@@ -1698,22 +1795,29 @@ class Sandbox:
         sides = sides or {}
         deletions = deletions or []
         await self._abort_stray_merge()
-        rc_co, _o, err_co = await self._workspace_run(["git", "checkout", integration_branch_for(self.workspace_id)])
+        rc_co, _o, err_co = await self._workspace_run(
+            ["git", "checkout", integration_branch_for(self.workspace_id)]
+        )
         if rc_co != 0:
             return (False, "", f"checkout main failed: {err_co.strip()[:200]}")
         rc_b, _ob, _eb = await self._workspace_run(["git", "rev-parse", "--verify", branch])
         if rc_b != 0:
             return (False, "", f"branch gone: {branch}")
         try:
-            await self._workspace_run([
-                "git", "-c", "merge.conflictStyle=diff3",
-                "merge", "--no-commit", "--no-ff", branch,
-            ])
+            await self._workspace_run(
+                [
+                    "git",
+                    "-c",
+                    "merge.conflictStyle=diff3",
+                    "merge",
+                    "--no-commit",
+                    "--no-ff",
+                    branch,
+                ]
+            )
             for p, side in sides.items():
                 flag = "--ours" if side == "ours" else "--theirs"
-                rc_co, _oco, _eco = await self._workspace_run(
-                    ["git", "checkout", flag, "--", p]
-                )
+                rc_co, _oco, _eco = await self._workspace_run(["git", "checkout", flag, "--", p])
                 if rc_co == 0:
                     await self._workspace_run(["git", "add", "--", p])
                 else:
@@ -1726,8 +1830,7 @@ class Sandbox:
                 # written + git-added it's no longer unmerged, so the U-guard
                 # below can't catch it and markers would commit to main.
                 if any(
-                    ln.startswith(("<<<<<<<", ">>>>>>>", "|||||||"))
-                    for ln in content.splitlines()
+                    ln.startswith(("<<<<<<<", ">>>>>>>", "|||||||")) for ln in content.splitlines()
                 ):
                     await self._workspace_run(["git", "merge", "--abort"])
                     return (False, "", f"resolution for {p} still has conflict markers")
@@ -1746,22 +1849,23 @@ class Sandbox:
                 return (False, "", "unresolved files remain")
             # Nothing staged (branch already merged / no-op) → success, not a
             # `git commit` that errors with "nothing to commit" (stuck card).
-            rc_idx, _oi, _ei = await self._workspace_run(
-                ["git", "diff", "--cached", "--quiet"]
-            )
+            rc_idx, _oi, _ei = await self._workspace_run(["git", "diff", "--cached", "--quiet"])
             if rc_idx == 0:
                 await self._abort_stray_merge()
                 return (True, await self.main_head_sha() or "", "already merged")
             # Attribute the resolve commit to the agent that fixed it (author),
             # so the history shows "顾屿 解决冲突" not the generic polynoia-agent
             # ("你"). Manual/human resolves pass author=None → default identity.
-            author_args = (
-                ["--author", f"{author} <{author}@polynoia.local>"] if author else []
+            author_args = ["--author", f"{author} <{author}@polynoia.local>"] if author else []
+            rc_c, _oc, err_c = await self._workspace_run(
+                [
+                    "git",
+                    "commit",
+                    *author_args,
+                    "-m",
+                    f"polynoia: resolve+merge {branch} into {integration_branch_for(self.workspace_id)}",
+                ]
             )
-            rc_c, _oc, err_c = await self._workspace_run([
-                "git", "commit", *author_args,
-                "-m", f"polynoia: resolve+merge {branch} into {integration_branch_for(self.workspace_id)}",
-            ])
             if rc_c != 0:
                 await self._abort_stray_merge()
                 return (False, "", f"commit failed: {err_c.strip()[:200]}")
@@ -1861,7 +1965,7 @@ class Sandbox:
         cred_home = str(self.credentials_home)
         env = {
             # Inherit safe vars from parent
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "PATH": _agent_subprocess_path(),
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
             "TERM": os.environ.get("TERM", "xterm-256color"),
@@ -1872,8 +1976,14 @@ class Sandbox:
         # endpoint and fail with "stream disconnected before completion". Both
         # case forms exist in the wild; reqwest/golang/python all check both.
         for k in (
-            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
         ):
             v = os.environ.get(k)
             if v is not None:
@@ -1883,40 +1993,42 @@ class Sandbox:
         # the macOS Keychain token). Isolated-copy mode rewrites HOME → sandbox.
         _direct = _use_direct_creds()
         _home = os.path.expanduser("~") if _direct else cred_home
-        env.update({
-            # ★ The trick (isolated mode): rewrite HOME so ~/.claude resolves into
-            # the sandbox copy. Direct mode keeps the real HOME.
-            "HOME": _home,
-            "USER": os.environ.get("USER", os.environ.get("USERNAME", "polynoia")),
-            # Codex respects CODEX_HOME explicitly — sandbox copy, or real ~/.codex.
-            "CODEX_HOME": (
-                os.path.join(_home, ".codex")
-                if _direct
-                else str(self.credentials_home / ".codex")
-            ),
-            # Polynoia identifier so spawned process can detect it's sandboxed.
-            # POLYNOIA_SANDBOX_ROOT is the *parent* directory under which all
-            # per-conv sandboxes live — i.e. the same value as the host's
-            # ``settings.sandbox_root``. When a spawned subprocess (e.g. the
-            # Polynoia MCP server) calls ``Sandbox.create(POLYNOIA_CONV_ID)``,
-            # pydantic-settings reads this env var as ``settings.sandbox_root``
-            # and resolves to the SAME sandbox dir that the parent created —
-            # not a double-nested ``<parent>/<conv>/<conv>``.
-            "POLYNOIA_CONV_ID": self.conv_id,
-            "POLYNOIA_SANDBOX_ROOT": str(self.root.parent),
-            # ── Local-dependency policy ─────────────────────────────────
-            # Each conv/workspace keeps its deps INSIDE its own working dir.
-            # Python: uv creates the venv at <workdir>/.venv (project env), so
-            # `uv add` / `uv run` / `uv pip install` all land locally — never in
-            # a global site-packages. Cache stays under the sandbox too.
-            "UV_PROJECT_ENVIRONMENT": ".venv",
-            "UV_CACHE_DIR": str(self.root / ".polynoia" / "uv-cache"),
-            # Node: keep npm/pnpm caches + global prefix inside the sandbox so a
-            # stray `npm i -g` can't escape to the host; normal installs already
-            # land in the local node_modules.
-            "npm_config_cache": str(self.root / ".polynoia" / "npm-cache"),
-            "npm_config_prefix": str(self.root / ".polynoia" / "npm-global"),
-        })
+        env.update(
+            {
+                # ★ The trick (isolated mode): rewrite HOME so ~/.claude resolves into
+                # the sandbox copy. Direct mode keeps the real HOME.
+                "HOME": _home,
+                "USER": os.environ.get("USER", os.environ.get("USERNAME", "polynoia")),
+                # Codex respects CODEX_HOME explicitly — sandbox copy, or real ~/.codex.
+                "CODEX_HOME": (
+                    os.path.join(_home, ".codex")
+                    if _direct
+                    else str(self.credentials_home / ".codex")
+                ),
+                # Polynoia identifier so spawned process can detect it's sandboxed.
+                # POLYNOIA_SANDBOX_ROOT is the *parent* directory under which all
+                # per-conv sandboxes live — i.e. the same value as the host's
+                # ``settings.sandbox_root``. When a spawned subprocess (e.g. the
+                # Polynoia MCP server) calls ``Sandbox.create(POLYNOIA_CONV_ID)``,
+                # pydantic-settings reads this env var as ``settings.sandbox_root``
+                # and resolves to the SAME sandbox dir that the parent created —
+                # not a double-nested ``<parent>/<conv>/<conv>``.
+                "POLYNOIA_CONV_ID": self.conv_id,
+                "POLYNOIA_SANDBOX_ROOT": str(self.root.parent),
+                # ── Local-dependency policy ─────────────────────────────────
+                # Each conv/workspace keeps its deps INSIDE its own working dir.
+                # Python: uv creates the venv at <workdir>/.venv (project env), so
+                # `uv add` / `uv run` / `uv pip install` all land locally — never in
+                # a global site-packages. Cache stays under the sandbox too.
+                "UV_PROJECT_ENVIRONMENT": ".venv",
+                "UV_CACHE_DIR": str(self.root / ".polynoia" / "uv-cache"),
+                # Node: keep npm/pnpm caches + global prefix inside the sandbox so a
+                # stray `npm i -g` can't escape to the host; normal installs already
+                # land in the local node_modules.
+                "npm_config_cache": str(self.root / ".polynoia" / "npm-cache"),
+                "npm_config_prefix": str(self.root / ".polynoia" / "npm-global"),
+            }
+        )
         # Workspace-shared mode: add WORKSPACE_ID + AGENT_ID + BRANCH so the
         # MCP subprocess + spawned tools know which (agent, conv, branch)
         # they're acting on top of.
@@ -1971,8 +2083,8 @@ class Sandbox:
         self.timeline_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "ts": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "role": role,                   # "user" | "agent" | "system"
-            "agent_id": agent_id,           # "you" | "claudeCode" | ...
+            "role": role,  # "user" | "agent" | "system"
+            "agent_id": agent_id,  # "you" | "claudeCode" | ...
             "text": text,
             "mentions": mentions or [],
             "parent_agent_id": parent_agent_id,
@@ -1994,9 +2106,7 @@ class Sandbox:
                 continue
         return entries
 
-    def render_timeline_for_agent(
-        self, viewer_agent_id: str, *, limit: int = 30
-    ) -> str:
+    def render_timeline_for_agent(self, viewer_agent_id: str, *, limit: int = 30) -> str:
         """Render last ``limit`` entries as a markdown history block to inject
         into the viewer agent's prompt. Distinguishes self from others."""
         entries = self.read_timeline(limit=limit)
@@ -2027,21 +2137,21 @@ class Sandbox:
         Each commit: ``{sha, author, date, subject}``.
         """
         fmt = "%H%x09%an <%ae>%x09%aI%x09%s"
-        rc, out, _err = await self._run(
-            ["git", "log", f"-{limit}", f"--format={fmt}"]
-        )
+        rc, out, _err = await self._run(["git", "log", f"-{limit}", f"--format={fmt}"])
         if rc != 0:
             return []
         commits = []
         for line in out.splitlines():
             parts = line.split("\t")
             if len(parts) == 4:
-                commits.append({
-                    "sha": parts[0],
-                    "author": parts[1],
-                    "date": parts[2],
-                    "subject": parts[3],
-                })
+                commits.append(
+                    {
+                        "sha": parts[0],
+                        "author": parts[1],
+                        "date": parts[2],
+                        "subject": parts[3],
+                    }
+                )
         return commits
 
     async def cleanup(self) -> None:

@@ -50,6 +50,16 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "NOT NULL DEFAULT 'auto'",
     ),
     (
+        "conversations",
+        "draft_text",
+        "ALTER TABLE conversations ADD COLUMN draft_text TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        "conversations",
+        "draft_attachments",
+        "ALTER TABLE conversations ADD COLUMN draft_attachments JSON NOT NULL DEFAULT '[]'",
+    ),
+    (
         "workspaces",
         "default_merge_mode",
         "ALTER TABLE workspaces ADD COLUMN default_merge_mode VARCHAR(16) "

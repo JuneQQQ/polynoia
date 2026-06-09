@@ -13,7 +13,8 @@ import {
 	GitPullRequestArrow,
 	X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../../lib/api";
 import { useStore } from "../../store";
 import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
@@ -27,6 +28,7 @@ export function PreviewPane() {
 	const wsName = useStore(
 		(s) => s.workspaces.find((w) => w.id === workspaceId)?.name ?? null,
 	);
+	const agents = useStore((s) => s.agents);
 	const closePreview = useStore((s) => s.closePreview);
 	const activeConvId = useStore((s) => s.activeConvId);
 	const terminalOpen = useStore((s) => s.terminalOpen);
@@ -39,6 +41,7 @@ export function PreviewPane() {
 	// scenario 2 of the preview routing: tree → center, chat card → right rail.
 	const openCenterFile = useStore((s) => s.openCenterFile);
 	const previewFile = useStore((s) => s.preview.previewFile);
+	const [convTitle, setConvTitle] = useState<string | null>(null);
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
 	const reviewing = useStore(
@@ -57,6 +60,35 @@ export function PreviewPane() {
 				(c) => c.status === "open" || c.status === "resolving",
 			),
 	);
+
+	useEffect(() => {
+		let alive = true;
+		setConvTitle(null);
+		if (!activeConvId)
+			return () => {
+				alive = false;
+			};
+		api
+			.getConv(activeConvId)
+			.then((c) => {
+				if (alive) setConvTitle(c.title || null);
+			})
+			.catch(() => {
+				if (alive) setConvTitle(null);
+			});
+		return () => {
+			alive = false;
+		};
+	}, [activeConvId]);
+
+	const privateOwnerName = useMemo(() => {
+		if (!activeConvId?.startsWith("dm-")) return null;
+		const agentId = activeConvId.slice(3);
+		return agents.find((a) => a.id === agentId)?.name ?? null;
+	}, [activeConvId, agents]);
+
+	const workspaceOwnerName = wsName ?? convTitle ?? privateOwnerName ?? "当前";
+	const workspaceTitle = `${workspaceOwnerName} 的工作区`;
 
 	// Resize handle — left edge, 360–900px, persisted.
 	const [width, setWidth] = useState(() => {
@@ -188,7 +220,7 @@ export function PreviewPane() {
 									? "运行中的服务"
 									: previewFile
 										? (previewFile.split("/").pop() ?? previewFile)
-										: (wsName ?? "工作区")}
+										: workspaceTitle}
 					</div>
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)] truncate">
 						{servicesView

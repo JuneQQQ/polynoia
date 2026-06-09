@@ -17,8 +17,9 @@
 import { Loader2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { isMobile } from "../../lib/platform";
 import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
-import { MessageView } from "../MessageView";
+import { isRenderableMessagePayload, MessageView } from "../MessageView";
 
 /** A reasoning payload's body shape (mirrors ReasoningPart.bodyText). */
 type ReasoningBody = Array<{ c?: string | Array<{ text?: string }> }>;
@@ -55,6 +56,7 @@ export function ToolCallGroup({
 	compact?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
+	const mobile = isMobile();
 	// Once the user clicks the header, their open/closed choice WINS — even while a
 	// bash terminal is still 运行中. Without this, `running`/`anyStreaming` below
 	// keep forcing the group open, so the 收起 button looks dead (you click it and
@@ -68,6 +70,20 @@ export function ToolCallGroup({
 	// ReasoningPart's own auto-open-while-streaming behavior.
 	const anyStreaming = useStore((s) =>
 		msgIds.some((id) => selectIsMessageStreaming(s, convId, id)),
+	);
+	const visibleMsgIds = useStore(
+		useShallow((s) => {
+			const cs = s.convs.get(convId);
+			if (!cs) return [];
+			return msgIds.filter((id) => {
+				const msg = cs.msgById.get(id);
+				if (!msg) return false;
+				return isRenderableMessagePayload(
+					msg.payload,
+					selectIsMessageStreaming(s, convId, id),
+				);
+			});
+		}),
 	);
 	// Collapsed summary + the sender's avatar (all members share one sender).
 	// Return only PRIMITIVES from the selector — a fresh array/object would defeat
@@ -127,6 +143,7 @@ export function ToolCallGroup({
 	// But once the user has manually toggled, honor THAT (so 收起 actually sticks
 	// mid-run instead of being overridden by `running`/`anyStreaming`).
 	const expanded = userTouched.current ? open : open || anyStreaming || running;
+	if (visibleMsgIds.length === 0 || toolCount === 0) return null;
 
 	const inner = (
 		<>
@@ -162,7 +179,7 @@ export function ToolCallGroup({
 				<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
 					{/* Natural stream order — reasoning and tool calls interleaved as
 					    they actually happened. No reordering. */}
-					{msgIds.map((id, i) => (
+					{visibleMsgIds.map((id, i) => (
 						<MessageView
 							key={id}
 							convId={convId}
@@ -178,18 +195,18 @@ export function ToolCallGroup({
 
 	// Compact (inside a burst lane): no avatar column / page padding — the fold
 	// block spans the lane width, lining up with the lane's file-edit cards.
-	if (compact) return <div className="my-1 max-w-[640px]">{inner}</div>;
+	if (compact) return <div className="max-w-[640px]">{inner}</div>;
 
 	return (
-		<div className="flex gap-3 px-6 my-1">
+		<div className={`flex py-0.5 ${mobile ? "gap-2 px-2" : "gap-3 px-6"}`}>
 			{/* Avatar column — populated only when this fold starts the run; empty
 			    otherwise (preserves indent, like MessageView's grouped mode). */}
-			<div className="w-8 flex-shrink-0">
+			<div className={`${mobile ? "w-7" : "w-8"} flex-shrink-0`}>
 				{showAvatar && avColor && (
 					<button
 						type="button"
 						onClick={() => avId && useStore.getState().openAgentDetail(avId)}
-						className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-transform duration-200 hover:scale-[1.04]"
+						className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-transform duration-200 hover:scale-[1.04]`}
 						style={{ background: avColor }}
 						title={`查看 ${avName} 详情`}
 					>
@@ -199,7 +216,21 @@ export function ToolCallGroup({
 			</div>
 			{/* max-w matches DiffPart (640) so a file-edit card and this fold block
 			    are EXACTLY the same width in the timeline (no wider flex-1 fold). */}
-			<div className="flex-1 min-w-0 max-w-[640px]">{inner}</div>
+			<div className="flex-1 min-w-0 max-w-[640px]">
+				{showAvatar && avId && (
+					<div className="mb-1 flex items-baseline gap-2">
+						<button
+							type="button"
+							onClick={() => useStore.getState().openAgentDetail(avId)}
+							className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
+							title="查看详情"
+						>
+							{avName}
+						</button>
+					</div>
+				)}
+				{inner}
+			</div>
 		</div>
 	);
 }

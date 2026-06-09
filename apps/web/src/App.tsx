@@ -58,6 +58,11 @@ export function App() {
 	// conversation pushes the chat over it (back button returns). Desktop:
 	// sidebar is a permanent left column.
 	const mobile = isMobile();
+	const activeConvRef = useRef(activeConv);
+
+	useEffect(() => {
+		activeConvRef.current = activeConv;
+	}, [activeConv]);
 
 	useEffect(() => {
 		if (!mobile) return;
@@ -191,16 +196,32 @@ export function App() {
 		if (!mobile) return;
 		return onBackButton(() => {
 			const st = useStore.getState();
+			if (editingRolesConv) {
+				setEditingRolesConv(null);
+				return;
+			}
+			if (st.searchOverlayOpen) {
+				st.setSearchOverlayOpen(false);
+				return;
+			}
 			if (st.preview.open) {
 				st.closePreview();
+				return;
+			}
+			if (st.rightDrawer.kind === "agent-detail") {
+				st.openMembersList();
 				return;
 			}
 			if (st.rightDrawer.kind !== null) {
 				st.closeRightDrawer();
 				return;
 			}
-			if (activeConv) {
+			if (activeConvRef.current) {
 				setActiveConv(null);
+				setView("inbox");
+				return;
+			}
+			if (st.view !== "inbox") {
 				setView("inbox");
 				return;
 			}
@@ -209,7 +230,7 @@ export function App() {
 				.then(({ App: CapApp }) => CapApp.exitApp())
 				.catch(() => {});
 		});
-	}, [mobile, activeConv, setView]);
+	}, [mobile, editingRolesConv, setView]);
 
 	// Boot-time validation: the `polynoia:active-conv` entry in localStorage can
 	// point at a conversation that was since deleted (server returns 404). Without
@@ -359,14 +380,17 @@ export function App() {
 	}, []);
 
 	useEffect(() => {
-		const onArchived = (ev: Event) => {
+		const onConvRemoved = (ev: Event) => {
 			const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
 			if (!convId) return;
 			setActiveConv((cur) => (cur?.id === convId ? null : cur));
 		};
-		window.addEventListener("polynoia:conv-archived", onArchived);
-		return () =>
-			window.removeEventListener("polynoia:conv-archived", onArchived);
+		window.addEventListener("polynoia:conv-archived", onConvRemoved);
+		window.addEventListener("polynoia:conv-deleted", onConvRemoved);
+		return () => {
+			window.removeEventListener("polynoia:conv-archived", onConvRemoved);
+			window.removeEventListener("polynoia:conv-deleted", onConvRemoved);
+		};
 	}, []);
 
 	const globalContactModals = (
@@ -516,6 +540,8 @@ export function App() {
 					{/* Full-screen read-only artifact preview, opened from chat file
 					    cards (FilePart/FilesPanelPart). Self-gates on preview state. */}
 					<MobilePreviewSheet />
+					<RightDrawer />
+					<ChatSearchOverlay />
 					{globalContactModals}
 				</div>
 			);
@@ -536,6 +562,8 @@ export function App() {
 						setView("chat");
 					}}
 				/>
+				<RightDrawer />
+				<ChatSearchOverlay />
 				{globalContactModals}
 			</div>
 		);

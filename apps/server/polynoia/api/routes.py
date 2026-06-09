@@ -38,8 +38,8 @@ log = logging.getLogger("polynoia.routes")
 # Examples that match: @林知夏 / @orchestrator / @claude-code / @顾屿
 # Doesn't match: @-foo (starts with separator) / @123 (starts with digit)
 _MENTION_RE = re.compile(
-    r"@([A-Za-z一-鿿㐀-䶿]"        # first char: letter or CJK
-    r"[\w一-鿿㐀-䶿_-]{0,63})"     # rest: word chars / CJK / -_
+    r"@([A-Za-z一-鿿㐀-䶿]"  # first char: letter or CJK
+    r"[\w一-鿿㐀-䶿_-]{0,63})"  # rest: word chars / CJK / -_
 )
 _ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
 _MAX_MENTION_CHAIN_DEPTH = 5
@@ -113,11 +113,8 @@ def _conv_has_open_ask(conv_id: str) -> bool:
     """True while this conv has an ask_user awaiting the user's answer (value is
     still None). Used by the idle watchdog to NOT kill the turn — the user may
     take any amount of time to answer."""
-    return any(
-        _ask_conv.get(aid) == conv_id
-        for aid, ans in _pending_asks.items()
-        if ans is None
-    )
+    return any(_ask_conv.get(aid) == conv_id for aid, ans in _pending_asks.items() if ans is None)
+
 
 # Conversation-scoped execution state — lives at MODULE level (per conv_id), NOT
 # per WS connection. This is what makes execution backend-driven + refresh-safe:
@@ -127,9 +124,11 @@ def _conv_has_open_ask(conv_id: str) -> bool:
 # `emit` broadcasts to all current connections) keeps receiving the live stream.
 # Only an explicit `abort` command cancels a task. Pruned when a conv goes fully
 # idle with no connections (see ws_conv finally).
-_conv_agent_tasks: dict[str, dict[str, asyncio.Task]] = {}   # conv_id → agent_id → task (abort/status handle)
-_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = {}   # conv_id → agent_id → lock
-_conv_bursts: dict[str, dict[str, dict]] = {}                # conv_id → tp_id → burst reg
+_conv_agent_tasks: dict[
+    str, dict[str, asyncio.Task]
+] = {}  # conv_id → agent_id → task (abort/status handle)
+_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = {}  # conv_id → agent_id → lock
+_conv_bursts: dict[str, dict[str, dict]] = {}  # conv_id → tp_id → burst reg
 
 
 class _DrainResult(NamedTuple):
@@ -142,6 +141,8 @@ class _DrainResult(NamedTuple):
     merged: int
     deliverables: list[tuple[str, str]]
     conflicted: bool
+
+
 # conv_id → ONE active discussion reg (free-form @mention discussion session).
 # reg = {budget:int, inflight:int, participants:set[str], seeder:str,
 #        synthesized:bool}. One discussion per conv at a time (a conv has one
@@ -154,7 +155,7 @@ _conv_discussions: dict[str, dict] = {}
 # burst summary) the earlier task would lose its only strong ref and could be
 # GC-cancelled mid-run ("Task was destroyed but it is pending"). This set keeps
 # all of them alive until they actually finish.
-_conv_inflight: dict[str, set[asyncio.Task]] = {}            # conv_id → {live turn tasks}
+_conv_inflight: dict[str, set[asyncio.Task]] = {}  # conv_id → {live turn tasks}
 # conv_id → loop.time() of the last bash/tool terminal-card activity (output OR
 # heartbeat). The model-idle watchdog consults this so a long-running `bash`
 # (which streams to /terminal-card, NOT to the adapter chunk stream) is NOT
@@ -165,17 +166,32 @@ _conv_tool_activity: dict[str, float] = {}
 # disconnect-prune must not free a conv's dicts while a dispatcher is still in
 # its pre-registration await window (get_conversation / append user msg), or it
 # would orphan the agent_tasks dict the dispatcher then writes into.
-_conv_dispatchers: dict[str, set[asyncio.Task]] = {}         # conv_id → {dispatcher tasks}
+_conv_dispatchers: dict[str, set[asyncio.Task]] = {}  # conv_id → {dispatcher tasks}
 
 # Live-stream accumulator for refresh-safe resume. While an agent streams, we
 # keep its in-flight message_id + ordered text/reasoning parts here so a client
 # that connects/reconnects MID-STREAM can be handed the current accumulated
 # content (data-stream-resume) and then keep appending live deltas — instead of
 # only seeing deltas emitted after it attached (which left思考块 half-rendered on
-# refresh). Structure: conv_id → agent_id → {message_id, parts:[{id,kind,text}]}.
+# refresh). The same record also carries transient UI state that is intentionally
+# not persisted in DB (agent-status + retry notice), so a refresh does not make
+# an active lane look idle. Structure:
+# conv_id → agent_id → {message_id, parts:[{id,kind,text}], status, retry_notice}.
 # Cleared per-agent on terminal status (idle/aborted/error). Module-level so it
 # survives a disconnect, like the other conv execution state.
 _conv_live: dict[str, dict[str, dict]] = {}
+
+
+def _live_entry(conv_id: str, agent_id: str) -> dict:
+    return _conv_live.setdefault(conv_id, {}).setdefault(
+        agent_id,
+        {
+            "message_id": None,
+            "parts": [],
+            "status": None,
+            "retry_notice": None,
+        },
+    )
 
 
 def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
@@ -183,8 +199,7 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
     for stream-resume. Only parses the text/reasoning frames; everything else is
     ignored (no JSON parse on the hot path for non-text frames)."""
     if not (
-        frame.startswith('data: {"type":"text-')
-        or frame.startswith('data: {"type":"reasoning-')
+        frame.startswith('data: {"type":"text-') or frame.startswith('data: {"type":"reasoning-')
     ):
         return
     try:
@@ -192,8 +207,7 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
     except (ValueError, IndexError):
         return
     t = obj.get("type")
-    agents = _conv_live.setdefault(conv_id, {})
-    entry = agents.setdefault(agent_id, {"message_id": None, "parts": []})
+    entry = _live_entry(conv_id, agent_id)
     if t in ("text-start", "reasoning-start"):
         kind = "reasoning" if t == "reasoning-start" else "text"
         pid = obj.get("id")
@@ -205,13 +219,53 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
             if p["id"] == pid:
                 p["text"] += obj.get("delta", "")
                 break
+    elif t == "reasoning-end":
+        # Completed reasoning is persisted as a normal message row as soon as the
+        # part completes. Keeping it in the live resume cache makes a reconnect
+        # replay it as an in-progress stream, so the UI shows old blocks as
+        # "正在思考" even after later tools have finished.
+        pid = obj.get("id")
+        if pid:
+            entry["parts"] = [
+                p
+                for p in entry.get("parts", [])
+                if not (p.get("id") == pid and p.get("kind") == "reasoning")
+            ]
 
 
 def _live_set_message_id(conv_id: str, agent_id: str, message_id: str) -> None:
-    entry = _conv_live.setdefault(conv_id, {}).setdefault(
-        agent_id, {"message_id": None, "parts": []}
-    )
-    entry["message_id"] = message_id
+    _live_entry(conv_id, agent_id)["message_id"] = message_id
+
+
+def _live_note_status(conv_id: str, agent_id: str, status: str, extra: dict | None = None) -> None:
+    """Record the latest transient agent status for reconnect replay."""
+    _live_entry(conv_id, agent_id)["status"] = {
+        "agent_id": agent_id,
+        "status": status,
+        **(extra or {}),
+    }
+
+
+def _live_note_retry_notice(conv_id: str, agent_id: str, notice_id: str, message: str) -> None:
+    """Record the live-only retry card so refresh/reconnect can replay it."""
+    _live_entry(conv_id, agent_id)["retry_notice"] = {
+        "id": notice_id,
+        "data": {
+            "kind": "error",
+            "message": message,
+            "agent_id": agent_id,
+            "reason": "timeout",
+            "retryable": False,
+        },
+        "sender_id": agent_id,
+    }
+
+
+def _live_clear_retry_notice(conv_id: str, agent_id: str) -> None:
+    agents = _conv_live.get(conv_id)
+    entry = agents.get(agent_id) if agents else None
+    if entry:
+        entry["retry_notice"] = None
 
 
 def _live_clear_agent(conv_id: str, agent_id: str) -> None:
@@ -223,10 +277,26 @@ def _live_clear_agent(conv_id: str, agent_id: str) -> None:
 
 
 def _live_resume_frames(conv_id: str) -> list[str]:
-    """Build data-stream-resume frames for every agent currently streaming in
-    this conv — one per agent, carrying its message_id + accumulated parts."""
+    """Build refresh/reconnect replay frames for currently-live agents."""
     frames: list[str] = []
     for agent_id, entry in (_conv_live.get(conv_id) or {}).items():
+        status = entry.get("status")
+        if status:
+            payload = {
+                "type": "data-agent-status",
+                "data": status,
+                "sender_id": agent_id,
+            }
+            frames.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        retry_notice = entry.get("retry_notice")
+        if retry_notice:
+            payload = {
+                "type": "data-error",
+                "data": retry_notice["data"],
+                "id": retry_notice["id"],
+                "sender_id": retry_notice["sender_id"],
+            }
+            frames.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
         if not entry.get("parts"):
             continue
         payload = {
@@ -248,10 +318,7 @@ def _coerce_tool_state(payload: dict, terminal: str) -> dict:
     terminal sweep only runs live). Coerce to a terminal state at PERSIST time so
     the reloaded trace is honest. ``terminal`` = 'completed' (clean turn end) or
     'error' (aborted / failed turn)."""
-    if (
-        payload.get("kind") == "tool-call"
-        and payload.get("state") in ("pending", "running", "run")
-    ):
+    if payload.get("kind") == "tool-call" and payload.get("state") in ("pending", "running", "run"):
         return {**payload, "state": terminal}
     return payload
 
@@ -293,6 +360,7 @@ def _maybe_prune_conv(conv_id: str) -> None:
     _pending_dispatches.pop(conv_id, None)
     _conv_discussions.pop(conv_id, None)
     _pending_discussions.pop(conv_id, None)
+    _conv_live.pop(conv_id, None)
 
 
 def _spawn_turn(conv_id: str, agent_id: str, coro) -> asyncio.Task:
@@ -412,9 +480,7 @@ async def update_workspace(ws_id: str, body: dict):
                 members = ["you", *members]
             new_members = list(dict.fromkeys(members))
             old_members = list(ws.members or [])
-            removed_ids = [
-                m for m in old_members if m not in new_members and m != "you"
-            ]
+            removed_ids = [m for m in old_members if m not in new_members and m != "you"]
             ws.members = new_members
         await storage_repo.upsert_workspace(session, ws)
 
@@ -427,9 +493,7 @@ async def update_workspace(ws_id: str, body: dict):
                 a = agents_lookup.get(aid)
                 return a.name if a else aid
 
-            convs = await storage_repo.list_conversations(
-                session, workspace_id=ws_id
-            )
+            convs = await storage_repo.list_conversations(session, workspace_id=ws_id)
             for conv in convs:
                 if not conv.group:  # DMs are private 1:1 — leave them alone
                     continue
@@ -448,7 +512,9 @@ async def update_workspace(ws_id: str, body: dict):
                     text += " 本群协调者已空缺,请重新指定一位。"
                 payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
                 nid = await storage_repo.append_message(
-                    session, conv_id=conv.id, sender_id="system",
+                    session,
+                    conv_id=conv.id,
+                    sender_id="system",
                     payload=payload,
                 )
                 notices.append((conv.id, nid, payload, present))
@@ -459,6 +525,7 @@ async def update_workspace(ws_id: str, body: dict):
     # affected convs, then push the notice + a conv-updated hint to open tabs.
     if notices:
         from polynoia.adapters.pool import get_pool
+
         pool = get_pool()
         for conv_id, nid, payload, present in notices:
             for aid in present:
@@ -466,15 +533,18 @@ async def update_workspace(ws_id: str, body: dict):
                     await pool.close_session(aid, conv_id)
             with contextlib.suppress(Exception):
                 frame = (
-                    'data: {"type":"data-text","id":' + json.dumps(nid)
+                    'data: {"type":"data-text","id":'
+                    + json.dumps(nid)
                     + ',"sender_id":"system","data":'
-                    + json.dumps(payload, ensure_ascii=False) + "}\n\n"
+                    + json.dumps(payload, ensure_ascii=False)
+                    + "}\n\n"
                 )
                 await _broadcast_to_conv(conv_id, frame)
                 await _broadcast_to_conv(
                     conv_id,
                     'data: {"type":"data-conv-updated","data":'
-                    + json.dumps({"conv_id": conv_id}) + "}\n\n",
+                    + json.dumps({"conv_id": conv_id})
+                    + "}\n\n",
                 )
     return {"workspace": result}
 
@@ -492,6 +562,8 @@ async def create_conversation_endpoint(body: dict):
           "direct": bool,
           "member_roles": {agent_id: role},     # optional, per-conv role labels
           "orchestrator_member_id": str|null,   # optional, designated coordinator
+          "draft_text": str,                     # optional, input-box draft
+          "draft_attachments": list,             # optional, already-uploaded composer files
           "id": str,                            # optional, ULID auto-generated
         }
     """
@@ -507,9 +579,13 @@ async def create_conversation_endpoint(body: dict):
     member_roles = body.get("member_roles") or {}
     if not isinstance(member_roles, dict):
         member_roles = {}
+    from polynoia.api.conversations_routes import _sanitize_draft_attachments
+
+    draft_attachments = _sanitize_draft_attachments(body.get("draft_attachments") or [])
     # Clean: only keep entries for members in this conv (no rogue keys)
-    member_roles = {k: str(v).strip() for k, v in member_roles.items()
-                    if k in members and str(v).strip()}
+    member_roles = {
+        k: str(v).strip() for k, v in member_roles.items() if k in members and str(v).strip()
+    }
     orchestrator_member_id = body.get("orchestrator_member_id")
     if orchestrator_member_id and orchestrator_member_id not in members:
         orchestrator_member_id = None
@@ -521,8 +597,7 @@ async def create_conversation_endpoint(body: dict):
         raise HTTPException(
             status_code=400,
             detail=(
-                "group conversation requires an orchestrator_member_id "
-                "that is one of its members"
+                "group conversation requires an orchestrator_member_id that is one of its members"
             ),
         )
     # Manual per-edit approval is retired; all new conversations run in auto.
@@ -536,6 +611,8 @@ async def create_conversation_endpoint(body: dict):
         group=not direct,
         member_roles=member_roles,
         orchestrator_member_id=orchestrator_member_id,
+        draft_text=str(body.get("draft_text") or ""),
+        draft_attachments=draft_attachments,
         last_message_at=None,
         merge_mode="auto",
     )
@@ -575,7 +652,17 @@ async def list_conversations(
             unread_only=unread_only,
             q=q,
         )
-        return [r.model_dump(mode="json") for r in rows]
+        out = []
+        for r in rows:
+            item = r.model_dump(mode="json")
+            live_agents = []
+            for agent_id, entry in (_conv_live.get(r.id) or {}).items():
+                status = entry.get("status") or {}
+                if status.get("status") in ("starting", "streaming"):
+                    live_agents.append(status)
+            item["running_agents"] = live_agents
+            out.append(item)
+        return out
 
 
 @router.get("/api/conversations/{conv_id}/messages")
@@ -596,7 +683,10 @@ async def list_conv_messages(
     """
     async with SessionLocal() as session:
         msgs, has_more = await storage_repo.list_messages(
-            session, conv_id, limit=limit, before=before,
+            session,
+            conv_id,
+            limit=limit,
+            before=before,
         )
         # Orphaned-burst recovery: a `tasks` card with lanes still pending/run
         # but NO live registry entry was orphaned mid-flight (server restart, or
@@ -686,10 +776,69 @@ async def clear_conv(conv_id: str):
         await session.commit()
     await _broadcast_to_conv(
         conv_id,
-        'data: {"type":"data-conv-cleared","data":{"conv_id":'
-        + json.dumps(conv_id) + "}}\n\n",
+        'data: {"type":"data-conv-cleared","data":{"conv_id":' + json.dumps(conv_id) + "}}\n\n",
     )
     return {"ok": True, "removed": removed}
+
+
+@router.delete("/api/conversations/{conv_id}/messages/{msg_id}")
+async def delete_conv_message(conv_id: str, msg_id: str, silent: bool = False):
+    """Delete one agent message from a conversation.
+
+    Used by "regenerate": the old agent output is replaced by a fresh turn,
+    while the triggering user message remains in history. User-authored
+    messages are refused so this endpoint cannot silently erase the prompt.
+    """
+    if _conv_has_running_agent(conv_id):
+        raise HTTPException(409, "an agent is still running — finish or cancel it first")
+    async with SessionLocal() as session:
+        row = await session.get(MessageRow, msg_id)
+        if row is None or row.conv_id != conv_id:
+            raise HTTPException(404, "message not in this conversation")
+        if row.sender_id == "you":
+            raise HTTPException(400, "cannot delete user messages")
+        ok = await storage_repo.delete_message(session, msg_id)
+        await session.commit()
+    if ok and not silent:
+        await _broadcast_to_conv(
+            conv_id,
+            'data: {"type":"data-message-removed","data":{"id":'
+            + json.dumps(msg_id)
+            + "}}\n\n",
+        )
+    return {"ok": ok}
+
+
+@router.patch("/api/conversations/{conv_id}/messages/{msg_id}")
+async def update_conv_message(conv_id: str, msg_id: str, body: dict):
+    """Update one user text message in-place.
+
+    Used by inline edit/resend. Only user-authored text is editable here; agent
+    outputs must be regenerated instead of manually rewritten.
+    """
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text required")
+    if _conv_has_running_agent(conv_id):
+        raise HTTPException(409, "an agent is still running — finish or cancel it first")
+    payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
+    async with SessionLocal() as session:
+        row = await session.get(MessageRow, msg_id)
+        if row is None or row.conv_id != conv_id:
+            raise HTTPException(404, "message not in this conversation")
+        if row.sender_id != "you":
+            raise HTTPException(400, "only user messages are editable")
+        await storage_repo.update_message_payload(session, msg_id, payload)
+        await session.commit()
+    await _broadcast_to_conv(
+        conv_id,
+        'data: {"type":"data-message-updated","data":{"id":'
+        + json.dumps(msg_id)
+        + ',"payload":'
+        + json.dumps(payload, ensure_ascii=False)
+        + "}}\n\n",
+    )
+    return {"ok": True}
 
 
 @router.post("/api/conversations/{conv_id}/dispatch")
@@ -732,18 +881,20 @@ async def record_dispatch(conv_id: str, body: dict):
                 ),
             }
     task_ids = [f"t-{uuid.uuid4().hex[:8]}" for _ in raw_tasks]
-    _pending_dispatches.setdefault(conv_id, []).append({
-        "title": (body.get("title") or "").strip(),
-        "contract": (body.get("contract") or "").strip(),
-        # True ⇒ orchestrator intends to keep going after this burst → its
-        # post-burst turn is allowed to dispatch the next phase.
-        "need_continue": bool(body.get("need_continue")),
-        "tasks": raw_tasks,
-        "task_ids": task_ids,
-        # Who called dispatch. Recorded here so attribution doesn't depend on
-        # which agent's turn later drains this per-conv queue (ADR-014 follow-up).
-        "author_agent_id": (body.get("author_agent_id") or "").strip(),
-    })
+    _pending_dispatches.setdefault(conv_id, []).append(
+        {
+            "title": (body.get("title") or "").strip(),
+            "contract": (body.get("contract") or "").strip(),
+            # True ⇒ orchestrator intends to keep going after this burst → its
+            # post-burst turn is allowed to dispatch the next phase.
+            "need_continue": bool(body.get("need_continue")),
+            "tasks": raw_tasks,
+            "task_ids": task_ids,
+            # Who called dispatch. Recorded here so attribution doesn't depend on
+            # which agent's turn later drains this per-conv queue (ADR-014 follow-up).
+            "author_agent_id": (body.get("author_agent_id") or "").strip(),
+        }
+    )
     return {
         "kind": "dispatched",
         "task_ids": task_ids,
@@ -782,11 +933,13 @@ async def record_discuss(conv_id: str, body: dict):
                 "kind": "error",
                 "error": "讨论需要至少两位可参与的队友——当前会话人数不足,无法发起讨论。",
             }
-    _pending_discussions.setdefault(conv_id, []).append({
-        "topic": topic,
-        "participants": participants,
-        "author_agent_id": author,
-    })
+    _pending_discussions.setdefault(conv_id, []).append(
+        {
+            "topic": topic,
+            "participants": participants,
+            "author_agent_id": author,
+        }
+    )
     return {
         "kind": "discussing",
         "participants": participants,
@@ -809,14 +962,19 @@ async def register_ask(conv_id: str, body: dict):
     _pending_asks[ask_id] = None
     _ask_conv[ask_id] = conv_id
     af = {
-        "id": ask_id, "agent_id": agent_id, "kind": "ask-form",
-        "title": title, "blocking": True, "questions": questions,
+        "id": ask_id,
+        "agent_id": agent_id,
+        "kind": "ask-form",
+        "title": title,
+        "blocking": True,
+        "questions": questions,
         "blocking_tool": True,
     }
     frame = (
         'data: {"type":"data-ask-form","data":'
         + json.dumps(af, ensure_ascii=False)
-        + ',"sender_id":' + json.dumps(agent_id)
+        + ',"sender_id":'
+        + json.dumps(agent_id)
         + "}\n\n"
     )
     await _broadcast_to_conv(conv_id, frame)
@@ -824,10 +982,15 @@ async def register_ask(conv_id: str, body: dict):
     with suppress(Exception):
         async with SessionLocal() as _db:
             await storage_repo.append_message(
-                _db, conv_id=conv_id, sender_id=agent_id,
+                _db,
+                conv_id=conv_id,
+                sender_id=agent_id,
                 payload={
-                    "kind": "ask-form", "title": title, "blocking": True,
-                    "questions": questions, "blocking_tool": True,
+                    "kind": "ask-form",
+                    "title": title,
+                    "blocking": True,
+                    "questions": questions,
+                    "blocking_tool": True,
                 },
                 msg_id=ask_id,
             )
@@ -857,7 +1020,9 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
     with suppress(Exception):
         async with SessionLocal() as _db:
             await storage_repo.append_message(
-                _db, conv_id=conv_id, sender_id="you",
+                _db,
+                conv_id=conv_id,
+                sender_id="you",
                 payload={"kind": "text", "body": [{"c": answer}]},
             )
             await _db.commit()
@@ -887,14 +1052,21 @@ async def record_handoff_report(conv_id: str, body: dict):
     )
     async with SessionLocal() as session:
         mid = await storage_repo.add_conv_memory(
-            session, conv_id=conv_id, author_agent_id=author,
-            kind="artifact", content=line,
+            session,
+            conv_id=conv_id,
+            author_agent_id=author,
+            kind="artifact",
+            content=line,
         )
         await session.commit()
-    log.info("handoff report by %s in %s: status=%s contract_ok=%s",
-             author, conv_id, status, contract_ok)
-    return {"kind": "reported", "id": mid,
-            "verdict": {"status": status, "contract_ok": contract_ok}}
+    log.info(
+        "handoff report by %s in %s: status=%s contract_ok=%s", author, conv_id, status, contract_ok
+    )
+    return {
+        "kind": "reported",
+        "id": mid,
+        "verdict": {"status": status, "contract_ok": contract_ok},
+    }
 
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
@@ -961,7 +1133,9 @@ async def upload_file(request: Request, name: str = "file", conv_id: str | None 
             detail=f"附件过大,单个文件上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
             f" (file too large, {MAX_UPLOAD_BYTES // (1024 * 1024)}MB max)",
         )
-    media_type = (request.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+    media_type = (
+        (request.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+    )
 
     if conv_id:
         updir = await _conv_upload_dir(conv_id)
@@ -1029,6 +1203,7 @@ async def serve_uploaded_file(file_id: str):
     if not file_id.isalnum():  # our ids are hex — reject any path separators
         raise HTTPException(status_code=400, detail="bad file id")
     from polynoia.settings import settings as _settings
+
     # New central blob dir, with a fallback to the legacy sandbox_root/uploads so
     # attachments uploaded before the move still resolve.
     matches: list = []
@@ -1148,6 +1323,7 @@ async def apply_diff(body: dict):
     # the per-conv sandbox. We pick the conv's branch worktree if the conv
     # is workspace-shared; otherwise legacy.
     from polynoia.sandbox import Sandbox, workspace_merge_lock
+
     async with SessionLocal() as session:
         conv = await storage_repo.get_conversation(session, conv_id)
     if conv is None:
@@ -1215,22 +1391,21 @@ async def apply_diff(body: dict):
     # let git create new files via apply unless --new-file is passed —
     # safer to fail loudly than silently create.
     import tempfile
+
     # Keep the .patch OUT of the worktree (no dir=) — inside it, a concurrent
     # burst-merge's `git add -A` could stage the temp patch into the branch
     # before we apply it. System tmp is fine: git apply reads it by abs path.
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".patch", delete=False,
+        mode="w",
+        suffix=".patch",
+        delete=False,
     ) as tmpf:
         tmpf.write(diff_text)
         patch_path = tmpf.name
     # Serialize git apply/add/commit against burst merges (commit_pending_worktrees
     # touches the SAME worktree under the lock); same workspace lock for workspace
     # convs, no lock for legacy per-conv sandboxes (independent .git).
-    lock = (
-        workspace_merge_lock(conv.workspace_id)
-        if conv.workspace_id
-        else None
-    )
+    lock = workspace_merge_lock(conv.workspace_id) if conv.workspace_id else None
     acquired = False
     try:
         if lock is not None:
@@ -1259,10 +1434,15 @@ async def apply_diff(body: dict):
         rc, _out, err = await sandbox._run(["git", "add", "-A", file_path])
         if rc != 0:
             return {"ok": False, "error": f"git add failed: {err.strip()[:200]}"}
-        rc, _out, err = await sandbox._run([
-            "git", "commit", "-q",
-            "-m", f"polynoia: {'revert' if reverse else 'apply'} diff {file_path}",
-        ])
+        rc, _out, err = await sandbox._run(
+            [
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                f"polynoia: {'revert' if reverse else 'apply'} diff {file_path}",
+            ]
+        )
         if rc != 0:
             # Nothing to commit isn't an error — happens when the diff is a no-op.
             if "nothing to commit" in err.lower() or "nothing added" in err.lower():
@@ -1271,9 +1451,7 @@ async def apply_diff(body: dict):
         rc, sha, _err = await sandbox._run(["git", "rev-parse", "--short", "HEAD"])
         # Nudge the code tab / file tree to refetch so the applied/reverted file
         # content shows immediately (esp. a 撤销 landing on main).
-        await _broadcast_to_conv(
-            conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
-        )
+        await _broadcast_to_conv(conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n')
         return {"ok": True, "sha": (sha.strip() if rc == 0 else "")}
     finally:
         if acquired:
@@ -1381,9 +1559,7 @@ async def post_diff_card(conv_id: str, body: dict):
             session, conv_id=conv_id, sender_id=sender_id, payload=payload
         )
         await session.commit()
-    frame = encode_polynoia_card(
-        "diff", payload, mid, sender_id=sender_id, sender_label=sender_id
-    )
+    frame = encode_polynoia_card("diff", payload, mid, sender_id=sender_id, sender_label=sender_id)
     await _broadcast_to_conv(conv_id, frame)
     return {"ok": True, "id": mid, "truncated": truncated}
 
@@ -1408,18 +1584,56 @@ async def post_terminal_card(conv_id: str, body: dict):
     output = str(body.get("output") or "")
     truncated = len(output) > _MAX
     exit_code = body.get("exit_code")
+    mode = str(body.get("mode") or "blocking")
+    if mode not in ("blocking", "background"):
+        mode = "blocking"
+    process_id = str(body.get("process_id") or term_id)
+    pid = body.get("pid")
+    pgid = body.get("pgid")
+    cwd = body.get("cwd")
+    label = body.get("label")
+    running = bool(body.get("running", True))
     payload = {
         "kind": "terminal",
         "command": str(body.get("command") or ""),
         "output": output[-_MAX:],
-        "running": bool(body.get("running", True)),
+        "running": running,
+        "mode": mode,
+        "label": str(label) if label else None,
+        "process_id": process_id,
+        "pid": int(pid) if isinstance(pid, int) else None,
+        "pgid": int(pgid) if isinstance(pgid, int) else None,
         "exit_code": int(exit_code) if isinstance(exit_code, int) else None,
         "truncated": truncated,
     }
     async with SessionLocal() as session:
         await storage_repo.upsert_message(
-            session, conv_id=conv_id, sender_id=sender_id,
-            payload=payload, msg_id=term_id,
+            session,
+            conv_id=conv_id,
+            sender_id=sender_id,
+            payload=payload,
+            msg_id=term_id,
+        )
+        status = (
+            "running"
+            if running
+            else ("exited" if payload["exit_code"] == 0 else "failed")
+        )
+        await storage_repo.upsert_process_run(
+            session,
+            process_id=process_id,
+            conv_id=conv_id,
+            message_id=term_id,
+            agent_id=sender_id,
+            command=payload["command"],
+            mode=mode,
+            status=status,
+            output_tail=payload["output"],
+            cwd=str(cwd) if cwd else None,
+            label=str(label) if label else None,
+            pid=payload["pid"],
+            pgid=payload["pgid"],
+            exit_code=payload["exit_code"],
         )
         await session.commit()
     frame = encode_polynoia_card(
@@ -1427,6 +1641,35 @@ async def post_terminal_card(conv_id: str, body: dict):
     )
     await _broadcast_to_conv(conv_id, frame)
     return {"ok": True, "id": term_id}
+
+
+@router.get("/api/conversations/{conv_id}/process-runs")
+async def list_process_runs(conv_id: str):
+    async with SessionLocal() as session:
+        runs = await storage_repo.list_process_runs(session, conv_id)
+    return {"processes": runs}
+
+
+@router.delete("/api/process-runs/{process_id}")
+async def stop_process_run(process_id: str):
+    async with SessionLocal() as session:
+        run = await storage_repo.get_process_run(session, process_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="process not found")
+        pgid = run.get("pgid")
+        pid = run.get("pid")
+        killed = False
+        if pgid:
+            with suppress(Exception):
+                os.killpg(int(pgid), 15)
+                killed = True
+        elif pid:
+            with suppress(Exception):
+                os.kill(int(pid), 15)
+                killed = True
+        await storage_repo.mark_process_run_killed(session, process_id)
+        await session.commit()
+    return {"ok": True, "killed": killed}
 
 
 # ── Manual-mode Pending Edits (Phase A) ──────────────────────────────
@@ -1459,19 +1702,13 @@ async def _abandon_in_flight_pending_edits(conv_id: str, contact_id: str) -> Non
         slug = getattr(agent_row, "adapter_id", None) if agent_row else None
         if not slug:
             return
-        rows = await storage_repo.abandon_pending_edits_for_adapter(
-            session, conv_id, slug
-        )
+        rows = await storage_repo.abandon_pending_edits_for_adapter(session, conv_id, slug)
         if not rows:
             return
         await session.commit()
         snapshot = [_pending_edit_to_dict(r) for r in rows]
     for d in snapshot:
-        frame = (
-            'data: {"type":"data-pending-edit","data":'
-            + json.dumps(d)
-            + "}\n\n"
-        )
+        frame = 'data: {"type":"data-pending-edit","data":' + json.dumps(d) + "}\n\n"
         with suppress(Exception):
             await _broadcast_to_conv(conv_id, frame)
 
@@ -1543,9 +1780,7 @@ async def present_file(body: dict):
             if not url:
                 continue
             if not (
-                url.startswith("/api/")
-                or url.startswith("http://")
-                or url.startswith("https://")
+                url.startswith("/api/") or url.startswith("http://") or url.startswith("https://")
             ):
                 continue
             kind = str(entry.get("kind") or "web").strip().lower()
@@ -1567,16 +1802,12 @@ async def present_file(body: dict):
     agent_id = (body.get("agent_id") or "system").strip()
     async with SessionLocal() as _session:
         _conv = await storage_repo.get_conversation(_session, conv_id)
-    if (
-        _conv is not None
-        and _conv.group
-        and agent_id != _conv.orchestrator_member_id
-    ):
+    if _conv is not None and _conv.group and agent_id != _conv.orchestrator_member_id:
         return {
             "ok": True,
             "deferred": True,
             "note": "已记录;群聊交付物会由协调者验收后从 main 统一展示。"
-                    "你现在只需用 report 报告产出的文件,不要自己 present。",
+            "你现在只需用 report 报告产出的文件,不要自己 present。",
         }
     # Orchestrator-presents (user's choice): a worker mid-burst must NOT surface
     # its own file — the card would stream from its unmerged branch, and the user
@@ -1594,9 +1825,12 @@ async def present_file(body: dict):
             continue
         _tasks = _reg.get("payload", {}).get("tasks", [])
         if any(t.get("agent") == agent_id for t in _tasks):
-            return {"ok": True, "deferred": True,
-                    "note": "已记录;交付物会由协调者在汇总时从 main 统一展示。"
-                            "你现在只需用 report 报告产出的文件,不要自己 present。"}
+            return {
+                "ok": True,
+                "deferred": True,
+                "note": "已记录;交付物会由协调者在汇总时从 main 统一展示。"
+                "你现在只需用 report 报告产出的文件,不要自己 present。",
+            }
     # ONE panel for the whole bundle (not a card per file): a one-line hand-off
     # message + the file list. `message` is the agent's note to the user.
     message = body.get("message") or body.get("caption") or None
@@ -1606,8 +1840,7 @@ async def present_file(body: dict):
         "files": [
             {
                 "src": (
-                    f"/api/workspaces/{ws}/files/download?path="
-                    + urllib.parse.quote(path, safe="")
+                    f"/api/workspaces/{ws}/files/download?path=" + urllib.parse.quote(path, safe="")
                 ),
                 "name": path.split("/")[-1],
             }
@@ -1618,14 +1851,21 @@ async def present_file(body: dict):
     mid = f"present-{uuid.uuid4().hex[:12]}"
     async with SessionLocal() as session:
         await storage_repo.append_message(
-            session, conv_id=conv_id, sender_id=agent_id,
-            payload=payload, msg_id=mid,
+            session,
+            conv_id=conv_id,
+            sender_id=agent_id,
+            payload=payload,
+            msg_id=mid,
         )
         await session.commit()
     frame = (
-        'data: {"type":"data-files","id":' + json.dumps(mid)
-        + ',"sender_id":' + json.dumps(agent_id)
-        + ',"data":' + json.dumps(payload, ensure_ascii=False) + "}\n\n"
+        'data: {"type":"data-files","id":'
+        + json.dumps(mid)
+        + ',"sender_id":'
+        + json.dumps(agent_id)
+        + ',"data":'
+        + json.dumps(payload, ensure_ascii=False)
+        + "}\n\n"
     )
     await _broadcast_to_conv(conv_id, frame)
     return {"ok": True, "message_id": mid}
@@ -1726,10 +1966,13 @@ async def create_pending_access_endpoint(body: dict):
     # is keyed to the actual contact and AdapterPool.active_access_grant (which
     # looks up by the contact's real id) finds it.
     if conv_id.startswith("dm-"):
-        agent_id = conv_id[len("dm-"):]
+        agent_id = conv_id[len("dm-") :]
     async with SessionLocal() as session:
         pid = await storage_repo.create_pending_access(
-            session, conv_id=conv_id, agent_id=agent_id, reason=reason,
+            session,
+            conv_id=conv_id,
+            agent_id=agent_id,
+            reason=reason,
         )
         await session.commit()
         row = await storage_repo.get_pending_access(session, pid)
@@ -1778,13 +2021,17 @@ async def decide_pending_access(pending_id: str, body: dict):
             return {"error": "pending access not found"}, 404
         if row.status == "pending":
             await storage_repo.set_pending_access_status(
-                session, pending_id, target, workspace_id=ws_id,
+                session,
+                pending_id,
+                target,
+                workspace_id=ws_id,
             )
             await session.commit()
             row = await storage_repo.get_pending_access(session, pending_id)
     if target == "accepted":
         # Evict cached session so the grant takes effect on the next turn.
         from polynoia.adapters.pool import get_pool
+
         with contextlib.suppress(Exception):
             await get_pool().close_sessions_for_agent(row.agent_id)
     frame = (
@@ -1853,13 +2100,11 @@ def _apply_resolution_to_files(
 # three sides must travel in the prompt. A huge file would blow the turn's
 # context budget, so we skip it; if nothing actionable remains the caller leaves
 # the conflict for a human (returns None).
-_AUTOFIX_PER_FILE_CAP = 20_000   # chars per inlined side
-_AUTOFIX_TOTAL_CAP = 60_000      # chars total inlined across all files
+_AUTOFIX_PER_FILE_CAP = 20_000  # chars per inlined side
+_AUTOFIX_TOTAL_CAP = 60_000  # chars total inlined across all files
 
 
-def _build_conflict_fix_prompt(
-    cid: str, branch: str, author: str, files: list[dict]
-) -> str | None:
+def _build_conflict_fix_prompt(cid: str, branch: str, author: str, files: list[dict]) -> str | None:
     """Compose the AUTO-mode auto-fix turn prompt for the ORCHESTRATOR (the
     neutral arbiter — not the branch author, who'd be judge-and-party): inline
     each conflicting file's sides, then instruct it to call `resolve_conflict`
@@ -1867,10 +2112,10 @@ def _build_conflict_fix_prompt(
     file binary or too large) so the caller skips the spawn and leaves it for a
     human in the conflict panel."""
     sections: list[str] = []
-    deferred: list[str] = []      # binary — describe, never inline
+    deferred: list[str] = []  # binary — describe, never inline
     skipped_large: list[str] = []
     budget = _AUTOFIX_TOTAL_CAP
-    actionable = 0                # content/add_add/modify_delete we inlined
+    actionable = 0  # content/add_add/modify_delete we inlined
 
     for f in files:
         path = f.get("path") or "?"
@@ -1901,9 +2146,7 @@ def _build_conflict_fix_prompt(
                 skipped_large.append(path)
                 continue
             budget -= len(snippet)
-            sections.append(
-                f"### `{path}` — content 冲突(diff3 标记)\n```\n{snippet}\n```"
-            )
+            sections.append(f"### `{path}` — content 冲突(diff3 标记)\n```\n{snippet}\n```")
             actionable += 1
             continue
         # content without markers, or add_add — show both whole sides.
@@ -1935,8 +2178,7 @@ def _build_conflict_fix_prompt(
         parts.append("无法内联、需你判断的文件:\n" + "\n".join(deferred))
     if skipped_large:
         parts.append(
-            "以下文件过大已省略(拿不准就留给用户):"
-            + ", ".join(f"`{p}`" for p in skipped_large)
+            "以下文件过大已省略(拿不准就留给用户):" + ", ".join(f"`{p}`" for p in skipped_large)
         )
     parts.append(
         f"用 `resolve_conflict` 工具(conflict_id=`{cid}`)一次性提交解决方案:\n"
@@ -1958,11 +2200,18 @@ async def _broadcast_conflict_card(row) -> None:
         return
     files = [ConflictFile(**f) for f in (row.files_json or [])]
     payload = ConflictPayload(
-        conflict_id=row.id, conv_id=row.conv_id, branch=row.branch,
-        agent_id=row.agent_id, base_agents=row.base_agents_json or [],
-        into=row.into, status=row.status, files=files,
-        resolved_by=row.resolved_by, resolved_sha=row.resolved_sha,
-        created_at=row.created_at, decided_at=row.decided_at,
+        conflict_id=row.id,
+        conv_id=row.conv_id,
+        branch=row.branch,
+        agent_id=row.agent_id,
+        base_agents=row.base_agents_json or [],
+        into=row.into,
+        status=row.status,
+        files=files,
+        resolved_by=row.resolved_by,
+        resolved_sha=row.resolved_sha,
+        created_at=row.created_at,
+        decided_at=row.decided_at,
     ).model_dump(mode="json")
     if row.card_msg_id:
         async with SessionLocal() as session:
@@ -1972,7 +2221,8 @@ async def _broadcast_conflict_card(row) -> None:
         'data: {"type":"data-conflict","data":'
         + json.dumps(payload, ensure_ascii=False)
         + (',"id":' + json.dumps(row.card_msg_id) if row.card_msg_id else "")
-        + ',"sender_id":' + json.dumps(row.agent_id)
+        + ',"sender_id":'
+        + json.dumps(row.agent_id)
         + "}\n\n"
     )
     await _broadcast_to_conv(row.conv_id, frame)
@@ -2035,9 +2285,7 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
     if ws_sandbox is None:
         raise HTTPException(409, "workspace not available")
 
-    updated_files = _apply_resolution_to_files(
-        row.files_json or [], resolutions, sides, deletions
-    )
+    updated_files = _apply_resolution_to_files(row.files_json or [], resolutions, sides, deletions)
 
     async with workspace_merge_lock(row.workspace_id):
         async with SessionLocal() as session:
@@ -2054,7 +2302,10 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
 
         try:
             ok, sha, msg = await ws_sandbox.conclude_merge(
-                row.branch, resolutions=resolutions, sides=sides, deletions=deletions,
+                row.branch,
+                resolutions=resolutions,
+                sides=sides,
+                deletions=deletions,
                 # Attribute the resolve commit to the resolving AGENT (auto-fix),
                 # not the user — `resolved_by` is the agent id in auto mode; "you"
                 # (manual UI resolve) → None → default polynoia-agent identity.
@@ -2067,11 +2318,16 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
         if ok:
             async with SessionLocal() as session:
                 await storage_repo.set_conflict_status(
-                    session, conflict_id, "resolved",
-                    resolved_by=resolved_by, resolved_sha=sha,
+                    session,
+                    conflict_id,
+                    "resolved",
+                    resolved_by=resolved_by,
+                    resolved_sha=sha,
                 )
                 await storage_repo.add_conv_memory(
-                    session, conv_id=row.conv_id, author_agent_id=resolved_by,
+                    session,
+                    conv_id=row.conv_id,
+                    author_agent_id=resolved_by,
                     kind="decision",
                     content=f"{resolved_by} 解决了 `{row.branch}` 的冲突 → main@{sha}。",
                 )
@@ -2085,7 +2341,9 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
                     await session.commit()
                 fresh = await storage_repo.get_conflict(session, conflict_id)
     await _broadcast_conflict_card(fresh)
-    return ({"ok": True, "sha": sha} if ok else {"ok": False, "error": msg}) | _conflict_to_dict(fresh)
+    return ({"ok": True, "sha": sha} if ok else {"ok": False, "error": msg}) | _conflict_to_dict(
+        fresh
+    )
 
 
 @router.post("/api/conflicts/{conflict_id}/abandon")
@@ -2099,7 +2357,10 @@ async def abandon_conflict_endpoint(conflict_id: str):
             return _conflict_to_dict(row)
         await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
         await storage_repo.add_conv_memory(
-            session, conv_id=row.conv_id, author_agent_id="you", kind="decision",
+            session,
+            conv_id=row.conv_id,
+            author_agent_id="you",
+            kind="decision",
             content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
         )
         await session.commit()
@@ -2163,9 +2424,7 @@ async def restore_workspace(ws_id: str, body: dict):
         raise HTTPException(400, result.get("error", "restore failed"))
     # Files changed → nudge the file tree / preview to refresh.
     if conv_id:
-        await _broadcast_to_conv(
-            conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
-        )
+        await _broadcast_to_conv(conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n')
     return result
 
 
@@ -2188,9 +2447,7 @@ async def rewind_conversation(conv_id: str, body: dict):
     if not from_msg_id:
         raise HTTPException(400, "from_msg_id required")
     if _conv_has_running_agent(conv_id):
-        raise HTTPException(
-            409, "an agent is still running — finish or cancel it first"
-        )
+        raise HTTPException(409, "an agent is still running — finish or cancel it first")
 
     async with SessionLocal() as session:
         conv = await storage_repo.get_conversation(session, conv_id)
@@ -2218,7 +2475,9 @@ async def rewind_conversation(conv_id: str, body: dict):
 
     async with SessionLocal() as session:
         deleted = await storage_repo.delete_messages_from(
-            session, conv_id=conv_id, from_msg_id=from_msg_id,
+            session,
+            conv_id=conv_id,
+            from_msg_id=from_msg_id,
         )
         await session.commit()
 
@@ -2229,14 +2488,10 @@ async def rewind_conversation(conv_id: str, body: dict):
         "type": "data-conv-rewound",
         "data": {"conv_id": conv_id, "from_msg_id": from_msg_id},
     }
-    await _broadcast_to_conv(
-        conv_id, f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-    )
+    await _broadcast_to_conv(conv_id, f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
     if restored:
         # Workspace files changed too — nudge the right-rail tree/preview.
-        await _broadcast_to_conv(
-            conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n'
-        )
+        await _broadcast_to_conv(conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n')
 
     return {
         "ok": True,
@@ -2302,8 +2557,13 @@ async def set_conv_members(conv_id: str, body: dict):
             bits.append("移出 " + "、".join(f"@{x}" for x in removed))
         if bits:
             await storage_repo.append_message(
-                session, conv_id=conv_id, sender_id="system",
-                payload={"kind": "text", "body": [{"t": "p", "c": "👥 成员变更 — " + " · ".join(bits)}]},
+                session,
+                conv_id=conv_id,
+                sender_id="system",
+                payload={
+                    "kind": "text",
+                    "body": [{"t": "p", "c": "👥 成员变更 — " + " · ".join(bits)}],
+                },
             )
         await session.commit()
         conv = await storage_repo.get_conversation(session, conv_id)
@@ -2312,7 +2572,9 @@ async def set_conv_members(conv_id: str, body: dict):
         with suppress(Exception):
             await _broadcast_to_conv(
                 conv_id,
-                'data: {"type":"data-conv-updated","data":' + json.dumps({"conv_id": conv_id}) + "}\n\n",
+                'data: {"type":"data-conv-updated","data":'
+                + json.dumps({"conv_id": conv_id})
+                + "}\n\n",
             )
     return conv.model_dump(mode="json") if conv else {"ok": True}
 
@@ -2344,13 +2606,12 @@ async def system_reset():
     # Also drop adapter sessions cache so the user's enabled state is
     # consistent with empty DB.
     from polynoia.adapters.pool import get_pool
+
     await get_pool().close_all()
     return {"ok": True, "message": "system reset complete"}
 
 
 # ── WebSocket: stream messages ─────────────────────────────────
-
-
 
 
 # ── Module-level helpers (used by ws_conv) ─────────────────────
@@ -2432,16 +2693,21 @@ async def _persist_and_emit_error(
     with suppress(Exception):
         async with SessionLocal() as _edb:
             await storage_repo.append_message(
-                _edb, conv_id=conv_id, sender_id=sender_id,
-                payload=payload, msg_id=eid,
+                _edb,
+                conv_id=conv_id,
+                sender_id=sender_id,
+                payload=payload,
+                msg_id=eid,
             )
             await _edb.commit()
     with suppress(RuntimeError):
         await emit(
             'data: {"type":"data-error","data":'
             + json.dumps(payload, ensure_ascii=False)
-            + ',"id":' + json.dumps(eid)
-            + ',"sender_id":' + json.dumps(sender_id)
+            + ',"id":'
+            + json.dumps(eid)
+            + ',"sender_id":'
+            + json.dumps(sender_id)
             + "}\n\n"
         )
 
@@ -2450,7 +2716,7 @@ def _error_text_from_chunk(chunk: str) -> str:
     """Pull the human error text out of a raw ``data: {"type":"error",...}``
     frame (adapter-surfaced TurnFailedEvent — 401/429/upstream)."""
     with suppress(Exception):
-        obj = json.loads(chunk[len("data: "):].strip())
+        obj = json.loads(chunk[len("data: ") :].strip())
         return str(obj.get("error_text") or obj.get("error") or "上游错误")
     return "上游错误"
 
@@ -2471,7 +2737,7 @@ def _phase_from_chunk(chunk: str) -> tuple[str, dict] | None:
     if chunk.startswith('data: {"type":"data-tool-call"'):
         name = None
         with suppress(Exception):
-            name = json.loads(chunk[len("data: "):].strip()).get("data", {}).get("name")
+            name = json.loads(chunk[len("data: ") :].strip()).get("data", {}).get("name")
         return ("executing", {"tool": name} if name else {})
     if chunk.startswith('data: {"type":"data-'):
         return ("executing", {})
@@ -2557,7 +2823,9 @@ async def _tap_text_into(
                         next_has_input = bool(dump.get("input"))
                         dump = {
                             **dump,
-                            "input": dump.get("input") if next_has_input else prev.get("input", dump.get("input")),
+                            "input": dump.get("input")
+                            if next_has_input
+                            else prev.get("input", dump.get("input")),
                             "input_preview": dump.get("input_preview") or prev.get("input_preview"),
                         }
                     if _is_edit_tool_call(dump):
@@ -2651,22 +2919,19 @@ def _build_task_items(
         resolved = resolve_agent(str(agent_raw))
         if not resolved:
             continue
-        label = (
-            raw_t.get("label")
-            or raw_t.get("file")
-            or raw_t.get("name")
-            or "task"
-        )
+        label = raw_t.get("label") or raw_t.get("file") or raw_t.get("name") or "task"
         note = raw_t.get("note") or raw_t.get("spec") or raw_t.get("desc")
-        out.append({
-            "id": f"t-{uuid.uuid4().hex[:8]}",
-            "state": "run",  # dispatched immediately on emit
-            "agent": resolved,
-            "label": str(label)[:120],
-            "note": (str(note)[:300] if note else None),
-            "context_refs": [],
-            "retry_count": 0,
-        })
+        out.append(
+            {
+                "id": f"t-{uuid.uuid4().hex[:8]}",
+                "state": "run",  # dispatched immediately on emit
+                "agent": resolved,
+                "label": str(label)[:120],
+                "note": (str(note)[:300] if note else None),
+                "context_refs": [],
+                "retry_count": 0,
+            }
+        )
     return out
 
 
@@ -2691,11 +2956,7 @@ def _extract_tasks_blocks(
     has_tag = "<tasks>" in text
     # Fallback path is needed when a persona ignores the `<tasks>` tag and
     # falls back to a `` ```json [{assignee...}] ``` `` code block.
-    has_fallback = (
-        not has_tag
-        and "```" in text
-        and "assignee" in text
-    )
+    has_fallback = not has_tag and "```" in text and "assignee" in text
     if not has_tag and not has_fallback:
         return text, []
     out_blocks: list[dict] = []
@@ -2727,11 +2988,13 @@ def _extract_tasks_blocks(
         if not tasks:
             return m.group(0)
 
-        out_blocks.append({
-            "kind": "tasks",
-            "title": title or "Parallel work",
-            "tasks": tasks,
-        })
+        out_blocks.append(
+            {
+                "kind": "tasks",
+                "title": title or "Parallel work",
+                "tasks": tasks,
+            }
+        )
         return ""
 
     cleaned = _TASKS_RE.sub(replacer, text).strip()
@@ -2745,16 +3008,17 @@ def _extract_tasks_blocks(
             except (json.JSONDecodeError, ValueError):
                 parsed = None
             if isinstance(parsed, list) and any(
-                isinstance(t, dict) and ("assignee" in t or "agent" in t)
-                for t in parsed
+                isinstance(t, dict) and ("assignee" in t or "agent" in t) for t in parsed
             ):
                 tasks = _build_task_items(parsed, resolve_agent=_resolve_agent)
                 if tasks:
-                    out_blocks.append({
-                        "kind": "tasks",
-                        "title": "Parallel work",
-                        "tasks": tasks,
-                    })
+                    out_blocks.append(
+                        {
+                            "kind": "tasks",
+                            "title": "Parallel work",
+                            "tasks": tasks,
+                        }
+                    )
                     cleaned = _TASKS_FALLBACK_RE.sub("", cleaned, count=1).strip()
 
     return cleaned, out_blocks
@@ -2873,10 +3137,7 @@ def _with_orchestrator_mention_routing_hint(
     The only code-producing route in such groups is the orchestrator's dispatch
     tool, which preserves burst/merge semantics and staged dependencies.
     """
-    targets = [
-        aid for aid in mentioned_ids
-        if aid in member_ids and aid not in {"you", orch_id}
-    ]
+    targets = [aid for aid in mentioned_ids if aid in member_ids and aid not in {"you", orch_id}]
     if len(targets) < 2:
         return text
 
@@ -2911,7 +3172,8 @@ def _single_direct_mention_target(
       - no @, multi @, or @orchestrator mixed in → route to the coordinator.
     """
     targets = [
-        aid for aid in mentioned_ids
+        aid
+        for aid in mentioned_ids
         if aid in member_ids and aid not in {"you", orch_id} and agent_ok(aid)
     ]
     if len(targets) == 1 and orch_id not in mentioned_ids:
@@ -2919,19 +3181,21 @@ def _single_direct_mention_target(
     return None
 
 
-_START_TURN_TRIGGERS = frozenset({
-    "开工",
-    "开始",
-    "开始吧",
-    "继续",
-    "继续吧",
-    "执行",
-    "跑",
-    "跑起来",
-    "go",
-    "run",
-    "start",
-})
+_START_TURN_TRIGGERS = frozenset(
+    {
+        "开工",
+        "开始",
+        "开始吧",
+        "继续",
+        "继续吧",
+        "执行",
+        "跑",
+        "跑起来",
+        "go",
+        "run",
+        "start",
+    }
+)
 
 
 def _effective_mention_routing_text(

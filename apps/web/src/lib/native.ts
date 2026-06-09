@@ -7,13 +7,21 @@
 
 function isCapacitorNative(): boolean {
 	const cap = (
-		globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }
+		globalThis as {
+			Capacitor?: {
+				isNativePlatform?: () => boolean;
+				getPlatform?: () => string;
+				platform?: string;
+			};
+		}
 	).Capacitor;
-	return !!(
-		cap &&
-		typeof cap.isNativePlatform === "function" &&
-		cap.isNativePlatform()
-	);
+	if (!cap) return false;
+	if (typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) {
+		return true;
+	}
+	const platform =
+		typeof cap.getPlatform === "function" ? cap.getPlatform() : cap.platform;
+	return platform === "ios" || platform === "android";
 }
 
 function seedNativeLayoutVars(): void {
@@ -153,6 +161,13 @@ export async function initNative(): Promise<void> {
 			document.documentElement.style.setProperty("--kb-h", "0px");
 		}),
 	]).catch(() => {});
+	for (const delay of [50, 250, 800]) {
+		window.setTimeout(() => {
+			void import("@capacitor/splash-screen")
+				.then(({ SplashScreen }) => SplashScreen.hide())
+				.catch(() => {});
+		}, delay);
+	}
 }
 
 /** Run `cb` when the app returns to the foreground (iOS/Android). Returns an

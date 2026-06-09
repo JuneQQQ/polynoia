@@ -591,7 +591,12 @@ class _BashTool(_ToolBase):
         "Do NOT use pkill/killall or `kill -1` / `kill -<pgid>` — the sandbox "
         "shares the host process space, so name-pattern/broadcast kills hit the "
         "host (they're blocked). To stop something you started, save its PID "
-        "(`mycmd & PID=$!`) and `kill \"$PID\"`."
+        "(`mycmd & PID=$!`) and `kill \"$PID\"`.\n\n"
+        "Use `blocking=false` ONLY for persistent commands the user should manage "
+        "from the right rail, such as `npm run dev -- --host 0.0.0.0`, `pnpm dev`, "
+        "`uvicorn ...`, or a long-lived watcher. The command card will be linked "
+        "to a managed process entry. Normal tests/builds/scripts should keep the "
+        "default `blocking=true`."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -601,6 +606,15 @@ class _BashTool(_ToolBase):
                 "type": "number",
                 "default": 30,
                 "description": "Max seconds of NO OUTPUT before kill (IDLE, not total). Streaming commands run as long as they're active; raise it for intentionally-silent long commands.",
+            },
+            "blocking": {
+                "type": "boolean",
+                "default": True,
+                "description": "true = wait for completion; false = start a persistent/background process and return immediately.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Short human label for a non-blocking process, e.g. 'Vue dev server'.",
             },
         },
         "required": ["command"],
@@ -622,9 +636,12 @@ class _BashTool(_ToolBase):
                 ),
             }
         timeout = float(args.get("timeout", 30))
+        blocking = bool(args.get("blocking", True))
+        label = str(args.get("label") or "").strip() or None
         base = os.environ.get("POLYNOIA_API_BASE")
         sender_id = ctx.turn_agent_id or ctx.agent_id
         term_id = "term-" + uuid.uuid4().hex
+        process_id = term_id
 
         loop = asyncio.get_event_loop()
         last_activity = loop.time()  # reset on every output line → drives idle timeout
@@ -674,10 +691,16 @@ class _BashTool(_ToolBase):
                         f"/api/conversations/{ctx.conv_id}/terminal-card",
                         json={
                             "term_id": term_id,
+                            "process_id": process_id,
                             "command": cmd,
                             "sender_id": sender_id,
                             "output": output,
                             "running": running,
+                            "mode": "blocking" if blocking else "background",
+                            "label": label,
+                            "pid": proc.pid,
+                            "pgid": os.getpgid(proc.pid),
+                            "cwd": str(ctx.sandbox.root),
                             "exit_code": exit_code,
                         },
                     )
@@ -702,6 +725,33 @@ class _BashTool(_ToolBase):
             asyncio.create_task(_pump(proc.stderr, err_parts)),
         ]
         throttle = asyncio.create_task(_throttle())
+
+        async def _monitor_background() -> None:
+            try:
+                while proc.returncode is None:
+                    await asyncio.sleep(5)
+                    await _post_card(running=True, exit_code=None)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+            finally:
+                throttle.cancel()
+                with contextlib.suppress(Exception):
+                    await throttle
+                exit_code = proc.returncode if proc.returncode is not None else -1
+                await _post_card(running=False, exit_code=exit_code)
+
+        if not blocking:
+            asyncio.create_task(_monitor_background())
+            return {
+                "kind": "started",
+                "command": cmd,
+                "blocking": False,
+                "process_id": process_id,
+                "pid": proc.pid,
+                "pgid": os.getpgid(proc.pid),
+                "label": label,
+                "note": "后台进程已托管,可在右侧运行面板停止或定位到命令卡片。",
+            }
 
         def _kill_tree() -> None:
             # Kill the whole process group (shell + npm + children), then the proc
@@ -1573,6 +1623,8 @@ class _PresentTool(_ToolBase):
         "  · documents — Markdown / PPTX / DOCX / XLSX / PDF / CSV\n"
         "  · images / diagrams / generated data files\n"
         "  · a deployed/exposed URL (preview server, container, static site)\n"
+        "  · a local dev URL for a running app/API that the user can click "
+        "(React/Vite, Vue, FastAPI docs, etc.)\n"
         "  · a download URL (a built zip the user can fetch)\n"
         "Do NOT present the SOURCE TREE of a code project — the user builds/runs "
         "that locally, and the per-file diff cards already show every code change. "
@@ -1585,6 +1637,26 @@ class _PresentTool(_ToolBase):
         "`message` is the one-line hand-off note. Paths are relative to your "
         "working dir. At least one of paths/links is required. Call this ONCE "
         "(not per file). Prefer it over pasting file contents into your reply.\n\n"
+        "URL hand-off rule: if a preview/deploy/start command prints a URL such as "
+        "`http://127.0.0.1:5173/`, `http://127.0.0.1:8000/docs`, "
+        "`http://127.0.0.1:8770/index.html`, or `expose` returns a `url` / "
+        "`download_url`, do NOT merely paste that URL in normal text. Call "
+        "`present(links=[{url,label,kind}], message=...)` so the chat shows a "
+        "clickable deliverable panel.\n\n"
+        "Few-shot examples:\n"
+        "  · Static file: after writing + reading `index.html`, call "
+        "`present(paths=[\"index.html\"], message=\"页面已完成\")`.\n"
+        "  · Preview URL: after a server prints `http://127.0.0.1:8770/index.html`, "
+        "call `present(links=[{\"url\":\"http://127.0.0.1:8770/index.html\","
+        "\"label\":\"打开预览\",\"kind\":\"web\"}], message=\"预览已就绪\")`.\n"
+        "  · Full-stack local app: after Vite/FastAPI are running, call "
+        "`present(links=[{\"url\":\"http://127.0.0.1:5173/\","
+        "\"label\":\"打开前端\",\"kind\":\"web\"},{\"url\":\"http://127.0.0.1:8000/docs\","
+        "\"label\":\"查看 API\",\"kind\":\"api\"}], message=\"前后端已启动\")`.\n"
+        "  · Exposed static site: after `expose(target=\"static\")` returns "
+        "`/api/deploy/static/<token>/index.html`, call `present(links=[{\"url\":"
+        "\"/api/deploy/static/<token>/index.html\",\"label\":\"打开部署预览\","
+        "\"kind\":\"web\"}], message=\"部署预览已生成\")`.\n\n"
         "This tool is for solo/direct agents and group orchestrators. Regular "
         "group members do not receive it; they should `report` produced files so "
         "the coordinator can validate the main result and present once."
