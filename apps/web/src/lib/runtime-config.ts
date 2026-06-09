@@ -39,6 +39,54 @@ export function isCapacitor(): boolean {
   return !!(cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform());
 }
 
+const NATIVE_SHELL_LS_KEY = "polynoia-native-shell";
+
+// Apply a `?native=1` URL flag once at load — mirrors applyServerQueryOverride and
+// platform.ts's `?platform=`. Under live-reload the Capacitor WebView loads a remote
+// http URL and the native bridge is NOT injected (`window.Capacitor` is undefined →
+// isCapacitor() is false), so the app can't otherwise tell it's the native shell.
+// The Capacitor server.url carries `?native=1`; we persist it so the connect gate
+// treats this as the native shell (must point at a remote server) even without the
+// bridge. `?native=` (empty) clears it. Runs at module import, before any gate read.
+(function applyNativeShellFlag() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("native")) return;
+    if (params.get("native") === "1") storage.setItem(NATIVE_SHELL_LS_KEY, "1");
+    else storage.removeItem(NATIVE_SHELL_LS_KEY);
+  } catch {
+    // window/localStorage unavailable — ignore.
+  }
+})();
+
+/** Is this the native mobile shell that must be pointed at a remote backend?
+ *
+ * True when the Capacitor bridge is present (bundled app) OR the persisted
+ * `?native=1` flag is set (live-reload, where the bridge isn't injected). The
+ * connect gate keys off THIS, not isCapacitor(), so it works in both modes. */
+export function isNativeShell(): boolean {
+  if (isCapacitor()) return true;
+  try {
+    if (storage.getItem(NATIVE_SHELL_LS_KEY) === "1") return true;
+  } catch {
+    /* storage unavailable — fall through */
+  }
+  // Dev/live-reload fallback: the bundled app injects window.Capacitor, but a
+  // live-reload load from a remote LAN host does NOT (isCapacitor()=false). Until
+  // a rebuild bakes `?native=1` into server.url, treat any non-local host in dev
+  // as the native shell, so the connect gate works after a plain app cold-restart
+  // (no Xcode). Localhost = the dev browser → NOT flagged. Off in production builds.
+  try {
+    if (import.meta.env.DEV) {
+      const h = window.location.hostname;
+      if (h && h !== "localhost" && h !== "127.0.0.1" && h !== "0.0.0.0") return true;
+    }
+  } catch {
+    /* window unavailable */
+  }
+  return false;
+}
+
 /** The user-configured remote server base, or "" if none. Durable on native
  * (Preferences-backed) via the storage facade. */
 export function getServerOverride(): string {

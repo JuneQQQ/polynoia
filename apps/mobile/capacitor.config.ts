@@ -31,7 +31,13 @@ const config: CapacitorConfig = {
     // web changes flow over HMR — no more Xcode rebuilds. Phone must be on the
     // same LAN as 10.2.255.109 (verified reachable from iOS Safari).
     // To go back to the bundled-snapshot mode, comment out `url` + `cleartext`.
-    url: "http://10.2.255.109:5173",
+    //
+    // `?platform=mobile&native=1`: under live-reload the WebView loads this remote
+    // http URL and Capacitor does NOT inject `window.Capacitor` (isCapacitor() is
+    // false). These flags let the app still recognise itself as the native shell —
+    // platform.ts reads `?platform=`, runtime-config reads `?native=` — so the
+    // connect gate (isNativeShell) runs in live-reload too, not just the bundled app.
+    url: "http://10.2.255.109:5173?platform=mobile&native=1",
     cleartext: true,
     androidScheme: "https",
     iosScheme: "https",
