@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
+import { ConnectingSplash } from "./components/ConnectingSplash";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
 import { ConvRolesModal } from "./components/ConvRolesModal";
 import { ServerUnreachable } from "./components/ServerUnreachable";
@@ -16,13 +17,15 @@ import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
 import { type ConversationSummary, api } from "./lib/api";
 import { onBackButton, onNetworkChange, onResume } from "./lib/native";
+import { resolveMobileGate } from "./lib/connectionGate";
 import { isMobile } from "./lib/platform";
-import { getServerOverride, isCapacitor } from "./lib/runtime-config";
+import { getServerOverride, isNativeShell } from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const serverReachable = useStore((s) => s.serverReachable);
+	const connectionProbed = useStore((s) => s.connectionProbed);
 	const providers = useStore((s) => s.providers);
 	const agents = useStore((s) => s.agents);
 	const view = useStore((s) => s.view);
@@ -124,7 +127,7 @@ export function App() {
 	useEffect(() => {
 		// On a Capacitor first run there's no server yet — ConnectServerScreen
 		// gates that below; don't fetch (and don't trip the unreachable gate).
-		if (mobile && isCapacitor() && !getServerOverride()) return;
+		if (mobile && isNativeShell() && !getServerOverride()) return;
 		// reloadSeed sets serverReachable; failure surfaces via the boot gate.
 		reloadSeed().catch(() => {});
 	}, [reloadSeed, mobile]);
@@ -421,22 +424,31 @@ export function App() {
 		);
 	};
 
-	// Boot gate: the initial seed couldn't reach the server and nothing loaded →
-	// a clear retry screen instead of an empty shell. Capacitor first-run has its
-	// own ConnectServerScreen (below), so exclude it here.
-	const capacitorFirstRun = mobile && isCapacitor() && !getServerOverride();
-	if (!capacitorFirstRun && !serverReachable && providers.length === 0) {
+	// Native mobile (Capacitor): gate the chat UI on a *verified* live connection
+	// for this session — not merely on whether a server URL was once saved.
+	// Otherwise a returning user whose saved server is down lands in an empty chat
+	// shell. See resolveMobileGate. (Web/desktop/narrow-browser → null, below.)
+	const gate = resolveMobileGate({
+		mobile,
+		nativeShell: isNativeShell(),
+		hasOverride: !!getServerOverride(),
+		connectionProbed,
+		serverReachable,
+	});
+	if (gate === "connect") return <ConnectServerScreen />;
+	if (gate === "connecting") return <ConnectingSplash />;
+
+	// Boot gate (web/desktop only — native mobile is handled above, where
+	// `gate !== null`): the initial seed couldn't reach the server and nothing
+	// loaded → a clear retry screen instead of an empty shell.
+	if (gate === null && !serverReachable && providers.length === 0) {
 		return <ServerUnreachable />;
 	}
 
 	// ── Mobile layout (Capacitor iOS/Android or narrow viewport) ─────
+	// Native-mobile connection gating is handled above (resolveMobileGate); by
+	// here a Capacitor shell has a verified live connection.
 	if (mobile) {
-		// First-run gate: a phone has no local backend, so it must be pointed at a
-		// remote Polynoia server before anything else. (Browser/desktop have a
-		// same-origin / local default and skip this.)
-		if (isCapacitor() && !getServerOverride()) {
-			return <ConnectServerScreen />;
-		}
 		// Chat open → full-screen chat pushed over the list, with a back button.
 		if (view === "chat" && activeConv) {
 			return (

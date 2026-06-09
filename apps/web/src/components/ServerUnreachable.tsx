@@ -9,7 +9,7 @@ import { useState } from "react";
 import {
 	flushServerConfig,
 	getServerHttpBase,
-	isCapacitor,
+	isNativeShell,
 	setServerUrl,
 } from "../lib/runtime-config";
 import { useStore } from "../store";
@@ -18,7 +18,7 @@ export function ServerUnreachable() {
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
 	const base = getServerHttpBase() || "本机默认 (同源 / 代理)";
-	const mobile = isCapacitor();
+	const mobile = isNativeShell();
 
 	const retry = async () => {
 		if (retrying) return;

@@ -10,7 +10,11 @@
  */
 import { ArrowRight, Loader2 } from "lucide-react";
 import { useState } from "react";
-import { flushServerConfig, setServerUrl } from "../lib/runtime-config";
+import {
+	flushServerConfig,
+	getServerOverride,
+	setServerUrl,
+} from "../lib/runtime-config";
 import { BrandIcon } from "./BrandIcon";
 
 type Test = { kind: "idle" | "testing" | "ok" | "err"; msg: string };
@@ -32,7 +36,22 @@ async function fetchWithTimeout(input: string, ms: number): Promise<Response> {
 }
 
 export function ConnectServerScreen() {
-	const [url, setUrl] = useState("http://127.0.0.1:7780");
+	// Prefill, in order of preference: the previously-saved server (returning user
+	// whose server is down can just retry) → the host the app was loaded from on
+	// :7780 (live-reload from a LAN box → that box's backend) → the local default.
+	const [url, setUrl] = useState(() => {
+		const saved = getServerOverride();
+		if (saved) return saved;
+		try {
+			const h = window.location.hostname;
+			if (h && h !== "localhost" && h !== "127.0.0.1" && h !== "0.0.0.0") {
+				return `http://${h}:7780`;
+			}
+		} catch {
+			/* window unavailable */
+		}
+		return "http://127.0.0.1:7780";
+	});
 	const [test, setTest] = useState<Test>({ kind: "idle", msg: "" });
 	// The connect button has its own busy/error state separate from the "测试连接"
 	// probe — the two run independently and a failed probe shouldn't disable the
