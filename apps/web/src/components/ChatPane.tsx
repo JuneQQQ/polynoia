@@ -705,6 +705,20 @@ export function ChatPane({ convId, members, title }: Props) {
 			window.removeEventListener("polynoia:abort-agent", onAbortAgent);
 	}, [convId]);
 
+	// 「交给模型解决」: the conflict resolve pane (in the right rail) dispatches this
+	// to (re)trigger the orchestrator's auto-fix turn over THIS conv's WS. Same
+	// window-event idiom as above — avoids threading wsRef into the preview pane.
+	useEffect(() => {
+		const onResolveAi = (ev: Event) => {
+			const ce = ev as CustomEvent<{ convId: string; conflictId: string }>;
+			if (!ce.detail || ce.detail.convId !== convId) return;
+			wsRef.current?.resolveConflictAi(ce.detail.conflictId);
+		};
+		window.addEventListener("polynoia:resolve-conflict-ai", onResolveAi);
+		return () =>
+			window.removeEventListener("polynoia:resolve-conflict-ai", onResolveAi);
+	}, [convId]);
+
 	const memberAgents = useMemo(
 		() =>
 			members

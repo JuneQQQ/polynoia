@@ -140,6 +140,16 @@ export class ConvWebSocket {
     this.ws?.send(JSON.stringify({ kind: "agent_status_query" }));
   }
 
+  /** 「交给模型解决」— (re)trigger the AUTO-mode auto-fix turn for an open conflict.
+   * The server spawns the orchestrator (neutral arbiter) to resolve it; the
+   * conflict card/pane update over WS when it lands. The retry hatch for when the
+   * automatic round failed or stalled. */
+  resolveConflictAi(conflictId: string) {
+    this.ws?.send(
+      JSON.stringify({ kind: "resolve_conflict_ai", conflict_id: conflictId }),
+    );
+  }
+
   private _reconnecting = false;
 
   /** True when there is no live socket (none / closing / closed). */

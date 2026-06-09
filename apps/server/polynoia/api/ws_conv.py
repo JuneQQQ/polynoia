@@ -2170,6 +2170,55 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     await emit_agent_status(agent_id, status)
                 continue
 
+            if kind == "resolve_conflict_ai":
+                # 「交给模型解决」— manually (re)trigger the AUTO-mode auto-fix turn
+                # for an OPEN conflict. Same arbiter + prompt + spawn as the drain's
+                # auto path (ws_conv:~700), but user-initiated, so it bypasses the
+                # once-only `already` guard → it's the retry hatch when the auto
+                # round failed/stalled (e.g. the orchestrator's session errored).
+                # Spawns the ORCHESTRATOR (neutral arbiter) — `resolve_conflict` is
+                # an orchestrator-only tool (mcp/tools.py:_ORCHESTRATE).
+                cid: str | None = msg.get("conflict_id") or None
+                if not cid:
+                    await emit(
+                        'data: {"type":"error","error_text":"missing conflict_id"}\n\n'
+                    )
+                    continue
+                async with SessionLocal() as session:
+                    crow = await storage_repo.get_conflict(session, cid)
+                    conv0 = await storage_repo.get_conversation(session, conv_id)
+                if crow is None or crow.status not in ("open", "resolving"):
+                    continue  # already resolved/abandoned/gone — nothing to do
+                orch_id = conv0.orchestrator_member_id if conv0 else None
+                if not orch_id:
+                    await _persist_and_emit_error(
+                        emit, conv_id=conv_id, sender_id="system",
+                        message=(
+                            "本对话没有协调器,无法交给模型解决冲突。"
+                            "请在面板上手动选择合并,或在群成员里指定一位协调器。"
+                        ),
+                        reason="no_orchestrator",
+                    )
+                    continue
+                nudge = _build_conflict_fix_prompt(
+                    cid, crow.branch, crow.agent_id, crow.files_json or [],
+                )
+                if nudge is None:
+                    await _persist_and_emit_error(
+                        emit, conv_id=conv_id, sender_id="system",
+                        message=(
+                            "这个冲突没有可自动合并的文本内容(可能是二进制或文件过大),"
+                            "请在面板上手动解决。"
+                        ),
+                        reason="not_auto_fixable",
+                    )
+                    continue
+                _spawn_turn(conv_id, orch_id, run_adapter_turn(
+                    orch_id, nudge, depth=1, parent_agent_id=None,
+                    inject_history=True, suppress_dispatch=True,
+                ))
+                continue
+
             if kind == "user_message":
                 text: str = msg.get("text", "")
                 members: list[str] = msg.get("members", [])

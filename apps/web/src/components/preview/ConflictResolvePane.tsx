@@ -12,11 +12,17 @@
  */
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view.css";
-import { GitMerge, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { GitMerge, Loader2, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { type Conflict, api } from "../../lib/api";
 import type { ConflictFile } from "../../lib/types";
-import { useStore } from "../../store";
+import { selectAgentStatuses, useStore } from "../../store";
+import {
+	type BlockChoice,
+	assembleResolution,
+	countConflictBlocks,
+	parseConflictMarkers,
+} from "./conflictMarkers";
 import { inferLang } from "./diffLang";
 import { lineDiffUnified } from "./diffUnified";
 
@@ -25,6 +31,10 @@ const EMPTY: readonly Conflict[] = [];
 type Choice = {
 	mode: "ours" | "theirs" | "edit" | "keep" | "delete";
 	text: string;
+	// git-style per-conflict-block picks for 手动合并 (when the file carries diff3
+	// markers). One entry per conflict block, in document order. `text` stays as
+	// the fallback when a file has no markers.
+	blocks?: BlockChoice[];
 };
 
 function defaultChoice(f: ConflictFile): Choice {
@@ -36,13 +46,48 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 	const list = useStore((s) => s.conflictsByConv.get(convId) ?? EMPTY);
 	const upsert = useStore((s) => s.upsertConflict);
 	const agents = useStore((s) => s.agents);
+	const agentStatus = useStore((s) => selectAgentStatuses(s, convId));
+	const mergeMode = useStore((s) => s.mergeMode);
+	const mergeModeConvId = useStore((s) => s.mergeModeConvId);
+	// auto mode = the orchestrator auto-resolves; manual = human picks. Mirrors
+	// ConflictPart's isAuto so the「交给模型」button reads as a retry, not a primary.
+	const isAuto = mergeMode === "auto" && mergeModeConvId === convId;
+	// Is any agent live right now? In auto mode the orchestrator's auto-fix turn
+	// fires the instant the conflict surfaces — while it streams, we don't offer a
+	// duplicate manual trigger; once everything's idle (the auto round failed or
+	// stalled), the button becomes the retry hatch.
+	const someoneWorking = useMemo(
+		() =>
+			[...agentStatus.values()].some(
+				(s) => s.status === "streaming" || s.status === "starting",
+			),
+		[agentStatus],
+	);
 	const [busy, setBusy] = useState(false);
+	const [aiBusy, setAiBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [over, setOver] = useState<Record<string, Choice>>({});
 
 	const conflict = list.find(
 		(c) => c.status === "open" || c.status === "resolving",
 	);
+	const conflictId = conflict?.id;
+	// Reset the「交给模型解决」spinner whenever the active conflict changes (it
+	// resolved, or a new one surfaced) — a stale spinner would otherwise stick.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset is keyed on the conflict id, not the setter
+	useEffect(() => {
+		setAiBusy(false);
+	}, [conflictId]);
+	// `aiBusy` only bridges the gap between clicking and the spawned turn showing
+	// up in agentStatus (~seconds). After that `someoneWorking` carries the live
+	// state; if the turn died before it ever streamed, this clears so the user can
+	// retry instead of being stuck on the spinner.
+	useEffect(() => {
+		if (!aiBusy) return;
+		const t = setTimeout(() => setAiBusy(false), 10_000);
+		return () => clearTimeout(t);
+	}, [aiBusy]);
+
 	if (!conflict) {
 		return (
 			<div className="h-full grid place-items-center text-[12.5px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)]">
@@ -81,7 +126,13 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 			const ch = choiceOf(f);
 			if (ch.mode === "ours") sides[f.path] = "ours";
 			else if (ch.mode === "theirs") sides[f.path] = "theirs";
-			else if (ch.mode === "edit") resolutions[f.path] = ch.text;
+			else if (ch.mode === "edit")
+				// git-style per-block picks → rebuild the file (context preserved
+				// verbatim). Falls back to the free-text edit when no markers.
+				resolutions[f.path] =
+					f.markers && ch.blocks
+						? assembleResolution(parseConflictMarkers(f.markers), ch.blocks)
+						: ch.text;
 			else if (ch.mode === "delete") deletions.push(f.path);
 			else if (ch.mode === "keep")
 				sides[f.path] = f.ours != null ? "ours" : "theirs";
@@ -101,6 +152,27 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 			setBusy(false);
 		}
 	};
+
+	// 「交给模型解决」— hand this conflict to the orchestrator (neutral arbiter):
+	// it compares both sides and merges like a human would, instead of taking one
+	// whole side. Goes over THIS conv's WS via ChatPane (which holds wsRef); the
+	// card/pane update when the resolve lands. Spinner clears on resolve or via the
+	// 90s safety timeout above.
+	const resolveWithAi = () => {
+		if (busy || aiBusy || someoneWorking) return;
+		setErr(null);
+		setAiBusy(true);
+		window.dispatchEvent(
+			new CustomEvent("polynoia:resolve-conflict-ai", {
+				detail: { convId, conflictId: conflict.id },
+			}),
+		);
+	};
+
+	// True while a model turn is (or just was) live on this conflict — covers the
+	// click→agentStatus gap (aiBusy) and the live turn (someoneWorking). Drives the
+	// button's disabled「协调器解决中…」state so it never duplicates a running round.
+	const aiResolving = aiBusy || someoneWorking;
 
 	return (
 		<div className="h-full flex flex-col bg-[var(--color-surface)]">
@@ -216,12 +288,30 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 											<ChoiceBtn
 												on={ch.mode === "edit"}
 												onClick={() =>
-													setChoice(f, {
-														// Prefill with BOTH sides so "want both" = delete what
-														// you don't want. Never the raw <<<<<<< markers.
-														mode: "edit",
-														text: ch.text || (f.ours ?? "") + (f.theirs ?? ""),
-													})
+													setChoice(
+														f,
+														f.markers
+															? {
+																	// git-style: one pick per conflict block, default
+																	// to the branch side (== 采用 {agentLabel}); the
+																	// user flips individual hunks to the main side.
+																	mode: "edit",
+																	blocks: Array(
+																		countConflictBlocks(
+																			parseConflictMarkers(f.markers),
+																		),
+																	).fill("theirs"),
+																}
+															: {
+																	// No diff3 markers → free-text edit. Prefill with
+																	// BOTH sides so "want both" = delete what you don't
+																	// want. Never the raw <<<<<<< markers.
+																	mode: "edit",
+																	text:
+																		ch.text ||
+																		(f.ours ?? "") + (f.theirs ?? ""),
+																},
+													)
 												}
 											>
 												手动合并
@@ -238,14 +328,28 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 									{agentLabel})。
 								</div>
 							) : ch.mode === "edit" ? (
-								<textarea
-									value={ch.text}
-									onChange={(e) =>
-										setChoice(f, { mode: "edit", text: e.target.value })
-									}
-									spellCheck={false}
-									className="w-full h-48 px-3 py-2 mono text-[12px] leading-[1.5] bg-[var(--color-code-bg)] text-[var(--color-code-fg)] outline-none resize-y"
-								/>
+								f.markers ? (
+									// git-style per-hunk picker: pick a side / both / edit at
+									// EACH conflict block; unchanged context is kept verbatim.
+									<HunkPicker
+										markers={f.markers}
+										blocks={ch.blocks ?? []}
+										onChange={(blocks) =>
+											setChoice(f, { mode: "edit", blocks })
+										}
+										baseLabel={baseLabel}
+										agentLabel={agentLabel}
+									/>
+								) : (
+									<textarea
+										value={ch.text}
+										onChange={(e) =>
+											setChoice(f, { mode: "edit", text: e.target.value })
+										}
+										spellCheck={false}
+										className="w-full h-48 px-3 py-2 mono text-[12px] leading-[1.5] bg-[var(--color-code-bg)] text-[var(--color-code-fg)] outline-none resize-y"
+									/>
+								)
 							) : isText ? (
 								<>
 									{/* which side is which — left = main side (码甲), right = branch (码乙) */}
@@ -331,6 +435,37 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 				)}
 				<button
 					type="button"
+					disabled={busy || aiResolving}
+					onClick={resolveWithAi}
+					title={
+						aiResolving
+							? "协调器(模型)正在自动对比两边、合并并落地 main"
+							: isAuto
+								? "auto 模式会自动让协调器合并;若卡住没动,点这里让它重试"
+								: "让协调器(模型)对比两边代码、像人一样合并并落地 main(不是整侧二选一)"
+					}
+					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] font-medium rounded border transition disabled:opacity-50 hover:bg-[var(--color-line)]"
+					style={{
+						borderColor: "var(--color-line)",
+						color: "var(--color-fg-2)",
+					}}
+				>
+					{aiResolving ? (
+						<Loader2 size={12} className="animate-spin" />
+					) : (
+						<Sparkles size={12} />
+					)}
+					{aiResolving
+						? "协调器解决中…"
+						: isAuto
+							? "重新交给模型解决"
+							: "交给模型解决"}
+				</button>
+				<button
+					type="button"
+					// Manual resolve stays available even while the model is working —
+					// the workspace lock + idempotent /resolve make racing safe, and the
+					// user opened this pane to act. Only its own in-flight request blocks.
 					disabled={busy}
 					onClick={resolve}
 					className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11.5px] font-medium rounded text-white hover:opacity-90 transition disabled:opacity-50"
@@ -370,5 +505,146 @@ function ChoiceBtn({
 		>
 			{children}
 		</button>
+	);
+}
+
+/** git-style per-conflict-block resolver. Parses the file's diff3 markers into
+ * context + conflict segments; each conflict block gets its own side picker
+ * (采用主线 / 采用分支 / 两者都要 / 编辑). The chosen content replaces only that
+ * block — unchanged context is preserved verbatim by `assembleResolution`. The
+ * body shows a live preview of what each block will become. */
+function HunkPicker({
+	markers,
+	blocks,
+	onChange,
+	baseLabel,
+	agentLabel,
+}: {
+	markers: string;
+	blocks: BlockChoice[];
+	onChange: (blocks: BlockChoice[]) => void;
+	baseLabel: string;
+	agentLabel: string;
+}) {
+	const segs = useMemo(() => parseConflictMarkers(markers), [markers]);
+	let bi = -1;
+	return (
+		<div className="text-[12px] bg-[var(--color-code-bg)]">
+			{segs.map((s, idx) => {
+				if (s.type === "context")
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: segments are positional within a file
+						<ContextRun key={idx} lines={s.lines} />
+					);
+				bi += 1;
+				const i = bi;
+				const ch: BlockChoice = blocks[i] ?? "theirs";
+				const isEdit = typeof ch === "object";
+				const set = (c: BlockChoice) => {
+					const next = blocks.slice();
+					next[i] = c;
+					onChange(next);
+				};
+				return (
+					// biome-ignore lint/suspicious/noArrayIndexKey: segments are positional within a file
+					<div key={idx} className="border-y border-[var(--color-line)]">
+						<div className="flex flex-wrap items-center gap-1.5 px-2 py-1 bg-[var(--color-surface-2)]">
+							<span className="text-[10px] font-mono text-[var(--color-fg-4)]">
+								第 {i + 1} 处冲突
+							</span>
+							<span className="flex-1" />
+							<ChoiceBtn on={ch === "ours"} onClick={() => set("ours")}>
+								采用 {baseLabel}
+							</ChoiceBtn>
+							<ChoiceBtn on={ch === "theirs"} onClick={() => set("theirs")}>
+								采用 {agentLabel}
+							</ChoiceBtn>
+							<ChoiceBtn on={ch === "both"} onClick={() => set("both")}>
+								两者都要
+							</ChoiceBtn>
+							<ChoiceBtn
+								on={isEdit}
+								onClick={() =>
+									set({ edit: [...s.ours, ...s.theirs].join("\n") })
+								}
+							>
+								编辑
+							</ChoiceBtn>
+						</div>
+						{isEdit ? (
+							<textarea
+								value={(ch as { edit: string }).edit}
+								onChange={(e) => set({ edit: e.target.value })}
+								spellCheck={false}
+								className="w-full h-32 px-2 py-1 mono text-[12px] leading-[1.5] bg-[var(--color-code-bg)] text-[var(--color-code-fg)] outline-none resize-y"
+							/>
+						) : (
+							<>
+								{(ch === "ours" || ch === "both") && (
+									<HunkSide
+										label={`${baseLabel}(主线)`}
+										lines={s.ours}
+										tone="ours"
+									/>
+								)}
+								{(ch === "theirs" || ch === "both") && (
+									<HunkSide
+										label={`${agentLabel} 的版本`}
+										lines={s.theirs}
+										tone="theirs"
+									/>
+								)}
+							</>
+						)}
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
+/** One side of a conflict block, rendered as the lines that will actually land
+ * (red = main side, green = branch side). */
+function HunkSide({
+	label,
+	lines,
+	tone,
+}: {
+	label: string;
+	lines: string[];
+	tone: "ours" | "theirs";
+}) {
+	const bg =
+		tone === "ours" ? "var(--color-red-soft)" : "var(--color-green-soft)";
+	const fg = tone === "ours" ? "var(--color-red)" : "var(--color-green)";
+	return (
+		<div>
+			<div
+				className="px-2 py-0.5 text-[9.5px] font-medium"
+				style={{ background: bg, color: fg }}
+			>
+				{label}
+			</div>
+			<pre className="px-2 py-1 mono text-[12px] leading-[1.5] whitespace-pre-wrap break-words text-[var(--color-code-fg)]">
+				{lines.join("\n")}
+			</pre>
+		</div>
+	);
+}
+
+/** Unchanged lines between conflict blocks — dimmed, with long runs collapsed so
+ * the conflicts stay the focus. Preserved verbatim in the assembled result. */
+function ContextRun({ lines }: { lines: string[] }) {
+	if (lines.length === 0) return null;
+	const body =
+		lines.length > 6
+			? `${lines.slice(0, 2).join("\n")}\n⋯ ${lines.length - 4} 行未冲突 ⋯\n${lines
+					.slice(-2)
+					.join("\n")}`
+			: lines.join("\n");
+	return (
+		<pre className="px-2 mono text-[11.5px] leading-[1.4] whitespace-pre-wrap break-words text-[var(--color-fg-4)]">
+			{body}
+		</pre>
 	);
 }
