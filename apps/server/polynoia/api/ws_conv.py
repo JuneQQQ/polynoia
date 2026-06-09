@@ -52,6 +52,7 @@ from polynoia.api.routes import (
     _conv_inflight,
     _conv_tool_activity,
     _DrainResult,
+    _effective_mention_routing_text,
     _error_text_from_chunk,
     _extract_ask_form_blocks,
     _extract_tasks_blocks,
@@ -1935,6 +1936,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # the L4 history layer (which reads MessageRow) sees this turn.
         # Without this, both the frontend lazy-load and the context assembler
         # think the conv is empty.
+        persisted_user_id: str | None = None
         if text.strip():
             user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
             # Stamp the code checkpoint: workspace main HEAD *before* this turn's
@@ -1949,6 +1951,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     db, conv_id=conv_id, sender_id="you", payload=user_payload,
                     in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
                 )
+                persisted_user_id = uid
                 await db.commit()
             # Real-time multi-client sync: echo the human message to OTHER clients
             # tailing this conv (e.g. desktop + web both open on the same group),
@@ -1986,10 +1989,31 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # discuss, or handle the request itself.
         async with SessionLocal() as session:
             all_agents = await storage_repo.list_agents(session)
+            recent_msgs, _ = await storage_repo.list_messages(session, conv_id, limit=30)
         agent_by_id = {a.id: a for a in all_agents}
         known_adapters = {"claudeCode", "opencoder", "codex"}
         resolver = _build_mention_resolver(all_agents)
-        mentioned_ids = _parse_mentions(text, exclude=set(), resolver=resolver)
+        previous_user_texts: list[str] = []
+        for m in recent_msgs:
+            if persisted_user_id and m.get("id") == persisted_user_id:
+                continue
+            if m.get("sender_id") != "you":
+                continue
+            payload = m.get("payload") or {}
+            if not isinstance(payload, dict) or payload.get("kind") != "text":
+                continue
+            chunks: list[str] = []
+            for blk in payload.get("body") or []:
+                if isinstance(blk, dict) and isinstance(blk.get("c"), str):
+                    chunks.append(blk["c"])
+            body_text = "\n".join(chunks).strip()
+            if body_text:
+                previous_user_texts.append(body_text)
+        routing_text = _effective_mention_routing_text(
+            text,
+            previous_user_texts=previous_user_texts,
+        )
+        mentioned_ids = _parse_mentions(routing_text, exclude=set(), resolver=resolver)
         member_set = set(members)
 
         def _agent_ok(aid: str) -> bool:

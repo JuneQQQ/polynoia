@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from polynoia.api.routes import (
+    _effective_mention_routing_text,
     _single_direct_mention_target,
     _with_orchestrator_mention_routing_hint,
 )
@@ -101,3 +102,22 @@ def test_unknown_mentions_are_ignored_for_direct_route() -> None:
         orch_id="orch",
         agent_ok=_agent_ok,
     ) == "writer"
+
+
+def test_start_trigger_routes_by_previous_at_task() -> None:
+    previous = [
+        "普通历史消息",
+        "这是单 @ 路由回归测试。请 @制图 直接做 sections/qa-single-at.html。",
+    ]
+
+    assert _effective_mention_routing_text(
+        "开工",
+        previous_user_texts=previous,
+    ) == previous[-1]
+
+
+def test_non_trigger_routes_by_current_text() -> None:
+    assert _effective_mention_routing_text(
+        "开工以后再说 @制图",
+        previous_user_texts=["请 @文澜 写 alpha"],
+    ) == "开工以后再说 @制图"

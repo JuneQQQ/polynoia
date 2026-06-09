@@ -2865,3 +2865,39 @@ def _single_direct_mention_target(
     if len(targets) == 1 and orch_id not in mentioned_ids:
         return targets[0]
     return None
+
+
+_START_TURN_TRIGGERS = frozenset({
+    "开工",
+    "开始",
+    "开始吧",
+    "继续",
+    "继续吧",
+    "执行",
+    "跑",
+    "跑起来",
+    "go",
+    "run",
+    "start",
+})
+
+
+def _effective_mention_routing_text(
+    current_text: str,
+    *,
+    previous_user_texts: list[str],
+) -> str:
+    """Pick the text used ONLY for @ routing.
+
+    Testkit conversations store the real task as a prior user message, then the
+    user often sends a tiny trigger like "开工". The agent context can read the
+    prior task from history, but the router used to look only at the trigger and
+    saw no @, so single-@ cases incorrectly went through the coordinator. For
+    short start triggers, route by the latest previous user task that contains @.
+    """
+    norm = re.sub(r"[\s,，。.!！?？]+", "", (current_text or "").strip()).lower()
+    if norm in _START_TURN_TRIGGERS:
+        for prev in reversed(previous_user_texts):
+            if "@" in prev:
+                return prev
+    return current_text
