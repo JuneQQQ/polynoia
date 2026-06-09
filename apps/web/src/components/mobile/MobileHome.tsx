@@ -279,6 +279,16 @@ export function MobileHome({ onSelectConv }: Props) {
 	});
 	const [adapters, setAdapters] = useState<EnabledAdapter[]>([]);
 	const [newContactOpen, setNewContactOpen] = useState(false);
+	const [homeReady, setHomeReady] = useState(false);
+	const [tabbarPaintKey, setTabbarPaintKey] = useState(0);
+
+	useEffect(() => {
+		const raf = requestAnimationFrame(() => {
+			setTabbarPaintKey(1);
+			setHomeReady(true);
+		});
+		return () => cancelAnimationFrame(raf);
+	}, []);
 
 	// Load the existing enabled adapters (mobile only selects among these). Once
 	// loaded, if the persisted default isn't among them, fall back to the first.
@@ -331,26 +341,28 @@ export function MobileHome({ onSelectConv }: Props) {
 			<div
 				style={{
 					height: "100%",
-					display: "flex",
-					flexDirection: "column",
+					position: "relative",
 					background: pal.bg,
 					overflow: "hidden",
 				}}
 			>
 				<div
+					className="pn-mobile-home-content"
 					style={{
-						flex: 1,
-						minHeight: 0,
 						display: "flex",
 						flexDirection: "column",
 					}}
 				>
-					{tab === "chat" && <ChatListScreen onSelectConv={onSelectConv} />}
-					{tab === "contacts" && <ContactsScreen onSelectConv={onSelectConv} />}
-					{tab === "folder" && <ProjectsScreen onSelectConv={onSelectConv} />}
-					{tab === "me" && <MeScreen />}
+					{homeReady && tab === "chat" && (
+						<ChatListScreen onSelectConv={onSelectConv} />
+					)}
+					{homeReady && tab === "contacts" && (
+						<ContactsScreen onSelectConv={onSelectConv} />
+					)}
+					{homeReady && tab === "folder" && <ProjectsScreen onSelectConv={onSelectConv} />}
+					{homeReady && tab === "me" && <MeScreen />}
 				</div>
-				<TabBar tab={tab} setTab={setTab} />
+				<TabBar key={tabbarPaintKey} tab={tab} setTab={setTab} />
 			</div>
 			{newContactOpen && (
 				<NewContactModal
@@ -2102,8 +2114,8 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 	];
 	return (
 		<div
+			className="pn-mobile-tabbar"
 			style={{
-				flexShrink: 0,
 				display: "flex",
 				borderTop: `0.5px solid ${pal.line}`,
 				background: pal.bgTop,
@@ -2128,13 +2140,13 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 							display: "flex",
 							flexDirection: "column",
 							alignItems: "center",
-							gap: 4,
+							gap: 5,
 							padding: 0,
 						}}
 					>
-						<Icon size={25} color={col} strokeWidth={on ? 2 : 1.7} />
+						<Icon size={27} color={col} strokeWidth={on ? 2.15 : 1.85} />
 						<span
-							style={{ fontSize: 10.5, color: col, fontWeight: on ? 600 : 500 }}
+							style={{ fontSize: 11.5, color: col, fontWeight: on ? 650 : 520 }}
 						>
 							{label}
 						</span>
