@@ -201,7 +201,21 @@ export function ToolCallGroup({
 			</div>
 			{/* max-w matches DiffPart (640) so a file-edit card and this fold block
 			    are EXACTLY the same width in the timeline (no wider flex-1 fold). */}
-			<div className="flex-1 min-w-0 max-w-[640px]">{inner}</div>
+			<div className="flex-1 min-w-0 max-w-[640px]">
+				{showAvatar && avId && (
+					<div className="mb-1 flex items-baseline gap-2">
+						<button
+							type="button"
+							onClick={() => useStore.getState().openAgentDetail(avId)}
+							className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
+							title="查看详情"
+						>
+							{avName}
+						</button>
+					</div>
+				)}
+				{inner}
+			</div>
 		</div>
 	);
 }
