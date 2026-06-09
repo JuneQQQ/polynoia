@@ -101,3 +101,66 @@ async def test_direct_agent_present_is_allowed(route_db) -> None:
     assert files[0]["sender_id"] == agent
     assert files[0]["payload"]["message"] == "demo ready"
     assert files[0]["payload"]["files"][0]["name"] == "demo.html"
+
+
+@pytest.mark.asyncio
+async def test_direct_agent_present_can_show_links_without_files(route_db) -> None:
+    conv_id = new_ulid()
+    agent = "agent-direct"
+    async with db_module.SessionLocal() as db:
+        await storage_repo.create_conversation(
+            db,
+            Conversation(
+                id=conv_id,
+                title="dm",
+                members=["you", agent],
+                direct=True,
+                group=False,
+            ),
+        )
+        await db.commit()
+
+    res = await routes.present_file(
+        {
+            "conv_id": conv_id,
+            "agent_id": agent,
+            "ws": "conv:direct",
+            "links": [
+                {
+                    "url": "/api/deploy/static/demo/index.html",
+                    "label": "部署预览",
+                    "kind": "web",
+                    "note": "static",
+                },
+                {
+                    "url": "/api/workspaces/ws/archive",
+                    "label": "source.zip",
+                    "kind": "download",
+                    "bytes": 1024,
+                },
+            ],
+            "message": "deploy ready",
+        }
+    )
+
+    assert res["ok"] is True
+    async with db_module.SessionLocal() as db:
+        msgs, _ = await storage_repo.list_messages(db, conv_id, limit=20)
+    files = [m for m in msgs if m["payload"].get("kind") == "files"]
+    assert len(files) == 1
+    assert files[0]["payload"]["message"] == "deploy ready"
+    assert files[0]["payload"]["files"] == []
+    assert files[0]["payload"]["links"] == [
+        {
+            "url": "/api/deploy/static/demo/index.html",
+            "kind": "web",
+            "label": "部署预览",
+            "note": "static",
+        },
+        {
+            "url": "/api/workspaces/ws/archive",
+            "kind": "download",
+            "label": "source.zip",
+            "bytes": 1024,
+        },
+    ]

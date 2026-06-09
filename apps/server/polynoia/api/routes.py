@@ -1518,11 +1518,12 @@ async def create_pending_edit_endpoint(body: dict):
 async def present_file(body: dict):
     """Agent proactively shows produced files to the user as ONE deliverable panel.
 
-    Body ``{conv_id, agent_id, ws, paths|path, message?}``. ``ws`` is the workspace
-    address the files live in (a project workspace_id, or ``conv:<id>`` for a
-    private DM). Appends ONE ``kind:files`` panel (a one-line ``message`` + the
-    file list) + broadcasts ``data-files`` so it shows live; each file is clickable
-    to preview in the right rail / download. Persists so it survives a refresh."""
+    Body ``{conv_id, agent_id, ws, paths|path, links, message?}``. ``ws`` is the
+    workspace address the files live in (a project workspace_id, or ``conv:<id>``
+    for a private DM). Appends ONE ``kind:files`` panel (a one-line ``message`` +
+    file rows and/or external link rows) + broadcasts ``data-files`` so it shows
+    live. File rows preview/download from the workspace; link rows open deployed
+    URLs or download exposed artifacts. Persists so it survives a refresh."""
     conv_id = (body.get("conv_id") or "").strip()
     ws = (body.get("ws") or "").strip()
     # Accept a single `path` or a list `paths` — present one or many files at once.
@@ -1532,8 +1533,37 @@ async def present_file(body: dict):
     else:
         _single = (body.get("path") or "").strip().lstrip("/")
         paths = [_single] if _single else []
-    if not conv_id or not ws or not paths:
-        return {"error": "conv_id + ws + path(s) required"}, 400
+    raw_links = body.get("links") or []
+    links: list[dict] = []
+    if isinstance(raw_links, list):
+        for entry in raw_links:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("url") or "").strip()
+            if not url:
+                continue
+            if not (
+                url.startswith("/api/")
+                or url.startswith("http://")
+                or url.startswith("https://")
+            ):
+                continue
+            kind = str(entry.get("kind") or "web").strip().lower()
+            link = {
+                "url": url,
+                "kind": kind if kind in ("web", "download") else "web",
+            }
+            label = str(entry.get("label") or "").strip()
+            if label:
+                link["label"] = label
+            note = str(entry.get("note") or "").strip()
+            if note:
+                link["note"] = note
+            if isinstance(entry.get("bytes"), int) and entry["bytes"] > 0:
+                link["bytes"] = entry["bytes"]
+            links.append(link)
+    if not conv_id or not ws or (not paths and not links):
+        return {"error": "conv_id + ws + path(s) or links required"}, 400
     agent_id = (body.get("agent_id") or "system").strip()
     async with SessionLocal() as _session:
         _conv = await storage_repo.get_conversation(_session, conv_id)
@@ -1583,6 +1613,7 @@ async def present_file(body: dict):
             }
             for path in paths
         ],
+        "links": links,
     }
     mid = f"present-{uuid.uuid4().hex[:12]}"
     async with SessionLocal() as session:
