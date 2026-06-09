@@ -2802,3 +2802,49 @@ def _build_mention_resolver(agents: list) -> dict[str, str]:
             resolver[stripped] = a.id
             resolver[stripped.lower()] = a.id
     return resolver
+
+
+def _with_orchestrator_mention_routing_hint(
+    text: str,
+    *,
+    mentioned_ids: list[str] | set[str],
+    member_ids: set[str],
+    orch_id: str | None,
+    agent_by_id: dict[str, object],
+) -> str:
+    """Append a hidden routing note for orchestrator-led groups.
+
+    In a group with a designated orchestrator, user @mentions are constraints for
+    the coordinator, not direct worker invocations. Directly spawning every
+    mentioned teammate made dependent requests race (e.g. "A writes, then B
+    reads A's file" ran A and B in parallel, so B read before A's branch merged).
+    The only code-producing route in such groups is the orchestrator's dispatch
+    tool, which preserves burst/merge semantics and staged dependencies.
+    """
+    targets = [
+        aid for aid in mentioned_ids
+        if aid in member_ids and aid not in {"you", orch_id}
+    ]
+    if not targets:
+        return text
+
+    def _name(aid: str) -> str:
+        agent = agent_by_id.get(aid)
+        return str(getattr(agent, "name", None) or aid)
+
+    names = "、".join(f"@{_name(aid)}" for aid in targets)
+    count_clause = (
+        "用户点名了多位群成员"
+        if len(targets) > 1
+        else "用户点名了一位群成员"
+    )
+    return (
+        text
+        + "\n\n# 平台路由提示(不要向用户复述)\n"
+        + f"{count_clause}:{names}。在本群聊中,用户 @ 成员只是给协调器的"
+        "调度约束,不是平台已经把消息直接转交给这些成员。\n"
+        "- 由你作为唯一协调入口判断:亲自处理、调用 `dispatch` 派活,或调用 `discuss` 组织讨论。\n"
+        "- 如果用户话里有“先/随后/然后/完成后/接续/读取前一步产物”等依赖关系,必须分阶段 `dispatch`:"
+        "上一阶段完成并合并到 main 后,下一阶段才可以读取和继续。\n"
+        "- 不要用正文 @ 代替派活;需要成员产出文件或改代码时,只能通过 `dispatch` 创建可合并的 worker 分支。"
+    )

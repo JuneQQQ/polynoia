@@ -71,6 +71,7 @@ from polynoia.api.routes import (
     _spawn_turn,
     _tap_text_into,
     _unregister_conv_outbox,
+    _with_orchestrator_mention_routing_hint,
     _workspace_head_for_conv,
     log,
 )
@@ -1972,44 +1973,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             return
 
         # Parse @mentions up-front (both branches use them). In an orchestrator
-        # group, the user @mentioning ≥2 teammates forms a discussion — they talk
-        # to each other and the orchestrator writes the 讨论结论 (use_orch branch).
+        # group, user @mentions are routing constraints for the coordinator, not
+        # direct worker invocations. The coordinator decides whether to dispatch,
+        # discuss, or handle the request itself.
         async with SessionLocal() as session:
             all_agents = await storage_repo.list_agents(session)
         agent_by_id = {a.id: a for a in all_agents}
         known_adapters = {"claudeCode", "opencoder", "codex"}
         resolver = _build_mention_resolver(all_agents)
-        mentioned_ids = set(_parse_mentions(text, exclude=set(), resolver=resolver))
+        mentioned_ids = _parse_mentions(text, exclude=set(), resolver=resolver)
         member_set = set(members)
-
-        def _agent_ok(aid: str) -> bool:
-            a = agent_by_id.get(aid)
-            return bool(a and a.setup and a.setup.adapter_id in known_adapters)
-
-        def _seed_user_discussion(seed_targets: list[str]) -> None:
-            """Seed a user-convened discussion (seeder='you'): pre-charge in-flight
-            SYNCHRONOUSLY for all seeds (no premature settle), then spawn each as a
-            discussion turn. They @mention each other → one 讨论结论 at the end."""
-            reg = _conv_discussions.get(conv_id)
-            if reg is None:
-                reg = _conv_discussions[conv_id] = {
-                    "budget": _DISCUSSION_TURN_BUDGET, "inflight": 0,
-                    "participants": {"you"}, "seeder": "you",
-                    "synthesized": False,
-                }
-            seeded: list[str] = []
-            for _aid in seed_targets:
-                if reg["budget"] <= 0:
-                    break
-                reg["budget"] -= 1
-                reg["inflight"] += 1
-                reg["participants"].add(_aid)
-                seeded.append(_aid)
-            for _aid in seeded:
-                _spawn_turn(
-                    conv_id, _aid,
-                    _run_discussion_turn(_aid, text, depth=0, parent_agent_id=None),
-                )
 
         if use_orch:
             # Tool-based orchestration (ADR-013). The orchestrator member runs a
@@ -2025,33 +1998,21 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # the recorded dispatch batch was never drained. See the e2e dispatch
             # self-test (scripts/test_dispatch_flow.py).
             #
-            # EXCEPTION: if the user explicitly @mentioned ≥2 non-orchestrator
-            # members (or named some + said 讨论/discuss), they want those people
-            # to DISCUSS — not a work dispatch. Seed the discussion directly,
-            # bypassing the orchestrator's dispatch; the orchestrator still gives
-            # the final 讨论结论 (it's the conv orchestrator → the synthesizer).
-            disc_targets = [
-                m for m in mentioned_ids
-                if m in member_set and m != "you" and m != orch_id and _agent_ok(m)
-            ]
-            # @≥2 teammates → they discuss; the orchestrator synthesizes 讨论结论.
-            if len(disc_targets) >= 2:
-                _seed_user_discussion(disc_targets)
-                return
-            # @ exactly one teammate (and NOT the orchestrator) → talk to them
-            # DIRECTLY, bypassing the orchestrator (Slack-style: @someone reaches
-            # that person, not the front desk).
-            if len(disc_targets) == 1 and orch_id not in mentioned_ids:
-                _spawn_turn(
-                    conv_id, disc_targets[0],
-                    run_adapter_turn(disc_targets[0], text),
-                )
-                return
-            # No @ (or you @'d the orchestrator itself) → the orchestrator fronts
-            # it: reply / dispatch / convene a discussion (it can call `discuss`).
+            # User @mentions in a coordinator-led group are constraints, not
+            # direct summons. This avoids racing dependent work ("A writes, then
+            # B reads A") and keeps every code-producing worker inside the
+            # dispatch→burst→merge pipeline. If it is a real discussion, the
+            # orchestrator can explicitly call `discuss`.
+            orch_text = _with_orchestrator_mention_routing_hint(
+                text,
+                mentioned_ids=mentioned_ids,
+                member_ids=member_set,
+                orch_id=orch_id,
+                agent_by_id=agent_by_id,
+            )
             _spawn_turn(
                 conv_id, orch_id,
-                run_adapter_turn(orch_id, text, is_dispatcher=True),
+                run_adapter_turn(orch_id, orch_text, is_dispatcher=True),
             )
             return
 
