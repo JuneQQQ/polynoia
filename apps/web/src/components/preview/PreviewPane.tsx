@@ -11,7 +11,6 @@ import {
 	FolderTree,
 	GitMerge,
 	GitPullRequestArrow,
-	Server,
 	X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -199,17 +198,6 @@ export function PreviewPane() {
 								: "main · 工作目录"}
 					</div>
 				</div>
-				{!hasConflict && !reviewing && !servicesView && (
-					<button
-						type="button"
-						onClick={toggleServicesView}
-						title="运行中的服务"
-						aria-label="运行中的服务"
-						className="p-1 hover:bg-[var(--color-line)] rounded text-[var(--color-fg-3)]"
-					>
-						<Server size={13} />
-					</button>
-				)}
 				<button
 					type="button"
 					onClick={closePreview}
