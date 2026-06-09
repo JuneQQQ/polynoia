@@ -71,9 +71,9 @@ ADR 位于 `docs/ADR/`,记录了多个关键决策:
 
 - 自动化测试:后端 pytest、前端 vitest。
 - 手动测试矩阵:`docs/testing/manual-test-cases.md`。
-- 一键重置脚本:`bash scripts/testkit/reset.sh`。
+- 唯一初始化脚本:`bash scripts/testkit/reset.sh`。
 
-`scripts/testkit/reset.sh` 会清库、重建 schema、启动后端并灌入上线准备相关真实场景,包括:
+`scripts/testkit/reset.sh` 会清库、重建 schema、启动前后端并灌入上线准备相关真实场景,包括:
 
 - 发布页、Release Notes、QA 检查表、状态页、埋点验收报告。
 - Go-live 多 Agent 协作包。
