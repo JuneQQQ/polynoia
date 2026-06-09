@@ -100,14 +100,14 @@ EDGE_CASES = [
      "等第一阶段完成并合并到 main 后,第二阶段再让制图读取该文件,并创建 sections/qa-mention-beta.md,"
      "内容只写一行 beta saw alpha ready。不要 present,最后由阿核说明两个文件是否都在 main。"
      "如果你要派活,必须分阶段 dispatch;不要让两人并发。"),
-    ("mention_single", "@路由 · 单点名仍走协调器", "group",
-     "这是单 @ 路由回归测试。请 @制图 做一个极小的单文件 HTML:sections/qa-single-at.html,"
-     "页面只需要显示“single at routed through orchestrator”和一个按钮。注意:虽然用户点名制图,"
-     "仍应由阿核作为协调器决定是否 dispatch,不要把正文 @ 当成派活。完成后 present 这个 HTML。"),
+    ("mention_single", "@路由 · 单点名直达+验收", "group",
+     "这是单 @ 路由回归测试。请 @制图 直接做一个极小的单文件 HTML:sections/qa-single-at.html,"
+     "页面只需要显示“single at direct route”和一个按钮。预期:制图先直达执行并 clean merge 到 main,"
+     "随后阿核收到轻量验收回合。完成后 present 这个 HTML。"),
     ("mention_unknown", "@路由 · 未知成员忽略", "group",
      "这是未知 @ 边界测试。请 @不存在的成员 @文澜 起草 sections/qa-unknown-mention.md,"
      "内容说明只有真实群成员会被解析,未知 @ 不应触发任何 agent。最终只需要一个 Markdown 文件,"
-     "不要 present,阿核汇报即可。"),
+     "不要 present。"),
     ("conflict_same_file", "合并冲突 · 同文件同区域", "group",
      "这是冲突处理回归测试。请故意让文澜和制图并行修改同一个文件 sections/qa-conflict.md 的同一行:"
      "文澜写“owner = writer”,制图写“owner = designer”。不要提前规避冲突;让系统暴露真实冲突,"

@@ -34,6 +34,7 @@ $PY scripts/testkit/_more_seed.py
 $PY scripts/testkit/_drive.py 2048
 $PY scripts/testkit/_drive.py 会议纪要
 $PY scripts/testkit/_drive.py 顺序依赖接力
+$PY scripts/testkit/_drive.py 单点名直达
 $PY scripts/testkit/_drive.py 合并冲突
 $PY scripts/testkit/_drive.py 01KTEN3DY9Q2XX2PCWC3TBF065
 ```
@@ -42,7 +43,7 @@ $PY scripts/testkit/_drive.py 01KTEN3DY9Q2XX2PCWC3TBF065
 
 - 常规产物:旅行 HTML、会议纪要 Markdown、预算 XLSX、2048 网页游戏、pandas 分析报告。
 - 多 agent:PRD 分章并行。
-- @ 路由:@ 多人顺序依赖、@ 单人仍由协调器调度、未知 @ 不触发 agent。
+- @ 路由:@ 多人顺序依赖走协调器、@ 单人直达并 clean merge 后由协调器轻量验收、未知 @ 不触发 agent。
 - 合并/diff:同文件同区域冲突、单聊产物同步到 main、连续修改的 diff/历史记录。
 - 错误恢复:读取不存在文件后继续完成可交付文件。
 

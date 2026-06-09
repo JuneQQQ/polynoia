@@ -2825,7 +2825,7 @@ def _with_orchestrator_mention_routing_hint(
         aid for aid in mentioned_ids
         if aid in member_ids and aid not in {"you", orch_id}
     ]
-    if not targets:
+    if len(targets) < 2:
         return text
 
     def _name(aid: str) -> str:
@@ -2833,18 +2833,35 @@ def _with_orchestrator_mention_routing_hint(
         return str(getattr(agent, "name", None) or aid)
 
     names = "、".join(f"@{_name(aid)}" for aid in targets)
-    count_clause = (
-        "用户点名了多位群成员"
-        if len(targets) > 1
-        else "用户点名了一位群成员"
-    )
     return (
         text
         + "\n\n# 平台路由提示(不要向用户复述)\n"
-        + f"{count_clause}:{names}。在本群聊中,用户 @ 成员只是给协调器的"
+        + f"用户点名了多位群成员:{names}。在本群聊中,多 @ 成员只是给协调器的"
         "调度约束,不是平台已经把消息直接转交给这些成员。\n"
         "- 由你作为唯一协调入口判断:亲自处理、调用 `dispatch` 派活,或调用 `discuss` 组织讨论。\n"
         "- 如果用户话里有“先/随后/然后/完成后/接续/读取前一步产物”等依赖关系,必须分阶段 `dispatch`:"
         "上一阶段完成并合并到 main 后,下一阶段才可以读取和继续。\n"
         "- 不要用正文 @ 代替派活;需要成员产出文件或改代码时,只能通过 `dispatch` 创建可合并的 worker 分支。"
     )
+
+
+def _single_direct_mention_target(
+    mentioned_ids: list[str] | set[str],
+    *,
+    member_ids: set[str],
+    orch_id: str | None,
+    agent_ok: Callable[[str], bool],
+) -> str | None:
+    """Return the direct target for the simple single-@ group route.
+
+    In an orchestrator-led group:
+      - exactly one real non-orchestrator member mention → direct to that member;
+      - no @, multi @, or @orchestrator mixed in → route to the coordinator.
+    """
+    targets = [
+        aid for aid in mentioned_ids
+        if aid in member_ids and aid not in {"you", orch_id} and agent_ok(aid)
+    ]
+    if len(targets) == 1 and orch_id not in mentioned_ids:
+        return targets[0]
+    return None

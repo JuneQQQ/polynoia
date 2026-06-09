@@ -69,6 +69,7 @@ from polynoia.api.routes import (
     _register_conv_outbox,
     _spawn_dispatcher,
     _spawn_turn,
+    _single_direct_mention_target,
     _tap_text_into,
     _unregister_conv_outbox,
     _with_orchestrator_mention_routing_hint,
@@ -745,15 +746,15 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         drain: _DrainResult, *, source_agent: str | None = None, failed: int = 0
     ) -> bool:
         """After a sub-agent's work merges, hand the conversation to its
-        orchestrator ONLY when there's something for it to do — a presentable
-        deliverable, a merge conflict, or a failed sub-task. Otherwise the
-        sub-agent's turn just ends (no orchestrator turn).
+        orchestrator when there's something for it to do: present deliverables,
+        resolve conflicts, report failures, or lightly validate a clean merge
+        from a directly-addressed teammate.
 
         The orchestrator is the ONLY role that can `present`, so a deliverable
         from a directly-@mentioned worker (which bypasses the orchestrator)
         would otherwise never reach the user — this is the hook that fixes it.
         Returns True if an orchestrator turn was spawned."""
-        if not (drain.deliverables or drain.conflicted or failed):
+        if not (drain.merged or drain.deliverables or drain.conflicted or failed):
             return False
         async with SessionLocal() as _db:
             _conv = await storage_repo.get_conversation(_db, conv_id)
@@ -798,10 +799,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 )
         if failed and not drain.deliverables and not drain.conflicted:
             parts.append(f"有 {failed} 个子任务失败。用 1-2 句如实说明哪条没成、影响什么。")
+        if drain.merged and not drain.conflicted and not failed:
+            parts.append(
+                f"{source_agent or '某成员'} 的直接点名任务已 clean merge 到 main"
+                f"(合并分支数:{drain.merged})。请做一次**轻量验收**:只读 diff/相关文件/必要测试,"
+                "判断是否和用户刚才的目标一致。不要 dispatch,不要改代码。"
+                "如果没问题,回复一句「验收通过」;如果发现语义问题,指出文件和原因。"
+            )
         nudge = "（系统提示)子任务已结束。" + " ".join(parts)
         log.info(
-            "handoff → orchestrator %s (deliverables=%d conflict=%s failed=%d)",
-            orch_id, len(drain.deliverables), drain.conflicted, failed,
+            "handoff → orchestrator %s (merged=%d deliverables=%d conflict=%s failed=%d)",
+            orch_id, drain.merged, len(drain.deliverables), drain.conflicted, failed,
         )
         _spawn_turn(
             conv_id, orch_id,
@@ -1984,6 +1992,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         mentioned_ids = _parse_mentions(text, exclude=set(), resolver=resolver)
         member_set = set(members)
 
+        def _agent_ok(aid: str) -> bool:
+            a = agent_by_id.get(aid)
+            return bool(a and a.setup and a.setup.adapter_id in known_adapters)
+
         if use_orch:
             # Tool-based orchestration (ADR-013). The orchestrator member runs a
             # normal adapter turn whose session carries the role-scoped `dispatch`
@@ -1998,11 +2010,31 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # the recorded dispatch batch was never drained. See the e2e dispatch
             # self-test (scripts/test_dispatch_flow.py).
             #
-            # User @mentions in a coordinator-led group are constraints, not
-            # direct summons. This avoids racing dependent work ("A writes, then
-            # B reads A") and keeps every code-producing worker inside the
-            # dispatch→burst→merge pipeline. If it is a real discussion, the
-            # orchestrator can explicitly call `discuss`.
+            # Simple routing contract:
+            #   no @ / multi @ → coordinator;
+            #   exactly one real non-orchestrator @ → that agent directly.
+            # Direct single-@ work still runs in the agent's own worktree and the
+            # platform post-turn merge below lands it in main. After a clean merge,
+            # `_maybe_handoff_to_orchestrator` gives the coordinator a light
+            # read-only validation turn; on conflict it hands off conflict
+            # resolution.
+            direct_target = _single_direct_mention_target(
+                mentioned_ids,
+                member_ids=member_set,
+                orch_id=orch_id,
+                agent_ok=_agent_ok,
+            )
+            if direct_target:
+                await emit_chain_link(caller="you", callee=direct_target, depth=0)
+                _spawn_turn(
+                    conv_id, direct_target,
+                    run_adapter_turn(direct_target, text),
+                )
+                return
+
+            # Multi-@ stays with the coordinator so it can decide serial vs
+            # parallel dispatch. This avoids racing dependent work ("A writes,
+            # then B reads A").
             orch_text = _with_orchestrator_mention_routing_hint(
                 text,
                 mentioned_ids=mentioned_ids,

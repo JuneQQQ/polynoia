@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from polynoia.api.routes import _with_orchestrator_mention_routing_hint
+from polynoia.api.routes import (
+    _single_direct_mention_target,
+    _with_orchestrator_mention_routing_hint,
+)
 
 
 def _agents():
@@ -12,6 +15,10 @@ def _agents():
         "chart": SimpleNamespace(name="制图"),
         "data": SimpleNamespace(name="数擎"),
     }
+
+
+def _agent_ok(aid: str) -> bool:
+    return aid in {"writer", "chart", "data"}
 
 
 def test_multi_mentions_route_through_orchestrator_hint() -> None:
@@ -32,7 +39,7 @@ def test_multi_mentions_route_through_orchestrator_hint() -> None:
     assert "合并到 main 后" in routed
 
 
-def test_single_member_mention_still_routes_through_orchestrator() -> None:
+def test_single_member_mention_does_not_add_orchestrator_hint() -> None:
     text = "@文澜 看一下这个文件"
 
     routed = _with_orchestrator_mention_routing_hint(
@@ -43,9 +50,7 @@ def test_single_member_mention_still_routes_through_orchestrator() -> None:
         agent_by_id=_agents(),
     )
 
-    assert "用户点名了一位群成员:@文澜" in routed
-    assert "唯一协调入口" in routed
-    assert "只能通过 `dispatch`" in routed
+    assert routed == text
 
 
 def test_orchestrator_or_non_member_mentions_do_not_add_hint() -> None:
@@ -60,3 +65,39 @@ def test_orchestrator_or_non_member_mentions_do_not_add_hint() -> None:
     )
 
     assert routed == text
+
+
+def test_single_real_member_mention_routes_directly() -> None:
+    assert _single_direct_mention_target(
+        ["chart"],
+        member_ids={"you", "orch", "writer", "chart"},
+        orch_id="orch",
+        agent_ok=_agent_ok,
+    ) == "chart"
+
+
+def test_multi_mentions_do_not_route_directly() -> None:
+    assert _single_direct_mention_target(
+        ["writer", "chart"],
+        member_ids={"you", "orch", "writer", "chart"},
+        orch_id="orch",
+        agent_ok=_agent_ok,
+    ) is None
+
+
+def test_orchestrator_plus_member_mention_stays_with_orchestrator() -> None:
+    assert _single_direct_mention_target(
+        ["orch", "chart"],
+        member_ids={"you", "orch", "writer", "chart"},
+        orch_id="orch",
+        agent_ok=_agent_ok,
+    ) is None
+
+
+def test_unknown_mentions_are_ignored_for_direct_route() -> None:
+    assert _single_direct_mention_target(
+        ["missing", "writer"],
+        member_ids={"you", "orch", "writer", "chart"},
+        orch_id="orch",
+        agent_ok=_agent_ok,
+    ) == "writer"
