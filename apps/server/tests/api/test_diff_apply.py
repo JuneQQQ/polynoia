@@ -89,3 +89,48 @@ async def test_reverse_create_diff_in_workspace_dm_deletes_file(env: Path) -> No
         text=True,
     ).stdout
     assert "revert diff created.txt" in log
+
+
+@pytest.mark.asyncio
+async def test_reverse_modify_diff_in_workspace_restores_previous_content(env: Path) -> None:
+    ws_id = new_ulid()
+    conv_id = new_ulid()
+    async with SessionLocal() as db:
+        await storage_repo.upsert_workspace(
+            db, Workspace(id=ws_id, server_id="local", name="Project", members=["agent-a"])
+        )
+        await storage_repo.create_conversation(
+            db,
+            Conversation(
+                id=conv_id,
+                title="single",
+                members=["you", "agent-a"],
+                workspace_id=ws_id,
+                group=False,
+            ),
+        )
+        await db.commit()
+
+    sb = await Sandbox.create_workspace_sandbox(
+        workspace_id=ws_id, conv_id=conv_id, agent_id="agent-a"
+    )
+    assert sb.workspace_root is not None
+    _commit(sb.workspace_root, "notes.md", "old\n", "seed notes")
+    _commit(sb.workspace_root, "notes.md", "new\n", "agent edit")
+
+    res = await apply_diff(
+        {
+            "conv_id": conv_id,
+            "file": "notes.md",
+            "hunks": [
+                {
+                    "header": "@@ -1 +1 @@",
+                    "lines": [["del", 1, "old"], ["add", 1, "new"]],
+                }
+            ],
+            "reverse": True,
+        }
+    )
+
+    assert res["ok"] is True
+    assert (sb.workspace_root / "notes.md").read_text() == "old\n"

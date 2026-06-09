@@ -10,7 +10,13 @@
  * highlight.js 主题。错误边界兜底:渲染抛错时退化成纯文本源码,绝不空白。
  */
 import { FileText, Pencil } from "lucide-react";
-import { Component, type ReactNode, useMemo } from "react";
+import {
+	Component,
+	type MouseEvent,
+	type ReactNode,
+	useMemo,
+	useRef,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -44,6 +50,80 @@ function resolveDocImageSrc(
 	return assetUrl(
 		`/api/workspaces/${encodeURIComponent(workspaceId)}/files/blob?path=${encodeURIComponent(norm)}`,
 	);
+}
+
+function textFromChildren(children: ReactNode): string {
+	if (typeof children === "string" || typeof children === "number") {
+		return String(children);
+	}
+	if (Array.isArray(children)) return children.map(textFromChildren).join("");
+	if (
+		children &&
+		typeof children === "object" &&
+		"props" in children &&
+		(children as { props?: { children?: ReactNode } }).props
+	) {
+		return textFromChildren(
+			(children as { props: { children?: ReactNode } }).props.children,
+		);
+	}
+	return "";
+}
+
+export function githubHeadingSlug(text: string): string {
+	return text
+		.trim()
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}\s-]/gu, "")
+		.replace(/\s+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
+function uniqueSlug(base: string, counts: Map<string, number>): string {
+	const key = base || "section";
+	const seen = counts.get(key) ?? 0;
+	counts.set(key, seen + 1);
+	return seen === 0 ? key : `${key}-${seen}`;
+}
+
+function buildHeadingIdMap(markdown: string): Map<number, string> {
+	const out = new Map<number, string>();
+	const counts = new Map<string, number>();
+	let inFence = false;
+	let offset = 0;
+	for (const line of markdown.split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) {
+			inFence = !inFence;
+			offset += line.length + 1;
+			continue;
+		}
+		if (!inFence) {
+			const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+			if (h) out.set(offset, uniqueSlug(githubHeadingSlug(h[2]), counts));
+		}
+		offset += line.length + 1;
+	}
+	return out;
+}
+
+function nodeStartOffset(node: unknown): number | null {
+	const pos = (node as { position?: { start?: { offset?: unknown } } } | null)
+		?.position;
+	const offset = pos?.start?.offset;
+	return typeof offset === "number" ? offset : null;
+}
+
+function findAnchorTarget(root: HTMLElement, raw: string): HTMLElement | null {
+	const decoded = decodeURIComponent(raw).replace(/^#/, "");
+	if (!decoded) return null;
+	let el = root.querySelector<HTMLElement>(
+		`[id="${decoded.replace(/["\\]/g, "\\$&")}"]`,
+	);
+	if (el) return el;
+	const slug = githubHeadingSlug(decoded);
+	el = root.querySelector<HTMLElement>(`[id="${slug.replace(/["\\]/g, "\\$&")}"]`);
+	return el;
 }
 
 const DOC_STYLE = `
@@ -122,27 +202,117 @@ export function MarkdownDoc({
 }) {
 	const name = path ? (path.split("/").pop() ?? path) : undefined;
 	const imgDocPath = imgBasePath ?? path;
-	// Links open in a new tab (read-only doc); embedded relative images resolve to
-	// the workspace blob endpoint. Memoized over the resolution inputs.
-	const components = useMemo(
-		() => ({
-			a({ node: _node, ...props }: { node?: unknown; [k: string]: unknown }) {
-				return (
-					<a {...props} target="_blank" rel="noopener noreferrer nofollow" />
-				);
-			},
-			img({
-				node: _node,
-				src,
-				...props
-			}: { node?: unknown; src?: string; [k: string]: unknown }) {
-				const resolved = resolveDocImageSrc(src, workspaceId, imgDocPath);
-				// biome-ignore lint/a11y/useAltText: alt comes through ...props from md
-				return <img src={resolved} {...props} />;
-			},
-		}),
-		[workspaceId, imgDocPath],
-	);
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const fixedContent = useMemo(() => fixCjkMarkdown(content), [content]);
+	const headingIds = useMemo(() => buildHeadingIdMap(fixedContent), [fixedContent]);
+	const scrollToHash = (href: string, event?: MouseEvent<HTMLAnchorElement>) => {
+		if (!href.startsWith("#")) return false;
+		const root = scrollRef.current;
+		event?.preventDefault();
+		if (!root) return true;
+		const target = findAnchorTarget(root, href);
+		if (!target) return true;
+		target.scrollIntoView({ behavior: "smooth", block: "start" });
+		return true;
+	};
+	// Recreate this map every render so duplicate-heading suffixes are stable.
+	const components = {
+		a({
+			node: _node,
+			href,
+			...props
+		}: { node?: unknown; href?: string; [k: string]: unknown }) {
+			const isHash = typeof href === "string" && href.startsWith("#");
+			return (
+				<a
+					{...props}
+					href={href}
+					target={isHash ? undefined : "_blank"}
+					rel={isHash ? undefined : "noopener noreferrer nofollow"}
+					onClick={(event) => {
+						if (href && scrollToHash(href, event)) return;
+						const onClick = props.onClick;
+						if (typeof onClick === "function") onClick(event);
+					}}
+				/>
+			);
+		},
+		h1({
+			node,
+			children,
+			...props
+		}: { node?: unknown; children?: ReactNode; [k: string]: unknown }) {
+			const offset = nodeStartOffset(node);
+			const id =
+				(offset != null ? headingIds.get(offset) : null) ??
+				githubHeadingSlug(textFromChildren(children));
+			return <h1 {...props} id={id}>{children}</h1>;
+		},
+		h2({
+			node,
+			children,
+			...props
+		}: { node?: unknown; children?: ReactNode; [k: string]: unknown }) {
+			const offset = nodeStartOffset(node);
+			const id =
+				(offset != null ? headingIds.get(offset) : null) ??
+				githubHeadingSlug(textFromChildren(children));
+			return <h2 {...props} id={id}>{children}</h2>;
+		},
+		h3({
+			node,
+			children,
+			...props
+		}: { node?: unknown; children?: ReactNode; [k: string]: unknown }) {
+			const offset = nodeStartOffset(node);
+			const id =
+				(offset != null ? headingIds.get(offset) : null) ??
+				githubHeadingSlug(textFromChildren(children));
+			return <h3 {...props} id={id}>{children}</h3>;
+		},
+		h4({
+			node,
+			children,
+			...props
+		}: { node?: unknown; children?: ReactNode; [k: string]: unknown }) {
+			const offset = nodeStartOffset(node);
+			const id =
+				(offset != null ? headingIds.get(offset) : null) ??
+				githubHeadingSlug(textFromChildren(children));
+			return <h4 {...props} id={id}>{children}</h4>;
+		},
+		h5({
+			node,
+			children,
+			...props
+		}: { node?: unknown; children?: ReactNode; [k: string]: unknown }) {
+			const offset = nodeStartOffset(node);
+			const id =
+				(offset != null ? headingIds.get(offset) : null) ??
+				githubHeadingSlug(textFromChildren(children));
+			return <h5 {...props} id={id}>{children}</h5>;
+		},
+		h6({
+			node,
+			children,
+			...props
+		}: { node?: unknown; children?: ReactNode; [k: string]: unknown }) {
+			const offset = nodeStartOffset(node);
+			const id =
+				(offset != null ? headingIds.get(offset) : null) ??
+				githubHeadingSlug(textFromChildren(children));
+			return <h6 {...props} id={id}>{children}</h6>;
+		},
+		img({
+			node: _node,
+			src,
+			...props
+		}: { node?: unknown; src?: string; [k: string]: unknown }) {
+			const resolved = resolveDocImageSrc(src, workspaceId, imgDocPath);
+			// biome-ignore lint/a11y/useAltText: alt comes through ...props from md
+			return <img src={resolved} {...props} />;
+		},
+	};
 	return (
 		<div className="h-full flex flex-col bg-[var(--color-bg)]">
 			{(name || onEdit) && (
@@ -166,7 +336,7 @@ export function MarkdownDoc({
 					)}
 				</div>
 			)}
-			<div className="flex-1 min-h-0 overflow-auto">
+			<div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
 				<style>{DOC_STYLE}</style>
 				<div className="pn-md-doc mx-auto max-w-[760px] px-5 py-7 sm:px-8">
 					<MdBoundary content={content}>
@@ -178,7 +348,7 @@ export function MarkdownDoc({
 							// biome-ignore lint/suspicious/noExplicitAny: rmd component map
 							components={components as any}
 						>
-							{fixCjkMarkdown(content)}
+							{fixedContent}
 						</ReactMarkdown>
 					</MdBoundary>
 				</div>

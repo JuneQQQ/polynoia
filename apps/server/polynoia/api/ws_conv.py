@@ -955,14 +955,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # turn-end / abort persist UPSERTS the same ids (no dup rows).
             tool_parts: dict[str, dict] = {}
 
-            async def _persist_tool_part(mid: str, payload: dict) -> None:
-                """Persist one completed tool-call/diff part immediately so the
-                trace survives a refresh mid-turn. Upsert by stable id."""
+            async def _persist_tool_part(mid: str, payload: dict | None) -> None:
+                """Persist/delete one streamed tool-call/diff part immediately.
+
+                ``payload is None`` means a temporary live card (successful
+                write/edit) has been superseded by its durable diff card.
+                """
                 async with SessionLocal() as _tdb:
-                    await storage_repo.upsert_message(
-                        _tdb, conv_id=conv_id, sender_id=agent_id,
-                        payload=payload, msg_id=mid,
-                    )
+                    if payload is None:
+                        await storage_repo.delete_message(_tdb, mid)
+                    else:
+                        await storage_repo.upsert_message(
+                            _tdb, conv_id=conv_id, sender_id=agent_id,
+                            payload=payload, msg_id=mid,
+                        )
                     await _tdb.commit()
 
             emitted_any = False

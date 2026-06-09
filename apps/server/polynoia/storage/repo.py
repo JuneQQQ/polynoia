@@ -675,6 +675,17 @@ async def upsert_message(
     )
 
 
+async def delete_message(session: AsyncSession, msg_id: str) -> bool:
+    """Delete one message by id. Used for live-only cards that have a durable
+    replacement, e.g. a successful write tool-call replaced by its diff card."""
+    row = await session.get(MessageRow, msg_id)
+    if row is None:
+        return False
+    await session.delete(row)
+    await session.flush()
+    return True
+
+
 async def add_conv_memory(
     session: AsyncSession,
     *,

@@ -2331,12 +2331,11 @@ async def system_reset():
 # history silently loses them.
 _PERSIST_PART_KINDS = frozenset({"tool-call", "diff", "reasoning"})
 
-# Write/edit tool-call cards are EPHEMERAL: the frontend streams the file content
-# into a "写入中" card live, then once the write commits the durable `diff` card
-# (post_diff_card) takes over. Their streamed content is LIVE-ONLY, so persisting
-# the tool-call row would resurrect an EMPTY "写入中" shell on refresh (the bug:
-# "刷新后 write 内容没了 + 冒出空块"). We skip persisting these — the committed
-# diff card is the durable record. The live card still shows via the emit path.
+# Write/edit tool-call cards are TEMPORARY but recoverable: while state=running,
+# persist the streamed args so a page refresh restores the accumulated "写入中"
+# content. Once the write succeeds, the durable `diff` card takes over and the
+# temporary tool-call row is deleted. Failed/interrupted writes stay persisted
+# with their args/output so the error survives refresh.
 _EPHEMERAL_EDIT_TOOLS = frozenset(
     {"write", "edit", "filewrite", "multiedit", "apply_patch", "str_replace", "str_replace_editor"}
 )
@@ -2353,19 +2352,24 @@ def _clean_tool_name(raw: str) -> str:
     return n.lower()
 
 
-def _is_ephemeral_edit_tool_success(payload: dict) -> bool:
-    """Successful write/edit tool-calls are live-only because the durable diff
-    card records the result. Failed/interrupted write calls are audit evidence:
-    persist them with their original args/output so refresh preserves the error
-    card instead of hiding the failure."""
+def _is_edit_tool_call(payload: dict) -> bool:
     if payload.get("kind") != "tool-call":
         return False
-    if _clean_tool_name(payload.get("name", "")) not in _EPHEMERAL_EDIT_TOOLS:
-        return False
-    state = payload.get("state")
-    if state == "error" or payload.get("is_error"):
-        return False
-    return True
+    return _clean_tool_name(payload.get("name", "")) in _EPHEMERAL_EDIT_TOOLS
+
+
+def _is_completed_edit_tool_success(payload: dict) -> bool:
+    """True when a write/edit family tool has reached the happy terminal state.
+
+    At that point the committed diff card is the durable record; the raw tool
+    card should disappear from DB/history. Running write cards are intentionally
+    persisted so refresh can restore their streamed content.
+    """
+    return (
+        _is_edit_tool_call(payload)
+        and payload.get("state") == "completed"
+        and not payload.get("is_error")
+    )
 
 
 async def _persist_and_emit_error(
@@ -2448,7 +2452,7 @@ async def _tap_text_into(
     events: AsyncIterator[AdapterEvent],
     buffer: list[str],
     parts: dict[str, dict] | None = None,
-    on_tool_part: Callable[[str, dict], Awaitable[None]] | None = None,
+    on_tool_part: Callable[[str, dict | None], Awaitable[None]] | None = None,
 ) -> AsyncIterator[AdapterEvent]:
     """Pass-through async iterator that side-effects every text bit into
     ``buffer`` so the caller can reassemble the full agent response after the
@@ -2506,13 +2510,16 @@ async def _tap_text_into(
                         _anon += 1
                         pid = f"anon{_anon}"
                     mid = f"tc-{pid}"
-                    # Ephemeral write/edit tool-call cards: don't persist (the
-                    # committed diff card is the durable record). Persisting them
-                    # resurrects an empty "写入中" shell on refresh. The LIVE card
-                    # still streams via the emit path. Keep its args in memory so
-                    # a later error state can be persisted with the original input.
-                    if _is_ephemeral_edit_tool_success(dump):
-                        ephemeral_edit_parts[mid] = dump
+                    # Successful write/edit cards are only the live "writing..."
+                    # affordance. During running we persist them so refresh keeps
+                    # the streamed content; once completed, delete the temporary
+                    # row and let the durable diff card be the historical record.
+                    if _is_completed_edit_tool_success(dump):
+                        ephemeral_edit_parts.pop(mid, None)
+                        parts.pop(mid, None)
+                        if on_tool_part is not None:
+                            with suppress(Exception):
+                                await on_tool_part(mid, None)
                         yield ev
                         continue
                     prev = ephemeral_edit_parts.get(mid)
@@ -2523,6 +2530,8 @@ async def _tap_text_into(
                             "input": dump.get("input") if next_has_input else prev.get("input", dump.get("input")),
                             "input_preview": dump.get("input_preview") or prev.get("input_preview"),
                         }
+                    if _is_edit_tool_call(dump):
+                        ephemeral_edit_parts[mid] = dump
                     parts[mid] = dump
                     # Durable mid-stream: persist EACH part (tool-call / diff /
                     # reasoning) the moment it completes, so a refresh keeps the

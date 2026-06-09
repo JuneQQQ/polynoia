@@ -257,6 +257,16 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 						/>
 					</div>
 				)}
+				{isGrouped && !compact && (
+					<div className="flex justify-end min-h-3 -mt-0.5 -mb-1">
+						<MessageActions
+							msgId={msg.id}
+							convId={convId}
+							pinned={msg.pinned ?? false}
+							isYou={isYou}
+						/>
+					</div>
+				)}
 				{/* Reply target header — small clickable chip pointing to original */}
 				{msg.in_reply_to && replyTarget && (
 					<button
