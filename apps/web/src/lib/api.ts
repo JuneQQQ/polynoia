@@ -226,6 +226,7 @@ export type ConversationSummary = {
 	pinned: boolean;
 	archived: boolean;
 	unread: number;
+	draft_text: string;
 	last_message_at: string | null;
 	created_at: string;
 	updated_at: string;
@@ -237,6 +238,14 @@ export type ConversationSummary = {
 	member_roles: Record<string, string>;
 	/** Designated orchestrator member (null = flat group). */
 	orchestrator_member_id: string | null;
+	/** Live, non-persisted backend execution state for list badges. */
+	running_agents?: Array<{
+		agent_id: string;
+		status: "starting" | "streaming" | "idle" | "aborted" | "error";
+		phase?: "thinking" | "executing" | "replying";
+		tool?: string;
+		message?: string;
+	}>;
 };
 
 export const api = {
@@ -329,6 +338,8 @@ export const api = {
 		member_roles?: Record<string, string>;
 		/** Which member acts as orchestrator (null = no orchestrator). */
 		orchestrator_member_id?: string | null;
+		/** Initial input-box draft for this conversation. */
+		draft_text?: string;
 	}) => postJSON<ConversationSummary>("/api/conversations", body),
 	deleteConv: (convId: string) =>
 		deleteJSON<{ ok: boolean }>(`/api/conversations/${convId}`),
@@ -424,6 +435,10 @@ export const api = {
 		postJSON<{ ok: boolean }>(`/api/conversations/${convId}/unpin`),
 	markConvRead: (convId: string) =>
 		postJSON<{ ok: boolean }>(`/api/conversations/${convId}/read`),
+	setConvDraft: (convId: string, draftText: string) =>
+		patchJSON<{ ok: boolean }>(`/api/conversations/${convId}/draft`, {
+			draft_text: draftText,
+		}),
 	/** Replace per-member role assignments for a group conv. Server appends
 	 * a system-event message describing the diff, which agents pick up via
 	 * L4 history on the next turn. Returns the updated conv summary. */

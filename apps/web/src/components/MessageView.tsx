@@ -27,6 +27,7 @@ import {
 } from "../store";
 import { MessagePart } from "./parts";
 import { useConvScope } from "./parts/_context";
+import { cleanToolName } from "./parts/ToolCallPart";
 
 function isEmptyStreamingTextPayload(payload: Message["payload"]): boolean {
 	if (payload.kind !== "text") return false;
@@ -36,6 +37,42 @@ function isEmptyStreamingTextPayload(payload: Message["payload"]): boolean {
 			seg.type === "text" ? seg.text.trim().length === 0 : false,
 		);
 	});
+}
+
+function payloadText(payload: Message["payload"]): string {
+	if (payload.kind !== "text" && payload.kind !== "reasoning") return "";
+	return payload.body
+		.map((block) => {
+			if (typeof block.c === "string") return block.c;
+			return block.c.map((seg) => (seg.type === "text" ? seg.text : "")).join("");
+		})
+		.join("\n")
+		.trim();
+}
+
+export function isRenderableMessagePayload(
+	payload: Message["payload"],
+	isStreaming: boolean,
+): boolean {
+	if ((payload.kind === "text" || payload.kind === "reasoning") && !isStreaming) {
+		return payloadText(payload).length > 0;
+	}
+	if (payload.kind === "tool-call") {
+		const name = cleanToolName(String(payload.name ?? "")).toLowerCase();
+		const state = String(payload.state ?? "");
+		const isError = Boolean(payload.is_error) || state === "error";
+		if ((name === "bash" || name === "shell" || name === "ask_user" || name === "ask") && !isError) {
+			return false;
+		}
+		if (
+			(name === "write" || name === "filewrite" || name === "apply_patch") &&
+			state === "completed" &&
+			!isError
+		) {
+			return false;
+		}
+	}
+	return true;
 }
 
 type Props = {
@@ -63,6 +100,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 	const mobile = isMobile();
 
 	if (!msg) return null;
+	if (!isRenderableMessagePayload(msg.payload, isStreaming)) return null;
 	const isYou = msg.sender_id === "you";
 	const isSystem = msg.sender_id === "system";
 	// Tombstone: a real sender who is no longer a member of this conv (e.g.
@@ -147,9 +185,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 				// here double-indented diff/text cards relative to the fold block
 				// (ToolCallGroup compact, which has no px). No own px in compact.
 				compact ? "" : mobile ? "px-2 gap-2" : "px-6 gap-3"
-			} ${
-				isGrouped ? "pt-0.5 pb-0.5" : compact ? "pt-2 pb-1" : "pt-3 pb-1.5"
-			} ${
+			} ${compact ? "py-0.5" : "py-0.5"} ${
 				isYou
 					? "bg-[var(--color-surface-2)]/40 hover:bg-[var(--color-surface-2)]/60"
 					: "hover:bg-[var(--color-surface-2)]/25"
@@ -184,7 +220,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 						))}
 				</div>
 			)}
-			<div className="flex-1 min-w-0">
+			<div className="relative flex-1 min-w-0">
 				{/* Header row: hidden in compact (lane already names the agent),
             also hidden when grouped (continuation of same sender). */}
 				{!isGrouped && !compact && (
@@ -258,7 +294,7 @@ function MessageViewInner({ convId, msgId, isGrouped, compact }: Props) {
 					</div>
 				)}
 				{isGrouped && !compact && (
-					<div className="flex justify-end min-h-3 -mt-0.5 -mb-1">
+					<div className="absolute right-0 top-0 z-10 flex justify-end pointer-events-none">
 						<MessageActions
 							msgId={msg.id}
 							convId={convId}
@@ -615,7 +651,7 @@ function MessageActions({
 	};
 
 	return (
-		<div className="ml-auto flex items-center gap-0.5">
+		<div className="ml-auto flex items-center gap-0.5 pointer-events-auto">
 			<button
 				type="button"
 				onClick={reply}

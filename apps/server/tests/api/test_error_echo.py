@@ -79,6 +79,25 @@ def test_live_resume_replays_status_retry_notice_and_stream() -> None:
     assert routes._live_resume_frames(cid) == []
 
 
+def test_live_resume_does_not_replay_completed_reasoning_as_streaming() -> None:
+    routes._conv_live.clear()
+    cid = "conv-reasoning"
+    agent = "agentX"
+    routes._live_note_status(cid, agent, "streaming", {"phase": "executing"})
+    routes._live_set_message_id(cid, agent, "msg-live")
+    routes._live_note_chunk(cid, agent, 'data: {"type":"reasoning-start","id":"r1"}\n\n')
+    routes._live_note_chunk(
+        cid,
+        agent,
+        'data: {"type":"reasoning-delta","id":"r1","delta":"thinking"}\n\n',
+    )
+    routes._live_note_chunk(cid, agent, 'data: {"type":"reasoning-end","id":"r1"}\n\n')
+
+    frames = routes._live_resume_frames(cid)
+    assert any('"type": "data-agent-status"' in f for f in frames)
+    assert not any('"type": "data-stream-resume"' in f for f in frames)
+
+
 # ── _persist_and_emit_error ──────────────────────────────────────
 
 

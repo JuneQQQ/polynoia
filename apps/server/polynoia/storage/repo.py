@@ -284,6 +284,7 @@ def _conv_from_row(r: ConversationRow) -> Conversation:
         updated_at=r.updated_at,
         last_message_at=r.last_message_at,
         unread=r.unread,
+        draft_text=r.draft_text or "",
         merge_mode=r.merge_mode,  # type: ignore[arg-type]
     )
 
@@ -393,6 +394,7 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
         member_roles=c.member_roles or {},
         orchestrator_member_id=c.orchestrator_member_id,
         pinned=c.pinned, archived=c.archived, unread=c.unread,
+        draft_text=c.draft_text or "",
         last_message_at=c.last_message_at,
         merge_mode=c.merge_mode,
     ))
@@ -432,6 +434,15 @@ async def reset_unread(session: AsyncSession, conv_id: str) -> None:
         .where(ConversationRow.id == conv_id)
         .values(unread=0)
     )
+
+
+async def set_draft_text(session: AsyncSession, conv_id: str, draft_text: str) -> bool:
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False
+    row.draft_text = draft_text
+    await session.flush()
+    return True
 
 
 async def set_merge_mode(

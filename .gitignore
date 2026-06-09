@@ -37,13 +37,17 @@ coverage/
 
 # Polynoia — runtime / scratch / 上游 archives
 .scratch/
+.tmp/
 # 注意:前导斜杠 = 只匹配项目根目录的 sandbox/,不影响
 # apps/server/polynoia/sandbox/ 源码模块
 /sandbox/
 /research/
 /ui_design/
+/projects/
 .claude/
 .codex/
+/rule.md
+/*.html
 
 # Local secrets / overrides
 *.local
@@ -54,9 +58,11 @@ coverage/
 *.sqlite
 *.sqlite3
 *.db
+*.db.*backup*
 *.db-backup
 *.db-shm
 *.db-wal
+apps/server/*.db*
 data/
 
 # Logs
@@ -68,3 +74,6 @@ logs/
 
 # Misc
 .cache/
+
+# Built app artifacts (macOS .app/.dmg, Android .apk) — local only
+/build-artifacts/

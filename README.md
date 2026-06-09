@@ -5,9 +5,9 @@
 <h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
 
 <p align="center">
-  <strong>Chat with many AI coding agents like it's a team IM.</strong><br/>
-  One conversation, multiple agents — an orchestrator splits the work, they build in parallel,
-  and you preview / edit / merge the results inline.
+  <strong>An open-source multi-agent workspace for building software through chat.</strong><br/>
+  Coordinate Claude Code, Codex, OpenCode, and custom agents in one IM-style interface,
+  with inline artifacts, workspace preview, git history, and guided merges.
 </p>
 
 <p align="center">
@@ -27,9 +27,14 @@
 
 ## What is Polynoia?
 
-Polynoia (internal codename **AgentHub**) is an **IM-style multi-agent collaboration
-platform**. You talk to AI coding agents — Claude Code, Codex, OpenCode — the same way
-you'd use Slack/Lark/WeChat: start a chat, send a message, get rich results back.
+Polynoia is an **IM-style multi-agent collaboration platform** for agentic software
+development. Instead of treating each coding agent as a separate terminal session,
+Polynoia gives them a shared workspace, a chat-native coordination layer, and a
+reviewable path from idea → files → preview → commit.
+
+You talk to AI coding agents — Claude Code, Codex, OpenCode, or your own custom agents —
+the same way you'd use Slack/Lark/WeChat: start a chat, send a message, get rich
+results back, then inspect and merge the work without leaving the conversation.
 
 - **1:1 chats** — pin a task to a single agent.
 - **Group chats** — @-mention several agents; a designated **Orchestrator** decomposes the

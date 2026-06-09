@@ -279,6 +279,17 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 		!outIsString &&
 		payload.output != null &&
 		typeof payload.output !== "string";
+	const errorText =
+		typeof payload.output_text === "string" && payload.output_text.trim()
+			? payload.output_text
+			: typeof payload.output === "string" && payload.output.trim()
+				? payload.output
+				: typeof (payload as { error?: unknown }).error === "string" &&
+					  ((payload as { error?: string }).error ?? "").trim()
+					? ((payload as { error?: string }).error as string)
+					: isError
+						? `${displayName} 执行失败,但平台未返回错误详情。`
+						: "";
 	const hasPreview = !hasInput && !!payload.input_preview;
 	// On error, always reveal the args the model sent — even an empty {} — so the
 	// user can see WHY it failed (e.g. dispatch called with no `tasks`).
@@ -374,7 +385,7 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 							</pre>
 						</div>
 					)}
-					{(outIsString || outIsObject) && (
+					{(outIsString || outIsObject || (isError && errorText)) && (
 						<div>
 							<div className="px-2.5 py-1 bg-[var(--color-surface-2)] text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold flex items-center gap-2">
 								{payload.is_error ? (
@@ -387,10 +398,14 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 								className={`mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto max-h-[260px] overflow-y-auto whitespace-pre-wrap ${
 									payload.is_error
 										? "bg-[var(--color-red-soft)]/30 text-[var(--color-red)]"
-										: "bg-[var(--color-surface)] text-[var(--color-fg-2)]"
+									: "bg-[var(--color-surface)] text-[var(--color-fg-2)]"
 								}`}
 							>
-								{outIsString ? outText : prettyJSON(payload.output)}
+								{outIsString
+									? outText
+									: outIsObject
+										? prettyJSON(payload.output)
+										: errorText}
 							</pre>
 						</div>
 					)}

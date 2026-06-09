@@ -5,8 +5,9 @@
 <h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
 
 <p align="center">
-  <strong>像群聊一样,和一群 AI 编码 Agent 协作。</strong><br/>
-  一个对话里多个 Agent —— 编排者拆解任务、并行开工,产物在聊天流里直接预览 / 编辑 / 合并。
+  <strong>一个通过聊天协作构建软件的开源多 Agent 工作区。</strong><br/>
+  在同一个 IM 界面中协调 Claude Code、Codex、OpenCode 和自定义 Agent,
+  内联查看产物、预览工作区、追踪提交历史并完成合并。
 </p>
 
 <p align="center">
@@ -26,9 +27,12 @@
 
 ## Polynoia 是什么?
 
-Polynoia(课题代号 **AgentHub**)是一个 **IM 形态的多 Agent 协作平台**。你像用
-Slack / 飞书 / 微信一样和 AI 编码 Agent(Claude Code、Codex、OpenCode)打交道:新建对话、
-发消息、拿回富媒体产物。
+Polynoia 是一个面向 Agentic Software Development 的 **IM 形态多 Agent 协作平台**。
+它不把每个编码 Agent 隔离成一个终端会话,而是给它们一个共享工作区、聊天式协调层,
+以及从想法 → 文件 → 预览 → 提交的可审查路径。
+
+你像用 Slack / 飞书 / 微信一样和 AI 编码 Agent(Claude Code、Codex、OpenCode 或自定义
+Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离开聊天流的情况下检查和合并。
 
 - **单聊** —— 把一个明确任务交给单个 Agent。
 - **群聊** —— @ 多个 Agent,由指定的**编排者(Orchestrator)** 拆解任务、并行派活,再验收 + 合并产物。

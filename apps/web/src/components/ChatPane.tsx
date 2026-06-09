@@ -25,7 +25,7 @@ import {
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
-import { MessageView } from "./MessageView";
+import { isRenderableMessagePayload, MessageView } from "./MessageView";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 import { TypingPart } from "./parts/TypingPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
@@ -89,6 +89,18 @@ function AgentExecutionPlaceholder({
 		</div>
 	);
 }
+
+const READ_SYNC_CHUNK_TYPES = new Set<string>([
+	"text-start",
+	"reasoning-start",
+	"data-tool-call",
+	"data-diff",
+	"data-terminal",
+	"data-files",
+	"data-present",
+	"data-error",
+	"data-tasks",
+]);
 
 function messageIsFreshForAgent(
 	message: Message,
@@ -183,6 +195,19 @@ export function ChatPane({ convId, members, title }: Props) {
 	// double-Enter / Enter+click). Otherwise the agent sees N copies and
 	// its native session bloats with phantom turns.
 	const lastSentRef = useRef<{ text: string; ts: number } | null>(null);
+	const markReadTimerRef = useRef<number | null>(null);
+	const markCurrentConvRead = useCallback(() => {
+		if (markReadTimerRef.current !== null) return;
+		markReadTimerRef.current = window.setTimeout(() => {
+			markReadTimerRef.current = null;
+			api
+				.markConvRead(convId)
+				.then(() => {
+					window.dispatchEvent(new Event("polynoia:resync-lists"));
+				})
+				.catch(() => undefined);
+		}, 250);
+	}, [convId]);
 
 	useEffect(() => {
 		const onConvUpdated = (ev: Event) => {
@@ -196,11 +221,22 @@ export function ChatPane({ convId, members, title }: Props) {
 			window.removeEventListener("polynoia:conv-updated", onConvUpdated);
 	}, [convId, refreshConversationSnapshot]);
 
+	useEffect(() => {
+		markCurrentConvRead();
+		return () => {
+			if (markReadTimerRef.current !== null) {
+				window.clearTimeout(markReadTimerRef.current);
+				markReadTimerRef.current = null;
+			}
+		};
+	}, [markCurrentConvRead]);
+
 	// Maintain a WS connection per active conv (lifecycle tied to convId)
 	useEffect(() => {
 		const ws = new ConvWebSocket(convId);
 		wsRef.current = ws;
 		ws.onChunk((chunk) => {
+			if (READ_SYNC_CHUNK_TYPES.has(chunk.type)) markCurrentConvRead();
 			switch (chunk.type) {
 				case "message-metadata":
 					applyChunkToConv(convId, {
@@ -817,6 +853,34 @@ export function ChatPane({ convId, members, title }: Props) {
 	// "派活后很卡" fix: a 3-lane burst fans out ~6 concurrent delta streams, and
 	// without this each delta re-ran computeBursts over the whole conversation.
 	const burstSig = `${messages.length}:${messages.length ? messages[messages.length - 1].id : ""}`;
+	const streamingMessageIdsForRender = useMemo(
+		() =>
+			new Set(
+				Array.from(
+					useStore.getState().convs.get(convId)?.streamingTexts.values() ?? [],
+				).map((stream) => stream.messageId),
+			),
+		[convId, streamTick],
+	);
+	const renderSig = useMemo(
+		() =>
+			messages
+				.map((m) =>
+					[
+						m.id,
+						m.sender_id,
+						m.payload.kind,
+						isRenderableMessagePayload(
+							m.payload,
+							streamingMessageIdsForRender.has(m.id),
+						)
+							? "1"
+							: "0",
+					].join(":"),
+				)
+				.join("|"),
+		[messages, streamingMessageIdsForRender],
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: burstSig captures the structural change; `messages` ref churns every delta by design, so it must NOT be a dep.
 	const { burstByAnchorId, claimedSet } = useMemo(() => {
 		const ids = messages.map((m) => m.id);
@@ -899,6 +963,9 @@ export function ChatPane({ convId, members, title }: Props) {
 		let prevRunSender: string | null = null;
 		for (const m of messages) {
 			if (claimedSet.has(m.id) || skip.has(m.id)) continue; // lane / folded
+			const currentPayload = byId.get(m.id)?.payload ?? m.payload;
+			const currentStreaming = streamingMessageIdsForRender.has(m.id);
+			if (!isRenderableMessagePayload(currentPayload, currentStreaming)) continue;
 			if (burstByAnchorId.has(m.id)) {
 				prevRunSender = null;
 				continue;
@@ -907,7 +974,7 @@ export function ChatPane({ convId, members, title }: Props) {
 			prevRunSender = m.sender_id;
 		}
 		return { groupFirstIds: firsts, groupedSkip: skip, firstOfRun };
-	}, [burstSig, convId, claimedSet, burstByAnchorId]);
+	}, [burstSig, renderSig, convId, claimedSet, burstByAnchorId, streamingMessageIdsForRender]);
 
 	return (
 		<main
@@ -1054,67 +1121,69 @@ export function ChatPane({ convId, members, title }: Props) {
 									)}
 								</div>
 							)}
-							{/* Burst-aware render: the orchestrator's tasks card anchors a burst;
+							<div className="flex flex-col gap-1">
+								{/* Burst-aware render: the orchestrator's tasks card anchors a burst;
             sub-agent messages are claimed into lanes (rendered inside
             TasksBurstPart), not the linear stream. Membership comes from the
             memoized burstByAnchorId/claimedSet above (delta-invariant). */}
-							{messages.map((m, i) => {
-								if (claimedSet.has(m.id)) return null; // rendered in a lane
-								if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
-								const group = groupFirstIds.get(m.id);
-								if (group) {
+								{messages.map((m) => {
+									if (claimedSet.has(m.id)) return null; // rendered in a lane
+									if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
+									const group = groupFirstIds.get(m.id);
+									if (group) {
+										return (
+											<ToolCallGroup
+												key={m.id}
+												convId={convId}
+												msgIds={group}
+												showAvatar={firstOfRun.has(m.id)}
+											/>
+										);
+									}
+									const burst = burstByAnchorId.get(m.id);
+									if (burst) {
+										return (
+											<TasksBurstPart
+												key={m.id}
+												payload={m.payload as TasksPayload}
+												burstInfo={burst}
+												convId={convId}
+											/>
+										);
+									}
+									// Normal linear MessageView. Avatar hidden (grouped) unless this
+									// is the FIRST avatar-bearing element of its sender's run — see
+									// firstOfRun, computed over the visible render sequence, so a fold
+									// between two same-sender messages doesn't re-show the avatar.
+									const isGrouped = !firstOfRun.has(m.id);
 									return (
-										<ToolCallGroup
+										<MessageView
 											key={m.id}
 											convId={convId}
-											msgIds={group}
-											showAvatar={firstOfRun.has(m.id)}
+											msgId={m.id}
+											isGrouped={isGrouped}
 										/>
 									);
-								}
-								const burst = burstByAnchorId.get(m.id);
-								if (burst) {
+								})}
+								{pendingAgentPlaceholders.map((a) => {
+									const agent = agents.find((x) => x.id === a.id);
+									const label =
+										a.status === "starting"
+											? lang === "en"
+												? "Starting…"
+												: "正在启动会话…"
+											: phaseLabel(a.phase, a.tool, lang);
 									return (
-										<TasksBurstPart
-											key={m.id}
-											payload={m.payload as TasksPayload}
-											burstInfo={burst}
-											convId={convId}
+										<AgentExecutionPlaceholder
+											key={`pending-${a.id}`}
+											agent={agent}
+											agentId={a.id}
+											label={label}
+											mobile={mobile}
 										/>
 									);
-								}
-								// Normal linear MessageView. Avatar hidden (grouped) unless this
-								// is the FIRST avatar-bearing element of its sender's run — see
-								// firstOfRun, computed over the visible render sequence, so a fold
-								// between two same-sender messages doesn't re-show the avatar.
-								const isGrouped = !firstOfRun.has(m.id);
-								return (
-									<MessageView
-										key={m.id}
-										convId={convId}
-										msgId={m.id}
-										isGrouped={isGrouped}
-									/>
-								);
-							})}
-							{pendingAgentPlaceholders.map((a) => {
-								const agent = agents.find((x) => x.id === a.id);
-								const label =
-									a.status === "starting"
-										? lang === "en"
-											? "Starting…"
-											: "正在启动会话…"
-										: phaseLabel(a.phase, a.tool, lang);
-								return (
-									<AgentExecutionPlaceholder
-										key={`pending-${a.id}`}
-										agent={agent}
-										agentId={a.id}
-										label={label}
-										mobile={mobile}
-									/>
-								);
-							})}
+								})}
+							</div>
 						</div>
 					</div>
 				</ConvScopeProvider>
@@ -1144,6 +1213,9 @@ export function ChatPane({ convId, members, title }: Props) {
 					<Composer
 						convId={convId}
 						members={members}
+						draftText={
+							convSummary?.id === convId ? convSummary.draft_text : undefined
+						}
 						statusSlot={
 							activeAgents.length > 0 ? (
 								<div className="anim-fade-up mb-2 border-b border-[var(--color-line)] pb-2">

@@ -219,6 +219,18 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
             if p["id"] == pid:
                 p["text"] += obj.get("delta", "")
                 break
+    elif t == "reasoning-end":
+        # Completed reasoning is persisted as a normal message row as soon as the
+        # part completes. Keeping it in the live resume cache makes a reconnect
+        # replay it as an in-progress stream, so the UI shows old blocks as
+        # "正在思考" even after later tools have finished.
+        pid = obj.get("id")
+        if pid:
+            entry["parts"] = [
+                p
+                for p in entry.get("parts", [])
+                if not (p.get("id") == pid and p.get("kind") == "reasoning")
+            ]
 
 
 def _live_set_message_id(conv_id: str, agent_id: str, message_id: str) -> None:
@@ -550,6 +562,7 @@ async def create_conversation_endpoint(body: dict):
           "direct": bool,
           "member_roles": {agent_id: role},     # optional, per-conv role labels
           "orchestrator_member_id": str|null,   # optional, designated coordinator
+          "draft_text": str,                     # optional, input-box draft
           "id": str,                            # optional, ULID auto-generated
         }
     """
@@ -594,6 +607,7 @@ async def create_conversation_endpoint(body: dict):
         group=not direct,
         member_roles=member_roles,
         orchestrator_member_id=orchestrator_member_id,
+        draft_text=str(body.get("draft_text") or ""),
         last_message_at=None,
         merge_mode="auto",
     )
@@ -633,7 +647,17 @@ async def list_conversations(
             unread_only=unread_only,
             q=q,
         )
-        return [r.model_dump(mode="json") for r in rows]
+        out = []
+        for r in rows:
+            item = r.model_dump(mode="json")
+            live_agents = []
+            for agent_id, entry in (_conv_live.get(r.id) or {}).items():
+                status = entry.get("status") or {}
+                if status.get("status") in ("starting", "streaming"):
+                    live_agents.append(status)
+            item["running_agents"] = live_agents
+            out.append(item)
+        return out
 
 
 @router.get("/api/conversations/{conv_id}/messages")

@@ -23,6 +23,20 @@ from polynoia.storage.db import SessionLocal
 router = APIRouter()
 
 
+def _running_agents_for_conv(conv_id: str) -> list[dict]:
+    # Late import avoids making this CRUD router own the live execution registry.
+    try:
+        from polynoia.api.routes import _conv_live  # type: ignore
+    except Exception:
+        return []
+    out: list[dict] = []
+    for _agent_id, entry in (_conv_live.get(conv_id) or {}).items():
+        status = entry.get("status") or {}
+        if status.get("status") in ("starting", "streaming"):
+            out.append(status)
+    return out
+
+
 @router.get("/api/conversations")
 async def list_conversations(
     archived: bool | None = None,
@@ -48,7 +62,12 @@ async def list_conversations(
             unread_only=unread_only,
             q=q,
         )
-        return [r.model_dump(mode="json") for r in rows]
+        out = []
+        for r in rows:
+            item = r.model_dump(mode="json")
+            item["running_agents"] = _running_agents_for_conv(r.id)
+            out.append(item)
+        return out
 
 
 @router.get("/api/conversations/{conv_id}")
@@ -106,6 +125,19 @@ async def unpin_conv(conv_id: str):
 async def mark_conv_read(conv_id: str):
     async with SessionLocal() as session:
         await storage_repo.reset_unread(session, conv_id)
+        await session.commit()
+    return {"ok": True}
+
+
+@router.patch("/api/conversations/{conv_id}/draft")
+async def update_conv_draft(conv_id: str, body: dict):
+    draft = str(body.get("draft_text") or "")
+    if len(draft) > 20000:
+        raise HTTPException(status_code=400, detail="draft_text too long")
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_draft_text(session, conv_id, draft)
+        if not ok:
+            raise HTTPException(status_code=404, detail="conversation not found")
         await session.commit()
     return {"ok": True}
 

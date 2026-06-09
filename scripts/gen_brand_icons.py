@@ -68,7 +68,7 @@ def _triad(scale: float = 1.0) -> str:
     """The 三色交叠 glyph: three multiply-blended agent-color discs."""
     cs = [(50, 39, PC["orange"]), (38, 60, PC["teal"]), (62, 60, PC["violet"])]
     discs = "".join(
-        f'<circle cx="{x}" cy="{y}" r="21" fill="{c}" '
+        f'<circle cx="{x}" cy="{y}" r="16.5" fill="{c}" '
         f'fill-opacity="0.86" style="mix-blend-mode:multiply"/>'
         for x, y, c in cs
     )
@@ -126,9 +126,9 @@ def main() -> None:
         ROOT / "apps/web/public/favicon.svg": favicon_web_mono(),
         ROOT / "assets/brand/favicon-web-mono.svg": favicon_web_mono(),
         ROOT / "assets/brand/icon-desktop.svg": icon_squircle_triad(
-            SQ_MAC, ring=True, glyph_scale=1.0, title="Polynoia"),
+            SQ_MAC, ring=True, glyph_scale=0.90, title="Polynoia"),
         ROOT / "assets/brand/icon-mobile.svg": icon_squircle_triad(
-            SQ_IOS, ring=False, glyph_scale=1.08, title="Polynoia"),
+            SQ_IOS, ring=False, glyph_scale=1.0, title="Polynoia"),
         ROOT / "assets/brand/logo.svg": logo_web_triad(),
     }
     for path, content in targets.items():

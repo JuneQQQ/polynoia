@@ -40,6 +40,8 @@ type Props = {
 	 * input box (inside the composer chrome) so it never floats over / occludes
 	 * message content. Built by ChatPane (it owns the agent-status state). */
 	statusSlot?: React.ReactNode;
+	/** Persisted per-conversation input draft. */
+	draftText?: string;
 };
 
 /**
@@ -102,6 +104,7 @@ export function Composer({
 	onAttachImage,
 	onAttachFile,
 	statusSlot,
+	draftText,
 }: Props) {
 	const [text, setText] = useState("");
 	// Mobile: roomier pill, bigger tap targets, and a 16px textarea (anything
@@ -143,6 +146,11 @@ export function Composer({
 	// user's subsequent edits.
 	const composerDraft = useStore((s) => s.composerDraft);
 	const setComposerDraft = useStore((s) => s.setComposerDraft);
+	const loadedDraftConv = useRef<string | null>(null);
+	useEffect(() => {
+		loadedDraftConv.current = null;
+		setText("");
+	}, [convId]);
 	useEffect(() => {
 		if (!composerDraft || composerDraft.convId !== convId) return;
 		setText(composerDraft.text);
@@ -150,6 +158,22 @@ export function Composer({
 		// Defer focus to next tick so the textarea is rendered + sized.
 		window.setTimeout(() => taRef.current?.focus(), 0);
 	}, [composerDraft, convId, setComposerDraft]);
+	useEffect(() => {
+		if (draftText === undefined) return;
+		if (loadedDraftConv.current !== convId) {
+			loadedDraftConv.current = convId;
+			setText((cur) => (cur ? cur : draftText));
+			return;
+		}
+		setText((cur) => (cur ? cur : draftText));
+	}, [convId, draftText]);
+	useEffect(() => {
+		if (convId.startsWith("dm-")) return;
+		const handle = window.setTimeout(() => {
+			api.setConvDraft(convId, text).catch(() => {});
+		}, 350);
+		return () => window.clearTimeout(handle);
+	}, [convId, text]);
 	// Only show reply chip when the global state targets THIS conv.
 	const replyingTo =
 		replyingToRaw && replyingToRaw.convId === convId ? replyingToRaw : null;
@@ -258,6 +282,7 @@ export function Composer({
 			onSend(t, replyingTo?.msgId);
 		}
 		setText("");
+		if (!convId.startsWith("dm-")) api.setConvDraft(convId, "").catch(() => {});
 		setMention(null);
 		if (replyingTo) setReplyingTo(null);
 	};
@@ -460,14 +485,15 @@ export function Composer({
 		}
 	};
 
-	// Auto-grow the textarea with content (ChatGPT/Claude feel), capped at 200px
+	// Auto-grow the textarea with content (ChatGPT/Claude feel), capped before
+	// it starts eating the mobile viewport.
 	// then it scrolls internally. Presentation behavior only.
 	useEffect(() => {
 		const ta = taRef.current;
 		if (!ta) return;
 		ta.style.height = "auto";
-		ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-	}, [text]);
+		ta.style.height = `${Math.min(ta.scrollHeight, mobile ? 118 : 200)}px`;
+	}, [mobile, text]);
 
 	const placeholder = isGroup
 		? "发消息给群聊 · 输入 @ 召唤成员"
@@ -479,7 +505,7 @@ export function Composer({
 		// carries its own surface bg + shadow.
 		<div className="bg-transparent">
 			<div
-				className={`relative ${mobile ? "px-3 pt-2 pb-3" : "px-6 pt-2 pb-3"}`}
+				className={`relative ${mobile ? "px-3 pt-1 pb-2" : "px-6 pt-2 pb-3"}`}
 			>
 				{/* @-mention picker */}
 				{mention && filtered.length > 0 && (
@@ -662,7 +688,7 @@ export function Composer({
 					onDrop={handleDrop}
 					className={`border bg-[var(--color-surface)] shadow-[var(--shadow-card)] transition-colors duration-200 focus-within:border-[var(--color-accent)]/55 ${
 						mobile
-							? "rounded-[26px] px-3 pt-2.5 pb-2.5"
+							? "rounded-[22px] px-2.5 pt-1.5 pb-1.5"
 							: "rounded-[22px] px-2.5 pt-2 pb-2"
 					} ${
 						isDragOver
@@ -686,12 +712,12 @@ export function Composer({
 						rows={1}
 						className={`w-full resize-none bg-transparent outline-none leading-relaxed text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] max-h-[200px] ${
 							mobile
-								? "text-[16px] min-h-[28px] px-2 py-2"
+								? "text-[16px] min-h-[24px] px-1.5 py-1"
 								: "text-[14px] min-h-[40px] px-2 py-1.5"
 						}`}
 					/>
 					{/* Docked control bar — sits INSIDE the box, ChatGPT/Claude-style */}
-					<div className="flex items-center gap-1.5 px-0.5">
+					<div className={`flex items-center px-0.5 ${mobile ? "gap-1" : "gap-1.5"}`}>
 						<input
 							ref={fileInputRef}
 							type="file"
@@ -705,11 +731,11 @@ export function Composer({
 							type="button"
 							onClick={() => fileInputRef.current?.click()}
 							className={`grid place-items-center rounded-full text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:bg-[var(--color-surface-2)] transition-all duration-150 ${
-								mobile ? "w-10 h-10" : "w-8 h-8"
+								mobile ? "w-8 h-8" : "w-8 h-8"
 							}`}
 							title="添加附件(也支持粘贴)"
 						>
-							<Paperclip size={mobile ? 20 : 16} />
+							<Paperclip size={mobile ? 18 : 16} />
 						</button>
 						{/* Recipient is already shown in the chat header — no redundant
                 "{name} · 1v1" chip in the composer bar (kept clean). */}
@@ -728,7 +754,7 @@ export function Composer({
 							}
 							title={anyUploading ? "附件上传中…" : "发送 (Enter)"}
 							className={`ml-auto grid place-items-center rounded-full transition-all duration-150 ${
-								mobile ? "w-10 h-10" : "w-8 h-8"
+								mobile ? "w-9 h-9" : "w-8 h-8"
 							} ${
 								!anyUploading &&
 								(
@@ -741,9 +767,9 @@ export function Composer({
 							}`}
 						>
 							{anyUploading ? (
-								<Loader2 size={mobile ? 20 : 17} className="animate-spin" />
+								<Loader2 size={mobile ? 18 : 17} className="animate-spin" />
 							) : (
-								<ArrowUp size={mobile ? 20 : 17} strokeWidth={2.4} />
+								<ArrowUp size={mobile ? 18 : 17} strokeWidth={2.4} />
 							)}
 						</button>
 					</div>

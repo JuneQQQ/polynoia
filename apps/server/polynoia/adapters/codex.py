@@ -1075,6 +1075,7 @@ async def _translate_appserver_turn(
     keys: dict[str, tuple[str, str]] = {}
     text_started: set[str] = set()
     reasoning_started: set[str] = set()
+    reasoning_start: dict[str, float] = {}
     usage: dict[str, Any] = {}
     terminal = False
 
@@ -1120,6 +1121,7 @@ async def _translate_appserver_turn(
             mid, pid = _keys(item_id)
             if item_id not in reasoning_started:
                 reasoning_started.add(item_id)
+                reasoning_start[item_id] = time.monotonic()
                 yield PartStartedEvent(
                     turn_id=turn_id,
                     task_id=task_id,
@@ -1174,7 +1176,10 @@ async def _translate_appserver_turn(
                         yield PartCompletedEvent(
                             message_id=mid,
                             part_id=pid,
-                            part=ReasoningPayload(body=[PNTextBlock(c=txt)]),
+                            part=ReasoningPayload(
+                                body=[PNTextBlock(c=txt)],
+                                seconds=_reasoning_seconds(reasoning_start.pop(item_id, None)),
+                            ),
                         )
                 continue
             payload = _v2_item_to_toolcall(item)

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Official AgentHub demo initializer.
 #
-# One command produces a clean, production-like launch-readiness workspace:
+# One command produces clean, production-like real-project workspaces:
 #   - wipes and rebuilds the local DB schema
 #   - starts backend :7780 and frontend :5173
-#   - seeds realistic go-live conversations: release notes, QA workbook,
-#     telemetry readiness, status page, @ routing, conflict, diff/history,
-#     and recovery cases
+#   - seeds realistic deliverable conversations: web games, PPT, DOCX, Excel,
+#     data reports, landing pages, collaboration, conflict, diff/history, and
+#     recovery cases
 #
 #   bash scripts/testkit/reset.sh
 set -euo pipefail
@@ -16,6 +16,14 @@ SRV="$REPO/apps/server"
 WEB="$REPO/apps/web"
 PY="$SRV/.venv/bin/python"
 PNPM="${PNPM:-pnpm}"
+RUN_DIR="$REPO/.tmp/testkit"
+LAUNCH_DIR="$RUN_DIR/launchd"
+SERVER_LOG="$RUN_DIR/polynoia_server.log"
+WEB_LOG="$RUN_DIR/polynoia_web.log"
+SERVER_PLIST="$LAUNCH_DIR/server.plist"
+WEB_PLIST="$LAUNCH_DIR/web.plist"
+
+mkdir -p "$RUN_DIR" "$LAUNCH_DIR"
 
 stop_launchd_service() {
   local label="$1"
@@ -50,10 +58,10 @@ wait_http() {
     sleep 1
   done
   echo "  $name failed to start: $url" >&2
-  echo "  --- /tmp/polynoia_server.log ---" >&2
-  tail -80 /tmp/polynoia_server.log >&2 2>/dev/null || true
-  echo "  --- /tmp/polynoia_web.log ---" >&2
-  tail -80 /tmp/polynoia_web.log >&2 2>/dev/null || true
+  echo "  --- $SERVER_LOG ---" >&2
+  tail -80 "$SERVER_LOG" >&2 2>/dev/null || true
+  echo "  --- $WEB_LOG ---" >&2
+  tail -80 "$WEB_LOG" >&2 2>/dev/null || true
   return 1
 }
 
@@ -63,8 +71,8 @@ start_dev_services() {
     local pnpm_bin
     uid="$(id -u)"
     pnpm_bin="$(command -v "$PNPM")"
-    mkdir -p /tmp/polynoia-launch
-    cat > /tmp/polynoia-launch/server.plist <<PLIST
+    mkdir -p "$LAUNCH_DIR"
+    cat > "$SERVER_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -85,13 +93,13 @@ start_dev_services() {
     <key>ALL_PROXY</key><string>$ALL_PROXY</string>
     <key>NO_PROXY</key><string>$NO_PROXY</string>
   </dict>
-  <key>StandardOutPath</key><string>/tmp/polynoia_server.log</string>
-  <key>StandardErrorPath</key><string>/tmp/polynoia_server.log</string>
+  <key>StandardOutPath</key><string>$SERVER_LOG</string>
+  <key>StandardErrorPath</key><string>$SERVER_LOG</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
 PLIST
-    cat > /tmp/polynoia-launch/web.plist <<PLIST
+    cat > "$WEB_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -106,21 +114,21 @@ PLIST
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>$PATH</string>
   </dict>
-  <key>StandardOutPath</key><string>/tmp/polynoia_web.log</string>
-  <key>StandardErrorPath</key><string>/tmp/polynoia_web.log</string>
+  <key>StandardOutPath</key><string>$WEB_LOG</string>
+  <key>StandardErrorPath</key><string>$WEB_LOG</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
 PLIST
-    launchctl bootstrap "gui/$uid" /tmp/polynoia-launch/server.plist
-    launchctl bootstrap "gui/$uid" /tmp/polynoia-launch/web.plist
+    launchctl bootstrap "gui/$uid" "$SERVER_PLIST"
+    launchctl bootstrap "gui/$uid" "$WEB_PLIST"
     launchctl kickstart -k "gui/$uid/local.polynoia.server" >/dev/null 2>&1 || true
     launchctl kickstart -k "gui/$uid/local.polynoia.web" >/dev/null 2>&1 || true
   else
     nohup "$PY" -m uvicorn polynoia.main:app --app-dir "$SRV" --host 0.0.0.0 --port 7780 \
-      > /tmp/polynoia_server.log 2>&1 &
+      > "$SERVER_LOG" 2>&1 &
     nohup "$PNPM" --dir "$WEB" dev --host 0.0.0.0 --port 5173 \
-      > /tmp/polynoia_web.log 2>&1 &
+      > "$WEB_LOG" 2>&1 &
   fi
 }
 
@@ -150,7 +158,7 @@ start_dev_services
 wait_http backend http://127.0.0.1:7780/api/agents
 wait_http frontend http://127.0.0.1:5173
 
-echo "→ Seed realistic launch-readiness cases"
+echo "→ Seed realistic real-project cases"
 "$PY" - <<'PYSEED'
 import json
 import urllib.error
@@ -225,113 +233,105 @@ TEAM = [
 
 CASES = [
     (
-        "launch_page",
-        "AgentHub 上线 · 发布页",
+        "plane_war_game",
+        "飞机大战网页版游戏",
         "solo:designer",
-        "为 AgentHub 的上线准备做一个真实可用的 launch.html 单页发布说明页。要求单文件、自包含、移动端优先。"
-        "内容包括:产品定位、上线范围、核心亮点(多 Agent 群聊、产物预览、Diff/回退、部署链接)、目标用户、"
-        "3 步快速开始、上线风险提示、反馈入口占位。视觉要像正式上线页,不要像 demo。最后 present 这个 .html。",
+        "做一个可直接打开玩的飞机大战网页版小游戏,产物为 plane-war.html。要求单文件自包含,"
+        "Canvas 渲染,支持键盘和移动端触摸拖拽,包含玩家飞机、敌机、子弹、碰撞、分数、生命值、暂停/重新开始。"
+        "视觉要完整,不要只做占位。完成后 present 这个 HTML。",
     ),
     (
-        "release_notes",
-        "AgentHub 上线 · Release Notes",
+        "landlord_game",
+        "斗地主网页版游戏",
+        "group",
+        "协作开发一个斗地主网页版小游戏,最终产物为 landlord.html 并 present。阿核负责拆分和最终验收;"
+        "文澜先整理规则、牌型和交互文案;制图实现单文件 HTML/CSS/JS 牌桌界面和基础出牌流程;"
+        "数擎补充牌型判断、胜负计分和测试数据。共享文件只由一个人合并,其余成员写各自模块文件,避免并行改同一文件。",
+    ),
+    (
+        "family_budget_xlsx",
+        "三口之家月度预算 Excel",
+        "solo:generalist",
+        "用 openpyxl 生成一个真正的 budget.xlsx 并 present。工作簿包含:收支明细、分类汇总、月度结余、"
+        "支出占比饼图。数字要像真实三口之家月度账单,分类清晰,汇总表使用 Excel SUMIF/SUM 公式,加基本格式和条件标记。",
+    ),
+    (
+        "startup_pitch_ppt",
+        "AI 教育创业路演 PPT",
         "solo:writer",
-        "整理一份正式上线用的 release-notes.md 并 present。结构:版本摘要、面向用户的新能力、已修复问题、"
-        "已知限制、升级/回滚说明、客服/反馈口径。内容基于以下事实:本版本支持 Web/桌面/移动轻量查看;"
-        "支持 Claude Code、Codex、OpenCode 适配器;群聊由阿核协调分工;子 Agent 可产出代码 diff、文件、"
-        "网页预览、Office 文档;已补齐归档列表刷新、移动端输入框与键盘间距、重连状态栏避让系统状态栏、"
-        "工具错误块刷新保留、present 展示部署链接。",
+        "制作一份 10 页左右的 AI 教育创业项目路演 PPTX 并 present。内容包括:封面、痛点、解决方案、"
+        "产品截图占位、市场规模、商业模式、竞品对比、增长策略、财务预测、团队与融资计划。要求视觉统一、标题短、每页信息密度合理。",
     ),
     (
-        "qa_workbook",
-        "AgentHub 上线 · QA 检查表",
-        "solo:generalist",
-        "用 openpyxl 生成一个真正的 launch-qa-checklist.xlsx 并 present。工作簿至少 3 张表:"
-        "1) SmokeCases:模块/用例/步骤/预期/负责人/状态/阻塞原因;2) RiskRegister:风险/概率/影响/缓解方案/"
-        "owner/上线前是否必须关闭;3) Metrics:上线观测指标/埋点名/阈值/告警渠道。用 Excel 公式统计通过率、"
-        "阻塞数、Must Fix 数;加条件格式或醒目标记。内容要像真实上线检查表。",
+        "rental_contract_docx",
+        "房屋租赁合同 DOCX",
+        "solo:writer",
+        "生成一份正式的房屋租赁合同 docx 并 present。包含出租方/承租方信息、房屋信息、租期、租金押金、"
+        "维修责任、违约责任、退租交接、附件清单和签字页。要求版式像正式合同,有标题层级、表格和签署栏。",
     ),
     (
-        "status_page",
-        "AgentHub 上线 · 状态页组件",
+        "coffee_shop_site",
+        "咖啡店官网",
         "solo:designer",
-        "实现一个单文件 status.html,用于上线当天投屏查看 AgentHub 服务状态。页面展示:前端、后端 API、"
-        "WebSocket、Agent 适配器、文件预览、部署链接 6 个模块的状态卡;包含模拟的最近 8 条事件时间线、"
-        "刷新按钮、轻量筛选(全部/异常/已恢复)。不依赖外网,移动端和桌面端都要好看。最后 present 这个 .html。",
+        "做一个本地精品咖啡店官网,产物 coffee-shop.html 并 present。要求首屏有品牌氛围、菜单、门店信息、"
+        "营业时间、预约按钮、移动端适配。不要做营销空壳,页面里要能看到真实菜单和价格。",
     ),
     (
-        "telemetry_report",
-        "AgentHub 上线 · 埋点验收报告",
-        "solo:generalist",
-        "自造一份约 200 行的 AgentHub 上线前埋点事件 CSV(event_name/user_role/platform/success/latency_ms/"
-        "timestamp),用 pandas 做验收分析:关键漏斗(创建项目→新建对话→发送消息→工具调用→present)、"
-        "平台成功率、P95 延迟、失败 Top 原因。用 matplotlib 画 2 张图并写 telemetry-readiness.md 报告,"
-        "报告内嵌图片引用。最后 present telemetry-readiness.md。",
+        "travel_plan_doc",
+        "关西亲子旅行计划",
+        "solo:writer",
+        "写一份关西 6 天 5 晚亲子旅行计划 travel-plan.md 并 present。包含每日行程、交通、餐厅、预算、"
+        "雨天备选、儿童友好提醒和打包清单。内容要具体到景点和时间段。",
     ),
     (
-        "go_live_pack",
-        "AgentHub 上线 · Go-live 协作包",
+        "marketing_page_sequence",
+        "英语夏令营落地页",
         "group",
-        "群里多位负责人并行准备 AgentHub 上线 Go-live 协作包。请拆成互不依赖的章节交给成员:"
-        "发布范围与非目标、上线检查清单、灰度与回滚方案、客服/公告口径、上线当天值班与监控。"
-        "每章落到 sections/ 下独立文件,最后由阿核合并成 go-live.md 并 present。注意:共享文件 go-live.md "
-        "的骨架/目录只由一个人建,其他人填各自章节,避免合并冲突。",
+        "协作完成一个英语夏令营招生落地页 summer-camp.html 并 present。必须顺序接力:"
+        "文澜先写招生卖点、课程安排、家长 FAQ 到 sections/summer-copy.md;"
+        "制图随后读取文案并实现单文件落地页。阿核负责控制顺序和验收。",
     ),
     (
-        "mention_seq",
-        "@路由 · 上线依赖接力",
+        "single_agent_portfolio",
+        "摄影师作品集网站",
         "group",
-        "这是 @ 路由回归测试,用真实上线准备场景。@文澜 @制图 协作,但必须严格顺序执行:"
-        "第一阶段只让文澜创建 sections/release-copy.md,内容是一段 80 字以内的上线公告文案;"
-        "等第一阶段完成并合并到 main 后,第二阶段再让制图读取该文件,并创建 sections/release-banner.html,"
-        "把这段文案做成一个上线横幅组件。不要 present,最后由阿核说明两个文件是否都在 main。"
-        "如果你要派活,必须分阶段 dispatch;不要让两人并发。",
+        "请 @制图 直接做一个摄影师作品集单页 photographer.html。要求包含全屏作品首屏、作品网格、"
+        "个人简介、联系入口和移动端适配。制图完成后阿核做轻量验收并 present。",
     ),
     (
-        "mention_single",
-        "@路由 · 单点名直达+验收",
+        "sales_analysis_report",
+        "电商销售分析报告",
         "group",
-        "这是单 @ 路由回归测试。请 @制图 直接做一个极小的上线倒计时组件:sections/launch-countdown.html,"
-        "页面只需要显示“AgentHub launch readiness”和一个开始检查按钮。预期:制图先直达执行并 clean merge 到 main,"
-        "随后阿核收到轻量验收回合。完成后 present 这个 HTML。",
+        "做一份电商销售分析报告。请 @不存在的成员 @数擎 生成 300 行订单样例 CSV,分析 GMV、客单价、"
+        "品类贡献、复购率和退款率,输出 sales-analysis.md 和两张图。未知成员不应被调度;最终由阿核验收。",
     ),
     (
-        "mention_unknown",
-        "@路由 · 未知成员忽略",
+        "restaurant_menu_collab",
+        "餐厅菜单页多人改版",
         "group",
-        "这是未知 @ 边界测试。请 @不存在的成员 @文澜 起草 sections/unknown-mention-policy.md,"
-        "内容说明上线群聊中只有真实群成员会被解析,未知 @ 不应触发任何 agent。最终只需要一个 Markdown 文件,"
-        "不要 present。",
+        "协作改版 restaurant-menu.html。为了模拟真实多人编辑冲突,文澜和制图都需要调整同一个菜单标题文案:"
+        "文澜偏品牌叙事,制图偏视觉短标题。不要提前规避冲突;如果出现冲突,由阿核选择更适合页面的一版并说明原因。",
     ),
     (
-        "conflict_same_file",
-        "合并冲突 · 上线口径冲突",
-        "group",
-        "这是冲突处理回归测试。请故意让文澜和制图并行修改同一个文件 sections/launch-owner.md 的同一行:"
-        "文澜写“launch_owner = 文档负责人”,制图写“launch_owner = 前端负责人”。不要提前规避冲突;"
-        "让系统暴露真实冲突,然后由阿核按冲突卡流程选择一个最终版本并说明处理结果。",
-    ),
-    (
-        "single_main_sync",
-        "单聊合并 · 上线文件同步",
+        "game_2048",
+        "2048 网页小游戏",
         "solo:designer",
-        "这是单聊 main 同步回归测试。创建 sections/single-agent-launch-sync.md,内容三行:"
-        "title: single agent launch sync / agent: 制图 / status: ready。完成后 report,不要 present。",
+        "做一个 2048 网页小游戏 2048.html 并 present。要求键盘/滑动操作、计分、重新开始、胜利/失败状态、"
+        "移动端适配。完成后确保文件已经同步到 main 工作区。",
     ),
     (
-        "diff_history",
-        "Diff/历史 · 上线清单连续修改",
+        "resume_iteration",
+        "个人简历网页连续迭代",
         "solo:designer",
-        "这是 diff 与提交历史回归测试。先创建 launch-history-smoke.md,写 3 行初始上线检查项;"
-        "然后在同一轮里修改它两次:第一次追加 rollback checklist,第二次把标题改成 Launch History Smoke Final。"
-        "目标是产生可检查的 diff/历史记录;完成后 report,不要 present。",
+        "制作 personal-resume.html。先完成基础版简历网页,再连续迭代两次:第一次加项目经历和技能标签,"
+        "第二次优化移动端排版和配色。最终 present,并保留可检查的提交历史。",
     ),
     (
-        "readonly_recovery",
-        "工具错误 · 上线缺失文件恢复",
+        "meeting_notes_recovery",
+        "会议纪要缺失资料恢复",
         "solo:generalist",
-        "这是错误恢复边界测试。先尝试读取 missing/launch-runbook.md,确认失败后不要停;"
-        "随后创建 sections/launch-recovery.md,内容写明 recovered after missing launch runbook。完成后 report。",
+        "整理一份项目复盘会议纪要 meeting-notes.md。先尝试读取 missing/interview-notes.md;如果资料不存在,"
+        "不要停,请基于合理假设补齐背景、决策、行动项和负责人,最后 present。",
     ),
 ]
 
@@ -356,65 +356,87 @@ def main():
     existing_workspaces = {w["name"]: w for w in get("/api/workspaces")}
     existing_convs = {(c.get("workspace_id"), c["title"]): c for c in get("/api/conversations")}
     manifest = []
+    colors = ["#D97757", "#5AA17F", "#5C7EC7", "#B66A4B", "#8A64D8", "#C0914A"]
+    role_names = {
+        "writer": "文档/内容/办公",
+        "designer": "网页/视觉/交互",
+        "generalist": "数据/脚本/Excel/分析",
+    }
 
-    for key, title, who, task in CASES:
-        ws_name = f"上线准备 · {title}"
-        ws_row = existing_workspaces.get(ws_name)
-        if ws_row:
-            ws_id = ws_row["id"]
-        else:
-            ws_id = req(
-                "/api/workspaces",
-                {
-                    "name": ws_name,
-                    "desc": f"AgentHub 上线准备真实用例:{title}",
-                    "members": all_members,
-                    "color": "#D97757",
-                },
-            )["workspace"]["id"]
-            existing_workspaces[ws_name] = {"id": ws_id, "name": ws_name}
-
-        conv_title = f"上线准备 · {title}"
-        existing_conv = existing_convs.get((ws_id, conv_title))
+    for idx, (key, title, who, task) in enumerate(CASES):
+        conv_title = title
         if who == "group":
             orch = by_role["orchestrator"]
-            conv = existing_conv or req(
-                "/api/conversations",
-                {
-                    "workspace_id": ws_id,
-                    "title": conv_title,
-                    "members": ["you"] + all_members,
-                    "group": True,
-                    "direct": False,
-                    "member_roles": {
-                        orch: "拆解 + 验收 + 合并 present",
-                        by_role["writer"]: "上线文档/公告/客服口径",
-                        by_role["designer"]: "上线页面/状态组件/视觉检查",
-                        by_role["generalist"]: "QA 表格/埋点/数据分析",
-                    },
-                    "orchestrator_member_id": orch,
-                },
-            )
             members = ["you"] + all_members
+            member_roles = {
+                orch: "拆解 + 验收 + 合并 present",
+                by_role["writer"]: "文案/文档/DOCX/PPT 叙事",
+                by_role["designer"]: "网页/游戏/视觉交互实现",
+                by_role["generalist"]: "Excel/数据/脚本/分析",
+            }
+            desc = f"多人协作真实交付项目:{title}"
         else:
             role = who.split(":", 1)[1]
             agent = by_role[role]
+            members = ["you", agent]
+            member_roles = {agent: "独立完成本真实产物任务"}
+            desc = f"{role_names.get(role, '单 Agent')}真实交付项目:{title}"
+
+        ws_row = existing_workspaces.get(title)
+        if ws_row:
+            workspace_id = ws_row["id"]
+        else:
+            workspace_id = req(
+                "/api/workspaces",
+                {
+                    "name": title,
+                    "desc": desc,
+                    "members": members,
+                    "color": colors[idx % len(colors)],
+                },
+            )["workspace"]["id"]
+            existing_workspaces[title] = {"id": workspace_id}
+
+        existing_conv = existing_convs.get((workspace_id, conv_title))
+        if who == "group":
             conv = existing_conv or req(
                 "/api/conversations",
                 {
-                    "workspace_id": ws_id,
+                    "workspace_id": workspace_id,
                     "title": conv_title,
-                    "members": ["you", agent],
+                    "members": members,
                     "group": True,
                     "direct": False,
-                    "member_roles": {agent: "独立完成本上线准备任务"},
+                    "member_roles": member_roles,
+                    "orchestrator_member_id": orch,
+                    "draft_text": task,
                 },
             )
-            members = ["you", agent]
+        else:
+            conv = existing_conv or req(
+                "/api/conversations",
+                {
+                    "workspace_id": workspace_id,
+                    "title": conv_title,
+                    "members": members,
+                    "group": False,
+                    "direct": True,
+                    "member_roles": member_roles,
+                    "draft_text": task,
+                },
+            )
 
-        if not existing_conv:
-            post_task(conv["id"], task)
-        manifest.append({"key": key, "conv_id": conv["id"], "title": title, "members": members})
+        if existing_conv:
+            req(f"/api/conversations/{conv['id']}/draft", {"draft_text": task}, method="PATCH")
+        manifest.append(
+            {
+                "key": key,
+                "workspace_id": workspace_id,
+                "conv_id": conv["id"],
+                "title": title,
+                "members": members,
+            }
+        )
 
     print("  cases(" + str(len(manifest)) + "): " + ", ".join(item["key"] for item in manifest))
 
@@ -427,8 +449,25 @@ if __name__ == "__main__":
         raise
 PYSEED
 
-CONVS="$(sqlite3 ~/.polynoia/polynoia.db 'SELECT count(*) FROM conversations')"
-AGENTS="$(sqlite3 ~/.polynoia/polynoia.db "SELECT name || ':' || json_extract(setup, '$.adapter_id') || '/' || json_extract(setup, '$.model') FROM agents WHERE custom = 1 ORDER BY name")"
-echo "✓ Ready — $CONVS production-like launch-readiness conversations"
-echo "$AGENTS"
+"$PY" - <<'PYSUMMARY'
+import json
+import urllib.request
+
+API = "http://localhost:7780"
+
+
+def get(path):
+    with urllib.request.urlopen(API + path) as resp:
+        return json.load(resp)
+
+
+workspaces = get("/api/workspaces")
+convs = get("/api/conversations")
+agents = [a for a in get("/api/agents") if a.get("custom")]
+
+print(f"✓ Ready — {len(workspaces)} real project workspaces, {len(convs)} conversations")
+for agent in sorted(agents, key=lambda x: x.get("name", "")):
+    setup = agent.get("setup") or {}
+    print(f"{agent.get('name')}:{setup.get('adapter_id')}/{setup.get('model')}")
+PYSUMMARY
 echo "  Frontend: http://127.0.0.1:5173"

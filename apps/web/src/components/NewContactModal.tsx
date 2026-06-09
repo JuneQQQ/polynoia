@@ -7,7 +7,7 @@
  * 入口:Sidebar 顶部 "+ 新建联系人"。
  * 底部 footer 链接 → 打开 AdapterManager(原 OnboardingModal)。
  */
-import { Sparkles, Trash2, Wrench, X } from "lucide-react";
+import { Check, ChevronDown, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent } from "../lib/types";
@@ -120,6 +120,7 @@ export function NewContactModal({
 		() => new Set((editing?.skills ?? []).map((s) => s.name)),
 	);
 	const [skillSrc, setSkillSrc] = useState("");
+	const [skillMenuOpen, setSkillMenuOpen] = useState(false);
 	const [skillBusy, setSkillBusy] = useState<"idle" | "installing" | "err">("idle");
 	const [skillErr, setSkillErr] = useState("");
 	useEffect(() => {
@@ -488,58 +489,116 @@ export function NewContactModal({
 
 							<Field label="Skill">
 								<div className="space-y-2">
+									{boundSkills.size > 0 && (
+										<div className="flex flex-wrap gap-1.5">
+											{[...boundSkills].map((name) => (
+												<button
+													key={name}
+													type="button"
+													onClick={() =>
+														setBoundSkills((b) => {
+															const n = new Set(b);
+															n.delete(name);
+															return n;
+														})
+													}
+													title={`移除 ${name}`}
+													className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[11.5px] text-[var(--color-accent)]"
+												>
+													<span className="font-mono">{name}</span>
+													<X size={11} />
+												</button>
+											))}
+										</div>
+									)}
 									{installedSkills.length > 0 ? (
-										<div className="space-y-1">
-											{installedSkills.map((s) => {
-												const on = boundSkills.has(s.name);
-												return (
-													<div
-														key={s.name}
-														className={`group w-full flex items-stretch gap-1 rounded border transition-colors ${
-															on
-																? "border-[var(--color-accent)] bg-[var(--color-accent)]/10"
-																: "border-[var(--color-line)] hover:bg-[var(--color-surface-2)]"
-														}`}
-													>
-														<button
-															type="button"
-															onClick={() =>
-																setBoundSkills((b) => {
-																	const n = new Set(b);
-																	n.has(s.name) ? n.delete(s.name) : n.add(s.name);
-																	return n;
-																})
-															}
-															className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-1.5"
-														>
-															<span className="text-[12px] mt-px">{on ? "✓" : "+"}</span>
-															<span className="min-w-0">
-																<span className="text-[12.5px] font-mono text-[var(--color-fg)]">
-																	{s.name}
-																</span>
-																{s.description && (
-																	<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
-																		{s.description}
-																	</span>
-																)}
-															</span>
-														</button>
-														<button
-															type="button"
-															onClick={() => removeSkill(s.name)}
-															title={`卸载 skill「${s.name}」`}
-															aria-label={`卸载 ${s.name}`}
-															className="px-2 grid place-items-center rounded-r text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
-														>
-															<Trash2 size={13} />
-														</button>
+										<div className="relative">
+											<button
+												type="button"
+												onClick={() => setSkillMenuOpen((v) => !v)}
+												className="w-full flex items-center justify-between gap-2 text-left text-[12.5px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)]"
+											>
+												<span>
+													{boundSkills.size > 0
+														? `已选择 ${boundSkills.size} 个 skill`
+														: "选择已安装 skill"}
+												</span>
+												<ChevronDown
+													size={14}
+													className={`text-[var(--color-fg-3)] transition-transform ${
+														skillMenuOpen ? "rotate-180" : ""
+													}`}
+												/>
+											</button>
+											{skillMenuOpen && (
+												<>
+													<button
+														type="button"
+														aria-hidden
+														tabIndex={-1}
+														onClick={() => setSkillMenuOpen(false)}
+														className="fixed inset-0 z-[61] cursor-default bg-transparent"
+													/>
+													<div className="absolute left-0 right-0 top-[calc(100%+6px)] z-[62] max-h-56 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)] p-1">
+														{installedSkills.map((s) => {
+															const on = boundSkills.has(s.name);
+															return (
+																<div
+																	key={s.name}
+																	className="group flex items-stretch gap-1 rounded hover:bg-[var(--color-surface-2)]"
+																>
+																	<button
+																		type="button"
+																		onClick={() =>
+																			setBoundSkills((b) => {
+																				const n = new Set(b);
+																				n.has(s.name)
+																					? n.delete(s.name)
+																					: n.add(s.name);
+																				return n;
+																			})
+																		}
+																		className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-2"
+																	>
+																		<span
+																			className={`mt-0.5 w-4 h-4 rounded border grid place-items-center flex-shrink-0 ${
+																				on
+																					? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+																					: "border-[var(--color-line-strong)]"
+																			}`}
+																		>
+																			{on && <Check size={11} />}
+																		</span>
+																		<span className="min-w-0">
+																			<span className="block text-[12.5px] font-mono text-[var(--color-fg)] truncate">
+																				{s.name}
+																			</span>
+																			{s.description && (
+																				<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
+																					{s.description}
+																				</span>
+																			)}
+																		</span>
+																	</button>
+																	<button
+																		type="button"
+																		onClick={() => removeSkill(s.name)}
+																		title={`卸载 skill「${s.name}」`}
+																		aria-label={`卸载 ${s.name}`}
+																		className="px-2 grid place-items-center rounded-r text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
+																	>
+																		<Trash2 size={13} />
+																	</button>
+																</div>
+															);
+														})}
 													</div>
-												);
-											})}
+												</>
+											)}
 										</div>
 									) : (
 										<p className="text-[11.5px] text-[var(--color-fg-3)]">
-											还没有已安装的 skill。粘贴一个 skill 地址安装(git URL 或本地路径)。
+											还没有已安装的 skill。可直接粘贴 GitHub 地址或本地路径安装。
 										</p>
 									)}
 									<div className="flex gap-2">
@@ -550,7 +609,7 @@ export function NewContactModal({
 												setSkillSrc(e.target.value);
 												setSkillBusy("idle");
 											}}
-											placeholder="skill 地址:https://….git 或 /abs/path"
+											placeholder="GitHub 地址或本地路径:https://github.com/org/repo.git"
 											className="flex-1 text-[12px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
 										/>
 										<button

@@ -158,6 +158,7 @@ class ConversationRow(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     unread: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    draft_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     # Merge gate. Manual is retained only for legacy rows; new conversations
     # are pinned to auto by the API.
     merge_mode: Mapped[str] = mapped_column(String(16), default="auto", nullable=False)

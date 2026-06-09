@@ -17,6 +17,7 @@
 import { Loader2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { isMobile } from "../../lib/platform";
 import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
 import { MessageView } from "../MessageView";
 
@@ -55,6 +56,7 @@ export function ToolCallGroup({
 	compact?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
+	const mobile = isMobile();
 	// Once the user clicks the header, their open/closed choice WINS — even while a
 	// bash terminal is still 运行中. Without this, `running`/`anyStreaming` below
 	// keep forcing the group open, so the 收起 button looks dead (you click it and
@@ -178,18 +180,18 @@ export function ToolCallGroup({
 
 	// Compact (inside a burst lane): no avatar column / page padding — the fold
 	// block spans the lane width, lining up with the lane's file-edit cards.
-	if (compact) return <div className="my-1 max-w-[640px]">{inner}</div>;
+	if (compact) return <div className="max-w-[640px]">{inner}</div>;
 
 	return (
-		<div className="flex gap-3 px-6 my-1">
+		<div className={`flex py-0.5 ${mobile ? "gap-2 px-2" : "gap-3 px-6"}`}>
 			{/* Avatar column — populated only when this fold starts the run; empty
 			    otherwise (preserves indent, like MessageView's grouped mode). */}
-			<div className="w-8 flex-shrink-0">
+			<div className={`${mobile ? "w-7" : "w-8"} flex-shrink-0`}>
 				{showAvatar && avColor && (
 					<button
 						type="button"
 						onClick={() => avId && useStore.getState().openAgentDetail(avId)}
-						className="w-8 h-8 rounded-full grid place-items-center text-white text-[11px] font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-transform duration-200 hover:scale-[1.04]"
+						className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-transform duration-200 hover:scale-[1.04]`}
 						style={{ background: avColor }}
 						title={`查看 ${avName} 详情`}
 					>

@@ -1201,6 +1201,21 @@ export const useStore = create<Store>((set, get) => ({
 			}
 			const cardSender = action.senderId || fallbackSender;
 			let messageId = action.messageId;
+			let prunedStreaming: Map<
+				string,
+				{
+					messageId: string;
+					senderId: string;
+					text: string;
+					kind: "text" | "reasoning";
+				}
+			> | null = null;
+			for (const [key, value] of cur.streamingTexts) {
+				if (value.senderId === cardSender && value.kind === "reasoning") {
+					if (!prunedStreaming) prunedStreaming = new Map(cur.streamingTexts);
+					prunedStreaming.delete(key);
+				}
+			}
 			if (action.cardKind === "tool-call") {
 				const nextToolId = (action.payload as { tool_call_id?: unknown })
 					.tool_call_id;
@@ -1237,6 +1252,7 @@ export const useStore = create<Store>((set, get) => ({
 				convs.set(convId, {
 					...cur,
 					msgById: nextById,
+					...(prunedStreaming ? { streamingTexts: prunedStreaming } : {}),
 					streamTick: cur.streamTick + 1,
 				});
 			} else {
@@ -1251,6 +1267,7 @@ export const useStore = create<Store>((set, get) => ({
 					...cur,
 					messageOrder: [...cur.messageOrder, messageId],
 					msgById: nextById,
+					...(prunedStreaming ? { streamingTexts: prunedStreaming } : {}),
 					streamTick: cur.streamTick + 1,
 				});
 			}
