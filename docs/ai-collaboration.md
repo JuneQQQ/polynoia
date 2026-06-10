@@ -51,10 +51,13 @@ Spec 覆盖:
 | 添加预览类型 | 新增 Markdown/HTML/Office 等产物预览 | `apps/web/src/components/preview/`, `docs/design/preview-system-and-evolution.md` |
 | 冲突闭环 | 多 Agent 并行改同文件时,由系统浮现冲突并保留人工选择 | `docs/design/conflict-closed-loop-2026-05-30.md` |
 | 上线回归 | 一键重置为可演示、可回归的上线准备场景 | `scripts/testkit/reset.sh` |
+| 模块化重构 | 把 6k 行 `routes.py` 的 WebSocket burst/merge/dispatch 引擎(~2100 行)增量抽到 `ws_conv.py`,跨重组守住合并承重不变量 | `apps/server/polynoia/api/ws_conv.py`、`docs/design/conflict-closed-loop-CHARTER.md` |
+| @ 路由收敛 | 群聊 @mention 接力的「致谢回弹」抑制 + 深度上限 + present-skip,防寒暄刷屏 | `docs/ADR/ADR-022-mention-chain-ack-suppression.md`、`tests/api/test_mention_routing.py` |
+| 进程/卡片可靠性 | 终端卡生命周期由后端权威接管(单调 seq 守卫 + 30s 存活清扫 + 启动 reap) | `docs/ADR/ADR-023-terminal-card-lifecycle-backend-owned.md` |
 
 ## 5. ADR:把 AI 协作中的决策留下来
 
-ADR 位于 `docs/ADR/`,记录了多个关键决策:
+ADR 位于 `docs/ADR/`(完整索引见 [`docs/ADR/README.md`](ADR/README.md)),持续记录**每一个非显然决策**——不是 Phase 0 一次性产物,而是贯穿全程的协作习惯。代表性决策:
 
 - Orchestrator 是 Agent,不是特殊后端逻辑。
 - 自管理五层上下文,不依赖 LLM 自动记忆。
@@ -62,6 +65,9 @@ ADR 位于 `docs/ADR/`,记录了多个关键决策:
 - 联系人与 Adapter 解耦,同一模型可以派生不同角色。
 - CodeMirror 优先于 Monaco,减少首屏体积与集成复杂度。
 - Capacitor 复用 Web 构建,保证移动端是 Web 的真实子集。
+- Agent 级跨会话记忆 + 按场景(单聊/群聊)差异化注入([ADR-019](ADR/ADR-019-agent-level-memory-and-scenario-context.md))。
+- 群聊 @mention 致谢接力抑制 + 收敛协议([ADR-022](ADR/ADR-022-mention-chain-ack-suppression.md),自主回归中发现)。
+- 终端卡生命周期由后端权威接管,而非会死的 MCP 子进程([ADR-023](ADR/ADR-023-terminal-card-lifecycle-backend-owned.md))。
 
 这些文档可用于答辩时解释“为什么这样设计”,而不只是展示结果。
 
@@ -72,6 +78,7 @@ ADR 位于 `docs/ADR/`,记录了多个关键决策:
 - 自动化测试:后端 pytest、前端 vitest。
 - 手动测试矩阵:`docs/testing/manual-test-cases.md`。
 - 唯一初始化脚本:`bash scripts/testkit/reset.sh`。
+- **自主 E2E 体检器** `scripts/testkit/check_case.py`:对每个会话做消息普查 + 4 项硬不变量(无卡死「运行中」终端、无卡死 tool-call、无空 reasoning/text、有 present 卡)+ 产物清单 + 残留进程检查。
 
 `scripts/testkit/reset.sh` 会清库、重建 schema、启动前后端并灌入上线准备相关真实场景,包括:
 
@@ -92,7 +99,18 @@ ADR 位于 `docs/ADR/`,记录了多个关键决策:
 
 这种分工也是 AgentHub 产品本身要证明的核心体验:AI 不是一个黑盒助手,而是可组织、可追踪、可协作的团队成员。
 
-## 8. 官方演示建议
+## 8. 自主质量闭环(Autonomous QA)
+
+除了「人写需求、AI 写代码」,本项目还实践了一种更强的协作形态:**AI 自主跑回归 → 诊断失败 → 修系统 BUG → 复验 → 迭代到收敛**,且全过程留痕可审计。会话纪要沉淀在 [`docs/sessions/`](sessions/)。
+
+- **通宵 20 案 E2E**([sessions/2026-06-overnight-e2e.md](sessions/2026-06-overnight-e2e.md)):用户授权全自主,逐个用「UI 发草稿 → 监视收敛 → `check_case.py` 不变量 → 亲查产物/亲跑(玩 2048、openpyxl 验表、跑 pytest、npm build、起后端 curl)」三重验证;**边测边在被测系统里修了 ~11 类 BUG**(终端卡乱序竞态、后台卡谎报 exit、空 reasoning 落库、沙箱端口泄漏…),最终 20/20 PASS。
+- **协调器收尾契约**(BUG-11/12):自主回归发现协调器在「验收轮」只做只读抽查就结束、或只解部分冲突就 present。在 `orchestrator.py` 加硬约束:**验收轮必须产生真实推进动作**(dispatch 或本轮 present),且 **present 前清掉所有 open 冲突卡**。后续用例复验生效。
+- **多 agent 会话收敛**([ADR-022](ADR/ADR-022-mention-chain-ack-suppression.md)):发现并修掉群聊「致谢接力」寒暄刷屏;两次 live 复验做到 depth-cap=0、ack-relay=0。
+- **进程/卡片可靠性**([ADR-023](ADR/ADR-023-terminal-card-lifecycle-backend-owned.md)):终端卡生命周期改由后端权威接管(单调 seq 守卫 + 30s pgid 存活清扫 + 启动 reap),根治「MCP 子进程一死,卡片永久运行中」。
+- **跨端落地**:桌面 Tauri 2 + 移动 Capacitor 6 复用同一份 `apps/web/dist`;期间修了端口劫持(桌面 `devUrl` 错配 5173→7788 + vite `strictPort`)、安全区/键盘/返回键等原生集成问题,而**不重写 UI**。
+- **多 agent 编排做诊断**:用并行 subagent workflow(对抗式取证 + 结构化产出)定位上述 ping-pong / 进程生命周期根因,再由主循环综合实施——AI 协作工具本身也用来开发 AI 协作平台。
+
+## 9. 官方演示建议
 
 建议按以下顺序演示:
 

@@ -65,7 +65,7 @@
 ## 3. 不变量(碰了会**静默**坏,测试不一定红)
 
 1. **workspace root 单 HEAD,绝不留半合并。** 跨所有 worktree + 所有 conv 只有一个 HEAD/index;任何 merge 异常出口必须守卫式 `git merge --abort`(先 `git rev-parse -q --verify MERGE_HEAD` 判断,否则 rc=128)。
-2. **per-workspace 锁键是 `workspace_id`,不是 `conv_id`。** 同 workspace 的多个 conv 并发合并会踩坏 `.git`。锁要包 `commit_pending_worktrees → probe_merge → conclude_merge` 整段。(此锁尚未存在,P1 必加。)
+2. **per-workspace 锁键是 `workspace_id`,不是 `conv_id`。** 同 workspace 的多个 conv 并发合并会踩坏 `.git`。锁要包 `commit_pending_worktrees → probe_merge → conclude_merge` 整段。**✅ 已实现**:`workspace_merge_lock(workspace_id)`(`sandbox/_core.py:158`),drain 入口(`ws_conv.py` `_merge_burst_to_main` 一带)已 `async with` 包住整段。**注意**:它是进程内 `asyncio.Lock` —— 同进程内多 conv 安全,但**跨进程/多实例不安全**(共享 `.git` 仍会被另一个后端实例踩坏)。跨进程安全(Postgres advisory / 文件锁)仍是 P1。
 3. **`open_workspace_if_exists` 是 sync** —— 别加 await。
 4. **新消息卡 kind 必须进 `MessagePayload` union + 跑 `make types`** —— 永不手写 `packages/shared` / `lib/types.ts`(CLAUDE.md §6.1)。
 5. **pending-edit pane 与 conflict pane 共用 preview 右槽,互斥** —— 不能同时显。

@@ -231,10 +231,10 @@ One Vite build, three runtimes — **not** three rewrites.
 
 ```bash
 make install      # uv sync (server) + pnpm install (web)
-make dev          # server :7780 + web :5173  (Ctrl-C stops both)
+make dev          # server :7780 + web :7788  (Ctrl-C stops both)
 ```
 
-Open **http://127.0.0.1:5173/** (API at http://127.0.0.1:7780/).
+Open **http://127.0.0.1:7788/** (API at http://127.0.0.1:7780/).
 
 ### Seed a demo (recommended)
 

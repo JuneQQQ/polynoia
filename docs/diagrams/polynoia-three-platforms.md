@@ -51,7 +51,7 @@ cargo tauri build / pnpm cap add ios
 
 线 1 → 端 A:Browser (左上,蓝色 #5B8FF9)
 端 A 内容:
-- 启动:vite dev --port 5173
+- 启动:vite dev --port 7788
 - 检测:detectPlatform() = "browser" (走 viewport / UA 判断)
 - 布局:完整三栏 Sidebar + ChatPane + PreviewPane
 - 部署:nginx static + reverse-proxy /api → uvicorn :7780
@@ -61,7 +61,7 @@ cargo tauri build / pnpm cap add ios
 - spawn:cargo tauri build → apps/desktop/src-tauri/target/release/bundle/
 - 产物:Polynoia_0.1.0_aarch64.dmg / Polynoia.app
 - 加载:
-    dev → http://127.0.0.1:5173 (vite dev,热重载)
+    dev → http://127.0.0.1:7788 (vite dev,热重载)
     prod → 内嵌 frontendDist: ../../web/dist 静态
 - 注入:window.__POLYNOIA_PLATFORM__ = "desktop" (Rust setup 阶段)
 - 检测:detectPlatform() = "desktop"
@@ -77,7 +77,7 @@ cargo tauri build / pnpm cap add ios
     ios/App/App/public/
     android/app/src/main/assets/public/
 - 加载:
-    dev → http://<LAN-IP>:5173 (--livereload --external)
+    dev → http://<LAN-IP>:7788 (--livereload --external)
     prod → bundled webDir
 - 检测:detectPlatform() = "mobile" (经 window.Capacitor.isNativePlatform())
 - 布局:抽屉 Sidebar (Drawer) + 全屏 ChatPane,隐藏 PreviewPane

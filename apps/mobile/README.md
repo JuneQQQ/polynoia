@@ -10,7 +10,7 @@ Polynoia 手机端(iOS / Android,经 Capacitor 6)。**共用 @polynoia/web 的�
 │   ┌──────────────────────────────────────────────────┐  │
 │   │  Native WebView (WKWebView iOS / Chrome Android) │  │
 │   │   ↓ 加载                                          │  │
-│   │   ① dev livereload: http://<LAN-IP>:5173         │  │
+│   │   ① dev livereload: http://<LAN-IP>:7788         │  │
 │   │   ② prod:bundled apps/web/dist (synced into     │  │
 │   │      ios/App/App/public 和 android/.../public)   │  │
 │   │  自动注入 window.Capacitor → platform.ts 检测     │  │
@@ -65,17 +65,17 @@ uv run uvicorn polynoia.main:app --host 0.0.0.0 --port 7780  # 必须 0.0.0.0
 
 # 终端 2: vite dev
 cd apps/web
-./node_modules/.bin/vite --host 0.0.0.0 --port 5173
+./node_modules/.bin/vite --host 0.0.0.0 --port 7788
 
 # 终端 3: launch phone(替换 LAN IP)
 cd apps/mobile
 # iOS
-cap run ios --livereload --external --port=5173
+cap run ios --livereload --external --port=7788
 # Android(USB 调试或模拟器)
-cap run android --livereload --external --port=5173
+cap run android --livereload --external --port=7788
 ```
 
-手机 WebView 自动加载 `http://<电脑LAN-IP>:5173`,改 web 代码自动刷新。
+手机 WebView 自动加载 `http://<电脑LAN-IP>:7788`,改 web 代码自动刷新。
 
 ## Build 生产 IPA / APK
 
