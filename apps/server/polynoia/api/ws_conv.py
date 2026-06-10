@@ -1073,6 +1073,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             out = dict(p)
             if not out.get("turn_id"):
                 out["turn_id"] = turn_id
+            if burst_card_id and not out.get("burst_card_id"):
+                out["burst_card_id"] = burst_card_id
+            if burst_task_id and not out.get("burst_task_id"):
+                out["burst_task_id"] = burst_task_id
             if (
                 discussion_id
                 and not out.get("discussion_id")

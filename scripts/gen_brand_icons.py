@@ -126,7 +126,7 @@ def main() -> None:
         ROOT / "apps/web/public/favicon.svg": favicon_web_mono(),
         ROOT / "assets/brand/favicon-web-mono.svg": favicon_web_mono(),
         ROOT / "assets/brand/icon-desktop.svg": icon_squircle_triad(
-            SQ_MAC, ring=True, glyph_scale=0.90, title="Polynoia"),
+            SQ_MAC, ring=True, glyph_scale=1.0, title="Polynoia"),
         ROOT / "assets/brand/icon-mobile.svg": icon_squircle_triad(
             SQ_IOS, ring=False, glyph_scale=1.0, title="Polynoia"),
         ROOT / "assets/brand/logo.svg": logo_web_triad(),

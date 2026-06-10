@@ -49,7 +49,12 @@ export type ComputeBurstsResult = {
 type TasksPayloadShape = {
   kind: "tasks";
   title?: string;
-  tasks?: Array<{ agent?: string }>;
+  tasks?: Array<{ id?: string; agent?: string }>;
+};
+
+type BurstTaggedPayload = {
+  burst_card_id?: string | null;
+  burst_task_id?: string | null;
 };
 
 function isTasksPayload(payload: unknown): payload is TasksPayloadShape {
@@ -71,12 +76,19 @@ export function computeBursts(
 
   let active: BurstInfo | null = null;
   let burstCount = 0;
+  const burstByTaskId = new Map<string, BurstInfo>();
 
   for (const msgId of messageOrder) {
     const m = msgById.get(msgId);
     if (!m) continue;
 
     const isTasks = isTasksPayload(m.payload);
+    const burstTag =
+      typeof m.payload === "object" && m.payload !== null
+        ? (m.payload as BurstTaggedPayload)
+        : null;
+    const taggedBurst =
+      burstTag?.burst_card_id ? burstByAnchorId.get(burstTag.burst_card_id) : null;
 
     // BURST START: any tasks card anchors a burst (only orchestrators emit
     // them). The card's sender becomes the burst owner.
@@ -100,6 +112,25 @@ export function computeBursts(
         closed: false,
       };
       burstByAnchorId.set(m.id, active);
+      for (const t of tasks) {
+        if (t.id) burstByTaskId.set(t.id, active);
+      }
+      continue;
+    }
+
+    // Explicit server tags win over timeline inference. This covers worker turns
+    // that arrive after the orchestrator's summary: they still belong in the
+    // burst lane instead of leaking into the main chat stream.
+    const explicitBurst =
+      taggedBurst ??
+      (burstTag?.burst_task_id
+        ? burstByTaskId.get(burstTag.burst_task_id)
+        : undefined);
+    if (explicitBurst && explicitBurst.assignees.has(m.sender_id)) {
+      claimedSet.add(m.id);
+      const lane = explicitBurst.lanes.get(m.sender_id) ?? [];
+      lane.push(m.id);
+      explicitBurst.lanes.set(m.sender_id, lane);
       continue;
     }
 
