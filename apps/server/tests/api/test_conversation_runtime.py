@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+from fastapi import HTTPException
+
 from polynoia.api.execution import RUNTIME, ConversationRuntime
 
 
@@ -82,3 +85,47 @@ def test_routes_aliases_are_the_runtime_objects():
     assert routes._conv_agent_tasks is RUNTIME.agent_tasks
     assert routes._conv_agent_discussion is RUNTIME.agent_discussion
     assert routes._conv_live is RUNTIME.live
+
+
+@pytest.mark.asyncio
+async def test_continue_discussion_requires_active_discussion():
+    from polynoia.api import routes
+
+    routes._conv_discussions.pop("conv-no-discussion", None)
+    with pytest.raises(HTTPException) as exc:
+        await routes.continue_discussion(
+            "conv-no-discussion",
+            {"prompt": "再讨论一轮", "participants": ["数擎"]},
+        )
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_continue_discussion_records_next_round_request():
+    from polynoia.api import routes
+
+    conv_id = "conv-discussion-continue"
+    routes._conv_discussions[conv_id] = {
+        "anchor_id": "discussion-1",
+        "round": 2,
+        "max_rounds": 10,
+        "participants": {"orch", "data", "chart"},
+    }
+    try:
+        res = await routes.continue_discussion(
+            conv_id,
+            {
+                "prompt": "请补齐 API 错误态。",
+                "participants": ["数擎", "制图"],
+                "author_agent_id": "orch",
+            },
+        )
+        assert res["kind"] == "continuing"
+        assert res["round"] == 3
+        assert routes._conv_discussions[conv_id]["continue"] == {
+            "prompt": "请补齐 API 错误态。",
+            "participants": ["数擎", "制图"],
+            "author_agent_id": "orch",
+        }
+    finally:
+        routes._conv_discussions.pop(conv_id, None)

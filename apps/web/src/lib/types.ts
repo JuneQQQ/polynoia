@@ -63,6 +63,8 @@ export type DiscussionPayload = {
 	started_at?: string | null;
 	ended_at?: string | null;
 	conclusion_message_id?: ULID | null;
+	round?: number | null;
+	max_rounds?: number | null;
 };
 
 export type HunkLine = ["add" | "del" | "ctx", number, string];

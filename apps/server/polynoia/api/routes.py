@@ -88,6 +88,7 @@ def _is_bare_ack_bounce(
 # trigger. Fan-out cap bounds how many peers a single message may actually pull
 # in, so one message can't spawn a wide burst of turns.
 _DISCUSSION_TURN_BUDGET = 10
+_DISCUSSION_MAX_ROUNDS = 10
 _DISCUSSION_FANOUT_CAP = 2
 # If an agent produces NO output for this long, treat its turn as hung (slow/
 # dead model backend, wedged CLI session) → fail the turn instead of freezing
@@ -1007,6 +1008,47 @@ async def record_discuss(conv_id: str, body: dict):
         "kind": "discussing",
         "participants": participants,
         "note": "已开场,参与者将各自加入讨论。你先停,讨论收敛后会在后续轮里给出结论。",
+    }
+
+
+@router.post("/api/conversations/{conv_id}/discussion/continue")
+async def continue_discussion(conv_id: str, body: dict):
+    """Coordinator-only continuation signal for the active discussion.
+
+    The model must not create nested ``discuss`` cards when a round needs more
+    review. Instead it calls this tool during the coordinator decision turn; the
+    websocket runner consumes the request and starts the next round on the same
+    discussion card. If the coordinator does not call this endpoint, the current
+    decision turn is the final conclusion.
+    """
+    reg = _conv_discussions.get(conv_id)
+    if not reg or not reg.get("anchor_id"):
+        raise HTTPException(status_code=409, detail="no active discussion")
+    current_round = int(reg.get("round") or 1)
+    max_rounds = int(reg.get("max_rounds") or _DISCUSSION_MAX_ROUNDS)
+    if current_round >= max_rounds:
+        return {
+            "kind": "max_rounds_reached",
+            "round": current_round,
+            "max_rounds": max_rounds,
+            "note": "讨论已达到最大轮数,请直接收敛结论。",
+        }
+    prompt = str(body.get("prompt") or "").strip()
+    participants = body.get("participants")
+    if participants is not None and not isinstance(participants, list):
+        raise HTTPException(status_code=400, detail="participants must be a list")
+    reg["continue"] = {
+        "prompt": prompt,
+        "participants": [
+            str(p).strip() for p in (participants or []) if str(p).strip()
+        ],
+        "author_agent_id": str(body.get("author_agent_id") or "").strip(),
+    }
+    return {
+        "kind": "continuing",
+        "round": current_round + 1,
+        "max_rounds": max_rounds,
+        "note": "已记录继续讨论请求。本轮结束后会在同一讨论卡片进入下一轮。",
     }
 
 

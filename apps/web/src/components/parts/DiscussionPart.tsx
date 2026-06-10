@@ -167,6 +167,12 @@ function DiscussionPartInner({
 			? transcriptGroups.slice(-1)
 			: transcriptGroups;
 	const transcriptCount = discussionInfo.messageIds.length;
+	const round = Number.isFinite(Number(payload.round))
+		? Math.max(1, Number(payload.round))
+		: 1;
+	const maxRounds = Number.isFinite(Number(payload.max_rounds))
+		? Math.max(round, Number(payload.max_rounds))
+		: 10;
 	const conclusionText = stripConclusionPrefix(
 		messageText(
 			discussionInfo.conclusionMsgId
@@ -207,6 +213,9 @@ function DiscussionPartInner({
 					>
 						{statusIcon(payload.status)}
 						{en ? status.en : status.zh}
+					</span>
+					<span className="inline-flex items-center px-1.5 py-0.5 rounded-sm bg-[var(--color-surface)] text-[10.5px] font-mono text-[var(--color-fg-3)] whitespace-nowrap shrink-0">
+						{en ? `R ${round}/${maxRounds}` : `第 ${round}/${maxRounds} 轮`}
 					</span>
 				</div>
 				<div className="mt-1.5 text-[13px] leading-5 text-[var(--color-fg)] truncate">

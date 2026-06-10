@@ -1401,6 +1401,61 @@ class _DiscussTool(_ToolBase):
         )
 
 
+class _ContinueDiscussionTool(_ToolBase):
+    name = "continue_discussion"
+    description = (
+        "Continue the CURRENT discussion for one more round on the same "
+        "discussion card. Use ONLY when you are the coordinator deciding after a "
+        "discussion round and the team still needs another pass before a final "
+        "conclusion. Do not use `discuss` again for the same topic.\n\n"
+        "If enough information is available, DO NOT call this tool; write the "
+        "final `讨论结论:` instead and optionally dispatch implementation work. "
+        "The platform enforces a hard maximum of 10 rounds."
+    )
+    input_schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "What the next round should clarify. Keep it concrete; this "
+                    "will be sent to the selected discussion participants."
+                ),
+            },
+            "participants": {
+                "type": "array",
+                "description": (
+                    "Optional teammate display names for the next round. Omit or "
+                    "pass [] to use the original discussion participants."
+                ),
+                "items": {"type": "string", "description": "Teammate display name"},
+            },
+        },
+        "required": ["prompt"],
+    }
+
+    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(args.get("prompt") or "").strip()
+        participants = args.get("participants") or []
+        if not prompt:
+            return {"kind": "error", "error": "prompt is required"}
+        if not isinstance(participants, list):
+            return {"kind": "error", "error": "participants must be a list"}
+        ctx.append_audit("agent.continue_discussion", {
+            "caller": ctx.agent_id,
+            "participants": [p for p in participants if isinstance(p, str)],
+        })
+        return await _callback_server(
+            f"/api/conversations/{ctx.conv_id}/discussion/continue",
+            json={
+                "prompt": prompt,
+                "participants": participants,
+                "author_agent_id": ctx.agent_id,
+            },
+            label="continue_discussion",
+        )
+
+
 class _RememberTool(_ToolBase):
     name = "remember"
     description = (
@@ -2053,7 +2108,8 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
     for cls in [
         _ReadTool, _WriteTool, _EditTool, _RunBackgroundTool, _WaitTool,
         _BashTool, _GrepTool, _GlobTool,
-        _DispatchTool, _DiscussTool, _RememberTool, _RecallTool, _ReportTool,
+        _DispatchTool, _DiscussTool, _ContinueDiscussionTool,
+        _RememberTool, _RecallTool, _ReportTool,
         _AskUserTool, _RequestProjectAccessTool, _PresentTool,
         _ResolveConflictTool, _ExposeTool,
     ]
@@ -2090,7 +2146,7 @@ _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + 
 # ONLY (the neutral arbiter that holds the contract + every member's intent) — a
 # worker self-resolving its own branch is judge-and-party (biased toward whoever
 # merged later). In AUTO mode the orchestrator resolves; in MANUAL the user does.
-_ORCHESTRATE = {"dispatch", "discuss", "resolve_conflict"}
+_ORCHESTRATE = {"dispatch", "discuss", "continue_discussion", "resolve_conflict"}
 # Deploy/publish — orchestrator AND builders may need to expose a preview URL,
 # container or source zip while wrapping up. Pairs with `present` (the agent
 # surfaces the returned URL via a `links` entry on the deliverable panel).

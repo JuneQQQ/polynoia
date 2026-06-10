@@ -34,6 +34,7 @@ from polynoia.api.routes import (
     _AGENT_IDLE_TIMEOUT,
     _AGENT_IDLE_TIMEOUT_MIDTURN,
     _DISCUSSION_FANOUT_CAP,
+    _DISCUSSION_MAX_ROUNDS,
     _DISCUSSION_TURN_BUDGET,
     _MAX_CONTINUE_PHASES,
     _MAX_MENTION_CHAIN_DEPTH,
@@ -426,35 +427,49 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     # A discussion session is one entry in `_conv_discussions[conv_id]` (created
     # lazily when an agent/user/orchestrator @mentions a teammate in a GROUP
     # conv). Each spawned discussion turn runs via `_run_discussion_turn`, which
-    # ALWAYS settles on completion (even on error). When the whole fan-out tree
-    # drains, exactly ONE 讨论结论 synthesis turn fires. Caps: global turn budget
-    # + per-message fan-out + per-branch depth (see _DISCUSSION_* + the chain loop).
+    # ALWAYS settles on completion (even on error). When one explicit round
+    # drains, the coordinator gets a decision turn: either call
+    # `continue_discussion` to start the next round on the same card, or produce
+    # the final 讨论结论. Explicit discussions are hard-capped at 10 rounds.
+    # The older @mention-only path still uses the same turn budget/fanout caps.
     async def _settle_discussion_turn() -> None:
-        """One discussion turn finished. Decrement in-flight; when the tree has
-        fully drained, fire EXACTLY ONE synthesis by the conv's orchestrator (the
-        only synthesizer — leaderless groups are unsupported). Idempotent (claim +
-        pop before any await, mirroring the burst is_last latch) so concurrent
-        branches settling never double-fire."""
+        """One discussion turn finished.
+
+        For explicit discussion cards, one drained participant round triggers a
+        coordinator decision turn. That decision either requests another round
+        via `continue_discussion` or becomes the final conclusion. The discussion
+        registry stays live until the final conclusion so continuation can reuse
+        the same card.
+        """
         reg = _conv_discussions.get(conv_id)
         if not reg:
             return
         reg["inflight"] = max(0, reg["inflight"] - 1)
         if reg["inflight"] > 0:
             return  # tree still active
-        if reg.get("synthesized"):
+        if reg.get("deciding") or reg.get("synthesized"):
             return
-        reg["synthesized"] = True
         participants = set(reg.get("participants") or ())
         discussion_id = reg.get("discussion_id")
         discussion_anchor_id = reg.get("anchor_id")
         discussion_payload = dict(reg.get("payload") or {})
-        _conv_discussions.pop(conv_id, None)   # remove BEFORE await → no double-fire
         # A lone participant never warranted a discussion → no summary.
         if len(participants) < 2:
+            _conv_discussions.pop(conv_id, None)
             return
+        # Implicit @ discussions created before a visible card can keep the old
+        # one-shot convergence path. There is no card/tool for multi-round state.
+        if not discussion_anchor_id:
+            reg["synthesized"] = True
+            _conv_discussions.pop(conv_id, None)
         if discussion_anchor_id and discussion_payload.get("kind") == "discussion":
+            reg["deciding"] = True
             discussion_payload["status"] = "synthesizing"
             discussion_payload["participants"] = list(participants)
+            discussion_payload["round"] = int(reg.get("round") or 1)
+            discussion_payload["max_rounds"] = int(
+                reg.get("max_rounds") or _DISCUSSION_MAX_ROUNDS
+            )
             await emit_discussion_card(
                 anchor_id=discussion_anchor_id,
                 payload=discussion_payload,
@@ -479,12 +494,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     persist=False,
                 )
             return
+        current_round = int(reg.get("round") or 1)
+        max_rounds = int(reg.get("max_rounds") or _DISCUSSION_MAX_ROUNDS)
         nudge = (
-            "上面是一段多人讨论(大家互相 @ 交流)。请给出**讨论结论**:综合各方观点、"
-            "点明共识与分歧、给出下一步建议。**必须先以「讨论结论:」开头输出一段"
-            "面向用户的结论**。如果结论已经足以开工,可以在同一轮调用 `dispatch` "
-            "继续落地;如果还缺用户选择,就只说明缺什么。不要再调用 `discuss`,也不要用"
-            "普通 @ 接力。"
+            f"上面是多人讨论第 {current_round}/{max_rounds} 轮。现在你作为唯一协调者"
+            "做轮后判定。\n"
+            "- 如果信息已经足够,请输出最终**讨论结论**:综合各方观点、点明共识与分歧、"
+            "给出下一步建议。必须先以「讨论结论:」开头。结论足以开工时,可在同一轮调用 "
+            "`dispatch` 继续落地。\n"
+            "- 如果还需要下一轮,调用 `continue_discussion` 工具,写清下一轮要澄清什么。"
+            "不要调用 `discuss`,不要用普通 @ 接力。达到最大轮数后必须收敛结论。"
         )
         log.info(
             "discussion %s settled → synthesis by %s (participants=%d)",
@@ -1782,16 +1801,96 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         _row = await _db.get(MessageRow, discussion_anchor_id)
                         _payload = dict(_row.payload or {}) if _row else {}
                     if _payload.get("kind") == "discussion":
-                        _payload["status"] = "done" if _persisted_text_msg_id else "failed"
-                        _payload["ended_at"] = datetime.utcnow().isoformat() + "Z"
-                        if _persisted_text_msg_id:
-                            _payload["conclusion_message_id"] = _persisted_text_msg_id
-                        await emit_discussion_card(
-                            anchor_id=discussion_anchor_id,
-                            payload=_payload,
-                            sender_id=_payload.get("created_by") or agent_id,
-                            persist=False,
+                        _continued_discussion = False
+                        _reg = _conv_discussions.get(conv_id)
+                        _continue = (
+                            (_reg or {}).pop("continue", None)
+                            if _reg and _reg.get("anchor_id") == discussion_anchor_id
+                            else None
                         )
+                        if _continue and _reg:
+                            _current_round = int(_reg.get("round") or 1)
+                            _max_rounds = int(
+                                _reg.get("max_rounds") or _DISCUSSION_MAX_ROUNDS
+                            )
+                            if _current_round < _max_rounds:
+                                _requested: list[str] = []
+                                for _nm in _continue.get("participants") or []:
+                                    _tok = str(_nm or "").strip().lstrip("@")
+                                    _pid = resolver.get(_tok) or resolver.get(_tok.lower())
+                                    if _pid and _pid not in _requested:
+                                        _requested.append(_pid)
+                                if not _requested:
+                                    _requested = [
+                                        p for p in (_reg.get("round_participants") or [])
+                                        if isinstance(p, str)
+                                    ]
+                                _seed = [
+                                    p for p in _requested
+                                    if p != agent_id
+                                    and (p in (_reg.get("participants") or set())
+                                         or p in (_agent_setup_by_id or {}))
+                                    and (_agent_setup_by_id.get(p) is not None)
+                                    and _agent_setup_by_id[p].adapter_id
+                                ]
+                                if _seed:
+                                    _reg["round"] = _current_round + 1
+                                    _reg["deciding"] = False
+                                    _reg["inflight"] = len(_seed)
+                                    _reg["round_participants"] = list(_seed)
+                                    for _pid in _seed:
+                                        _reg.setdefault("participants", set()).add(_pid)
+                                    _payload["status"] = "running"
+                                    _payload["round"] = _reg["round"]
+                                    _payload["max_rounds"] = _max_rounds
+                                    _payload["participants"] = list(
+                                        _reg.get("participants") or []
+                                    )
+                                    _payload["ended_at"] = None
+                                    await emit_discussion_card(
+                                        anchor_id=discussion_anchor_id,
+                                        payload=_payload,
+                                        sender_id=_payload.get("created_by") or agent_id,
+                                        persist=False,
+                                    )
+                                    _prompt = str(_continue.get("prompt") or "").strip()
+                                    if not _prompt:
+                                        _prompt = (
+                                            "协调者要求进入下一轮讨论。请基于前面内容补充"
+                                            "尚未澄清的判断。"
+                                        )
+                                    _spawn_discussion_sequence(
+                                        _seed,
+                                        (
+                                            f"讨论进入第 {_reg['round']}/{_max_rounds} 轮。"
+                                            f"协调者要求:{_prompt}"
+                                        ),
+                                        depth=1,
+                                        parent_agent_id=agent_id,
+                                        discussion_id=(
+                                            discussion_id
+                                            if isinstance(discussion_id, str)
+                                            else _reg.get("discussion_id")
+                                        ),
+                                        discussion_anchor_id=discussion_anchor_id,
+                                    )
+                                    _continued_discussion = True
+                        if not _continued_discussion:
+                            if _reg and _reg.get("anchor_id") == discussion_anchor_id:
+                                _reg["synthesized"] = True
+                                _conv_discussions.pop(conv_id, None)
+                            _payload["status"] = (
+                                "done" if _persisted_text_msg_id else "failed"
+                            )
+                            _payload["ended_at"] = datetime.utcnow().isoformat() + "Z"
+                            if _persisted_text_msg_id:
+                                _payload["conclusion_message_id"] = _persisted_text_msg_id
+                            await emit_discussion_card(
+                                anchor_id=discussion_anchor_id,
+                                payload=_payload,
+                                sender_id=_payload.get("created_by") or agent_id,
+                                persist=False,
+                            )
 
             if tasks_payloads:
                 async with SessionLocal() as _db:
@@ -2041,6 +2140,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         "started_at": datetime.utcnow().isoformat() + "Z",
                         "ended_at": None,
                         "conclusion_message_id": None,
+                        "round": 1,
+                        "max_rounds": _DISCUSSION_MAX_ROUNDS,
                     }
                     await emit_discussion_card(
                         anchor_id=_anchor_id,
@@ -2051,7 +2152,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     _reg = _conv_discussions[conv_id] = {
                         "budget": _DISCUSSION_TURN_BUDGET, "inflight": 0,
                         "participants": {agent_id}, "seeder": agent_id,
-                        "synthesized": False,
+                        "synthesized": False, "deciding": False,
+                        "round": 1, "max_rounds": _DISCUSSION_MAX_ROUNDS,
+                        "round_participants": list(_pids),
                         "discussion_id": _discussion_id,
                         "anchor_id": _anchor_id,
                         "payload": _discussion_payload,
@@ -2071,6 +2174,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             "started_at": datetime.utcnow().isoformat() + "Z",
                             "ended_at": None,
                             "conclusion_message_id": None,
+                            "round": 1,
+                            "max_rounds": _DISCUSSION_MAX_ROUNDS,
                         }
                         await emit_discussion_card(
                             anchor_id=_anchor_id,
@@ -2081,17 +2186,21 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         _reg["discussion_id"] = _discussion_id
                         _reg["anchor_id"] = _anchor_id
                         _reg["payload"] = _discussion_payload
+                        _reg["round"] = int(_reg.get("round") or 1)
+                        _reg["max_rounds"] = int(
+                            _reg.get("max_rounds") or _DISCUSSION_MAX_ROUNDS
+                        )
+                        _reg["round_participants"] = list(_pids)
                 _seed: list[str] = []
                 for _pid in _pids:
-                    if _reg["budget"] <= 0:
-                        break
-                    _reg["budget"] -= 1
                     _reg["inflight"] += 1
                     _reg["participants"].add(_pid)
                     _seed.append(_pid)
                 _seed_nudge = (
-                    f"协调器发起了一场讨论,主题:{_topic}。请发表你的看法;需要听取某位"
-                    "队友意见时,可在回复里 @ ta 继续讨论(讨论会自动收敛,别无限互相 @)。"
+                    f"协调器发起了一场讨论,主题:{_topic}。这是第 1/"
+                    f"{_DISCUSSION_MAX_ROUNDS} 轮。请发表你的看法;如果你认为信息足够,"
+                    "直接说明可以收敛。不要用普通 @ 拉同一批参与者继续,每轮后由协调者"
+                    "决定结束或进入下一轮。"
                 )
                 _spawn_discussion_sequence(
                     _seed,
