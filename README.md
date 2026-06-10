@@ -29,7 +29,7 @@
 <!-- HERO SHOT — replace with a real screenshot of a group chat: an orchestrator
      dispatching sub-tasks in parallel, with an inline diff / preview open. -->
 <p align="center">
-  <img src="assets/readme/image.png" alt="Polynoia — a group chat of AI agents building in parallel" width="860" />
+  <img src="assets/readme/yw.png" alt="Polynoia — a group chat of AI agents building in parallel" width="860" />
 </p>
 
 ---

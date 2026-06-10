@@ -27,7 +27,7 @@
 
 <!-- 主图 — 换成真实截图:群聊里编排者并行派活、同时打开一个内联 diff/预览 -->
 <p align="center">
-  <img src="assets/readme/image.png" alt="Polynoia —— 一群 AI Agent 在群聊里并行开工" width="860" />
+  <img src="assets/readme/zw.png" alt="Polynoia —— 一群 AI Agent 在群聊里并行开工" width="860" />
 </p>
 
 ---
