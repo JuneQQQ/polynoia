@@ -15,6 +15,8 @@ beforeAll(() => {
       removeItem: (k: string) => void store.delete(k),
     },
     location: { protocol: "http:", host: "localhost:7788" },
+    matchMedia: () => ({ matches: false }),
+    navigator: { userAgent: "" },
   };
 });
 

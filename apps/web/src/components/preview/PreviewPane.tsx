@@ -9,14 +9,12 @@
 import {
 	ArrowLeft,
 	FolderTree,
-	GitMerge,
 	GitPullRequestArrow,
 	X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
-import { ConflictResolvePane } from "./ConflictResolvePane";
 import { DiffReviewPane } from "./DiffReviewPane";
 import { FileTree } from "./FileTree";
 import { RightPreviewFile } from "./RightPreviewFile";
@@ -51,15 +49,9 @@ export function PreviewPane() {
 				(e) => e.status === "pending",
 			),
 	);
-	// A live multi-agent merge conflict blocks everything else — the user must
-	// resolve it before reviewing/editing (ConflictResolvePane).
-	const hasConflict = useStore(
-		(s) =>
-			!!activeConvId &&
-			(s.conflictsByConv.get(activeConvId) ?? []).some(
-				(c) => c.status === "open" || c.status === "resolving",
-			),
-	);
+	// Manual conflict resolution is retired — conflicts are auto-resolved by an
+	// agent (group→orchestrator, solo/DM→author), so they no longer take over the
+	// preview pane. The chat-timeline ConflictPart shows their status.
 
 	useEffect(() => {
 		let alive = true;
@@ -174,12 +166,7 @@ export function PreviewPane() {
 
 			{/* Header — workspace title (or ← back + filename when previewing a file) + close */}
 			<header className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
-				{hasConflict ? (
-					<GitMerge
-						size={14}
-						className="text-[var(--color-red)] flex-shrink-0"
-					/>
-				) : reviewing ? (
+				{reviewing ? (
 					<GitPullRequestArrow
 						size={14}
 						className="text-[var(--color-green)] flex-shrink-0"
@@ -212,10 +199,8 @@ export function PreviewPane() {
 				)}
 				<div className="flex-1 min-w-0">
 					<div className="text-[12px] font-semibold truncate text-[var(--color-fg)]">
-						{hasConflict
-							? "合并冲突 · 待解决"
-							: reviewing
-								? "代码评审 · 待接受改动"
+						{reviewing
+							? "代码评审 · 待接受改动"
 								: servicesView
 									? "运行中的服务"
 									: previewFile
@@ -225,7 +210,7 @@ export function PreviewPane() {
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)] truncate">
 						{servicesView
 							? `conv · ${activeConvId?.slice(0, 8) ?? "—"}`
-							: previewFile && !hasConflict && !reviewing
+							: previewFile && !reviewing
 								? previewFile
 								: "main · 工作目录"}
 					</div>
@@ -249,9 +234,7 @@ export function PreviewPane() {
 				className="flex-1 min-h-0 flex flex-col overflow-hidden"
 			>
 				<div className="flex-1 min-h-0 overflow-hidden">
-					{hasConflict && activeConvId ? (
-						<ConflictResolvePane convId={activeConvId} />
-					) : reviewing && activeConvId ? (
+					{reviewing && activeConvId ? (
 						<DiffReviewPane convId={activeConvId} />
 					) : servicesView && activeConvId ? (
 						<ServicesView convId={activeConvId} />

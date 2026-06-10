@@ -37,13 +37,8 @@ export type EnabledAdapter = {
 	proxy_kind: ProxyKind;
 };
 
-// Server base from runtime-config: "" (same-origin Vite proxy) for dev/web, the
-// local backend for a packaged desktop build, or a user-configured REMOTE
-// server. Read once at module load — see lib/runtime-config.ts.
-const BASE = getServerHttpBase();
-
 function apiUrl(path: string): string {
-	return BASE + path;
+	return getServerHttpBase() + path;
 }
 
 /** Pending edit row, returned by manual-mode endpoints. */
@@ -151,13 +146,13 @@ export type ProcessRunItem = {
 export type ServiceItem = ProcessRunItem;
 
 async function getJSON<T>(path: string): Promise<T> {
-	const res = await fetch(BASE + path);
+	const res = await fetch(apiUrl(path));
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 	return res.json() as Promise<T>;
 }
 
 async function postJSON<T>(path: string, body?: unknown): Promise<T> {
-	const res = await fetch(BASE + path, {
+	const res = await fetch(apiUrl(path), {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -167,7 +162,7 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function patchJSON<T>(path: string, body?: unknown): Promise<T> {
-	const res = await fetch(BASE + path, {
+	const res = await fetch(apiUrl(path), {
 		method: "PATCH",
 		headers: { "content-type": "application/json" },
 		body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -181,7 +176,7 @@ async function patchJSON<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function deleteJSON<T>(path: string): Promise<T> {
-	const res = await fetch(BASE + path, { method: "DELETE" });
+	const res = await fetch(apiUrl(path), { method: "DELETE" });
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 	return res.json() as Promise<T>;
 }

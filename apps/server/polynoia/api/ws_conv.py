@@ -108,8 +108,8 @@ def _rewrite_outgoing_chunk(
     - ``discussion_id``: tag starts, and normally tool/data cards, so a
       participant can use tools during a discussion. For the final coordinator
       synthesis turn, ``tag_discussion_data_cards`` is false: the conclusion text
-      belongs to the card, but follow-up ``dispatch`` / tasks cards belong to
-      the linear stream.
+      belongs to the card, while any post-discussion action is started as a
+      separate normal coordinator turn after the card is closed.
 
     No-op (returns the chunk verbatim) for non-``data:`` frames, unparseable
     JSON, or when neither id is set. Extracted from run_adapter_turn so it's
@@ -500,8 +500,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             f"上面是多人讨论第 {current_round}/{max_rounds} 轮。现在你作为唯一协调者"
             "做轮后判定。\n"
             "- 如果信息已经足够,请输出最终**讨论结论**:综合各方观点、点明共识与分歧、"
-            "给出下一步建议。必须先以「讨论结论:」开头。结论足以开工时,可在同一轮调用 "
-            "`dispatch` 继续落地。\n"
+            "给出下一步建议。必须先以「讨论结论:」开头。本轮只负责收敛讨论,不要调用 "
+            "`dispatch`、`present` 或文件/命令工具;如果结论足以开工,写清下一步需要"
+            "执行,平台会在 discussion 卡关闭后给你一个独立协调轮去派活。\n"
             "- 如果还需要下一轮,调用 `continue_discussion` 工具,写清下一轮要澄清什么。"
             "不要调用 `discuss`,不要用普通 @ 接力。达到最大轮数后必须收敛结论。"
         )
@@ -513,7 +514,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             conv_id, synth_id,
             run_adapter_turn(
                 synth_id, nudge, depth=1, parent_agent_id=None,
-                inject_history=True, suppress_dispatch=False,
+                inject_history=True, suppress_dispatch=True,
                 discussion_id=discussion_id if isinstance(discussion_id, str) else None,
                 discussion_anchor_id=(
                     discussion_anchor_id
@@ -881,21 +882,34 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # open and is skipped on the next drain). The fix turn is NOT a
                         # burst worker (no burst_card_id/_task_id) so it never touches
                         # the is_last state machine.
-                        # ONLY auto-resolve when orch_id is the conv's TRUE
-                        # orchestrator (burst case). In a non-burst drain orch_id is
-                        # the speaking agent itself — auto-spawning a "you're the
-                        # arbiter" turn for the branch's own author is judge-and-party
-                        # (the exact bias we avoid); leave those for the user instead.
+                        # Manual user side-picking is retired — a conflict is ALWAYS
+                        # resolved by an agent:
+                        #   · GROUP (has orchestrator) → the orchestrator (neutral
+                        #     arbiter) resolves. Only fire here when orch_id is the
+                        #     conv's TRUE orchestrator (burst case); a non-burst group
+                        #     drain (orch_id = speaking agent) routes to the
+                        #     orchestrator via _maybe_handoff_to_orchestrator instead.
+                        #   · SOLO/DM (no orchestrator) → the branch AUTHOR resolves
+                        #     its own conflict. Only one party here, so the
+                        #     judge-and-party bias doesn't apply.
                         _true_orch = bool(
                             orch_id
                             and _conv
                             and orch_id == getattr(_conv, "orchestrator_member_id", None)
                         )
-                        if cid and _conv and _conv.merge_mode == "auto" and _true_orch:
+                        _has_orch = bool(
+                            _conv and getattr(_conv, "orchestrator_member_id", None)
+                        )
+                        _resolver = (
+                            orch_id if (_true_orch)
+                            else author if (cid and _conv and not _has_orch)
+                            else None
+                        )
+                        if _resolver and _conv and _conv.merge_mode == "auto":
                             nudge = _build_conflict_fix_prompt(cid, b, author, files)
                             if nudge is not None:
-                                _spawn_turn(conv_id, orch_id, run_adapter_turn(
-                                    orch_id, nudge, depth=1, parent_agent_id=None,
+                                _spawn_turn(conv_id, _resolver, run_adapter_turn(
+                                    _resolver, nudge, depth=1, parent_agent_id=None,
                                     inject_history=True, suppress_dispatch=True,
                                 ))
                     elif status == "error":
@@ -1895,6 +1909,36 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 sender_id=_payload.get("created_by") or agent_id,
                                 persist=False,
                             )
+                            if (
+                                _persisted_text_msg_id
+                                and _payload.get("trigger") == "discuss"
+                            ):
+                                # Keep the discussion card semantically closed:
+                                # the synthesis turn only writes the conclusion.
+                                # Follow-up implementation/dispatch happens in a
+                                # fresh normal coordinator turn without
+                                # discussion_id, so its tool cards render in the
+                                # main chat flow rather than inside the roundtable.
+                                _spawn_turn(
+                                    conv_id,
+                                    agent_id,
+                                    run_adapter_turn(
+                                        agent_id,
+                                        (
+                                            "讨论已经结束,上一个 discussion 卡片里已有最终"
+                                            "结论。现在回到普通协调轮。请基于用户原始目标"
+                                            "和讨论结论决定下一步:如果需要实现、验证或并行"
+                                            "工作,现在调用 `dispatch`;如果无需落地,用一句话"
+                                            "说明无需继续。不要调用 `discuss` 或 "
+                                            "`continue_discussion`,不要重复粘贴完整结论。"
+                                        ),
+                                        depth=1,
+                                        parent_agent_id=None,
+                                        inject_history=True,
+                                        suppress_dispatch=False,
+                                        is_dispatcher=True,
+                                    ),
+                                )
 
             if tasks_payloads:
                 async with SessionLocal() as _db:

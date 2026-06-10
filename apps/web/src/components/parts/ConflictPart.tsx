@@ -1,16 +1,15 @@
 /** ConflictPart — merge-conflict card (conflict closed-loop).
  *
- * Replaces the old silent abort-and-drop: a real git conflict surfaces here in
- * the timeline (everyone sees it). open/resolving → "解决冲突" opens the
- * ConflictResolvePane in the right rail; resolved/abandoned show the outcome.
+ * Manual user side-picking is RETIRED: a conflict is always resolved by an agent
+ * automatically — a GROUP routes to its orchestrator (neutral arbiter), a SOLO/DM
+ * chat to the branch author itself. This card only DISPLAYS state: open/resolving
+ * show "自动解决中", resolved/abandoned show the outcome. There is no human
+ * resolve pane anymore (ConflictResolvePane removed from the flow).
  * See docs/design/conflict-closed-loop-2026-05-30.md.
  */
-import { AlertTriangle, Check, GitMerge, Loader2, Sparkles, X } from "lucide-react";
-import { useState } from "react";
-import { api } from "../../lib/api";
+import { AlertTriangle, Check, GitMerge, Loader2, Sparkles } from "lucide-react";
 import type { ConflictPayload } from "../../lib/types";
 import { useStore } from "../../store";
-import { useConvScope } from "./_context";
 
 const CTYPE_LABEL: Record<string, string> = {
   content: "内容",
@@ -21,39 +20,15 @@ const CTYPE_LABEL: Record<string, string> = {
 };
 
 export function ConflictPart({ payload }: { payload: ConflictPayload }) {
-  const openPreview = useStore((s) => s.openPreview);
-  const upsertConflict = useStore((s) => s.upsertConflict);
   const agents = useStore((s) => s.agents);
-  // Manual merge mode is retired from the product flow. The store still mirrors
-  // mergeMode for legacy rows, but ChatPane pins it to auto for active convs.
-  const scope = useConvScope();
-  const mergeMode = useStore((s) => s.mergeMode);
-  const mergeModeConvId = useStore((s) => s.mergeModeConvId);
-  const isAuto =
-    mergeMode === "auto" && !!scope && mergeModeConvId === scope.convId;
-  const [busy, setBusy] = useState(false);
   const status = payload.status;
   const files = payload.files ?? [];
   const active = status === "open" || status === "resolving";
   const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
-  // The human resolve path sends resolved_by:"you"; the auto-fix round sends the
-  // branch author's agent id. So a non-"you" resolver == the LLM auto-fix.
+  // resolved_by:"you" was the legacy human path; a non-"you" resolver is the
+  // agent auto-fix (orchestrator in a group, the author in a solo/DM chat).
   const resolvedBy = payload.resolved_by;
   const autoFixed = !!resolvedBy && resolvedBy !== "you";
-
-  const abandon = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const c = await api.abandonConflict(payload.conflict_id);
-      // Self-heal even if the WS is momentarily disconnected.
-      useStore.getState().upsertConflict(c);
-    } catch (e) {
-      console.error("abandon conflict failed", e);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const pill =
     status === "resolved"
@@ -106,7 +81,7 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
         </ul>
       </div>
 
-      {/* Actions */}
+      {/* Status — auto-resolved by an agent; no manual side-picking */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-t border-[var(--color-line)] bg-[var(--color-surface-2)]">
         {status === "resolved" ? (
           <span
@@ -115,8 +90,8 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
           >
             {autoFixed ? <Sparkles size={12} /> : <Check size={12} />}{" "}
             {autoFixed
-              ? `${nameOf(resolvedBy ?? "")} 自动修复`
-              : `${resolvedBy === "you" ? "你" : "已"}解决`}{" "}
+              ? `${nameOf(resolvedBy ?? "")} 自动解决`
+              : "已解决"}{" "}
             → main@{(payload.resolved_sha ?? "").slice(0, 9)}
           </span>
         ) : status === "abandoned" ? (
@@ -126,46 +101,20 @@ export function ConflictPart({ payload }: { payload: ConflictPayload }) {
           >
             <AlertTriangle size={12} /> 已放弃,分支未合并进 main
           </span>
-        ) : isAuto ? (
+        ) : (
           <span
             className="inline-flex items-center gap-1.5 text-[11px]"
             style={{ color: "var(--color-amber)" }}
           >
             <Loader2 size={12} className="animate-spin flex-shrink-0" />
             <span>
-              auto 模式 · 协调者自动合并中…
+              自动解决中…
               <span className="text-[var(--color-fg-4)]">
                 {" "}
-                (若无法自动修复,可在版本历史中恢复或重开任务)
+                (群聊由协调者消解、单聊由该成员消解;无法自动合并时会在对话里说明)
               </span>
             </span>
           </span>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                // Self-populate the resolve store from THIS card's payload — the
-                // card already carries the full conflict (id + files + blobs), so
-                // opening the pane doesn't depend on the live/hydrate path having
-                // filled conflictsByConv.
-                upsertConflict({ ...payload, id: payload.conflict_id });
-                openPreview("code");
-              }}
-              className="inline-flex items-center gap-1 px-3 py-1 text-[11px] rounded font-medium text-white hover:opacity-90 transition"
-              style={{ background: "var(--color-amber)" }}
-            >
-              <GitMerge size={11} /> 解决冲突
-            </button>
-            <button
-              type="button"
-              onClick={abandon}
-              disabled={busy}
-              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-[var(--color-line)] text-[var(--color-fg-2)] hover:text-[var(--color-red)] hover:border-[var(--color-red)] transition disabled:opacity-50"
-            >
-              {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} 放弃
-            </button>
-          </>
         )}
       </div>
     </div>

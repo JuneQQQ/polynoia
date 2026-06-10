@@ -1251,6 +1251,9 @@ class _DispatchTool(_ToolBase):
         "next phase (otherwise the follow-up is terminal: verify + present + "
         "summarize, no further dispatch). This is what makes a plan auto-advance "
         "instead of stalling after one phase.\n\n"
+        "Do NOT call dispatch from inside a discussion/conclusion round. A "
+        "discussion first closes with a `讨论结论:`; the platform then starts a "
+        "separate normal coordinator turn where dispatch is allowed.\n\n"
         "When the sub-tasks must interoperate (shared API, field names, file "
         "paths, ports, data shapes), put that shared spec in `contract` — it "
         "is handed to EVERY teammate verbatim and is what you verify their "
@@ -1409,7 +1412,9 @@ class _ContinueDiscussionTool(_ToolBase):
         "discussion round and the team still needs another pass before a final "
         "conclusion. Do not use `discuss` again for the same topic.\n\n"
         "If enough information is available, DO NOT call this tool; write the "
-        "final `讨论结论:` instead and optionally dispatch implementation work. "
+        "final `讨论结论:` instead. Do NOT dispatch in that conclusion round; "
+        "the platform will open a separate normal coordinator turn for "
+        "implementation work after the discussion card closes. "
         "The platform enforces a hard maximum of 10 rounds."
     )
     input_schema: ClassVar[dict[str, Any]] = {
@@ -1971,10 +1976,11 @@ _CONFLICT_MARKERS = ("<<<<<<<", ">>>>>>>", "|||||||")
 class _ResolveConflictTool(_ToolBase):
     name = "resolve_conflict"
     description = (
-        "ORCHESTRATOR-ONLY. Resolve an OPEN merge conflict on a TEAMMATE's branch "
-        "and land it in main — you are the neutral arbiter (you hold the dispatch "
-        "contract + every member's intent), so YOU decide the merge, not the "
-        "member (who'd be judge-and-party). Call this in AUTO mode when a conflict "
+        "Resolve an OPEN merge conflict and land it in main. In a GROUP you are the "
+        "orchestrator + neutral arbiter (you hold the dispatch contract + every "
+        "member's intent), resolving a teammate's branch. In a SOLO/DM chat you are "
+        "the branch author resolving your OWN conflict against main (no orchestrator "
+        "exists; the user does NOT pick sides). Call this when a conflict "
         "card appears (you'll be given the conflict_id + each file's three sides). "
         "Decide per the batch contract first, then provide a per-file decision via "
         "ONE OR MORE of:\n"
@@ -1987,7 +1993,8 @@ class _ResolveConflictTool(_ToolBase):
         "  • deletions: [path] — remove the file (for modify/delete conflicts where "
         "deletion is correct).\n"
         "Cover EVERY conflicting file or the merge will abort. If two intents truly "
-        "can't be reconciled, do NOT guess — leave it for the user's manual panel."
+        "can't be reconciled, do NOT guess — say so in 1-2 lines and ask the user "
+        "how to proceed."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -2142,11 +2149,15 @@ _ASK      = {"ask_user"}                           # block + ask the user a ques
 _MUTATE   = {"write", "edit"}                      # file-mutation: full write + targeted edit
 _SHELL    = {"bash", "run_background", "wait"}     # shell: run + background jobs
 _WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
-# delegate + resolve merge conflicts. resolve_conflict is ORCHESTRATOR-
-# ONLY (the neutral arbiter that holds the contract + every member's intent) — a
-# worker self-resolving its own branch is judge-and-party (biased toward whoever
-# merged later). In AUTO mode the orchestrator resolves; in MANUAL the user does.
-_ORCHESTRATE = {"dispatch", "discuss", "continue_discussion", "resolve_conflict"}
+# delegate to teammates. Orchestrator-only — workers don't sub-delegate.
+_ORCHESTRATE = {"dispatch", "discuss", "continue_discussion"}
+# resolve merge conflicts. Manual user side-picking is retired, so conflicts are
+# ALWAYS resolved by an agent: a GROUP routes to its orchestrator (the neutral
+# arbiter holding the contract + every member's intent); a SOLO/DM agent resolves
+# its OWN branch (no orchestrator exists). Group WORKERS still never self-resolve
+# (judge-and-party) — their conflict goes to the orchestrator. So _RESOLVE lives on
+# the orchestrator + solo builder tiers, and is subtracted from group_member.
+_RESOLVE = {"resolve_conflict"}
 # Deploy/publish — orchestrator AND builders may need to expose a preview URL,
 # container or source zip while wrapping up. Pairs with `present` (the agent
 # surfaces the returned URL via a `links` entry on the deliverable panel).
@@ -2156,19 +2167,20 @@ _EXPOSE   = {"expose"}
 # coordinator validates + presents the canonical main result.
 _DELIVER = {"present"}
 # Note: `report` is for WORKERS (the orchestrator CONSUMES verdicts, doesn't
-# self-report). resolve_conflict stays orchestrator-only (neutral arbiter). The
+# self-report). resolve_conflict: group orchestrator OR solo/DM self-resolve (not
+# group workers — see _RESOLVE). The
 # removed edit/apply_patch/revert/call_agent tools are gone for good — `write` is
 # the single audited write path, and delegation is dispatch/discuss not a blocking call.
 
 # ── Functional tiers (role names map onto these) ────────────────
-_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _EXPOSE
-# Builders do NOT resolve conflicts — that's the orchestrator's call (neutral
-# arbiter). Workers just build + report; a conflict on their branch is escalated
-# to the orchestrator (AUTO) or the user (MANUAL), never self-resolved.
-_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _EXPOSE
+_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _RESOLVE | _EXPOSE
+# Solo/DM builders DO resolve their own conflicts (no orchestrator exists, manual
+# user side-picking is retired). Group WORKERS do NOT (judge-and-party) — their
+# conflict escalates to the orchestrator; _RESOLVE is subtracted from group_member.
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE | _EXPOSE
 _TIER_ORCHESTRATOR = _TIER_ORCHESTRATOR | _DELIVER
 _TIER_BUILDER      = _TIER_BUILDER | _DELIVER
-_TIER_GROUP_MEMBER = _TIER_BUILDER - _DELIVER
+_TIER_GROUP_MEMBER = _TIER_BUILDER - _DELIVER - _RESOLVE
 _TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
 _TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
 _TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write

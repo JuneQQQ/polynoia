@@ -200,7 +200,8 @@ language (no raw git hashes in your face).
 One Vite build, three runtimes — **not** three rewrites.
 
 - **Web** — the full experience in any modern browser.
-- **Desktop** — **Tauri 2** wraps the web build with native window chrome.
+- **Desktop** — **Tauri 2** wraps the web build, starts an embedded private backend on
+  a random localhost port by default, and can switch to a custom local/LAN/remote backend.
 - **Mobile** — **Capacitor 6** wraps the *same* build: a WeChat-style 4-tab home
   (Chats · Agents · Projects · Me) with a lightweight, read-only-preview IM subset tuned for
   touch.
@@ -272,7 +273,7 @@ make types    # regenerate shared TS types from Pydantic
 apps/
 ├── web/          Vite + React + TypeScript — the UI shell (reused by all 3 platforms)
 ├── server/       Python 3.12 + FastAPI + asyncio (uv-managed)
-├── desktop/      Tauri 2 wrapper around apps/web/dist
+├── desktop/      Tauri 2 wrapper + desktop backend selector / embedded server resource
 └── mobile/       Capacitor 6 wrapper around apps/web/dist
 
 docs/

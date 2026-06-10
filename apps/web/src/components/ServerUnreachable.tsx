@@ -10,8 +10,10 @@ import {
 	flushServerConfig,
 	getServerHttpBase,
 	isNativeShell,
+	setServerMode,
 	setServerUrl,
 } from "../lib/runtime-config";
+import { isDesktopApp } from "../lib/platform";
 import { useStore } from "../store";
 
 export function ServerUnreachable() {
@@ -19,6 +21,7 @@ export function ServerUnreachable() {
 	const [retrying, setRetrying] = useState(false);
 	const base = getServerHttpBase() || "本机默认 (同源 / 代理)";
 	const mobile = isNativeShell();
+	const desktop = isDesktopApp();
 
 	const retry = async () => {
 		if (retrying) return;
@@ -36,7 +39,8 @@ export function ServerUnreachable() {
 	// address and reload → App falls back to ConnectServerScreen so the user can
 	// re-enter one. (Mobile only; on web there's no connect screen.)
 	const reselect = async () => {
-		setServerUrl("");
+		if (desktop) setServerMode("custom", "http://127.0.0.1:7780");
+		else setServerUrl("");
 		await flushServerConfig().catch(() => {});
 		window.location.reload();
 	};
@@ -82,13 +86,13 @@ export function ServerUnreachable() {
 					)}
 					{retrying ? "重试中…" : "重试连接"}
 				</button>
-				{mobile && (
+				{(mobile || desktop) && (
 					<button
 						type="button"
 						onClick={reselect}
 						className="mt-2.5 w-full text-[12.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] underline underline-offset-2 transition-colors"
 					>
-						换个服务器地址
+						{desktop ? "改用自定义地址" : "换个服务器地址"}
 					</button>
 				)}
 			</div>

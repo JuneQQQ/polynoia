@@ -29,9 +29,15 @@ import { useCallback, useEffect, useState } from "react";
 import { type AdapterProbe, api } from "../lib/api";
 import {
 	flushServerConfig,
+	getDesktopEmbeddedBackendUrl,
 	getServerOverride,
-	setServerUrl,
+	isNativeShell,
+	getServerMode,
+	type ServerMode,
+	setServerMode,
+	startDesktopEmbeddedBackend,
 } from "../lib/runtime-config";
+import { isDesktopApp } from "../lib/platform";
 import type { ProxyKind } from "../lib/types";
 
 type ProxyCfg = { proxy: string | null; proxy_kind: ProxyKind };
@@ -385,11 +391,21 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 }
 
 function ServerSection() {
-	const current = getServerOverride();
-	const [mode, setMode] = useState<"local" | "remote">(
-		current ? "remote" : "local",
+	const desktop = isDesktopApp();
+	const nativeShell = isNativeShell();
+	const currentMode = getServerMode();
+	const [mode, setMode] = useState<ServerMode>(
+		desktop
+			? currentMode === "custom"
+				? "custom"
+				: "embedded"
+			: nativeShell
+				? "custom"
+				: currentMode === "custom"
+					? "custom"
+					: "shared",
 	);
-	const [url, setUrl] = useState(current || "http://127.0.0.1:7780");
+	const [url, setUrl] = useState(getServerOverride() || "http://127.0.0.1:7780");
 	const [expanded, setExpanded] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [test, setTest] = useState<{
@@ -400,11 +416,23 @@ function ServerSection() {
 		msg: "",
 	});
 
-	const effectiveBase = () =>
-		mode === "local" ? "" : url.trim().replace(/\/+$/, "");
+	const effectiveBase = async () => {
+		if (mode === "custom") return url.trim().replace(/\/+$/, "");
+		if (mode === "shared") return desktop ? "http://127.0.0.1:7780" : "";
+		let embeddedUrl = getDesktopEmbeddedBackendUrl();
+		if (!embeddedUrl) {
+			const info = await startDesktopEmbeddedBackend();
+			embeddedUrl = info?.status === "running" && info.url ? info.url : "";
+		}
+		return embeddedUrl;
+	};
 
 	async function runTest() {
-		const base = effectiveBase();
+		const base = await effectiveBase();
+		if (mode === "embedded" && !base) {
+			setTest({ kind: "err", msg: "桌面内置后端不可用" });
+			return;
+		}
 		setTest({ kind: "testing", msg: "连接中…" });
 		try {
 			const [healthRes, agentsRes] = await Promise.all([
@@ -430,12 +458,19 @@ function ServerSection() {
 
 	async function save() {
 		setSaving(true);
-		setServerUrl(mode === "remote" ? effectiveBase() : "");
+		if (mode === "custom") setServerMode("custom", await effectiveBase());
+		else setServerMode(mode);
 		// Await native Preferences write before reload — otherwise the URL can be
 		// lost on Capacitor due to the async write racing window.location.reload.
 		await flushServerConfig();
 		setTimeout(() => window.location.reload(), 400);
 	}
+
+	const modes: ServerMode[] = desktop
+		? ["embedded", "custom"]
+		: nativeShell
+			? ["custom"]
+			: ["shared", "custom"];
 
 	return (
 		<div>
@@ -447,7 +482,11 @@ function ServerSection() {
 				<Server size={12} />
 				<span>服务器</span>
 				<span className="ml-auto text-[10.5px] text-[var(--color-fg-4)] font-mono">
-					{mode === "local" ? "local" : url.replace(/^https?:\/\//, "")}
+					{mode === "embedded"
+						? "embedded"
+						: mode === "shared"
+							? "current"
+							: url.replace(/^https?:\/\//, "")}
 				</span>
 				<ChevronDown
 					size={11}
@@ -461,43 +500,35 @@ function ServerSection() {
 					}`}
 				>
 					<div
-						className="flex rounded-md overflow-hidden border border-[var(--color-line)]"
-						style={{ height: 28 }}
+						className={`grid ${modes.length === 1 ? "grid-cols-1" : "grid-cols-2"} rounded-md overflow-hidden border border-[var(--color-line)]`}
 					>
-						<button
-							type="button"
-							onClick={() => {
-								setMode("local");
-								setTest({ kind: "idle", msg: "" });
-							}}
-							className={`flex-1 text-[11px] font-medium transition-all duration-150 ${
-								mode === "local"
-									? "bg-[var(--color-accent)] text-white"
-									: "bg-transparent text-[var(--color-fg-3)] hover:text-[var(--color-fg-2)]"
-							}`}
-						>
-							本机
-						</button>
-						<button
-							type="button"
-							onClick={() => {
-								setMode("remote");
-								setTest({ kind: "idle", msg: "" });
-							}}
-							className={`flex-1 text-[11px] font-medium transition-all duration-150 ${
-								mode === "remote"
-									? "bg-[var(--color-accent)] text-white"
-									: "bg-transparent text-[var(--color-fg-3)] hover:text-[var(--color-fg-2)]"
-							}`}
-						>
-							远程
-						</button>
+						{modes.map((m) => (
+							<button
+								key={m}
+								type="button"
+								onClick={() => {
+									setMode(m);
+									setTest({ kind: "idle", msg: "" });
+								}}
+								className={`h-7 text-[10.5px] font-medium transition-all duration-150 ${
+									mode === m
+										? "bg-[var(--color-accent)] text-white"
+										: "bg-transparent text-[var(--color-fg-3)] hover:text-[var(--color-fg-2)]"
+								}`}
+							>
+								{m === "embedded"
+									? "内置"
+									: m === "shared"
+										? "当前"
+										: "自定义"}
+							</button>
+						))}
 					</div>
-					{mode === "local" ? (
+					{mode === "shared" ? (
 						<div className="px-2 py-1.5 rounded bg-[var(--color-surface-2)] text-[11px] text-[var(--color-fg-3)] font-mono">
-							127.0.0.1:7780
+							same-origin /api
 						</div>
-					) : (
+					) : mode === "custom" ? (
 						<input
 							autoFocus
 							type="text"
@@ -509,6 +540,10 @@ function ServerSection() {
 							placeholder="http://127.0.0.1:7780"
 							className="w-full text-[11px] px-2 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-4)] font-mono outline-none focus:border-[var(--color-accent)]"
 						/>
+					) : (
+						<div className="px-2 py-1.5 rounded bg-[var(--color-surface-2)] text-[11px] text-[var(--color-fg-3)]">
+							桌面内置后端,随机端口,不和 Web 端冲突
+						</div>
 					)}
 					{test.kind !== "idle" && (
 						<div

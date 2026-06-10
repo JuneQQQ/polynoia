@@ -1,5 +1,7 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
+const liveReloadUrl = process.env.POLYNOIA_MOBILE_LIVE_URL?.trim();
+
 /**
  * Capacitor config — wraps the @polynoia/web build into iOS / Android shells.
  *
@@ -26,14 +28,11 @@ const config: CapacitorConfig = {
   webDir: "../web/dist",
   bundledWebRuntime: false,
   server: {
-    // WebView loads the web app from the dev box's Vite server instead of the
-    // baked-in bundle. For Android physical devices we use:
-    //   adb reverse tcp:7788 tcp:7788
-    // so 127.0.0.1:7788 inside the phone reaches the Mac, even when Wi-Fi
-    // subnets differ. To go back to bundled-snapshot mode, comment out
-    // `url` + `cleartext`.
-    url: "http://127.0.0.1:7788",
-    cleartext: true,
+    // Production/release builds must load the bundled web assets. Set
+    // POLYNOIA_MOBILE_LIVE_URL only for explicit livereload debugging, e.g.
+    // POLYNOIA_MOBILE_LIVE_URL=http://127.0.0.1:7788 pnpm --filter
+    // @polynoia/mobile sync.
+    ...(liveReloadUrl ? { url: liveReloadUrl, cleartext: true } : {}),
     androidScheme: "https",
     iosScheme: "https",
     // Allow Capacitor's https://localhost origin to connect to the Polynoia

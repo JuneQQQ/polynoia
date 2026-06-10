@@ -127,8 +127,14 @@ async def test_inference_ambiguous_errors(monkeypatch):
 
 
 def test_tier_exposure():
-    """resolve_conflict is ORCHESTRATOR-only (neutral arbiter) — builders/critic/
-    advisory never self-resolve their own branch's conflict."""
-    assert "resolve_conflict" in tools_for_role("orchestrator")
-    for role in ("coder", "generalist", "designer", "writer", "critic", "advisory"):
+    """Manual user side-picking is retired, so resolve_conflict is exposed to every
+    role that may resolve a conflict on its own:
+      · orchestrator — group arbiter (resolves a teammate's branch)
+      · solo/DM builders (coder/generalist/designer/writer) — resolve their OWN branch
+    But NOT to:
+      · group_member — group workers escalate to the orchestrator (judge-and-party)
+      · critic/advisory — read-only tiers."""
+    for role in ("orchestrator", "coder", "generalist", "designer", "writer"):
+        assert "resolve_conflict" in tools_for_role(role), role
+    for role in ("group_member", "critic", "advisory"):
         assert "resolve_conflict" not in tools_for_role(role), role

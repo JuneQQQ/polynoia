@@ -47,6 +47,7 @@
     "@radix-ui/react-tooltip": "^1.1.4",
     "@replit/codemirror-minimap": "^0.5.2",
     "@replit/codemirror-vscode-keymap": "^6.0.2",
+    "@tauri-apps/api": "^2.1.0",
     "@uiw/react-codemirror": "^4.23.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",

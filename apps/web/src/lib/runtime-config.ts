@@ -1,11 +1,11 @@
 /** Runtime server configuration.
  *
- * The desktop client defaults to its OWN local backend (127.0.0.1:7780), but
- * can be pointed at a REMOTE Polynoia server and sync it live. The choice is
- * persisted in localStorage so it survives reloads. Dev + web keep using the
- * same-origin Vite proxy (empty base). Read once at module load — switching the
- * server takes effect on the next reload (a hard server switch should reset the
- * client anyway).
+ * Desktop defaults to an embedded private backend launched by the Tauri shell.
+ * Mobile has no embedded backend and must be pointed at a reachable server.
+ * Browser/dev uses the current page's same-origin /api backend by default.
+ *
+ * The choice is persisted in localStorage/Preferences so it survives reloads.
+ * Switching the server reloads the app so REST + WS both reconnect cleanly.
  *
  * Design note: this is the `runtime-config` shim referenced in CLAUDE.md §6.3.
  */
@@ -13,6 +13,22 @@ import { isDesktopApp } from "./platform";
 import { storage } from "./storage";
 
 const LS_KEY = "polynoia-server-url";
+const MODE_KEY = "polynoia-server-mode";
+export type ServerMode = "embedded" | "shared" | "custom";
+
+export type DesktopBackendInfo = {
+  mode: string;
+  status: "starting" | "running" | "stopped" | "error" | "unavailable" | string;
+  url?: string | null;
+  pid?: number | null;
+  message?: string;
+};
+
+declare global {
+  interface Window {
+    __POLYNOIA_DESKTOP_BACKEND__?: DesktopBackendInfo | null;
+  }
+}
 
 // Apply a `?server=` URL override once at load — a controllable lever for a bare
 // WebView (no settings UI). `?server=http://host:7780` pins a remote backend;
@@ -93,11 +109,32 @@ export function getServerOverride(): string {
   return storage.getItem(LS_KEY) || "";
 }
 
+export function getServerMode(): ServerMode {
+  const stored = storage.getItem(MODE_KEY);
+  if (stored === "embedded" || stored === "shared" || stored === "custom") {
+    if (isNativeShell() && stored !== "custom") return "custom";
+    return stored;
+  }
+  if (getServerOverride()) return "custom";
+  if (isDesktopApp()) return "embedded";
+  if (isNativeShell()) return "custom";
+  return "shared";
+}
+
+export function setServerMode(mode: ServerMode, url = ""): void {
+  storage.setItem(MODE_KEY, mode);
+  if (mode === "custom" && url) storage.setItem(LS_KEY, url.replace(/\/+$/, ""));
+  else storage.removeItem(LS_KEY);
+}
+
 /** Point the client at a remote server, e.g. "http://10.2.255.109:7780".
  * Pass "" to clear the override and fall back to the local default. */
 export function setServerUrl(url: string): void {
-  if (url) storage.setItem(LS_KEY, url.replace(/\/+$/, ""));
-  else storage.removeItem(LS_KEY);
+  if (url) setServerMode("custom", url);
+  else {
+    storage.removeItem(LS_KEY);
+    storage.removeItem(MODE_KEY);
+  }
 }
 
 /** Resolve once all in-flight native Preferences writes have settled. Pair with
@@ -110,11 +147,55 @@ export function flushServerConfig(): Promise<void> {
 
 /** HTTP base for REST calls (no trailing slash). "" = same-origin (dev/web proxy). */
 export function getServerHttpBase(): string {
-  const override = getServerOverride();
-  if (override) return override;
-  // Packaged desktop has no dev proxy → talk to its own local backend.
-  if (import.meta.env.PROD && isDesktopApp()) return "http://127.0.0.1:7780";
+  const mode = getServerMode();
+  if (mode === "custom") return getServerOverride();
+  if (mode === "embedded" && isDesktopApp()) {
+    return getDesktopEmbeddedBackendUrl();
+  }
+  // Shared local backend. In the browser/dev path, same-origin Vite proxy keeps
+  // CORS out of the path; in a packaged desktop app there is no proxy, so use the
+  // explicit shared backend port.
+  if (mode === "shared" && import.meta.env.PROD && isDesktopApp()) {
+    return "http://127.0.0.1:7780";
+  }
   return "";
+}
+
+export function getDesktopBackendInfo(): DesktopBackendInfo | null {
+  try {
+    return window.__POLYNOIA_DESKTOP_BACKEND__ ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function getDesktopEmbeddedBackendUrl(): string {
+  const info = getDesktopBackendInfo();
+  return info?.status === "running" && info.url ? info.url.replace(/\/+$/, "") : "";
+}
+
+export async function startDesktopEmbeddedBackend(): Promise<DesktopBackendInfo | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    const mod = await import("@tauri-apps/api/core");
+    const info = await mod.invoke<DesktopBackendInfo>("start_desktop_backend");
+    window.__POLYNOIA_DESKTOP_BACKEND__ = info;
+    return info;
+  } catch {
+    return getDesktopBackendInfo();
+  }
+}
+
+export async function refreshDesktopBackendStatus(): Promise<DesktopBackendInfo | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    const mod = await import("@tauri-apps/api/core");
+    const info = await mod.invoke<DesktopBackendInfo>("desktop_backend_status");
+    window.__POLYNOIA_DESKTOP_BACKEND__ = info;
+    return info;
+  } catch {
+    return getDesktopBackendInfo();
+  }
 }
 
 /** Resolve a blob/asset URL (e.g. "/api/files/<id>/raw") against the configured

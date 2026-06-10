@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import socket
 import signal
 import re
 import urllib.parse
@@ -33,6 +34,7 @@ from polynoia.storage.models import AgentRow, MessageRow, WorkspaceRow
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
 log = logging.getLogger("polynoia.routes")
+_SERVER_STARTED_AT = datetime.utcnow()
 
 # Mention router — agent-to-agent @ in conv timeline.
 # Match @AgentId (camelCase or snake) anywhere in agent's response.
@@ -922,6 +924,20 @@ async def record_dispatch(conv_id: str, body: dict):
     raw_tasks = body.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise HTTPException(status_code=400, detail="tasks must be a non-empty array")
+    # Discussion finalization has its own lifecycle: the coordinator first
+    # writes a conclusion into the discussion card, then the websocket runner
+    # starts a separate normal coordinator turn where dispatch is allowed.
+    # Blocking here keeps a model that ignores the prompt from nesting a burst
+    # inside the discussion card or racing the card's close event.
+    active_discussion = _conv_discussions.get(conv_id)
+    if active_discussion and active_discussion.get("anchor_id"):
+        return {
+            "kind": "error",
+            "error": (
+                "当前讨论尚未关闭,不能在讨论轮内 dispatch。请先输出讨论结论;平台会在"
+                " discussion 卡关闭后开启普通协调轮,届时再 dispatch。"
+            ),
+        }
     # ⑧b — a 1:1 (单聊) has no teammates to delegate to. Reject dispatch so the
     # orchestrator does the work itself (it has write/edit) instead of trying to
     # delegate to a non-existent team (and then mis-rationalizing the context).
@@ -2764,6 +2780,33 @@ async def health():
     return {
         "status": "ok",
         "version": "0.1.0",
+        "time": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.get("/api/identity")
+async def identity(request: Request):
+    """Runtime identity for the backend instance this client is talking to.
+
+    Desktop can run an embedded backend on a random localhost port while the web
+    dev server uses the shared :7780 backend. This endpoint makes that explicit
+    in the UI and in diagnostics instead of relying on port guesses.
+    """
+
+    mode = os.environ.get("POLYNOIA_INSTANCE_MODE") or "shared"
+    instance_id = os.environ.get("POLYNOIA_INSTANCE_ID") or f"{mode}:{os.getpid()}"
+    return {
+        "app": "polynoia",
+        "version": "0.1.0",
+        "mode": mode,
+        "instance_id": instance_id,
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "url": str(request.base_url).rstrip("/"),
+        "db_url": settings.db_url,
+        "files_dir": str(settings.files_dir),
+        "sandbox_root": str(settings.sandbox_root),
+        "started_at": _SERVER_STARTED_AT.isoformat() + "Z",
         "time": datetime.utcnow().isoformat() + "Z",
     }
 

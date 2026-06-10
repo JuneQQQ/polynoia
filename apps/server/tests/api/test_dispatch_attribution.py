@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import pytest
 
-from polynoia.api.routes import _pending_dispatches, record_dispatch
+from polynoia.api.routes import _conv_discussions, _pending_dispatches, record_dispatch
 
 
 @pytest.fixture(autouse=True)
 def _clear_pending():
     _pending_dispatches.clear()
+    _conv_discussions.clear()
     yield
     _pending_dispatches.clear()
+    _conv_discussions.clear()
 
 
 @pytest.mark.asyncio
@@ -44,3 +46,25 @@ async def test_record_dispatch_missing_author_is_empty() -> None:
         {"tasks": [{"agent": "沈昭", "note": "写前端"}]},
     )
     assert _pending_dispatches["conv2"][-1]["author_agent_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_record_dispatch_rejected_during_active_discussion() -> None:
+    _conv_discussions["conv-disc"] = {
+        "anchor_id": "discussion-1",
+        "deciding": True,
+        "round": 1,
+    }
+
+    res = await record_dispatch(
+        "conv-disc",
+        {
+            "title": "不应入队",
+            "tasks": [{"agent": "制图", "note": "写前端"}],
+            "author_agent_id": "orch",
+        },
+    )
+
+    assert res["kind"] == "error"
+    assert "不能在讨论轮内 dispatch" in res["error"]
+    assert "conv-disc" not in _pending_dispatches

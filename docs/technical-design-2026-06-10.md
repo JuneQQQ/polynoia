@@ -327,7 +327,7 @@ spec 原定 12 种 kind,实现演进到 21 种,新增的主要是 Conflict / Ter
 
 ## 10. 跨平台(ADR-020)
 
-`apps/desktop` 是 Tauri 2 壳,装 `apps/web/dist`,零业务代码,只注入 `window.__POLYNOIA_PLATFORM__="desktop"`。`apps/mobile` 是 Capacitor 6(`webDir:"../web/dist"`),不是 React Native;布局靠 `platform.ts:isMobile()` 在同一套组件里自适应,进入聊天前由 connection gate 强制校验服务器可达。
+`apps/desktop` 是 Tauri 2 壳,装 `apps/web/dist`,并负责桌面端后端选择:默认启动打包进 App 的 server resource,监听随机 `127.0.0.1:<port>` 并通过 Tauri command/全局注入把地址交给前端;用户可切到自定义后端(本机 `127.0.0.1:7780`、局域网或远程服务器)。`/api/identity` 用于显示当前连接实例(mode/pid/url/db),避免 Web 端和桌面端同时运行时误连。`apps/mobile` 是 Capacitor 6(`webDir:"../web/dist"`),不是 React Native;移动端没有内置后端,只能填写手机可访问的服务器地址;布局靠 `platform.ts:isMobile()` 在同一套组件里自适应,进入聊天前由 connection gate 强制校验服务器可达。
 
 `packages/*` 目前是空的,业务逻辑都在 `apps/web/src/{store.ts,lib/*}`(约 85% 纯 TS)。三端差异收敛在三个 shim 里:`runtime-config.ts` 管服务器基址,`storage.ts` 管持久化,`native.ts` 管 Capacitor 插件。
 

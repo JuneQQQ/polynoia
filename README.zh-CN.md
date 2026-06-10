@@ -183,7 +183,7 @@ Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离
 同一份 Vite 构建,三种运行时 —— **不是**三套重写。
 
 - **Web** —— 任意现代浏览器里的完整体验。
-- **桌面** —— **Tauri 2** 包裹 web 构建,带原生窗口外壳。
+- **桌面** —— **Tauri 2** 包裹 web 构建,默认启动随机 localhost 端口的桌面私有内置后端,也可在设置中切换到自定义本机/局域网/远程后端。
 - **移动** —— **Capacitor 6** 包裹*同一份*构建:微信式 4-tab 首页
   (消息 · 联系人 · 项目 · 我),为触屏精简的「轻量 IM + 只读产物预览」子集。
 
@@ -255,7 +255,7 @@ make types    # 由 Pydantic 重新生成共享 TS 类型
 apps/
 ├── web/          Vite + React + TypeScript —— UI 壳(三端复用同一份)
 ├── server/       Python 3.12 + FastAPI + asyncio(uv 管理)
-├── desktop/      Tauri 2 包裹 apps/web/dist
+├── desktop/      Tauri 2 外壳 + 桌面后端选择 / 内置 server resource
 └── mobile/       Capacitor 6 包裹 apps/web/dist
 
 docs/
