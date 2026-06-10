@@ -60,9 +60,16 @@ export function isRenderableMessagePayload(
 		const name = cleanToolName(String(payload.name ?? "")).toLowerCase();
 		const state = String(payload.state ?? "");
 		const isError = Boolean(payload.is_error) || state === "error";
-		if ((name === "bash" || name === "shell" || name === "ask_user" || name === "ask") && !isError) {
+		// ask_user surfaces as the friendly ask-form card; its raw tool-call (a JSON
+		// dump of the questions) is always redundant noise → never render it.
+		if ((name === "ask_user" || name === "ask") && !isError) {
 			return false;
 		}
+		// NOTE: bash/shell are intentionally NOT dropped here. Whether a bash call
+		// is redundant depends on context (does its sender also emit a separate
+		// `terminal` card?) — that's decided in the timeline fold (classifyFoldable,
+		// per-sender). A bash call that survives folding embeds its own output and
+		// MUST render, else the execution disappears between thinking blocks.
 		if (
 			(name === "write" || name === "filewrite" || name === "apply_patch") &&
 			state === "completed" &&
@@ -116,6 +123,8 @@ function MessageViewInner({
 	const agents = useStore((s) => s.agents);
 	const convScope = useConvScope();
 	const mobile = isMobile();
+	const [editing, setEditing] = useState(false);
+	const [editText, setEditText] = useState("");
 
 	if (!msg) return null;
 	if (!isRenderableMessagePayload(msg.payload, isStreaming)) return null;
@@ -155,8 +164,6 @@ function MessageViewInner({
 			})
 			.join("\n");
 	};
-	const [editing, setEditing] = useState(false);
-	const [editText, setEditText] = useState("");
 	const beginEdit = () => {
 		if (!isYou || msg.payload.kind !== "text") return;
 		setEditText(textFromPayload(msg.payload));
@@ -353,15 +360,18 @@ function MessageViewInner({
 						)}
 					</div>
 				)}
-				{isGrouped && !compact && (
+				{/* Action slot for grouped messages — only reserve the (min-h-3)
+				    row when it will actually hold actions (isYou). For agent
+				    continuation blocks the slot was empty yet still reserved ~6px,
+				    making the gap ABOVE a diff/text block larger than above a
+				    tool-call group → visibly uneven block spacing. Gate on isYou. */}
+				{isGrouped && !compact && isYou && (
 					<div className="flex justify-end min-h-3 -mt-0.5 -mb-1">
-						{isYou && (
-							<MessageActions
-								msgId={msg.id}
-								convId={convId}
-								pinned={msg.pinned ?? false}
-							/>
-						)}
+						<MessageActions
+							msgId={msg.id}
+							convId={convId}
+							pinned={msg.pinned ?? false}
+						/>
 					</div>
 				)}
 				{/* Reply target header — small clickable chip pointing to original */}

@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 7780
     cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        "http://localhost:7788",
+        "http://127.0.0.1:7788",
         # Packaged desktop builds (Tauri 2) load from a custom-scheme origin and
         # call the server cross-origin; without these the .app/.dmg is CORS-blocked.
         "tauri://localhost",  # macOS / Linux
@@ -28,10 +28,10 @@ class Settings(BaseSettings):
         "http://localhost",  # defensive
         # LAN dev: an Android WebView / phone loads the Vite dev page from the
         # host's LAN IP, then calls the API cross-origin. Both the page origin
-        # (:5173) and a direct-backend origin (:7780) must be allowed, else the
+        # (:7788) and a direct-backend origin (:7780) must be allowed, else the
         # browser CORS-blocks every request and the app shows no data. Change the
         # IP to your host, or set POLYNOIA_CORS_ORIGINS to override the whole list.
-        "http://10.12.48.166:5173",
+        "http://10.12.48.166:7788",
         "http://10.12.48.166:7780",
     ]
 

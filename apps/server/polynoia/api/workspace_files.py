@@ -67,6 +67,11 @@ async def list_workspace_files(ws_id: str, path: str = ""):
     root = _workspace_root(ws_id)
     target = _resolve_safe_path(root, path)
     if not target.exists() or not target.is_dir():
+        # A project workspace's main checkout is created on the FIRST agent
+        # turn. Browsing before that (preview pane auto-opens on conv entry)
+        # must show an empty tree, not an error toast — mirror the conv: case.
+        if not path:
+            return {"path": "", "entries": []}
         raise HTTPException(404, "directory not found")
     entries = []
     for child in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):

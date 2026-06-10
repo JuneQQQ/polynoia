@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import signal
 import re
 import urllib.parse
 import uuid
@@ -22,6 +23,7 @@ from fastapi.responses import Response
 
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
+from polynoia.api.execution import RUNTIME
 from polynoia.domain.messages import ConflictFile, ConflictPayload
 from polynoia.sandbox import Sandbox, workspace_merge_lock, workspace_root_for
 from polynoia.settings import settings
@@ -42,7 +44,43 @@ _MENTION_RE = re.compile(
     r"[\w一-鿿㐀-䶿_-]{0,63})"  # rest: word chars / CJK / -_
 )
 _ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
-_MAX_MENTION_CHAIN_DEPTH = 5
+# Bounds a single linear @mention relay. Kept tight (was 5): in practice a depth
+# of 5 let post-work "收到 / 已就位 / 感谢" acknowledgements ping-pong between the
+# orchestrator and workers for several rounds of pure noise before cutting. 3
+# still allows ask→answer→one follow-up; the bare-ack-bounce guard (ws_conv.py)
+# kills the acknowledgement loops well before this.
+_MAX_MENTION_CHAIN_DEPTH = 3
+
+
+def _is_bare_ack_bounce(
+    *, target: str, parent_agent_id: str | None, turn_did_work: bool
+) -> bool:
+    """Should we SUPPRESS spawning ``target`` because this is a content-free ack?
+
+    A turn that did no real work — no tool call and no code edit, just thinking
+    plus a short text reply — which then @mentions back the very agent that just
+    pinged it ("收到 / 已就位 / 感谢 / 确认闭环") is a pure acknowledgement. Letting
+    it spawn the pinger again only ping-pongs pleasantries between orchestrator
+    and workers until the depth cap, flooding the thread with zero progress
+    (observed live: two separate relays each ran all the way to the cap, see the
+    缺陷追踪 case). Suppressing the bounce at its source kills the loop.
+
+    Returns False — i.e. spawn normally — for the cases we must NOT touch:
+    a real handoff (``turn_did_work`` is True: a worker delivered a diff then
+    @orchestrator), a fresh mention to someone who did NOT just ping us
+    (``target != parent_agent_id``), or a root turn with no pinger
+    (``parent_agent_id is None``). Discussion synthesis is unaffected: it brings
+    replies back to the seeder via the in-flight==0 path, never via a per-reply
+    @mention, so a discussion contribution that merely @acks its pinger SHOULD
+    be suppressed here too.
+    """
+    return (
+        not turn_did_work
+        and parent_agent_id is not None
+        and target == parent_agent_id
+    )
+
+
 # Agent↔agent discussion (free-form @mention back-and-forth) convergence caps.
 # Depth (above) bounds any single linear chain; the GLOBAL turn budget bounds the
 # whole fan-out TREE of one discussion (a chain forks via @mentions, so depth
@@ -74,7 +112,7 @@ _RETRY_BACKOFF = (5.0, 15.0, 30.0, 60.0, 120.0)  # seconds before retry 1..5 (�
 # need to push WS chunks to all clients tailing a conv. Each ws_conv handler
 # registers its send_queue here on accept + unregisters on disconnect.
 # Multiple queues per conv = multiple tabs/clients open on the same conv.
-_conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = {}
+_conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = RUNTIME.outboxes
 
 # Pending dispatch batches recorded by the `dispatch` MCP tool DURING an
 # in-flight orchestrator turn. The tool POSTs here mid-turn; the orchestrator's
@@ -82,7 +120,15 @@ _conv_outboxes: dict[str, set[asyncio.Queue[str | None]]] = {}
 # + resolver in scope) → builds the BurstCard + spawns each worker. Keyed by
 # conv_id; each entry is one `dispatch` call's batch.
 # `tasks` are raw `{agent, label, note}` dicts — resolution happens at drain.
-_pending_dispatches: dict[str, list[dict]] = {}
+_pending_dispatches: dict[str, list[dict]] = RUNTIME.pending_dispatches
+
+# Current turn_id per (conv_id, agent_id) — set by run_adapter_turn when it mints
+# a turn, read by the diff-card / terminal-card POST endpoints (which the MCP tool
+# subprocess hits over HTTP, outside the turn's scope) so those cards carry the
+# same turn_id as the rest of the turn's parts → the client groups them into one
+# contiguous turn/lane (ADR-024). Key: f"{conv_id}:{agent_id}".
+_conv_agent_turn: dict[str, str] = RUNTIME.agent_turn
+_conv_agent_discussion: dict[str, str] = RUNTIME.agent_discussion
 
 # Multi-phase auto-advance budget. When a dispatch sets need_continue=true, the
 # post-burst turn is allowed to dispatch the NEXT phase (instead of the default
@@ -90,30 +136,30 @@ _pending_dispatches: dict[str, list[dict]] = {}
 # conv so a stuck "always continue" can't loop forever; reset on each new user
 # message. Replaces the old blanket suppress_dispatch=True with an opt-in cap.
 _MAX_CONTINUE_PHASES = 8
-_conv_continue_phases: dict[str, int] = {}
+_conv_continue_phases: dict[str, int] = RUNTIME.continue_phases
 
 # Pending DISCUSSION batches recorded by the orchestrator-only `discuss` MCP tool
 # during an in-flight turn (parallels `_pending_dispatches`). Drained at the
 # orchestrator turn-end on a SEPARATE, non-burst path: it posts a framing @
 # message and spawns the participants' first turns into a discussion session.
 # Keyed by conv_id; each entry is one `discuss` call's `{topic, participants}`.
-_pending_discussions: dict[str, list[dict]] = {}
+_pending_discussions: dict[str, list[dict]] = RUNTIME.pending_discussions
 
 # ⑥ Blocking ask_user: ask_id → answer text (None = still waiting). The
 # `ask_user` MCP tool registers an entry then polls it (suspending the agent's
 # turn); the frontend POSTs the answer to resolve it. poll_ask pops on delivery.
-_pending_asks: dict[str, str | None] = {}
+_pending_asks: dict[str, str | None] = RUNTIME.pending_asks
 # ask_id → conv_id, so the idle watchdog can tell when a conv is legitimately
 # blocked on an ask_user (per-chunk silence is expected while the user thinks).
 # Set at register, dropped when poll_ask delivers the answer.
-_ask_conv: dict[str, str] = {}
+_ask_conv: dict[str, str] = RUNTIME.ask_conv
 
 
 def _conv_has_open_ask(conv_id: str) -> bool:
     """True while this conv has an ask_user awaiting the user's answer (value is
     still None). Used by the idle watchdog to NOT kill the turn — the user may
-    take any amount of time to answer."""
-    return any(_ask_conv.get(aid) == conv_id for aid, ans in _pending_asks.items() if ans is None)
+    take any amount of time to answer. Delegates to ConversationRuntime."""
+    return RUNTIME.conv_has_open_ask(conv_id)
 
 
 # Conversation-scoped execution state — lives at MODULE level (per conv_id), NOT
@@ -126,9 +172,9 @@ def _conv_has_open_ask(conv_id: str) -> bool:
 # idle with no connections (see ws_conv finally).
 _conv_agent_tasks: dict[
     str, dict[str, asyncio.Task]
-] = {}  # conv_id → agent_id → task (abort/status handle)
-_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = {}  # conv_id → agent_id → lock
-_conv_bursts: dict[str, dict[str, dict]] = {}  # conv_id → tp_id → burst reg
+] = RUNTIME.agent_tasks  # conv_id → agent_id → task (abort/status handle)
+_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = RUNTIME.agent_locks  # conv_id → agent_id → lock
+_conv_bursts: dict[str, dict[str, dict]] = RUNTIME.bursts  # conv_id → tp_id → burst reg 🔴 CHARTER §2
 
 
 class _DrainResult(NamedTuple):
@@ -148,25 +194,25 @@ class _DrainResult(NamedTuple):
 #        synthesized:bool}. One discussion per conv at a time (a conv has one
 # logical "current thread"). Module-level so it survives a client refresh, like
 # bursts. Created lazily on the first qualifying @mention spawn (or by `discuss`).
-_conv_discussions: dict[str, dict] = {}
+_conv_discussions: dict[str, dict] = RUNTIME.discussions
 # Strong refs to EVERY live turn task (workers, follow-ups, summaries, orch). The
 # by-id `_conv_agent_tasks` map is last-writer-wins, so when two turns share an
 # agent_id (dup teammate in a batch, worker→chain-follow-up, orch turn vs its
 # burst summary) the earlier task would lose its only strong ref and could be
 # GC-cancelled mid-run ("Task was destroyed but it is pending"). This set keeps
 # all of them alive until they actually finish.
-_conv_inflight: dict[str, set[asyncio.Task]] = {}  # conv_id → {live turn tasks}
+_conv_inflight: dict[str, set[asyncio.Task]] = RUNTIME.inflight  # conv_id → {live turn tasks}
 # conv_id → loop.time() of the last bash/tool terminal-card activity (output OR
 # heartbeat). The model-idle watchdog consults this so a long-running `bash`
 # (which streams to /terminal-card, NOT to the adapter chunk stream) is NOT
 # mistaken for a hung model and killed mid-command (that abort closed the MCP
 # session → "Connection closed" on the next call).
-_conv_tool_activity: dict[str, float] = {}
+_conv_tool_activity: dict[str, float] = RUNTIME.tool_activity
 # In-flight dispatcher tasks (the not-yet-awaited `dispatch_user_message`). The
 # disconnect-prune must not free a conv's dicts while a dispatcher is still in
 # its pre-registration await window (get_conversation / append user msg), or it
 # would orphan the agent_tasks dict the dispatcher then writes into.
-_conv_dispatchers: dict[str, set[asyncio.Task]] = {}  # conv_id → {dispatcher tasks}
+_conv_dispatchers: dict[str, set[asyncio.Task]] = RUNTIME.dispatchers  # conv_id → {dispatcher tasks}
 
 # Live-stream accumulator for refresh-safe resume. While an agent streams, we
 # keep its in-flight message_id + ordered text/reasoning parts here so a client
@@ -179,7 +225,7 @@ _conv_dispatchers: dict[str, set[asyncio.Task]] = {}  # conv_id → {dispatcher 
 # conv_id → agent_id → {message_id, parts:[{id,kind,text}], status, retry_notice}.
 # Cleared per-agent on terminal status (idle/aborted/error). Module-level so it
 # survives a disconnect, like the other conv execution state.
-_conv_live: dict[str, dict[str, dict]] = {}
+_conv_live: dict[str, dict[str, dict]] = RUNTIME.live
 
 
 def _live_entry(conv_id: str, agent_id: str) -> dict:
@@ -212,7 +258,12 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
         kind = "reasoning" if t == "reasoning-start" else "text"
         pid = obj.get("id")
         if pid and not any(p["id"] == pid for p in entry["parts"]):
-            entry["parts"].append({"id": pid, "kind": kind, "text": ""})
+            entry["parts"].append({
+                "id": pid,
+                "kind": kind,
+                "text": "",
+                "discussion_id": obj.get("discussion_id"),
+            })
     elif t in ("text-delta", "reasoning-delta"):
         pid = obj.get("id")
         for p in entry["parts"]:
@@ -341,26 +392,12 @@ async def _workspace_head_for_conv(conv_id: str) -> str | None:
 
 
 def _maybe_prune_conv(conv_id: str) -> None:
-    """Free a conv's module-level execution state once it is fully idle AND has
-    no attached clients. Called from every turn/dispatcher task's done-callback
-    (so the LAST finisher reclaims, even if all clients already left) and from
-    ws_conv's finally (so a disconnect reclaims an already-idle conv)."""
-    if _conv_inflight.get(conv_id):
-        return
-    if _conv_dispatchers.get(conv_id):
-        return
-    if conv_id in _conv_outboxes:
-        return
-    _conv_agent_tasks.pop(conv_id, None)
-    _conv_agent_locks.pop(conv_id, None)
-    _conv_tool_activity.pop(conv_id, None)
-    _conv_bursts.pop(conv_id, None)
-    _conv_inflight.pop(conv_id, None)
-    _conv_dispatchers.pop(conv_id, None)
-    _pending_dispatches.pop(conv_id, None)
-    _conv_discussions.pop(conv_id, None)
-    _pending_discussions.pop(conv_id, None)
-    _conv_live.pop(conv_id, None)
+    """Free a conv's execution state once it is fully idle AND has no attached
+    clients. Called from every turn/dispatcher task's done-callback (so the LAST
+    finisher reclaims, even if all clients already left) and from ws_conv's
+    finally (so a disconnect reclaims an already-idle conv). Delegates to
+    ConversationRuntime — the dicts live there now (api/execution.py)."""
+    RUNTIME.maybe_prune_conv(conv_id)
 
 
 def _spawn_turn(conv_id: str, agent_id: str, coro) -> asyncio.Task:
@@ -753,9 +790,34 @@ async def list_conv_messages(
     return {"messages": msgs, "has_more": has_more}
 
 
+async def _kill_conv_process_runs(conv_id: str) -> int:
+    """OS-kill (SIGTERM the whole process group) + mark killed every still-running
+    process run of a conv. Called on delete/clear so a leaked background dev server
+    (uvicorn / vite / …) doesn't keep running — and holding its port — after its
+    conversation is gone. These pgids belong to THIS backend instance, so the kill
+    is safe (unlike the startup reap, which is DB-only)."""
+    killed = 0
+    async with SessionLocal() as session:
+        runs = await storage_repo.list_running_process_runs(session, conv_id)
+        for run in runs:
+            pgid, pid = run.get("pgid"), run.get("pid")
+            with suppress(Exception):
+                if pgid:
+                    os.killpg(int(pgid), 15)
+                    killed += 1
+                elif pid:
+                    os.kill(int(pid), 15)
+                    killed += 1
+            with suppress(Exception):
+                await storage_repo.mark_process_run_killed(session, run["id"])
+        await session.commit()
+    return killed
+
+
 @router.delete("/api/conversations/{conv_id}")
 async def delete_conv(conv_id: str):
     """Hard-delete a conversation + its messages and pins."""
+    await _kill_conv_process_runs(conv_id)  # don't leak this conv's bg servers
     async with SessionLocal() as session:
         ok = await storage_repo.delete_conversation(session, conv_id)
         await session.commit()
@@ -770,6 +832,7 @@ async def clear_conv(conv_id: str):
     Broadcasts `data-conv-cleared` so any open client drops its in-memory
     message list immediately.
     """
+    await _kill_conv_process_runs(conv_id)  # bg servers tied to wiped cards
     async with SessionLocal() as session:
         removed = await storage_repo.clear_conversation_messages(session, conv_id)
         await storage_repo.reset_unread(session, conv_id)
@@ -1544,6 +1607,7 @@ async def post_diff_card(conv_id: str, body: dict):
         return {"ok": False, "error": "empty diff"}
     max_hunks = 40
     truncated = len(hunks) > max_hunks
+    ctx_key = f"{conv_id}:{sender_id}"
     payload = {
         "kind": "diff",
         "file": file,
@@ -1553,7 +1617,11 @@ async def post_diff_card(conv_id: str, body: dict):
         "applied": True,
         "commit_sha": body.get("commit_sha"),
         "agent_id": body.get("agent_id") or sender_id,
+        # Group with the rest of the emitting agent's current turn (ADR-024).
+        "turn_id": _conv_agent_turn.get(ctx_key),
     }
+    if discussion_id := _conv_agent_discussion.get(ctx_key):
+        payload["discussion_id"] = discussion_id
     async with SessionLocal() as session:
         mid = await storage_repo.append_message(
             session, conv_id=conv_id, sender_id=sender_id, payload=payload
@@ -1593,6 +1661,8 @@ async def post_terminal_card(conv_id: str, body: dict):
     cwd = body.get("cwd")
     label = body.get("label")
     running = bool(body.get("running", True))
+    seq = body.get("seq")
+    ctx_key = f"{conv_id}:{sender_id}"
     payload = {
         "kind": "terminal",
         "command": str(body.get("command") or ""),
@@ -1605,8 +1675,38 @@ async def post_terminal_card(conv_id: str, body: dict):
         "pgid": int(pgid) if isinstance(pgid, int) else None,
         "exit_code": int(exit_code) if isinstance(exit_code, int) else None,
         "truncated": truncated,
+        "seq": int(seq) if isinstance(seq, int) else None,
+        # Group with the rest of the emitting agent's current turn (ADR-024).
+        "turn_id": _conv_agent_turn.get(ctx_key),
     }
+    if discussion_id := _conv_agent_discussion.get(ctx_key):
+        payload["discussion_id"] = discussion_id
     async with SessionLocal() as session:
+        # ── Monotonic snapshot guard ─────────────────────────────────────
+        # Snapshots arrive on separate connections (throttle / heartbeat /
+        # final) and FastAPI may commit them out of order. An older in-flight
+        # running=true snapshot landing AFTER the final running=false one used
+        # to resurrect the card to 运行中 and wipe its output/exit_code — the
+        # "card stuck at 运行中 forever" bug. Reject stale or post-final
+        # regressions instead of upserting them.
+        existing_row = await session.get(MessageRow, term_id)
+        if existing_row is not None and isinstance(existing_row.payload, dict):
+            prev = existing_row.payload
+            prev_seq = prev.get("seq")
+            if (
+                isinstance(prev_seq, int)
+                and isinstance(payload["seq"], int)
+                and payload["seq"] <= prev_seq
+            ):
+                return {"ok": False, "stale": True, "id": term_id}
+            # Never let any running=true snapshot overwrite a finalized card,
+            # seq or no seq (covers mixed old/new tool versions).
+            if prev.get("running") is False and running:
+                return {"ok": False, "stale": True, "id": term_id}
+            # Never shrink real output back to empty (stale-empty snapshot).
+            if not payload["output"] and prev.get("output"):
+                payload["output"] = prev["output"]
+                payload["truncated"] = bool(prev.get("truncated"))
         await storage_repo.upsert_message(
             session,
             conv_id=conv_id,
@@ -1658,17 +1758,55 @@ async def stop_process_run(process_id: str):
             raise HTTPException(status_code=404, detail="process not found")
         pgid = run.get("pgid")
         pid = run.get("pid")
+
+        def _alive(_pgid: int) -> bool:
+            try:
+                os.killpg(_pgid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except Exception:
+                return False
+
+        # Escalate: SIGTERM the whole group, give it a moment, then SIGKILL if it
+        # ignored the term (vite / npm dev servers often do) — a user clicking
+        # 停止 wants it actually gone, not "asked nicely".
         killed = False
         if pgid:
+            _pgid = int(pgid)
             with suppress(Exception):
-                os.killpg(int(pgid), 15)
+                os.killpg(_pgid, signal.SIGTERM)
                 killed = True
+            await asyncio.sleep(0.4)
+            if _alive(_pgid):
+                with suppress(Exception):
+                    os.killpg(_pgid, signal.SIGKILL)
+                    killed = True
         elif pid:
             with suppress(Exception):
-                os.kill(int(pid), 15)
+                os.kill(int(pid), signal.SIGTERM)
                 killed = True
+            await asyncio.sleep(0.4)
+            with suppress(Exception):
+                os.kill(int(pid), signal.SIGKILL)
+
         await storage_repo.mark_process_run_killed(session, process_id)
+        # Flip the terminal CARD too (was the bug: the card hung at 运行中 after a
+        # successful kill because only the process_run row was updated). Re-broadcast
+        # so the open client converges without a refresh. See ADR-023.
+        closed = await storage_repo.close_terminal_card_for_run(
+            session, run.get("message_id"), exit_code=-1
+        )
         await session.commit()
+    if closed:
+        with suppress(Exception):
+            frame = encode_polynoia_card(
+                "terminal", closed, run.get("message_id"),
+                sender_id=run.get("agent_id"), sender_label=run.get("agent_id"),
+            )
+            await _broadcast_to_conv(run.get("conv_id"), frame)
     return {"ok": True, "killed": killed}
 
 
@@ -2806,6 +2944,27 @@ async def _tap_text_into(
                         _anon += 1
                         pid = f"anon{_anon}"
                     mid = f"tc-{pid}"
+                    # EMPTY reasoning (e.g. opus redacted thinking blocks that
+                    # complete with no visible text) must not be persisted —
+                    # they reload as blank 思考 stubs. Skip both the durable
+                    # mid-stream write AND the `parts` entry (turn-end persist).
+                    if dump.get("kind") == "reasoning":
+                        _rtxt = ""
+                        for _blk in dump.get("body") or []:
+                            if not isinstance(_blk, dict):
+                                continue
+                            _c = _blk.get("c")
+                            if isinstance(_c, str):
+                                _rtxt += _c
+                            elif isinstance(_c, list):
+                                _rtxt += "".join(
+                                    seg.get("text", "")
+                                    for seg in _c
+                                    if isinstance(seg, dict)
+                                )
+                        if not _rtxt.strip():
+                            yield ev
+                            continue
                     # Successful write/edit cards are only the live "writing..."
                     # affordance. During running we persist them so refresh keeps
                     # the streamed content; once completed, delete the temporary
@@ -2933,6 +3092,186 @@ def _build_task_items(
             }
         )
     return out
+
+
+# Leaked tool-call markup an LLM occasionally emits as TEXT instead of a native
+# tool_use block (observed: 阿核/opus writing `<parameter name="tasks">…</parameter>`
+# for a `dispatch` call). Without handling, the raw XML renders in the thread
+# (ugly, unreviewable) AND the dispatch never executes. We RECOVER the dispatch
+# from the markup + STRIP all such markup from the displayed text.
+_LEAKED_PARAM_RE = re.compile(
+    r"<parameter\s+name=\"(?P<name>[^\"]+)\"\s*>(?P<val>.*?)</parameter>",
+    re.DOTALL,
+)
+_LEAKED_WRAP_RE = re.compile(
+    r"</?(?:invoke|function_calls)\b[^>]*>", re.IGNORECASE
+)
+_RAW_TOOL_PROTOCOL_MARKER_RE = re.compile(
+    r"<(?:tool_call|tool_result|tool_response)>"
+)
+_RAW_TOOL_PROTOCOL_CLOSE_RE = re.compile(
+    r"</(?:tool_call|tool_result|tool_response)>"
+)
+
+
+def _find_json_like_end(text: str, start: int) -> int | None:
+    opener = text[start] if start < len(text) else ""
+    closer = "}" if opener == "{" else "]" if opener == "[" else None
+    if closer is None:
+        return None
+    stack = [closer]
+    in_string = False
+    escaped = False
+    for i in range(start + 1, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            stack.append("}")
+            continue
+        if ch == "[":
+            stack.append("]")
+            continue
+        if ch == stack[-1]:
+            stack.pop()
+            if not stack:
+                return i + 1
+    return None
+
+
+def _synthesize_tool_call_from_raw_protocol(obj: object) -> dict | None:
+    if not isinstance(obj, dict):
+        return None
+    raw_name = obj.get("name") or obj.get("type") or obj.get("tool")
+    if not raw_name:
+        return None
+    name = str(raw_name).strip()
+    if not name:
+        return None
+    params = obj.get("parameters") or obj.get("input") or {}
+    if not isinstance(params, dict):
+        params = {}
+    input_payload = dict(params)
+    for key in ("path", "command", "description", "pattern"):
+        if key in obj and key not in input_payload:
+            input_payload[key] = obj[key]
+    status = str(obj.get("status") or "").lower()
+    is_error = bool(obj.get("is_error")) or status in {"error", "failed", "fail"}
+    output_text = obj.get("error") or obj.get("output_text") or obj.get("output")
+    if output_text is None and "status" in obj:
+        output_text = str(obj.get("status"))
+    summary = obj.get("path") or obj.get("description") or obj.get("command")
+    return {
+        "kind": "tool-call",
+        "tool_call_id": f"leaked-{uuid.uuid4().hex[:12]}",
+        "name": name,
+        "input": input_payload,
+        "state": "error" if is_error else "completed",
+        "output_text": str(output_text) if output_text is not None else None,
+        "is_error": is_error,
+        "summary": str(summary) if summary else None,
+    }
+
+
+def _recover_raw_tool_protocol(text: str) -> tuple[str, list[dict]]:
+    """Recover raw ``<tool_call>/<tool_result>/<tool_response>`` protocol leaked
+    into normal text.
+
+    Parsed blocks become synthetic tool-call cards so the UI still shows the
+    execution trace. Only malformed / partial blocks are hidden with a notice.
+    """
+    if "<tool_" not in text:
+        return text, []
+    out: list[str] = []
+    cursor = 0
+    hidden = 0
+    recovered: list[dict] = []
+    while True:
+        m = _RAW_TOOL_PROTOCOL_MARKER_RE.search(text, cursor)
+        if not m:
+            break
+        out.append(text[cursor:m.start()])
+        i = m.end()
+        while i < len(text) and text[i].isspace():
+            i += 1
+        end = _find_json_like_end(text, i)
+        if end is None:
+            hidden += 1
+            cursor = len(text)
+            break
+        try:
+            parsed = json.loads(text[i:end])
+        except (json.JSONDecodeError, ValueError, TypeError):
+            parsed = None
+        payload = _synthesize_tool_call_from_raw_protocol(parsed)
+        if payload is None:
+            hidden += 1
+        else:
+            recovered.append(payload)
+        cursor = end
+        close = _RAW_TOOL_PROTOCOL_CLOSE_RE.match(text, cursor)
+        if close:
+            cursor = close.end()
+    out.append(text[cursor:])
+    cleaned = _RAW_TOOL_PROTOCOL_CLOSE_RE.sub("", "".join(out))
+    if hidden == 0 and not recovered:
+        return text, []
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if hidden:
+        notice = "> 工具调用协议内容已隐藏。"
+        cleaned = f"{cleaned}\n\n{notice}" if cleaned else notice
+    return cleaned, recovered
+
+
+def _strip_raw_tool_protocol(text: str) -> str:
+    cleaned, _ = _recover_raw_tool_protocol(text)
+    return cleaned
+
+
+def _recover_leaked_dispatch(text: str) -> tuple[str, dict | None]:
+    """Recover a `dispatch` call an LLM emitted as TEXT, and strip the markup.
+
+    Returns ``(cleaned_text, dispatch_or_None)``. ``dispatch`` (when found) has
+    the same shape `record_dispatch` stashes: ``{title, contract, need_continue,
+    tasks}`` (raw tasks; agent resolution happens at drain). If no valid leaked
+    `tasks` param is present, ``dispatch`` is None but stray tool-call markup is
+    still stripped so nothing raw renders.
+    """
+    if "<parameter name=" not in text and not _LEAKED_WRAP_RE.search(text):
+        return text, None
+    params: dict[str, str] = {}
+    for m in _LEAKED_PARAM_RE.finditer(text):
+        params[m.group("name")] = m.group("val").strip()
+    dispatch: dict | None = None
+    raw_tasks = params.get("tasks")
+    if raw_tasks:
+        try:
+            parsed = json.loads(raw_tasks)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list) and parsed:
+            _nc = (params.get("need_continue") or "").strip().lower()
+            dispatch = {
+                "title": params.get("title", ""),
+                "contract": params.get("contract", ""),
+                "need_continue": _nc in ("true", "1", "yes"),
+                "tasks": parsed,
+            }
+    # Strip every leaked param block + invoke/function_calls wrapper, then tidy.
+    cleaned = _LEAKED_PARAM_RE.sub("", text)
+    cleaned = _LEAKED_WRAP_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, dispatch
 
 
 def _extract_tasks_blocks(

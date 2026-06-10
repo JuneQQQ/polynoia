@@ -49,6 +49,13 @@ def _make_engine() -> AsyncEngine:
             cur.execute("PRAGMA busy_timeout=5000")
             cur.execute("PRAGMA temp_store=MEMORY")
             cur.execute("PRAGMA cache_size=-64000")  # ~64 MB page cache
+            # NOTE: foreign_keys is left OFF (SQLite default). Enabling it would
+            # make the declared `ondelete=CASCADE` constraints real, BUT the app
+            # deliberately relies on FK-off semantics in several places — synthetic
+            # DMs persisted without a conversation row, system error messages with
+            # no agent, orphaned-burst-lane recovery on reload. Turning it on broke
+            # those paths. Conv deletion instead cascades explicitly + completely
+            # in repo.delete_conversation, so correctness doesn't depend on the FK.
             cur.close()
 
         return eng

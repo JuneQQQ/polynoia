@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import { renderToStaticMarkup } from "react-dom/server";
 import remarkGfm from "remark-gfm";
 import { describe, expect, it } from "vitest";
-import { fixCjkMarkdown, stripRawToolProtocol } from "./TextPart";
+import { fixCjkMarkdown, stripRawToolProtocol, TextPart } from "./TextPart";
 
 // Renders through the SAME pipeline TextPart uses (react-markdown + remark-gfm),
 // jsdom-free via renderToStaticMarkup. We assert on <strong> presence so the test
@@ -75,8 +75,41 @@ describe("stripRawToolProtocol", () => {
 		expect(out).not.toContain("很长");
 	});
 
+	it("hides leaked Claude Code tool_response JSON blocks", () => {
+		const input =
+			'components.json 落盘。\n<tool_response> {"type":"write","path":"backend/data/components.json","diff":"+ secret"} </tool_response>\n继续写事故数据。';
+		const out = stripRawToolProtocol(input);
+		expect(out).toContain("components.json 落盘。");
+		expect(out).toContain("继续写事故数据。");
+		expect(out).toContain("工具调用协议内容已隐藏");
+		expect(out).not.toContain("<tool_response>");
+		expect(out).not.toContain("backend/data/components.json");
+	});
+
 	it("preserves ordinary text unchanged", () => {
 		const input = "这是普通回复,包含 `write` 这个词但不是协议块。";
 		expect(stripRawToolProtocol(input)).toBe(input);
+	});
+});
+
+describe("TextPart structured inline markdown", () => {
+	it("renders inline code inside mention-aware structured text", () => {
+		const html = renderToStaticMarkup(
+			<TextPart
+				payload={{
+					kind: "text",
+					body: [
+						{
+							t: "p",
+							c: [
+								{ type: "text", text: "请读取 `docs/spec.md` 后继续" },
+							],
+						},
+					],
+				}}
+			/>,
+		);
+		expect(html).toContain("<code");
+		expect(html).toContain("docs/spec.md");
 	});
 });

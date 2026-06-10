@@ -169,6 +169,6 @@ async def test_tool_call_format_rule_survives_custom_discipline(clean_db) -> Non
     assert '{"name":"write"' in prompt
     assert "## 交付物展示规则(平台强制)" in prompt
     assert 'present(links=[{"url":"http://127.0.0.1:8770/index.html"' in prompt
-    assert 'present(links=[{"url":"http://127.0.0.1:5173/"' in prompt
+    assert 'present(links=[{"url":"http://127.0.0.1:7788/"' in prompt
     assert 'http://127.0.0.1:8000/docs' in prompt
     assert "没有 present 卡片" in prompt

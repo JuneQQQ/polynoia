@@ -10,7 +10,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
  *   3. Open Xcode / Android Studio and Run
  *
  * Dev livereload:
- *   - `pnpm dev:web` in one terminal (vite at :5173)
+ *   - `pnpm dev:web` in one terminal (vite at :7788)
  *   - `cap run android --livereload --external` — phone loads vite dev URL
  *
  * Network:
@@ -28,11 +28,11 @@ const config: CapacitorConfig = {
   server: {
     // WebView loads the web app from the dev box's Vite server instead of the
     // baked-in bundle. For Android physical devices we use:
-    //   adb reverse tcp:5173 tcp:5173
-    // so 127.0.0.1:5173 inside the phone reaches the Mac, even when Wi-Fi
+    //   adb reverse tcp:7788 tcp:7788
+    // so 127.0.0.1:7788 inside the phone reaches the Mac, even when Wi-Fi
     // subnets differ. To go back to bundled-snapshot mode, comment out
     // `url` + `cleartext`.
-    url: "http://127.0.0.1:5173",
+    url: "http://127.0.0.1:7788",
     cleartext: true,
     androidScheme: "https",
     iosScheme: "https",

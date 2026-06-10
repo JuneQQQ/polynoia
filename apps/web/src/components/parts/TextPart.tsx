@@ -179,7 +179,8 @@ function StructuredInline({ content }: { content: InlineSegment[] }) {
 	return (
 		<>
 			{content.map((seg, i) => {
-				if (seg.type === "text") return <span key={i}>{seg.text}</span>;
+				if (seg.type === "text")
+					return <InlineMarkdown key={i} text={seg.text} />;
 				return <Mention key={i} agentId={seg.m} />;
 			})}
 		</>
@@ -260,6 +261,28 @@ export const MARKDOWN_COMPONENTS = {
 	em: ({ children }: any) => <em className="italic">{children}</em>,
 };
 
+const INLINE_MARKDOWN_COMPONENTS = {
+	...MARKDOWN_COMPONENTS,
+	p: ({ children }: any) => <MentionAware>{children}</MentionAware>,
+	// Structured inline segments live inside one paragraph; fenced/list/table
+	// markdown belongs to string blocks. Keep accidental block constructs inline.
+	ul: ({ children }: any) => <span>{children}</span>,
+	ol: ({ children }: any) => <span>{children}</span>,
+	li: ({ children }: any) => <span>{children}</span>,
+};
+
+function InlineMarkdown({ text }: { text: string }) {
+	if (!text) return null;
+	return (
+		<ReactMarkdown
+			remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+			components={INLINE_MARKDOWN_COMPONENTS as any}
+		>
+			{fixCjkMarkdown(stripRawToolProtocol(text))}
+		</ReactMarkdown>
+	);
+}
+
 /**
  * Find a "safe split point" in streaming markdown — where the prefix above
  * can be considered finalized (won't re-parse differently when more text
@@ -306,7 +329,8 @@ export function fixCjkMarkdown(s: string): string {
 	return s.replace(CJK_CLOSE_RE, "$1​$2");
 }
 
-const RAW_TOOL_MARKER_RE = /<(?:tool_call|tool_result)>/g;
+const RAW_TOOL_MARKER_RE = /<(?:tool_call|tool_result|tool_response)>/g;
+const RAW_TOOL_CLOSE_RE = /<\/(?:tool_call|tool_result|tool_response)>/g;
 const HIDDEN_TOOL_NOTICE = "> 工具调用协议内容已隐藏。";
 
 function findJsonLikeEnd(text: string, start: number): number | null {
@@ -366,12 +390,13 @@ export function stripRawToolProtocol(text: string): string {
 			break;
 		}
 		cursor = end;
-		const close = /^<\/(?:tool_call|tool_result)>/.exec(text.slice(cursor));
+		const close = /^<\/(?:tool_call|tool_result|tool_response)>/.exec(text.slice(cursor));
 		if (close) cursor += close[0].length;
 		RAW_TOOL_MARKER_RE.lastIndex = cursor;
 		match = RAW_TOOL_MARKER_RE.exec(text);
 	}
 	out += text.slice(cursor);
+	out = out.replace(RAW_TOOL_CLOSE_RE, "");
 	if (hidden === 0) return text;
 	const normalized = out.replace(/\n{3,}/g, "\n\n").trim();
 	return normalized
@@ -462,6 +487,21 @@ const StringBlock = memo(function StringBlock({
 				</div>
 			)}
 		</>
+	);
+});
+
+/** Markdown — one-shot (non-streaming) GFM render with the chat component map,
+ * CJK-bold fix and raw-tool-protocol stripping. Reused by deliverable panels and
+ * anywhere agent-authored markdown is shown outside a streaming chat bubble. */
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
+	return (
+		<ReactMarkdown
+			remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+			rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+			components={MARKDOWN_COMPONENTS as any}
+		>
+			{fixCjkMarkdown(stripRawToolProtocol(text))}
+		</ReactMarkdown>
 	);
 });
 

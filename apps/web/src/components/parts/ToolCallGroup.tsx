@@ -18,6 +18,7 @@ import { Loader2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { isMobile } from "../../lib/platform";
+import { isActiveToolMember } from "../../lib/toolActivity";
 import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
 import { isRenderableMessagePayload, MessageView } from "../MessageView";
 
@@ -102,7 +103,6 @@ export function ToolCallGroup({
 							kind?: string;
 							name?: string;
 							running?: boolean;
-							state?: string;
 							body?: ReasoningBody;
 					  }
 					| undefined;
@@ -115,9 +115,8 @@ export function ToolCallGroup({
 					if (p.running) anyRunning = true;
 				} else {
 					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
-					if (p?.state === "running" || p?.state === "pending")
-						anyRunning = true;
 				}
+				if (isActiveToolMember(p)) anyRunning = true;
 			}
 			const joined =
 				nm.slice(0, 5).join(" · ") +

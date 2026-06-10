@@ -53,7 +53,12 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from polynoia.adapters._utils import _new_id, _reasoning_seconds, _tool_summary
+from polynoia.adapters._utils import (
+    _new_id,
+    _reasoning_seconds,
+    _tool_summary,
+    apply_proxy_egress,
+)
 from polynoia.adapters.base import (
     AdapterCapabilities,
     AdapterEvent,
@@ -245,25 +250,8 @@ class OpenCodeAdapter:
             ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
-        # ── Proxy egress control (proxy_kind) ───────────────────────
-        _env = dict(env or {})
-        if proxy_kind == "direct":
-            for _k in (
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "http_proxy",
-                "https_proxy",
-                "all_proxy",
-            ):
-                _env.pop(_k, None)
-        elif proxy_kind == "custom" and proxy:
-            _env["HTTP_PROXY"] = proxy
-            _env["HTTPS_PROXY"] = proxy
-            _env["ALL_PROXY"] = proxy
-            _env["http_proxy"] = proxy
-            _env["https_proxy"] = proxy
-            _env["all_proxy"] = proxy
+        # Proxy egress (system inherit / direct strip / custom override) — shared.
+        _env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return OpenCodeSession(
             sandbox=sandbox,
             conv_id=conv_id,

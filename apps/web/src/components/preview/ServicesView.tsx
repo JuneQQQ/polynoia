@@ -36,6 +36,14 @@ const STATUS_LABEL: Record<ProcessRunItem["status"], string> = {
 	lost: "已丢失",
 };
 
+/** Running (启动中/运行中) processes float to the top; everything else keeps its
+ * place. Stable sort over the API's `started_at DESC` order → within each group
+ * (running / finished) the time ordering is preserved. */
+const _isLive = (s: ProcessRunItem["status"]) => s === "running" || s === "starting";
+function orderRuns(runs: ProcessRunItem[]): ProcessRunItem[] {
+	return [...runs].sort((a, b) => Number(_isLive(b.status)) - Number(_isLive(a.status)));
+}
+
 function ProcessRow({
 	run,
 	onStop,
@@ -192,7 +200,7 @@ export function ServicesView({ convId }: { convId: string }) {
 				</div>
 			) : (
 				<div className="flex flex-col gap-1.5 px-1">
-					{processes.map((run) => (
+					{orderRuns(processes).map((run) => (
 						<ProcessRow
 							key={run.id}
 							run={run}

@@ -29,7 +29,12 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 7788,
+    // Fail loudly if 7788 is taken instead of silently drifting to 7789 — the
+    // desktop (tauri.conf.json devUrl) and the proxy pin this exact port, and a
+    // drift would leave 7788 free for an agent's sandboxed dev server to grab,
+    // hijacking the desktop webview (the "缺陷管理项目 顶掉桌面端" bug).
+    strictPort: true,
     host: "0.0.0.0",
     proxy: {
       "/api": "http://localhost:7780",

@@ -17,7 +17,7 @@ const LS_KEY = "polynoia-server-url";
 // Apply a `?server=` URL override once at load — a controllable lever for a bare
 // WebView (no settings UI). `?server=http://host:7780` pins a remote backend;
 // `?server=` (empty value) CLEARS any stale override so the client falls back to
-// the same-origin Vite proxy (relative /api → :5173 → 7780), which sidesteps CORS
+// the same-origin Vite proxy (relative /api → :7788 → 7780), which sidesteps CORS
 // entirely. Persisted to localStorage so it survives SPA navigation. Runs at
 // module import — before api.ts reads `const BASE = getServerHttpBase()`. Mirrors
 // platform.ts's `?platform=`.

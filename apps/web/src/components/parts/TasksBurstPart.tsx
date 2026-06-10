@@ -18,52 +18,38 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Check, Loader2, Square, X } from "lucide-react";
 import { memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
+import { type FoldPass, foldPass } from "../../lib/foldPass";
 import { isMobile } from "../../lib/platform";
-import { classifyFoldable } from "../../lib/toolFold";
 import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
-import { isInProgressCard, useStore } from "../../store";
+import { useStore } from "../../store";
 import { MessageView } from "../MessageView";
 import { DiffPart } from "./DiffPart";
 import { ToolCallGroup } from "./ToolCallGroup";
 
-/** Fold a burst lane's messages the same way the main timeline does: reasoning /
- * non-write tool-calls / terminal collapse into a ToolCallGroup; only file-edit
- * (diff/write) stays standalone; the raw bash tool-call is dropped. Single
- * sender (the lane's agent), so no sender-break logic. */
+/** Fold a burst lane's messages the same way the main timeline does (delegates
+ * to the shared {@link foldPass}): reasoning / non-write tool-calls / terminal
+ * collapse into a ToolCallGroup; only file-edit (diff/write) stays standalone;
+ * the raw bash tool-call is dropped. Single sender (the lane's agent), so no
+ * sender-break logic. */
 function computeLaneFold(
 	byId: Map<string, Message>,
 	ids: readonly string[],
-): { firsts: Map<string, string[]>; skip: Set<string> } {
-	const firsts = new Map<string, string[]>();
-	const skip = new Set<string>();
-	let run: string[] = [];
-	let runHasTool = false;
-	const flush = () => {
-		if (runHasTool && run.length) {
-			firsts.set(run[0], [...run]);
-			for (let j = 1; j < run.length; j++) skip.add(run[j]);
-		}
-		run = [];
-		runHasTool = false;
-	};
-	for (const mid of ids) {
-		const pl = byId.get(mid)?.payload as
-			| { kind?: string; name?: string }
-			| undefined;
-		const cl = classifyFoldable(pl?.kind, pl?.name);
-		if (cl.drop) {
-			skip.add(mid);
-			continue;
-		}
-		if (cl.foldable) {
-			run.push(mid);
-			if (cl.isTool) runHasTool = true;
-		} else {
-			flush();
-		}
-	}
-	flush();
-	return { firsts, skip };
+): FoldPass {
+	// Does this lane's agent emit separate `terminal` cards? If not, its bash
+	// tool-calls embed their own output and must stay visible (don't drop them).
+	const laneHasTerminal = ids.some(
+		(id) => byId.get(id)?.payload?.kind === "terminal",
+	);
+	return foldPass(
+		ids.map((id) => ({
+			id,
+			sender: "",
+			part: byId.get(id)?.payload as
+				| { kind?: string; name?: string }
+				| undefined,
+		})),
+		() => laneHasTerminal,
+	);
 }
 
 const STATE_BADGE = {
@@ -373,29 +359,10 @@ function TasksBurstPartInner({
 										const byId =
 											useStore.getState().convs.get(convId)?.msgById ??
 											new Map<string, Message>();
-										// In-progress cards (a still-"写入中" write, a running bash)
-										// belong at the BOTTOM — they stream in BEFORE the tool runs,
-										// so a sibling file whose diff already committed must sort
-										// above them. Stable-partition the lane ids the same way the
-										// main timeline does (floatInProgressLast).
-										const ordered = (() => {
-											let anyLive = false;
-											for (const mid of lane) {
-												const m = byId.get(mid);
-												if (m && isInProgressCard(m)) {
-													anyLive = true;
-													break;
-												}
-											}
-											if (!anyLive) return lane;
-											const done: string[] = [];
-											const live: string[] = [];
-											for (const mid of lane) {
-												const m = byId.get(mid);
-												(m && isInProgressCard(m) ? live : done).push(mid);
-											}
-											return [...done, ...live];
-										})();
+										// Keep natural stream order. Running tool cards auto-open inside
+										// their ToolCallGroup; moving them to the lane bottom detaches
+										// bash/output from the surrounding reasoning and tool sequence.
+										const ordered = lane;
 										const { firsts, skip } = computeLaneFold(byId, ordered);
 										// Track RENDERED position (not the raw array index): dropped
 										// (skipped) bash tool-calls don't count, so the first VISIBLE

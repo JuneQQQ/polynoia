@@ -6,217 +6,228 @@ import type { MessagePayload } from "./types";
 import { getServerWsBase } from "./runtime-config";
 
 export type UIMessageChunk =
-  | { type: "start"; message_id: string }
-  | { type: "start-step" }
-  | { type: "finish-step" }
-  | { type: "finish" }
-  | {
-      type: "text-start";
-      id: string;
-      message_id?: string | null;
-      sender_id?: string | null;
-      sender_label?: string | null;
-    }
-  | { type: "text-delta"; id: string; delta: string }
-  | { type: "text-end"; id: string }
-  | {
-      type: "reasoning-start";
-      id: string;
-      sender_id?: string | null;
-      sender_label?: string | null;
-    }
-  | { type: "reasoning-delta"; id: string; delta: string }
-  | { type: "reasoning-end"; id: string }
-  | { type: "message-metadata"; message_metadata: Record<string, unknown> }
-  | {
-      type: `data-${string}`;
-      id?: string;
-      data: Record<string, unknown>;
-      sender_id?: string | null;
-      sender_label?: string | null;
-    }
-  | { type: "error"; error_text: string };
+	| { type: "start"; message_id: string }
+	| { type: "start-step" }
+	| { type: "finish-step" }
+	| { type: "finish" }
+	| {
+			type: "text-start";
+			id: string;
+			message_id?: string | null;
+			sender_id?: string | null;
+			sender_label?: string | null;
+			turn_id?: string | null;
+			discussion_id?: string | null;
+	  }
+	| { type: "text-delta"; id: string; delta: string }
+	| { type: "text-end"; id: string }
+	| {
+			type: "reasoning-start";
+			id: string;
+			sender_id?: string | null;
+			sender_label?: string | null;
+			turn_id?: string | null;
+			discussion_id?: string | null;
+	  }
+	| { type: "reasoning-delta"; id: string; delta: string }
+	| { type: "reasoning-end"; id: string }
+	| { type: "message-metadata"; message_metadata: Record<string, unknown> }
+	| {
+			type: `data-${string}`;
+			id?: string;
+			data: Record<string, unknown>;
+			sender_id?: string | null;
+			sender_label?: string | null;
+			turn_id?: string | null;
+			discussion_id?: string | null;
+	  }
+	| { type: "error"; error_text: string };
 
 export class ConvWebSocket {
-  private ws: WebSocket | null = null;
-  private buffer = "";
-  private onChunkCb?: (chunk: UIMessageChunk) => void;
-  private onCloseCb?: () => void;
-  private onErrorCb?: (err: string) => void;
+	private ws: WebSocket | null = null;
+	private buffer = "";
+	private onChunkCb?: (chunk: UIMessageChunk) => void;
+	private onCloseCb?: () => void;
+	private onErrorCb?: (err: string) => void;
 
-  constructor(public readonly convId: string) {}
+	constructor(public readonly convId: string) {}
 
-  private _intentionallyClosed = false;
+	private _intentionallyClosed = false;
 
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Server origin from runtime-config (local default or a configured remote
-      // server) — see lib/runtime-config.ts.
-      this.ws = new WebSocket(`${getServerWsBase()}/ws/conv/${this.convId}`);
-      this.ws.onopen = () => {
-        this.queryAgentStatus();
-        resolve();
-      };
-      this.ws.onerror = (e) => {
-        // React 18 Strict Mode double-mount triggers immediate cleanup before
-        // open — that's expected, not a real error. Only surface to caller
-        // if we weren't closed deliberately.
-        if (this._intentionallyClosed) return;
-        this.onErrorCb?.(String(e));
-        reject(e);
-      };
-      this.ws.onclose = () => {
-        if (this._intentionallyClosed) return;
-        this.onCloseCb?.();
-      };
-      this.ws.onmessage = (e) => this.handleFrame(typeof e.data === "string" ? e.data : "");
-    });
-  }
+	connect(): Promise<void> {
+		return new Promise((resolve, reject) => {
+			// Server origin from runtime-config (local default or a configured remote
+			// server) — see lib/runtime-config.ts.
+			this.ws = new WebSocket(`${getServerWsBase()}/ws/conv/${this.convId}`);
+			this.ws.onopen = () => {
+				this.queryAgentStatus();
+				resolve();
+			};
+			this.ws.onerror = (e) => {
+				// React 18 Strict Mode double-mount triggers immediate cleanup before
+				// open — that's expected, not a real error. Only surface to caller
+				// if we weren't closed deliberately.
+				if (this._intentionallyClosed) return;
+				this.onErrorCb?.(String(e));
+				reject(e);
+			};
+			this.ws.onclose = () => {
+				if (this._intentionallyClosed) return;
+				this.onCloseCb?.();
+			};
+			this.ws.onmessage = (e) =>
+				this.handleFrame(typeof e.data === "string" ? e.data : "");
+		});
+	}
 
-  private handleFrame(frame: string) {
-    // each WS message is one "data: {...}\n\n" SSE-style frame, possibly batched.
-    this.buffer += frame;
-    let idx: number;
-    while ((idx = this.buffer.indexOf("\n\n")) !== -1) {
-      const event = this.buffer.slice(0, idx);
-      this.buffer = this.buffer.slice(idx + 2);
-      const lines = event.split("\n");
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") {
-          // stream ended, do nothing (FinishChunk already emitted)
-          continue;
-        }
-        try {
-          const chunk = JSON.parse(payload) as UIMessageChunk;
-          this.onChunkCb?.(chunk);
-        } catch {
-          this.onErrorCb?.(`bad chunk: ${payload}`);
-        }
-      }
-    }
-  }
+	private handleFrame(frame: string) {
+		// each WS message is one "data: {...}\n\n" SSE-style frame, possibly batched.
+		this.buffer += frame;
+		let idx: number;
+		while ((idx = this.buffer.indexOf("\n\n")) !== -1) {
+			const event = this.buffer.slice(0, idx);
+			this.buffer = this.buffer.slice(idx + 2);
+			const lines = event.split("\n");
+			for (const line of lines) {
+				if (!line.startsWith("data:")) continue;
+				const payload = line.slice(5).trim();
+				if (payload === "[DONE]") {
+					// stream ended, do nothing (FinishChunk already emitted)
+					continue;
+				}
+				try {
+					const chunk = JSON.parse(payload) as UIMessageChunk;
+					this.onChunkCb?.(chunk);
+				} catch {
+					this.onErrorCb?.(`bad chunk: ${payload}`);
+				}
+			}
+		}
+	}
 
-  onChunk(cb: (c: UIMessageChunk) => void) {
-    this.onChunkCb = cb;
-  }
-  onClose(cb: () => void) {
-    this.onCloseCb = cb;
-  }
-  onError(cb: (e: string) => void) {
-    this.onErrorCb = cb;
-  }
+	onChunk(cb: (c: UIMessageChunk) => void) {
+		this.onChunkCb = cb;
+	}
+	onClose(cb: () => void) {
+		this.onCloseCb = cb;
+	}
+	onError(cb: (e: string) => void) {
+		this.onErrorCb = cb;
+	}
 
-  /** `msgId`: if supplied, the server persists the message with THIS id so the
-   * client's optimistic-store id matches the DB id (rewind/pin/reply look the
-   * message up by id; a mismatch yields a 404 on those routes). */
-  sendUserMessage(
-    text: string,
-    members: string[],
-    inReplyTo?: string,
-    msgId?: string,
-    options?: {
-      regenerate?: boolean;
-      regenerateMsgId?: string;
-      regenerateSenderId?: string;
-    },
-  ) {
-    this.ws?.send(JSON.stringify({
-      kind: "user_message",
-      text,
-      members,
-      ...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
-      ...(msgId ? { msg_id: msgId } : {}),
-      ...(options?.regenerate ? { regenerate: true } : {}),
-      ...(options?.regenerateMsgId
-        ? { regenerate_msg_id: options.regenerateMsgId }
-        : {}),
-      ...(options?.regenerateSenderId
-        ? { regenerate_sender_id: options.regenerateSenderId }
-        : {}),
-    }));
-  }
+	/** `msgId`: if supplied, the server persists the message with THIS id so the
+	 * client's optimistic-store id matches the DB id (rewind/pin/reply look the
+	 * message up by id; a mismatch yields a 404 on those routes). */
+	sendUserMessage(
+		text: string,
+		members: string[],
+		inReplyTo?: string,
+		msgId?: string,
+		options?: {
+			regenerate?: boolean;
+			regenerateMsgId?: string;
+			regenerateSenderId?: string;
+		},
+	) {
+		this.ws?.send(
+			JSON.stringify({
+				kind: "user_message",
+				text,
+				members,
+				...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
+				...(msgId ? { msg_id: msgId } : {}),
+				...(options?.regenerate ? { regenerate: true } : {}),
+				...(options?.regenerateMsgId
+					? { regenerate_msg_id: options.regenerateMsgId }
+					: {}),
+				...(options?.regenerateSenderId
+					? { regenerate_sender_id: options.regenerateSenderId }
+					: {}),
+			}),
+		);
+	}
 
-  /**
-   * Abort one or all agents.
-   *
-   * - `abort()` cancels everything in flight on this conv.
-   * - `abort(agentId)` cancels only that one agent's current turn — others keep
-   *   running. Useful when codex is stuck but claude is mid-stream.
-   */
-  abort(agentId?: string) {
-    this.ws?.send(
-      JSON.stringify(agentId ? { kind: "abort", agent_id: agentId } : { kind: "abort" }),
-    );
-  }
+	/**
+	 * Abort one or all agents.
+	 *
+	 * - `abort()` cancels everything in flight on this conv.
+	 * - `abort(agentId)` cancels only that one agent's current turn — others keep
+	 *   running. Useful when codex is stuck but claude is mid-stream.
+	 */
+	abort(agentId?: string) {
+		this.ws?.send(
+			JSON.stringify(
+				agentId ? { kind: "abort", agent_id: agentId } : { kind: "abort" },
+			),
+		);
+	}
 
-  /** Ask the server for a fresh snapshot of agent statuses (useful on reconnect). */
-  queryAgentStatus() {
-    this.ws?.send(JSON.stringify({ kind: "agent_status_query" }));
-  }
+	/** Ask the server for a fresh snapshot of agent statuses (useful on reconnect). */
+	queryAgentStatus() {
+		this.ws?.send(JSON.stringify({ kind: "agent_status_query" }));
+	}
 
-  private _reconnecting = false;
+	private _reconnecting = false;
 
-  /** True when there is no live socket (none / closing / closed). */
-  isDisconnected(): boolean {
-    return (
-      !this.ws ||
-      this.ws.readyState === WebSocket.CLOSED ||
-      this.ws.readyState === WebSocket.CLOSING
-    );
-  }
+	/** True when there is no live socket (none / closing / closed). */
+	isDisconnected(): boolean {
+		return (
+			!this.ws ||
+			this.ws.readyState === WebSocket.CLOSED ||
+			this.ws.readyState === WebSocket.CLOSING
+		);
+	}
 
-  /** Re-open the socket after a background/network drop (mobile resume). Reuses
-   * the registered onChunk/onClose/onError callbacks; single-flight so a flurry
-   * of resume+network events can't spawn parallel sockets, and detaches the dead
-   * socket's handlers so its close can't re-trigger this. Re-syncs agent status;
-   * the server replays mid-stream content via `data-stream-resume`. */
-  async reconnect(): Promise<void> {
-    if (this._intentionallyClosed || this._reconnecting) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return; // still live
-    this._reconnecting = true;
-    try {
-      if (this.ws) {
-        this.ws.onclose = null;
-        this.ws.onerror = null;
-        try {
-          this.ws.close();
-        } catch {
-          /* already closing */
-        }
-        this.ws = null;
-      }
-      this.buffer = "";
-      await this.connect();
-      this.queryAgentStatus();
-    } catch {
-      /* leave disconnected — next resume/network event will retry */
-    } finally {
-      this._reconnecting = false;
-    }
-  }
+	/** Re-open the socket after a background/network drop (mobile resume). Reuses
+	 * the registered onChunk/onClose/onError callbacks; single-flight so a flurry
+	 * of resume+network events can't spawn parallel sockets, and detaches the dead
+	 * socket's handlers so its close can't re-trigger this. Re-syncs agent status;
+	 * the server replays mid-stream content via `data-stream-resume`. */
+	async reconnect(): Promise<void> {
+		if (this._intentionallyClosed || this._reconnecting) return;
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) return; // still live
+		this._reconnecting = true;
+		try {
+			if (this.ws) {
+				this.ws.onclose = null;
+				this.ws.onerror = null;
+				try {
+					this.ws.close();
+				} catch {
+					/* already closing */
+				}
+				this.ws = null;
+			}
+			this.buffer = "";
+			await this.connect();
+			this.queryAgentStatus();
+		} catch {
+			/* leave disconnected — next resume/network event will retry */
+		} finally {
+			this._reconnecting = false;
+		}
+	}
 
-  close() {
-    this._intentionallyClosed = true;
-    // Don't call close() while still CONNECTING — browser logs a noisy error.
-    // Wait for OPEN, then close gracefully; or if it's already closing/closed
-    // there's nothing to do.
-    if (!this.ws) return;
-    const state = this.ws.readyState;
-    if (state === WebSocket.OPEN) {
-      this.ws.close();
-    } else if (state === WebSocket.CONNECTING) {
-      this.ws.addEventListener("open", () => this.ws?.close(), { once: true });
-    }
-    // CLOSING / CLOSED: noop
-  }
+	close() {
+		this._intentionallyClosed = true;
+		// Don't call close() while still CONNECTING — browser logs a noisy error.
+		// Wait for OPEN, then close gracefully; or if it's already closing/closed
+		// there's nothing to do.
+		if (!this.ws) return;
+		const state = this.ws.readyState;
+		if (state === WebSocket.OPEN) {
+			this.ws.close();
+		} else if (state === WebSocket.CONNECTING) {
+			this.ws.addEventListener("open", () => this.ws?.close(), { once: true });
+		}
+		// CLOSING / CLOSED: noop
+	}
 }
 
 /** Convert a `data-${kind}` chunk's `data` payload to typed MessagePayload. */
 export function chunkToPayload(chunk: UIMessageChunk): MessagePayload | null {
-  if (!chunk.type.startsWith("data-")) return null;
-  const kind = chunk.type.slice("data-".length);
-  // server sends the Pydantic-dumped payload as `data`; we trust it's well-formed.
-  return { kind, ...(chunk as any).data } as MessagePayload;
+	if (!chunk.type.startsWith("data-")) return null;
+	const kind = chunk.type.slice("data-".length);
+	// server sends the Pydantic-dumped payload as `data`; we trust it's well-formed.
+	return { kind, ...(chunk as any).data } as MessagePayload;
 }

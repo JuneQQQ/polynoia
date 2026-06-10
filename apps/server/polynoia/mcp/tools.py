@@ -572,6 +572,34 @@ def _bash_safety_block(cmd: str) -> str | None:
     return None
 
 
+_LISTEN_PORT_RE = re.compile(r":(\d+)\s*\(LISTEN\)")
+
+
+async def _pgid_listening_ports(pgid: int) -> list[int]:
+    """Listening TCP ports held by ANY process in `pgid` — the most reliable
+    "this is a long-running server" signal (uvicorn / vite / next dev / …). Used
+    to auto-promote a long-running bash to background by OBSERVING runtime behavior
+    rather than having the agent declare it. Best-effort: returns [] if lsof is
+    unavailable or errors, so detection failure just falls back to plain waiting."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "lsof", "-nP", "-a", "-g", str(pgid), "-iTCP", "-sTCP:LISTEN",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except Exception:
+        with contextlib.suppress(Exception):
+            proc.kill()  # type: ignore[possibly-undefined]
+        return []
+    ports: set[int] = set()
+    for line in out.decode("utf-8", "replace").splitlines():
+        m = _LISTEN_PORT_RE.search(line)
+        if m:
+            ports.add(int(m.group(1)))
+    return sorted(ports)
+
+
 class _BashTool(_ToolBase):
     name = "bash"
     # bash enforces its own per-command timeout (arg `timeout`, default 30s) and
@@ -592,11 +620,15 @@ class _BashTool(_ToolBase):
         "shares the host process space, so name-pattern/broadcast kills hit the "
         "host (they're blocked). To stop something you started, save its PID "
         "(`mycmd & PID=$!`) and `kill \"$PID\"`.\n\n"
-        "Use `blocking=false` ONLY for persistent commands the user should manage "
-        "from the right rail, such as `npm run dev -- --host 0.0.0.0`, `pnpm dev`, "
-        "`uvicorn ...`, or a long-lived watcher. The command card will be linked "
-        "to a managed process entry. Normal tests/builds/scripts should keep the "
-        "default `blocking=true`."
+        "Just run the command — you do NOT decide blocking vs background. A "
+        "persistent server (`npm run dev -- --host 0.0.0.0`, `pnpm dev`, "
+        "`uvicorn ...`, a watcher) is detected automatically the moment it binds a "
+        "LISTENING PORT (~8s) and promoted to a managed background process: it "
+        "never blocks the turn or gets idle-killed, and you get back a "
+        "`process_id` + port. Manage it from the right rail or with `wait`/`kill`; "
+        "for a smoke test just `curl` the port in a later `bash`. Do NOT append "
+        "`&` to background a server — it does not survive the tool's process model; "
+        "auto-promotion handles it."
     )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -607,14 +639,9 @@ class _BashTool(_ToolBase):
                 "default": 30,
                 "description": "Max seconds of NO OUTPUT before kill (IDLE, not total). Streaming commands run as long as they're active; raise it for intentionally-silent long commands.",
             },
-            "blocking": {
-                "type": "boolean",
-                "default": True,
-                "description": "true = wait for completion; false = start a persistent/background process and return immediately.",
-            },
             "label": {
                 "type": "string",
-                "description": "Short human label for a non-blocking process, e.g. 'Vue dev server'.",
+                "description": "Optional short human label, shown if the command is auto-promoted to a background process, e.g. 'Vue dev server'.",
             },
         },
         "required": ["command"],
@@ -636,7 +663,10 @@ class _BashTool(_ToolBase):
                 ),
             }
         timeout = float(args.get("timeout", 30))
-        blocking = bool(args.get("blocking", True))
+        # No agent-supplied blocking flag — bash always runs adaptively: wait for
+        # exit, but auto-promote to background the moment it binds a listening port
+        # (see the wait loop). `bg` tracks that runtime state for the card's mode.
+        bg = False
         label = str(args.get("label") or "").strip() or None
         base = os.environ.get("POLYNOIA_API_BASE")
         sender_id = ctx.turn_agent_id or ctx.agent_id
@@ -655,6 +685,13 @@ class _BashTool(_ToolBase):
             # `proc.kill()` left runaway npm pids the agent had to hunt + kill.
             start_new_session=True,
         )
+        # Capture the pgid ONCE right after spawn: os.getpgid(proc.pid) later can
+        # raise ProcessLookupError if the child exits + is reaped between checks
+        # (which would abort execute and skip the final card post).
+        try:
+            pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            pgid = proc.pid
 
         out_parts: list[str] = []
         err_parts: list[str] = []
@@ -677,35 +714,57 @@ class _BashTool(_ToolBase):
                 last_activity = loop.time()  # output → reset the idle clock
                 dirty.set()
 
-        async def _post_card(*, running: bool, exit_code: int | None) -> None:
-            # Best-effort live terminal card. NEVER fail the tool on a UI post.
+        # Monotonic per-card sequence: the server rejects snapshots whose seq is
+        # older than the stored one, so an in-flight throttle/heartbeat
+        # (running=true, possibly stale-empty output) that lands AFTER the final
+        # running=false snapshot can no longer resurrect the card to 运行中 or
+        # wipe its output/exit_code. This was the root cause of cards stuck at
+        # 运行中 with empty output in long multi-agent runs.
+        seq_counter = {"v": 0}
+
+        async def _post_card(
+            *, running: bool, exit_code: int | None, final: bool = False
+        ) -> None:
+            # Best-effort live terminal card. NEVER fail the tool on a UI post —
+            # except the FINAL snapshot, which is retried (it's the only thing
+            # that closes the card live; losing it strands the UI at 运行中).
             if not base:
                 return
             async with lock:
                 output = "".join(combined)[-16000:]
-            try:
-                async with httpx.AsyncClient(
-                    base_url=base, timeout=10.0, trust_env=False
-                ) as client:
-                    await client.post(
-                        f"/api/conversations/{ctx.conv_id}/terminal-card",
-                        json={
-                            "term_id": term_id,
-                            "process_id": process_id,
-                            "command": cmd,
-                            "sender_id": sender_id,
-                            "output": output,
-                            "running": running,
-                            "mode": "blocking" if blocking else "background",
-                            "label": label,
-                            "pid": proc.pid,
-                            "pgid": os.getpgid(proc.pid),
-                            "cwd": str(ctx.sandbox.root),
-                            "exit_code": exit_code,
-                        },
-                    )
-            except Exception:
-                pass
+            seq_counter["v"] += 1
+            body = {
+                "term_id": term_id,
+                "process_id": process_id,
+                "command": cmd,
+                "sender_id": sender_id,
+                "output": output,
+                "running": running,
+                "mode": "background" if bg else "blocking",
+                "label": label,
+                "pid": proc.pid,
+                "pgid": pgid,
+                "cwd": str(ctx.sandbox.root),
+                "exit_code": exit_code,
+                "seq": seq_counter["v"],
+                "final": final,
+            }
+            attempts = 3 if final else 1
+            for i in range(attempts):
+                try:
+                    async with httpx.AsyncClient(
+                        base_url=base,
+                        timeout=(20.0 if final else 10.0),
+                        trust_env=False,
+                    ) as client:
+                        await client.post(
+                            f"/api/conversations/{ctx.conv_id}/terminal-card",
+                            json=body,
+                        )
+                    return
+                except Exception:
+                    if i + 1 < attempts:
+                        await asyncio.sleep(1.0 * (i + 1))
 
         async def _throttle() -> None:
             # Push a snapshot at most ~2×/sec while output is flowing.
@@ -727,43 +786,49 @@ class _BashTool(_ToolBase):
         throttle = asyncio.create_task(_throttle())
 
         async def _monitor_background() -> None:
+            # Heartbeats while a (promoted) background process runs. CRITICAL: on
+            # CancelledError (the MCP session exits with the turn / idle eviction)
+            # the process itself KEEPS RUNNING in its own session — posting a
+            # final running=False / exit=-1 here would LIE (we shipped cards that
+            # said "exit -1" while the dev server was actually alive serving).
+            # Only post a final snapshot when the process has truly exited.
             try:
                 while proc.returncode is None:
                     await asyncio.sleep(5)
                     await _post_card(running=True, exit_code=None)
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+            except asyncio.CancelledError:
+                # Detached server outlives the MCP session — leave the card
+                # running=true (truthful); the process panel manages it from here.
+                throttle.cancel()
+                raise
             finally:
                 throttle.cancel()
                 with contextlib.suppress(Exception):
                     await throttle
-                exit_code = proc.returncode if proc.returncode is not None else -1
-                await _post_card(running=False, exit_code=exit_code)
-
-        if not blocking:
-            asyncio.create_task(_monitor_background())
-            return {
-                "kind": "started",
-                "command": cmd,
-                "blocking": False,
-                "process_id": process_id,
-                "pid": proc.pid,
-                "pgid": os.getpgid(proc.pid),
-                "label": label,
-                "note": "后台进程已托管,可在右侧运行面板停止或定位到命令卡片。",
-            }
+                if proc.returncode is not None:
+                    await asyncio.shield(
+                        _post_card(
+                            running=False, exit_code=proc.returncode, final=True
+                        )
+                    )
 
         def _kill_tree() -> None:
             # Kill the whole process group (shell + npm + children), then the proc
             # as fallback — no orphaned installs left behind.
             with contextlib.suppress(Exception):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(Exception):
                 proc.kill()
 
         timed_out = False
+        promoted = False
+        promoted_ports: list[int] = []
         wait_task = asyncio.ensure_future(proc.wait())
         _HEARTBEAT = 5.0  # while quiet, refresh the card / show liveness this often
+        _GRACE_S = 8.0    # blocking grace before a server is auto-promoted to bg
+        started = loop.time()
         try:
             while True:
                 done, _ = await asyncio.wait(
@@ -771,10 +836,27 @@ class _BashTool(_ToolBase):
                 )
                 if wait_task in done:
                     break  # process finished on its own
+                now = loop.time()
+                # AUTO-PROMOTE a long-running server to background — do NOT trust the
+                # agent's `blocking` flag (it's frequently wrong: agents run uvicorn /
+                # dev servers blocking, or append `&` which doesn't survive). A process
+                # that has bound a LISTENING PORT is a server: it won't exit, so block-
+                # ing the turn is pointless and idle-killing it (below) is destructive.
+                # Detach it instead. Grace-gated so quick commands never touch lsof.
+                if now - started >= _GRACE_S:
+                    promoted_ports = await _pgid_listening_ports(pgid)
+                    if promoted_ports:
+                        promoted = True
+                        break
                 # IDLE timeout: kill ONLY if no output for `timeout`s — a streaming
-                # command (npm i, a build) keeps last_activity fresh and runs as
-                # long as it's making progress, however long that takes.
-                if loop.time() - last_activity >= timeout:
+                # command (npm i, a build) keeps last_activity fresh and runs as long
+                # as it's making progress. A quiet-but-alive SERVER (bound a port) is
+                # promoted here, never killed.
+                if now - last_activity >= timeout:
+                    promoted_ports = await _pgid_listening_ports(pgid)
+                    if promoted_ports:
+                        promoted = True
+                        break
                     timed_out = True
                     _kill_tree()
                     with contextlib.suppress(Exception):
@@ -785,7 +867,42 @@ class _BashTool(_ToolBase):
                 await _post_card(running=True, exit_code=None)
         except asyncio.CancelledError:
             _kill_tree()  # don't orphan the tree if the turn is aborted
+            # The tree was just SIGKILLed → running=False is TRUTHFUL here. Post
+            # it shielded so the card doesn't strand at 运行中 when a turn is
+            # aborted / the 30-min backstop fires mid-command.
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(
+                    _post_card(running=False, exit_code=-1, final=True)
+                )
             raise
+
+        if promoted:
+            # Hand control back to the agent: keep streaming + managed (process-run
+            # panel) in the background. This is the ONLY way a bash goes background
+            # now — auto-detected, never an agent flag.
+            bg = True  # final card reflects background mode
+            # Strong reference: asyncio only weakly holds create_task'd tasks; a
+            # GC'd monitor would silently stop heartbeating/finalizing the card.
+            _mon = asyncio.create_task(_monitor_background())
+            _BG_MONITORS.add(_mon)
+            _mon.add_done_callback(_BG_MONITORS.discard)
+            await _post_card(running=True, exit_code=None)
+            ports_str = ", ".join(str(p) for p in promoted_ports)
+            return {
+                "kind": "promoted_background",
+                "command": cmd,
+                "background": True,
+                "process_id": process_id,
+                "pid": proc.pid,
+                "pgid": pgid,
+                "ports": promoted_ports,
+                "label": label,
+                "note": (
+                    f"检测到常驻服务(监听端口 {ports_str}),已自动转入后台托管,不再"
+                    "阻塞本轮。可在右侧运行面板停止,或用 wait/kill 管理;联调请直接 "
+                    "curl 该端口。请继续后续步骤。"
+                ),
+            }
 
         with contextlib.suppress(Exception):
             await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
@@ -794,9 +911,10 @@ class _BashTool(_ToolBase):
             await throttle
 
         exit_code = proc.returncode if proc.returncode is not None else -1
-        # Final card snapshot — running=False so the card stops pulsing.
+        # Final card snapshot — running=False so the card stops pulsing. final=True
+        # → retried with backoff; this is the only live close signal for the card.
         await _post_card(
-            running=False, exit_code=(None if timed_out else exit_code)
+            running=False, exit_code=(None if timed_out else exit_code), final=True
         )
 
         out = "".join(out_parts)
@@ -817,6 +935,10 @@ class _BashTool(_ToolBase):
             "stderr": err[-4096:],
         }
 
+
+# Strong refs to promoted-background monitor tasks (asyncio.create_task holds
+# only a weak ref; a GC'd monitor silently stops heartbeating its card).
+_BG_MONITORS: set[asyncio.Task] = set()
 
 # Background-job registry for this MCP session (one subprocess per agent session).
 # job_id → {pid, log}. Best-effort: `wait` is driven by the log's exit marker, so
@@ -1638,7 +1760,7 @@ class _PresentTool(_ToolBase):
         "working dir. At least one of paths/links is required. Call this ONCE "
         "(not per file). Prefer it over pasting file contents into your reply.\n\n"
         "URL hand-off rule: if a preview/deploy/start command prints a URL such as "
-        "`http://127.0.0.1:5173/`, `http://127.0.0.1:8000/docs`, "
+        "`http://127.0.0.1:7788/`, `http://127.0.0.1:8000/docs`, "
         "`http://127.0.0.1:8770/index.html`, or `expose` returns a `url` / "
         "`download_url`, do NOT merely paste that URL in normal text. Call "
         "`present(links=[{url,label,kind}], message=...)` so the chat shows a "
@@ -1650,7 +1772,7 @@ class _PresentTool(_ToolBase):
         "call `present(links=[{\"url\":\"http://127.0.0.1:8770/index.html\","
         "\"label\":\"打开预览\",\"kind\":\"web\"}], message=\"预览已就绪\")`.\n"
         "  · Full-stack local app: after Vite/FastAPI are running, call "
-        "`present(links=[{\"url\":\"http://127.0.0.1:5173/\","
+        "`present(links=[{\"url\":\"http://127.0.0.1:7788/\","
         "\"label\":\"打开前端\",\"kind\":\"web\"},{\"url\":\"http://127.0.0.1:8000/docs\","
         "\"label\":\"查看 API\",\"kind\":\"api\"}], message=\"前后端已启动\")`.\n"
         "  · Exposed static site: after `expose(target=\"static\")` returns "

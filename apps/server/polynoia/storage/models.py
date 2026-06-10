@@ -229,6 +229,13 @@ class MessageRow(Base):
     # code to the state at this point (Cursor-checkpoint style). Null = DM / no
     # workspace / pre-feature message.
     code_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Per-turn grouping id (one per run_adapter_turn) — ADR-024. First-class
+    # indexed column so the renderer can keep a turn's parts contiguous and so we
+    # can query by turn without re-scanning the payload JSON blob. Mirrors the id
+    # also stamped into the payload (`_stamp_turn`); append_message lifts it here.
+    # Indexed because pagination/anchor logic groups by it. Null for pre-turn_id
+    # rows and for user-side / out-of-turn cards with no owning turn.
+    turn_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False, index=True
     )

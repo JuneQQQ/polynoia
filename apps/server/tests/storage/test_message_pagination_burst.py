@@ -101,3 +101,90 @@ async def test_latest_page_after_closed_burst_does_not_pull_anchor(fresh_db) -> 
 
     assert has_more is True
     assert [m["id"] for m in msgs] == ["m5-after"]
+
+
+# ── Discussion (round-table) anchor — symmetric to the burst cases ──────────
+
+
+def _discussion(did: str) -> dict:
+    return {
+        "kind": "discussion",
+        "discussion_id": did,
+        "topic": "缺陷追踪对齐",
+        "participants": ["a", "b"],
+        "status": "running",
+    }
+
+
+def _text_in_discussion(body: str, did: str) -> dict:
+    p = _text(body)
+    p["discussion_id"] = did
+    return p
+
+
+async def _seed_discussion(conv_id: str) -> None:
+    base = datetime(2026, 6, 9, 13, 0, 0)
+    rows = [
+        ("m0-discussion", "orch", _discussion("d-1")),      # anchor card
+        ("m1-a", "a", _text_in_discussion("a opinion", "d-1")),
+        ("m2-b", "b", _text_in_discussion("b opinion", "d-1")),
+        ("m3-conclusion", "orch", _text_in_discussion("结论", "d-1")),
+        ("m4-after", "you", _text("after")),                # no discussion_id
+    ]
+    async with SessionLocal() as db:
+        await storage_repo.create_conversation(
+            db,
+            Conversation(
+                id=conv_id,
+                title="discuss",
+                members=["you", "orch", "a", "b"],
+                group=True,
+                orchestrator_member_id="orch",
+            ),
+        )
+        for i, (mid, sender, payload) in enumerate(rows):
+            db.add(
+                MessageRow(
+                    id=mid,
+                    conv_id=conv_id,
+                    sender_id=sender,
+                    payload=payload,
+                    created_at=base + timedelta(seconds=i),
+                )
+            )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_latest_page_inside_discussion_includes_anchor_context(fresh_db) -> None:
+    # The newest 3 rows (m2-b, m3-conclusion, m4-after) carry discussion_id but
+    # the `discussion` anchor (m0) sits older — it must be pulled in so the
+    # round-table renders on refresh without scrolling up.
+    conv_id = new_ulid()
+    await _seed_discussion(conv_id)
+
+    async with SessionLocal() as db:
+        msgs, has_more = await storage_repo.list_messages(db, conv_id, limit=3)
+
+    assert has_more is True
+    assert [m["id"] for m in msgs] == [
+        "m0-discussion",
+        "m1-a",
+        "m2-b",
+        "m3-conclusion",
+        "m4-after",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_latest_page_after_closed_discussion_does_not_pull_anchor(fresh_db) -> None:
+    # Viewing only the tail (a non-discussion message) must NOT drag the anchor
+    # back — symmetric to the closed-burst case, avoids over-fetching.
+    conv_id = new_ulid()
+    await _seed_discussion(conv_id)
+
+    async with SessionLocal() as db:
+        msgs, has_more = await storage_repo.list_messages(db, conv_id, limit=1)
+
+    assert has_more is True
+    assert [m["id"] for m in msgs] == ["m4-after"]

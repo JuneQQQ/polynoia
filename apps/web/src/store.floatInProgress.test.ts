@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { floatInProgressLast, isInProgressCard } from "./store";
+import { isInProgressCard, selectMessages, useStore } from "./store";
 import type { Message } from "./lib/types";
 
 // Minimal message factory — only `payload` matters to the helpers under test.
@@ -31,24 +31,29 @@ describe("isInProgressCard", () => {
 	});
 });
 
-describe("floatInProgressLast", () => {
-	it("moves a still-writing card BELOW an already-committed one", () => {
-		// The bug: a still-"写入中" write (arrived first) sits above a committed diff.
+describe("selectMessages timeline order", () => {
+	it("keeps running tool cards in stream order instead of floating them to the bottom", () => {
 		const writing = msg("main", { kind: "tool-call", state: "running" });
 		const committed = msg("blocks", { kind: "diff", commit_sha: "6ea12f7" });
-		const out = floatInProgressLast([writing, committed]);
-		expect(out.map((m) => m.id)).toEqual(["blocks", "main"]);
-	});
-	it("is a stable partition (preserves relative order within each group)", () => {
-		const a = msg("a", { kind: "diff", commit_sha: "x" });
-		const live1 = msg("l1", { kind: "tool-call", state: "running" });
-		const b = msg("b", { kind: "diff", commit_sha: "y" });
-		const live2 = msg("l2", { kind: "diff" });
-		const out = floatInProgressLast([a, live1, b, live2]);
-		expect(out.map((m) => m.id)).toEqual(["a", "b", "l1", "l2"]);
-	});
-	it("returns the SAME array reference when nothing is in-progress", () => {
-		const arr = [msg("a", { kind: "text" }), msg("b", { kind: "diff", commit_sha: "x" })];
-		expect(floatInProgressLast(arr)).toBe(arr);
+		const terminal = msg("term", { kind: "terminal", running: true });
+		useStore.setState({
+			convs: new Map([
+				[
+					"c",
+					{
+						messageOrder: ["main", "blocks", "term"],
+						msgById: new Map([
+							["main", writing],
+							["blocks", committed],
+							["term", terminal],
+						]),
+						streamingTexts: new Map(),
+						agentStatus: new Map(),
+					} as any,
+				],
+			]),
+		});
+		const out = selectMessages(useStore.getState(), "c");
+		expect(out.map((m) => m.id)).toEqual(["main", "blocks", "term"]);
 	});
 });

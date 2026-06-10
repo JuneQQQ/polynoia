@@ -18,11 +18,17 @@ describe("classifyFoldable", () => {
 		});
 	});
 
-	it("DROPS the raw bash/shell tool-call (terminal card represents it)", () => {
-		expect(classifyFoldable("tool-call", "bash").drop).toBe(true);
-		expect(classifyFoldable("tool-call", "shell").drop).toBe(true);
+	it("DROPS the raw bash/shell tool-call when the sender has a terminal card", () => {
+		// bash drop is conditional: only when a separate terminal card already
+		// represents the run (3rd arg). Without it, the bash call is KEPT + folded
+		// (some senders embed output on the bash call, no terminal card).
+		expect(classifyFoldable("tool-call", "bash", true).drop).toBe(true);
+		expect(classifyFoldable("tool-call", "shell", true).drop).toBe(true);
 		// drop ⇒ neither foldable nor a tool (it's removed, not grouped)
-		expect(classifyFoldable("tool-call", "bash").foldable).toBe(false);
+		expect(classifyFoldable("tool-call", "bash", true).foldable).toBe(false);
+		// no terminal card → keep it visible (folded, counted as a tool)
+		expect(classifyFoldable("tool-call", "bash", false).drop).toBe(false);
+		expect(classifyFoldable("tool-call", "bash", false).foldable).toBe(true);
 	});
 
 	it("keeps write-family tool-calls STANDALONE (the file-edit block)", () => {
@@ -44,7 +50,9 @@ describe("classifyFoldable", () => {
 	});
 
 	it("strips MCP prefixes before matching (mcp__polynoia__bash → bash)", () => {
-		expect(classifyFoldable("tool-call", "mcp__polynoia__bash").drop).toBe(true);
+		expect(classifyFoldable("tool-call", "mcp__polynoia__bash", true).drop).toBe(
+			true,
+		);
 		expect(classifyFoldable("tool-call", "mcp__polynoia__write").foldable).toBe(
 			false,
 		);

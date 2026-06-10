@@ -22,6 +22,7 @@ class TextStartChunk(BaseModel):
     id: str  # part_id
     sender_id: str | None = None  # Polynoia ext: agent_id for atomic sender binding
     sender_label: str | None = None
+    turn_id: str | None = None  # Polynoia ext: per-turn grouping id (ADR-024)
 
 
 class TextDeltaChunk(BaseModel):
@@ -43,6 +44,7 @@ class ReasoningStartChunk(BaseModel):
     id: str  # part_id
     sender_id: str | None = None  # Polynoia ext: agent_id for atomic sender binding
     sender_label: str | None = None
+    turn_id: str | None = None  # Polynoia ext: per-turn grouping id (ADR-024)
 
 
 class ReasoningDeltaChunk(BaseModel):
@@ -64,6 +66,7 @@ class DataChunk(BaseModel):
     data: dict[str, Any]
     sender_id: str | None = None  # Polynoia ext
     sender_label: str | None = None
+    turn_id: str | None = None  # Polynoia ext: per-turn grouping id (ADR-024)
 
 
 class ToolInputAvailableChunk(BaseModel):
@@ -131,11 +134,16 @@ def encode_polynoia_card(
     message_id: str,
     sender_id: str | None = None,
     sender_label: str | None = None,
+    turn_id: str | None = None,
 ) -> str:
     """Encode a Polynoia 12-card payload as a UIMessageChunk `data-{kind}`.
 
     Example: encode_polynoia_card("diff", {...}, "msg-1", "claudeCode", "Claude Code")
     → produces `data-diff` chunk with inline sender binding.
+
+    ``turn_id`` (optional) tags the card with its run_adapter_turn grouping id so
+    the client coalesces a turn's parts into one group/lane (ADR-024). Falls back
+    to the value embedded in ``payload_data`` if not passed explicitly.
     """
     chunk = DataChunk(
         type=f"data-{card_kind}",
@@ -143,5 +151,6 @@ def encode_polynoia_card(
         data=payload_data,
         sender_id=sender_id,
         sender_label=sender_label,
+        turn_id=turn_id or (payload_data.get("turn_id") if isinstance(payload_data, dict) else None),
     )
     return encode_chunk(chunk)

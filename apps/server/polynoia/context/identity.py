@@ -43,6 +43,7 @@ _TOOL_CALL_FORMAT_RULE = """## 工具调用格式(平台强制)
 用户:创建 `prd.md` 骨架。
 你:我现在调用工具: `{"name":"write","parameters":{"path":"prd.md","content":"..."}}`
 你:`<tool_call>{"name":"write",...}</tool_call>`
+你:`<tool_response>{"type":"write","path":"prd.md","status":"ok"}</tool_response>`
 你:`write prd.md skeleton`
 
 正确做法:
@@ -51,8 +52,9 @@ _TOOL_CALL_FORMAT_RULE = """## 工具调用格式(平台强制)
 (工具成功后再真实 `read` 核对)
 你:骨架已创建并核对,接下来派发章节任务。
 
-如果你发现自己正在输出 `{"name":"write"}`、`<tool_call>`、`tool:`、`write path=...`
-这类文本,立刻停止正文,改用真实工具调用。若工具不可用 / 被平台拒绝,如实说明阻塞,不要伪造“已调用”。"""
+如果你发现自己正在输出 `{"name":"write"}`、`<tool_call>`、`<tool_response>`、`tool:`、
+`write path=...` 这类文本,立刻停止正文,改用真实工具调用。若工具不可用 / 被平台拒绝,
+如实说明阻塞,不要伪造“已调用”,也不要把工具结果协议复制进正文。"""
 
 _DELIVERABLE_PRESENT_RULE = """## 交付物展示规则(平台强制)
 
@@ -61,7 +63,7 @@ _DELIVERABLE_PRESENT_RULE = """## 交付物展示规则(平台强制)
 - 如果你的真实工具列表里有 `present`:用一次 `present(paths=[...], links=[...], message="...")` 展示用户真正会打开的成品。
 - 本地预览服务、容器、静态部署、下载包返回的 URL 必须放进 `links`;正文可以简述,但不能替代 `present`。
 - 如果你启动了前后端/单页应用/API 文档等本地服务,也必须把可打开 URL 放进 `present(links=[...])`;
-  例如 Vite `http://127.0.0.1:5173/`、FastAPI docs `http://127.0.0.1:8000/docs`。
+  例如 Vite `http://127.0.0.1:7788/`、FastAPI docs `http://127.0.0.1:8000/docs`。
 - `expose` 只返回 URL,不会自己发聊天卡片;拿到 URL 后紧跟 `present(links=[...])`。
 - 如果你没有 `present`(群聊普通成员通常没有):用 `report` 明确列出产物文件 / URL,由协调者验收并 `present`。
 
@@ -73,14 +75,14 @@ Few-shot:
 正确:真实调用 `present(links=[{"url":"http://127.0.0.1:8770/index.html","label":"打开预览","kind":"web"}], message="预览服务已启动")`。
 
 用户:前后端都已本地跑通。
-正确:真实调用 `present(links=[{"url":"http://127.0.0.1:5173/","label":"打开前端","kind":"web"},{"url":"http://127.0.0.1:8000/docs","label":"查看 API","kind":"api"}], message="前后端已启动")`。
+正确:真实调用 `present(links=[{"url":"http://127.0.0.1:7788/","label":"打开前端","kind":"web"},{"url":"http://127.0.0.1:8000/docs","label":"查看 API","kind":"api"}], message="前后端已启动")`。
 错误:“打开这个链接即可:http://127.0.0.1:8770/index.html”(没有 present 卡片)。"""
 
 _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)
 
 你能用的工具,系统已经注入到这次请求里了 —— **不用自己背 / 列清单**,直接按各工具的 schema 调用。下面只讲规矩:
 
-- 写文件**一律用 `write` 工具**(给出完整文件内容),落盘成功才算完成;别在没调之前说“已交付 / 已落盘”。**不要用 bash 的 `echo`/`cat`/`>`/heredoc 写文件**——那绕过审计、看不到 diff。(要程序化生成二进制产物时,用 `write` 写好生成脚本,再 `bash` 跑它。)
+- 写文件**一律用 `write` 工具**(给出完整文件内容),落盘成功才算完成;别在没调之前说“已交付 / 已落盘”。**不要用 bash 的 `echo`/`cat`/`>`/heredoc 写文件**——那绕过审计、看不到 diff。(要程序化生成二进制产物时,用 `write` 写好生成脚本,再 `bash` 跑它。)你 CLI 自带的原生写文件通道(如 `apply_patch` / 编辑器直写)在本平台沙箱里是**只读被拒**的——别试,第一次写就直接用平台 `write`。
 - 报告完成前**必须**调一次 read 把刚写的内容读回来核对(工具 result 是真相,你的文字描述是辅助)。
 - 声称“测试通过 / 跑通”前**必须**真用 bash 跑一遍,贴真实输出 + exit_code 为证(没 bash 的角色不声称跑通)。
 - 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。

@@ -5,6 +5,39 @@ import time
 import uuid
 from typing import Any
 
+# All proxy env var spellings we honor (upper + lower case). Order irrelevant.
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+
+
+def apply_proxy_egress(
+    env: dict[str, str], proxy_kind: str, proxy: str | None
+) -> dict[str, str]:
+    """Apply an adapter's per-egress proxy policy, returning a NEW env dict.
+
+    Shared verbatim by all three adapters' start_session:
+    - ``system`` → leave inherited proxy vars untouched (no-op; the default;
+      env_for_agent copies host proxy vars from os.environ).
+    - ``direct`` → strip every proxy var so the spawned CLI goes direct.
+    - ``custom`` → override every proxy var with ``proxy`` (when set).
+
+    Never mutates the input. See OnboardedAdapterRow.proxy_kind.
+    """
+    out = dict(env)
+    if proxy_kind == "direct":
+        for k in _PROXY_ENV_KEYS:
+            out.pop(k, None)
+    elif proxy_kind == "custom" and proxy:
+        for k in _PROXY_ENV_KEYS:
+            out[k] = proxy
+    return out
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex

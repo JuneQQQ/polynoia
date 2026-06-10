@@ -44,7 +44,13 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 
-from polynoia.adapters._utils import _new_id, _reasoning_seconds, _stringify_tool_output, _tool_summary
+from polynoia.adapters._utils import (
+    _new_id,
+    _reasoning_seconds,
+    _stringify_tool_output,
+    _tool_summary,
+    apply_proxy_egress,
+)
 from polynoia.adapters.base import (
     AdapterCapabilities,
     AdapterEvent,
@@ -228,22 +234,10 @@ class ClaudeCodeAdapter:
         extra_env = dict(env or {})
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             extra_env.setdefault("IS_SANDBOX", "1")
-        # ── Proxy egress control (proxy_kind) ───────────────────────
-        # system  → inherit host HTTP_PROXY / HTTPS_PROXY etc. (default,
-        #   env_for_agent already copies them from os.environ)
-        # direct  → strip all proxy env vars so the agent goes direct
-        # custom  → override HTTP_PROXY + HTTPS_PROXY with the given URL
-        if proxy_kind == "direct":
-            for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                       "http_proxy", "https_proxy", "all_proxy"):
-                extra_env.pop(_k, None)
-        elif proxy_kind == "custom" and proxy:
-            extra_env["HTTP_PROXY"] = proxy
-            extra_env["HTTPS_PROXY"] = proxy
-            extra_env["ALL_PROXY"] = proxy
-            extra_env["http_proxy"] = proxy
-            extra_env["https_proxy"] = proxy
-            extra_env["all_proxy"] = proxy
+        # Proxy egress (system inherit / direct strip / custom override) — shared
+        # across all three adapters; system relies on env_for_agent copying host
+        # proxy vars from os.environ.
+        extra_env = apply_proxy_egress(extra_env, proxy_kind, proxy)
         sandbox_env = sandbox.env_for_agent(extra_env)
         # ── merged: feat used `env_for_agent(env or {})`; main's root-aware
         #    IS_SANDBOX path above is a strict superset, so it wins. ──

@@ -3,7 +3,7 @@
 #
 # One command produces clean, production-like real-project workspaces:
 #   - wipes and rebuilds the local DB schema
-#   - starts backend :7780 and frontend :5173
+#   - starts backend :7780 and frontend :7788
 #   - seeds realistic deliverable conversations: web games, PPT, DOCX, Excel,
 #     React/Vue + backend API apps, data reports, office deliverables,
 #     collaboration, conflict, diff/history, and recovery cases
@@ -27,9 +27,19 @@ mkdir -p "$RUN_DIR" "$LAUNCH_DIR"
 
 stop_launchd_service() {
   local label="$1"
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
-  fi
+  command -v launchctl >/dev/null 2>&1 || return 0
+  local target="gui/$(id -u)/$label"
+  # `bootout` can race KeepAlive respawn and silently leave the label loaded —
+  # the next `bootstrap` then dies with "Bootstrap failed: 5: Input/output error".
+  # So bootout + VERIFY the label is actually gone (poll). Do NOT use
+  # `launchctl disable` here: it persists a disabled flag that makes the later
+  # `bootstrap` fail (also "5: Input/output error"). Once booted out the service
+  # is unloaded and KeepAlive no longer respawns it.
+  for _ in 1 2 3 4 5; do
+    launchctl print "$target" >/dev/null 2>&1 || return 0  # not loaded → done
+    launchctl bootout "$target" >/dev/null 2>&1 || true
+    sleep 0.5
+  done
 }
 
 stop_port() {
@@ -109,7 +119,7 @@ PLIST
     <string>$pnpm_bin</string>
     <string>dev</string>
     <string>--host</string><string>0.0.0.0</string>
-    <string>--port</string><string>5173</string>
+    <string>--port</string><string>7788</string>
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>$PATH</string>
@@ -127,7 +137,7 @@ PLIST
   else
     nohup "$PY" -m uvicorn polynoia.main:app --app-dir "$SRV" --host 0.0.0.0 --port 7780 \
       > "$SERVER_LOG" 2>&1 &
-    nohup "$PNPM" --dir "$WEB" dev --host 0.0.0.0 --port 5173 \
+    nohup "$PNPM" --dir "$WEB" dev --host 0.0.0.0 --port 7788 \
       > "$WEB_LOG" 2>&1 &
   fi
 }
@@ -135,8 +145,37 @@ PLIST
 echo "→ Stop existing dev services"
 stop_launchd_service local.polynoia.server
 stop_launchd_service local.polynoia.web
+# Legacy labels from older revisions of this script — clear them too so a
+# stale registration can't block bootstrap.
+stop_launchd_service local.polynoia.dev-server
+stop_launchd_service local.polynoia.dev-web
 stop_port 7780
-stop_port 5173
+stop_port 7788
+
+# Reap leftover DELIVERABLE services started by agents inside sandbox worktrees
+# (vite / uvicorn / node dev servers under ~/sandbox/polynoia/workspaces/...).
+# Without this they survive a reset, keep holding contract ports (5173/8000…),
+# and the NEXT run's agents waste turns fighting "address already in use" or —
+# worse — kill each other's processes. Match strictly on the sandbox path so
+# nothing outside agent worktrees can be hit.
+echo "→ Reap leftover sandbox deliverable services"
+SANDBOX_ROOT="${POLYNOIA_SANDBOX_ROOT:-$HOME/sandbox/polynoia}"
+reaped=0
+while IFS= read -r pid; do
+  [ -n "$pid" ] || continue
+  kill "$pid" 2>/dev/null && reaped=$((reaped+1)) || true
+done < <(ps -axo pid=,command= | grep -F "$SANDBOX_ROOT/workspaces/" | grep -vE "grep|$0" | awk '{print $1}')
+if [ "$reaped" -gt 0 ]; then
+  sleep 1
+  # Escalate to SIGKILL for any survivor still under the sandbox root.
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -9 "$pid" 2>/dev/null || true
+  done < <(ps -axo pid=,command= | grep -F "$SANDBOX_ROOT/workspaces/" | grep -vE "grep|$0" | awk '{print $1}')
+  echo "  reaped $reaped sandbox service(s)"
+else
+  echo "  no sandbox services running"
+fi
 sleep 1
 
 echo "→ Wipe DB and rebuild schema"
@@ -156,13 +195,17 @@ export http_proxy="$PROXY" https_proxy="$PROXY" all_proxy="$PROXY"
 export NO_PROXY="localhost,127.0.0.1,0.0.0.0,::1" no_proxy="localhost,127.0.0.1,0.0.0.0,::1"
 start_dev_services
 wait_http backend http://127.0.0.1:7780/api/agents
-wait_http frontend http://127.0.0.1:5173
+wait_http frontend http://127.0.0.1:7788
 
 echo "→ Seed realistic real-project cases"
 "$PY" - <<'PYSEED'
 import json
+import base64
+import io
+import urllib.parse
 import urllib.error
 import urllib.request
+import zipfile
 
 API = "http://localhost:7780"
 OPUS = "claude-opus-4-7"
@@ -197,6 +240,105 @@ def post_task(conv_id, task):
             "payload": {"kind": "text", "body": [{"t": "p", "c": task}]},
         },
     )
+
+
+def minimal_docx_bytes(title, body):
+    xml_body = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        "<w:body>"
+        f"<w:p><w:r><w:t>{title}</w:t></w:r></w:p>"
+        f"<w:p><w:r><w:t>{body}</w:t></w:r></w:p>"
+        "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr>"
+        "</w:body></w:document>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+            "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+            "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+            "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
+            "</Types>",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>"
+            "</Relationships>",
+        )
+        zf.writestr("word/document.xml", xml_body)
+    return buf.getvalue()
+
+
+def tiny_png_bytes():
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAGUlEQVR4nGNkaGhgYGBgYGBgYmBgYGBgAAAeAAHbZL2uAAAAAElFTkSuQmCC"
+    )
+
+
+def upload_attachment(conv_id, name, media_type, data):
+    url = (
+        API
+        + "/api/upload?name="
+        + urllib.parse.quote(name)
+        + "&conv_id="
+        + urllib.parse.quote(conv_id)
+    )
+    r = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": media_type},
+        method="POST",
+    )
+    with urllib.request.urlopen(r) as resp:
+        uploaded = json.load(resp)
+    kind = "image" if media_type.startswith("image/") else "file"
+    return {
+        "id": uploaded.get("url") or uploaded.get("id") or name,
+        "kind": kind,
+        "src": uploaded["url"],
+        "name": uploaded.get("name") or name,
+        "media_type": uploaded.get("media_type") or media_type,
+        "size_bytes": uploaded.get("size_bytes") or len(data),
+    }
+
+
+def sample_attachments(key, conv_id):
+    if key == "upload_doc_review":
+        return [
+            upload_attachment(
+                conv_id,
+                "contract-draft.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                minimal_docx_bytes("合同审阅样例", "付款、违约、保密和终止条款需要重点识别风险。"),
+            ),
+            upload_attachment(
+                conv_id,
+                "signed-scan.pdf",
+                "application/pdf",
+                b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n",
+            ),
+        ]
+    if key == "multimodal_receipt_expense":
+        return [
+            upload_attachment(conv_id, "receipt-cafe.png", "image/png", tiny_png_bytes()),
+            upload_attachment(conv_id, "receipt-taxi.png", "image/png", tiny_png_bytes()),
+        ]
+    if key == "csv_upload_dashboard":
+        csv = (
+            "date,category,amount,channel\n"
+            "2026-06-01,coffee,38.5,offline\n"
+            "2026-06-02,book,126.0,online\n"
+            "2026-06-03,traffic,58.0,offline\n"
+        ).encode()
+        return [upload_attachment(conv_id, "sales-sample.csv", "text/csv", csv)]
+    if key == "image_to_landing_page":
+        return [upload_attachment(conv_id, "reference-layout.png", "image/png", tiny_png_bytes())]
+    return []
 
 
 TEAM = [
@@ -480,6 +622,13 @@ def main():
 
         if existing_conv:
             req(f"/api/conversations/{conv['id']}/draft", {"draft_text": task}, method="PATCH")
+        attachments = sample_attachments(key, conv["id"])
+        if attachments:
+            req(
+                f"/api/conversations/{conv['id']}/draft_attachments",
+                {"draft_attachments": attachments},
+                method="PATCH",
+            )
         manifest.append(
             {
                 "key": key,
@@ -487,10 +636,13 @@ def main():
                 "conv_id": conv["id"],
                 "title": title,
                 "members": members,
+                "attachments": len(attachments),
             }
         )
 
+    attachment_cases = [f"{item['key']}:{item['attachments']}" for item in manifest if item["attachments"]]
     print("  cases(" + str(len(manifest)) + "): " + ", ".join(item["key"] for item in manifest))
+    print("  draft attachments: " + (", ".join(attachment_cases) if attachment_cases else "none"))
 
 
 if __name__ == "__main__":
@@ -522,4 +674,4 @@ for agent in sorted(agents, key=lambda x: x.get("name", "")):
     setup = agent.get("setup") or {}
     print(f"{agent.get('name')}:{setup.get('adapter_id')}/{setup.get('model')}")
 PYSUMMARY
-echo "  Frontend: http://127.0.0.1:5173"
+echo "  Frontend: http://127.0.0.1:7788"

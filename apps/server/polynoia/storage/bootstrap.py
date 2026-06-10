@@ -87,6 +87,11 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "ALTER TABLE messages ADD COLUMN in_reply_to VARCHAR(26)",
     ),
     (
+        "messages",
+        "turn_id",
+        "ALTER TABLE messages ADD COLUMN turn_id VARCHAR(40)",
+    ),
+    (
         "agents",
         "tool_role",
         "ALTER TABLE agents ADD COLUMN tool_role VARCHAR(16) "
@@ -106,6 +111,14 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
 ]
 
 
+# Idempotent index creation for columns added via _SCHEMA_PATCHES (an ADD COLUMN
+# can't carry its index on SQLite). `CREATE INDEX IF NOT EXISTS` is self-idempotent
+# and a no-op on fresh DBs where create_all already built the index from the model.
+_INDEX_PATCHES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS ix_messages_turn_id ON messages (turn_id)",
+]
+
+
 async def _apply_schema_patches() -> None:
     """Apply idempotent ADD COLUMN statements for tables that pre-date a
     newer model definition. SQLite-only — sufficient for P0/P1 dev.
@@ -116,6 +129,8 @@ async def _apply_schema_patches() -> None:
             cols = {row[1] for row in res.fetchall()}
             if column not in cols:
                 await conn.execute(text(sql))
+        for sql in _INDEX_PATCHES:
+            await conn.execute(text(sql))
 
 
 async def _apply_column_drops() -> None:

@@ -11,7 +11,11 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { type ConversationSummary, api } from "../lib/api";
 import { computeBursts } from "../lib/burstClaim";
-import type { Message, TasksPayload } from "../lib/types";
+import {
+	activeDiscussionParticipantIds,
+	computeDiscussions,
+} from "../lib/discussionClaim";
+import type { DiscussionPayload, Message, TasksPayload } from "../lib/types";
 import { isMobile } from "../lib/platform";
 import { onNetworkChange, onResume } from "../lib/native";
 import { ConvWebSocket } from "../lib/ws";
@@ -27,10 +31,12 @@ import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
 import { isRenderableMessagePayload, MessageView } from "./MessageView";
+import { DiscussionPart } from "./parts/DiscussionPart";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
 import { TypingPart } from "./parts/TypingPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
-import { classifyFoldable } from "../lib/toolFold";
+import { foldPass } from "../lib/foldPass";
+import { orderByTurn } from "../lib/turnGroup";
 import { ConvScopeProvider } from "./parts/_context";
 
 type Props = {
@@ -101,6 +107,11 @@ const READ_SYNC_CHUNK_TYPES = new Set<string>([
 	"data-present",
 	"data-error",
 	"data-tasks",
+	// Turn-end frame: the server's turn-end PERSIST bumps unread for messages
+	// that already streamed (and were already marked read) — with no further
+	// chunk, that ghost +1 stuck on the badge while the conv was open. Marking
+	// read once more on `finish` (250ms debounce absorbs ordering) clears it.
+	"finish",
 ]);
 
 function messageIsFreshForAgent(
@@ -179,6 +190,7 @@ export function ChatPane({ convId, members, title }: Props) {
 
 	const wsRef = useRef<ConvWebSocket | null>(null);
 	const bodyRef = useRef<HTMLDivElement>(null);
+	const contentRef = useRef<HTMLDivElement>(null);
 	// The floating composer overlays the bottom of the message stream; its height
 	// grows when the per-agent running-status strip appears (while an agent is
 	// answering) or the input wraps. Measure it so the scroll area's bottom
@@ -254,6 +266,8 @@ export function ChatPane({ convId, members, title }: Props) {
 						partId: chunk.id,
 						messageId: chunk.message_id ?? `msg-${chunk.id}`,
 						senderId: chunk.sender_id ?? null,
+						turnId: chunk.turn_id ?? null,
+						discussionId: chunk.discussion_id ?? null,
 					});
 					break;
 				case "text-delta":
@@ -292,6 +306,8 @@ export function ChatPane({ convId, members, title }: Props) {
 						partId: chunk.id,
 						messageId: `rsn-${chunk.id}`,
 						senderId: chunk.sender_id ?? null,
+						turnId: chunk.turn_id ?? null,
+						discussionId: chunk.discussion_id ?? null,
 					});
 					break;
 				case "reasoning-delta":
@@ -422,6 +438,7 @@ export function ChatPane({ convId, members, title }: Props) {
 								payload: { kind: "conflict", ...data },
 								messageId: anyChunk.id ?? `conflict-${Date.now()}`,
 								senderId: anyChunk.sender_id ?? null,
+								turnId: anyChunk.turn_id ?? null,
 							});
 							if (st.preview.data?.workspaceId && !st.preview.open) {
 								st.openPreview("code");
@@ -433,7 +450,13 @@ export function ChatPane({ convId, members, title }: Props) {
 					} else if (chunk.type.startsWith("data-")) {
 						const cardKind = chunk.type.slice("data-".length);
 						const anyChunk = chunk as any;
-						const payload = { kind: cardKind, ...anyChunk.data };
+						const payload = {
+							kind: cardKind,
+							...anyChunk.data,
+							...(anyChunk.discussion_id
+								? { discussion_id: anyChunk.discussion_id }
+								: {}),
+						};
 						// Tool-call cards are persisted server-side under `tc-<part_id>`
 						// (durable mid-stream). Use the SAME id live so a conv-switch /
 						// reload during the turn updates ONE card, not a duplicate next
@@ -448,6 +471,7 @@ export function ChatPane({ convId, members, title }: Props) {
 							payload,
 							messageId: cardId,
 							senderId: anyChunk.sender_id ?? null,
+							turnId: anyChunk.turn_id ?? null,
 						});
 						// A fresh chat file card auto-opens the right-rail preview so
 						// the user sees what the agent just produced without clicking.
@@ -701,6 +725,24 @@ export function ChatPane({ convId, members, title }: Props) {
 			if (el && wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
 		});
 	}, [messages.length, streamTick]);
+	// Catch-all stick-to-bottom: the streamTick rAF above pins at delta time, but
+	// content that grows AFTER that frame — burst lanes, the discussion round-table,
+	// a deliverable's markdown, image/code-block decode — would otherwise leave the
+	// view drifting a few hundred px above bottom until the next delta. A
+	// ResizeObserver on the message content re-pins on EVERY height change, so the
+	// scroll truly "always" tracks the bottom while the user is there. Guarded by
+	// wasAtBottomRef so a manual scroll-up is never yanked back down. Setting
+	// scrollTop doesn't change content height, so this can't self-retrigger.
+	useEffect(() => {
+		const content = contentRef.current;
+		const el = bodyRef.current;
+		if (!content || !el || typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(() => {
+			if (wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
+		});
+		ro.observe(content);
+		return () => ro.disconnect();
+	}, []);
 	useEffect(
 		() => () => {
 			if (scrollRafRef.current != null)
@@ -869,20 +911,12 @@ export function ChatPane({ convId, members, title }: Props) {
 			const payload = m.payload;
 			if (payload.kind !== "tasks") continue;
 			for (const task of payload.tasks ?? []) {
-				if (task.state !== "done" && task.state !== "failed") out.add(task.agent);
+				if (task.state !== "done" && task.state !== "failed")
+					out.add(task.agent);
 			}
 		}
 		return out;
 	}, [messages]);
-
-	const pendingAgentPlaceholders = useMemo(
-		() =>
-			activeAgents.filter((a) => {
-				if (activeBurstAgents.has(a.id)) return false;
-				return !messages.some((m) => messageIsFreshForAgent(m, a.id, a.ts));
-			}),
-		[activeAgents, activeBurstAgents, messages],
-	);
 
 	// Burst membership (which messages fold into the orchestrator's lanes) changes
 	// ONLY when a message is appended — never on streaming text/reasoning deltas.
@@ -891,14 +925,30 @@ export function ChatPane({ convId, members, title }: Props) {
 	// "派活后很卡" fix: a 3-lane burst fans out ~6 concurrent delta streams, and
 	// without this each delta re-ran computeBursts over the whole conversation.
 	const burstSig = `${messages.length}:${messages.length ? messages[messages.length - 1].id : ""}`;
+	// De-interleave concurrent agents: re-group the flat arrival-ordered list so a
+	// turn's parts are contiguous (by turn_id), keeping turn-start order. This is
+	// what the whole render pipeline below (burst claim, fold pass, firstOfRun,
+	// the render map) iterates — so a slow agent's turn no longer gets sliced into
+	// 1–2-step fragments by another agent's interleaved rows (ADR-024). Memoized
+	// on burstSig (structural: count + last id) so streaming deltas don't re-run it.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: burstSig captures the structural change; `messages` ref churns every delta by design.
+	const orderedMessages = useMemo(() => orderByTurn(messages), [burstSig]);
+	// Ids of messages currently streaming. Re-read each render (cheap — <5 in
+	// flight), but STABILIZE the Set reference on its CONTENT so the structural
+	// grouping below (renderSig, fold pass) only re-runs when an agent starts/stops
+	// a stream — NOT on every text delta. streamTick bumps per delta; a fresh Set
+	// each tick was forcing the O(N) fold pass to recompute on every chunk (the
+	// render perf cliff, ADR-024 follow-up).
+	const _streamingIds = Array.from(
+		useStore.getState().convs.get(convId)?.streamingTexts.values() ?? [],
+	)
+		.map((stream) => stream.messageId)
+		.sort();
+	const _streamingIdsKey = `${convId}|${_streamingIds.join("|")}`;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: _streamingIdsKey IS the content signature of _streamingIds — keying the Set on it (not streamTick) is the whole point: a stable ref across deltas of the same in-flight message.
 	const streamingMessageIdsForRender = useMemo(
-		() =>
-			new Set(
-				Array.from(
-					useStore.getState().convs.get(convId)?.streamingTexts.values() ?? [],
-				).map((stream) => stream.messageId),
-			),
-		[convId, streamTick],
+		() => new Set(_streamingIds),
+		[_streamingIdsKey],
 	);
 	const renderSig = useMemo(
 		() =>
@@ -920,8 +970,8 @@ export function ChatPane({ convId, members, title }: Props) {
 		[messages, streamingMessageIdsForRender],
 	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: burstSig captures the structural change; `messages` ref churns every delta by design, so it must NOT be a dep.
-	const { burstByAnchorId, claimedSet } = useMemo(() => {
-		const ids = messages.map((m) => m.id);
+	const { burstByAnchorId, claimedSet: burstClaimedSet } = useMemo(() => {
+		const ids = orderedMessages.map((m) => m.id);
 		const msgByIdLive =
 			useStore.getState().convs.get(convId)?.msgById ??
 			new Map<string, Message>();
@@ -929,6 +979,36 @@ export function ChatPane({ convId, members, title }: Props) {
 		// longer drives it — computeBursts ignores its old 3rd arg).
 		return computeBursts(ids, msgByIdLive);
 	}, [burstSig, convId]);
+
+	const { discussionByAnchorId, claimedSet: discussionClaimedSet } =
+		useMemo(() => {
+			const ids = orderedMessages.map((m) => m.id);
+			const msgByIdLive =
+				useStore.getState().convs.get(convId)?.msgById ??
+			new Map<string, Message>();
+			return computeDiscussions(ids, msgByIdLive);
+		}, [burstSig, convId]);
+
+	const activeDiscussionAgents = useMemo(
+		() => activeDiscussionParticipantIds(discussionByAnchorId),
+		[discussionByAnchorId],
+	);
+
+	const pendingAgentPlaceholders = useMemo(
+		() =>
+			activeAgents.filter((a) => {
+				if (activeBurstAgents.has(a.id)) return false;
+				if (activeDiscussionAgents.has(a.id)) return false;
+				return !messages.some((m) => messageIsFreshForAgent(m, a.id, a.ts));
+			}),
+		[activeAgents, activeBurstAgents, activeDiscussionAgents, messages],
+	);
+
+	const claimedSet = useMemo(() => {
+		const out = new Set<string>(burstClaimedSet);
+		for (const id of discussionClaimedSet) out.add(id);
+		return out;
+	}, [burstClaimedSet, discussionClaimedSet]);
 
 	// Consecutive tool-call / reasoning folding (#9): a run of ≥2 adjacent
 	// tool-call OR reasoning messages from the same sender (not in a burst lane)
@@ -939,59 +1019,35 @@ export function ChatPane({ convId, members, title }: Props) {
 	// members. Memoized on the burst signature (no re-run on streaming deltas).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see burstSig note above.
 	const { groupFirstIds, groupedSkip, firstOfRun } = useMemo(() => {
-		const firsts = new Map<string, string[]>();
-		const skip = new Set<string>();
 		const byId =
 			useStore.getState().convs.get(convId)?.msgById ??
 			new Map<string, Message>();
-		let run: string[] = [];
-		let runSender: string | null = null;
-		let runHasTool = false;
-		const flush = () => {
-			// Fold ANY run that contains ≥1 tool call into a ToolCallGroup — even a
-			// single lone tool call. Tool calls should never render "naked"; they're
-			// always wrapped in the fold block (user request). Pure-reasoning runs
-			// (no tool) keep their own ReasoningPart and are not forced into a group.
-			if (runHasTool) {
-				firsts.set(run[0], [...run]);
-				for (let j = 1; j < run.length; j++) skip.add(run[j]);
-			}
-			run = [];
-			runSender = null;
-			runHasTool = false;
-		};
-		for (const m of messages) {
-			const pl = (
-				claimedSet.has(m.id) || burstByAnchorId.has(m.id)
-					? undefined
-					: byId.get(m.id)?.payload
-			) as { kind?: string; name?: string } | undefined;
-			const kind = pl?.kind;
-			// Fold reasoning / non-write tool-calls / terminal(bash) into the
-			// "N 步工具调用" block; keep only file-edit (diff/write) standalone; drop
-			// the raw bash tool-call (its terminal card represents it). Shared with
-			// burst lanes via classifyFoldable so both fold identically.
-			const cl = classifyFoldable(kind, pl?.name);
-			if (cl.drop) {
-				skip.add(m.id);
-				continue;
-			}
-			const foldable = cl.foldable;
-			const countsAsTool = cl.isTool;
-			if (foldable && (runSender === null || runSender === m.sender_id)) {
-				run.push(m.id);
-				runSender = m.sender_id;
-				if (countsAsTool) runHasTool = true;
-			} else {
-				flush();
-				if (foldable) {
-					run.push(m.id);
-					runSender = m.sender_id;
-					if (countsAsTool) runHasTool = true;
-				}
-			}
+		// Senders that emit separate `terminal` cards. For those the bare bash
+		// tool-call is redundant (drop it); for senders that embed output on the
+		// bash call (no terminal) we must KEEP it visible, else the execution
+		// vanishes (consecutive thinking blocks with a missing tool call between).
+		const sendersWithTerminal = new Set<string>();
+		for (const m of orderedMessages) {
+			if ((byId.get(m.id)?.payload ?? m.payload)?.kind === "terminal")
+				sendersWithTerminal.add(m.sender_id);
 		}
-		flush();
+		// Fold reasoning / non-write tool-calls into the "N 步工具调用" block; keep
+		// file-edit (diff/write) AND terminals/bash-with-output standalone. Claimed
+		// (lane) + burst-anchor messages pass `part: undefined` so they break a run.
+		// Shared with burst lanes via foldPass so both fold identically.
+		const { firsts, skip } = foldPass(
+			orderedMessages.map((m) => ({
+				id: m.id,
+				sender: m.sender_id,
+				part: (claimedSet.has(m.id) || burstByAnchorId.has(m.id)
+					? undefined
+					: byId.get(m.id)?.payload) as
+					| { kind?: string; name?: string }
+					| undefined,
+			})),
+			(sender) => sendersWithTerminal.has(sender),
+			true,
+		);
 		// Avatar grouping over the VISIBLE render sequence: a run = consecutive
 		// avatar-bearing elements (normal messages + fold groups) from the same
 		// sender; only the FIRST element shows the avatar. So text → fold → text
@@ -999,12 +1055,22 @@ export function ChatPane({ convId, members, title }: Props) {
 		// Burst cards have no avatar and break a run.
 		const firstOfRun = new Set<string>();
 		let prevRunSender: string | null = null;
-		for (const m of messages) {
+		for (const m of orderedMessages) {
 			if (claimedSet.has(m.id) || skip.has(m.id)) continue; // lane / folded
-			const currentPayload = byId.get(m.id)?.payload ?? m.payload;
-			const currentStreaming = streamingMessageIdsForRender.has(m.id);
-			if (!isRenderableMessagePayload(currentPayload, currentStreaming)) continue;
-			if (burstByAnchorId.has(m.id)) {
+			// A fold-group HEAD renders as a ToolCallGroup regardless of whether its
+			// first member's payload is individually renderable — e.g. a run that
+			// starts with an empty `reasoning` (len 0) still shows as "N 步工具调用".
+			// Without this guard the empty head fails isRenderableMessagePayload, the
+			// loop skips it, and the avatar mis-attaches to the NEXT message — leaving
+			// the tool-call fold orphaned ABOVE the agent header (rendered under the
+			// previous sender). Treat fold heads as always avatar-bearing.
+			if (!firsts.has(m.id)) {
+				const currentPayload = byId.get(m.id)?.payload ?? m.payload;
+				const currentStreaming = streamingMessageIdsForRender.has(m.id);
+				if (!isRenderableMessagePayload(currentPayload, currentStreaming))
+					continue;
+			}
+			if (burstByAnchorId.has(m.id) || discussionByAnchorId.has(m.id)) {
 				prevRunSender = null;
 				continue;
 			}
@@ -1012,7 +1078,15 @@ export function ChatPane({ convId, members, title }: Props) {
 			prevRunSender = m.sender_id;
 		}
 		return { groupFirstIds: firsts, groupedSkip: skip, firstOfRun };
-	}, [burstSig, renderSig, convId, claimedSet, burstByAnchorId, streamingMessageIdsForRender]);
+	}, [
+		burstSig,
+		renderSig,
+		convId,
+		claimedSet,
+		burstByAnchorId,
+		discussionByAnchorId,
+		streamingMessageIdsForRender,
+	]);
 
 	const agentActionMsgIds = useMemo(() => {
 		const out = new Set<string>();
@@ -1030,7 +1104,11 @@ export function ChatPane({ convId, members, title }: Props) {
 			}
 			if (m.sender_id === "system") continue;
 			if (claimedSet.has(m.id) || groupedSkip.has(m.id)) continue;
-			if (burstByAnchorId.has(m.id) || groupFirstIds.has(m.id)) {
+			if (
+				burstByAnchorId.has(m.id) ||
+				discussionByAnchorId.has(m.id) ||
+				groupFirstIds.has(m.id)
+			) {
 				if (lastAgentSender && lastAgentSender !== m.sender_id) flush();
 				lastAgentSender = m.sender_id;
 				continue;
@@ -1041,7 +1119,15 @@ export function ChatPane({ convId, members, title }: Props) {
 		}
 		flush();
 		return out;
-	}, [messages, claimedSet, groupedSkip, burstByAnchorId, groupFirstIds]);
+		// biome-ignore lint/correctness/useExhaustiveDependencies: renderSig is the structural signature of `messages` (id+sender+kind+renderable, in order); this pass depends only on that structure + the stable group sets, so gating on renderSig keeps the O(N) scan off the per-delta path. `messages` ref churns every delta by design.
+	}, [
+		renderSig,
+		claimedSet,
+		groupedSkip,
+		burstByAnchorId,
+		discussionByAnchorId,
+		groupFirstIds,
+	]);
 
 	const [quoteMenu, setQuoteMenu] = useState<{
 		x: number;
@@ -1049,11 +1135,13 @@ export function ChatPane({ convId, members, title }: Props) {
 		text: string;
 		msgId?: string;
 	} | null>(null);
+	const selectingRef = useRef(false);
 
-	useEffect(() => {
-		let timer: number | null = null;
-		const openFromSelection = () => {
-			const host = bodyRef.current;
+	const openSelectionQuoteMenuFromSelection = useCallback(
+		(
+			host: HTMLDivElement | null,
+			point?: { clientX: number; clientY: number },
+		) => {
 			const sel = window.getSelection();
 			const selected = sel?.toString().trim();
 			if (!host || !sel || !selected || sel.rangeCount === 0) {
@@ -1066,28 +1154,49 @@ export function ChatPane({ convId, members, title }: Props) {
 			}
 			const range = sel.getRangeAt(0);
 			const rect = range.getBoundingClientRect();
-			if (!rect.width && !rect.height) return;
+			if (!rect.width && !rect.height) {
+				setQuoteMenu(null);
+				return;
+			}
 			const node =
 				sel.anchorNode instanceof Element
 					? sel.anchorNode
 					: sel.anchorNode?.parentElement;
 			const msgEl = node?.closest("[data-msg-id]") as HTMLElement | null;
 			setQuoteMenu({
-				x: Math.min(rect.left + rect.width / 2, window.innerWidth - 150),
-				y: Math.max(rect.top - 38, 8),
+				x: Math.min(
+					point?.clientX ?? rect.left + rect.width / 2,
+					window.innerWidth - 150,
+				),
+				y: Math.max((point?.clientY ?? rect.top) - 38, 8),
 				text: selected,
 				msgId: msgEl?.dataset.msgId,
 			});
+		},
+		[],
+	);
+
+	useEffect(() => {
+		const clearInvalidSelectionMenu = () => {
+			const host = bodyRef.current;
+			const sel = window.getSelection();
+			const selected = sel?.toString().trim();
+			if (!host || !sel || !selected || sel.rangeCount === 0) {
+				setQuoteMenu(null);
+				return;
+			}
+			if (!host.contains(sel.anchorNode) || !host.contains(sel.focusNode)) {
+				setQuoteMenu(null);
+			}
 		};
 		const onSelectionChange = () => {
-			if (timer != null) window.clearTimeout(timer);
-			timer = window.setTimeout(openFromSelection, 80);
+			if (selectingRef.current) setQuoteMenu(null);
+			else clearInvalidSelectionMenu();
 		};
-		const onScroll = () => openFromSelection();
+		const onScroll = () => setQuoteMenu(null);
 		document.addEventListener("selectionchange", onSelectionChange);
 		window.addEventListener("scroll", onScroll, true);
 		return () => {
-			if (timer != null) window.clearTimeout(timer);
 			document.removeEventListener("selectionchange", onSelectionChange);
 			window.removeEventListener("scroll", onScroll, true);
 		};
@@ -1121,10 +1230,7 @@ export function ChatPane({ convId, members, title }: Props) {
 			.trim();
 	};
 
-	const clearAgentTurnForRegenerate = (
-		first: Message,
-		ids: string[],
-	): void => {
+	const clearAgentTurnForRegenerate = (first: Message, ids: string[]): void => {
 		useStore.setState((s) => {
 			const cs = s.convs.get(convId);
 			if (!cs) return {};
@@ -1183,7 +1289,8 @@ export function ChatPane({ convId, members, title }: Props) {
 		const idx = messages.findIndex((m) => m.id === msgId);
 		if (idx < 0) return null;
 		const current = messages[idx];
-		if (current.sender_id === "you" || current.sender_id === "system") return null;
+		if (current.sender_id === "you" || current.sender_id === "system")
+			return null;
 		let user: Message | null = null;
 		for (let i = idx - 1; i >= 0; i--) {
 			if (messages[i].sender_id === "you") {
@@ -1276,24 +1383,33 @@ export function ChatPane({ convId, members, title }: Props) {
 		return agents.find((a) => a.id === m.sender_id)?.name ?? "Agent";
 	};
 
-	const openSelectionQuoteMenu = (ev: React.MouseEvent<HTMLDivElement>) => {
-		const sel = window.getSelection();
-		const selected = sel?.toString().trim();
-		if (!sel || !selected || sel.rangeCount === 0) return;
+	const beginTextSelection = (ev: React.MouseEvent<HTMLDivElement>) => {
+		if ((ev.target as Element | null)?.closest("[data-quote-menu]")) return;
+		selectingRef.current = true;
+		setQuoteMenu(null);
+	};
+
+	const finishTextSelection = (ev: React.MouseEvent<HTMLDivElement>) => {
+		selectingRef.current = false;
 		const host = ev.currentTarget;
-		if (!host.contains(sel.anchorNode) || !host.contains(sel.focusNode)) return;
-		ev.preventDefault();
-		const node =
-			sel.anchorNode instanceof Element
-				? sel.anchorNode
-				: sel.anchorNode?.parentElement;
-		const msgEl = node?.closest("[data-msg-id]") as HTMLElement | null;
-		setQuoteMenu({
-			x: ev.clientX,
-			y: ev.clientY,
-			text: selected,
-			msgId: msgEl?.dataset.msgId,
-		});
+		const point = { clientX: ev.clientX, clientY: ev.clientY };
+		window.setTimeout(
+			() => openSelectionQuoteMenuFromSelection(host, point),
+			0,
+		);
+	};
+
+	const finishTouchSelection = (ev: React.TouchEvent<HTMLDivElement>) => {
+		selectingRef.current = false;
+		const host = ev.currentTarget;
+		const touch = ev.changedTouches[0];
+		const point = touch
+			? { clientX: touch.clientX, clientY: touch.clientY }
+			: undefined;
+		window.setTimeout(
+			() => openSelectionQuoteMenuFromSelection(host, point),
+			0,
+		);
 	};
 
 	const quoteSelectedText = () => {
@@ -1413,11 +1529,16 @@ export function ChatPane({ convId, members, title }: Props) {
             so it doesn't displace the message list when streaming starts/ends. */}
 
 				<ConvScopeProvider value={{ convId, inWorkspace, members }}>
-						<div
-							ref={bodyRef}
-							onMouseUp={openSelectionQuoteMenu}
-							onContextMenu={openSelectionQuoteMenu}
-							className={`absolute inset-0 overflow-y-auto py-4 ${mobile ? "pn-mobile-chat-scroll" : ""}`}
+					<div
+						ref={bodyRef}
+						onMouseDown={beginTextSelection}
+						onMouseUp={finishTextSelection}
+						onTouchStart={() => {
+							selectingRef.current = true;
+							setQuoteMenu(null);
+						}}
+						onTouchEnd={finishTouchSelection}
+						className={`absolute inset-0 overflow-y-auto py-4 ${mobile ? "pn-mobile-chat-scroll" : ""}`}
 						// Clear the floating composer + running-status strip, so the
 						// message being answered always sits ABOVE the status bar.
 						style={{
@@ -1425,6 +1546,7 @@ export function ChatPane({ convId, members, title }: Props) {
 						}}
 					>
 						<div
+							ref={contentRef}
 							className={`mx-auto w-full max-w-[var(--chat-measure)] ${mobile ? "px-1" : ""}`}
 						>
 							{/* Lazy-load top sentinel — visible spinner while older messages
@@ -1461,7 +1583,7 @@ export function ChatPane({ convId, members, title }: Props) {
             sub-agent messages are claimed into lanes (rendered inside
             TasksBurstPart), not the linear stream. Membership comes from the
             memoized burstByAnchorId/claimedSet above (delta-invariant). */}
-								{messages.map((m) => {
+								{orderedMessages.map((m) => {
 									if (claimedSet.has(m.id)) return null; // rendered in a lane
 									if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
 									const group = groupFirstIds.get(m.id);
@@ -1477,12 +1599,31 @@ export function ChatPane({ convId, members, title }: Props) {
 									}
 									const burst = burstByAnchorId.get(m.id);
 									if (burst) {
+										const currentPayload =
+											useStore.getState().convs.get(convId)?.msgById.get(m.id)
+												?.payload ?? m.payload;
 										return (
 											<TasksBurstPart
 												key={m.id}
-												payload={m.payload as TasksPayload}
+												payload={currentPayload as TasksPayload}
 												burstInfo={burst}
 												convId={convId}
+											/>
+										);
+									}
+									const discussion = discussionByAnchorId.get(m.id);
+									if (discussion) {
+										const currentPayload =
+											useStore.getState().convs.get(convId)?.msgById.get(m.id)
+												?.payload ?? m.payload;
+										return (
+											<DiscussionPart
+												key={m.id}
+												convId={convId}
+												discussionInfo={{
+													...discussion,
+													payload: currentPayload as DiscussionPayload,
+												}}
 											/>
 										);
 									}
@@ -1522,9 +1663,13 @@ export function ChatPane({ convId, members, title }: Props) {
 							</div>
 							{quoteMenu && (
 								<div
+									data-quote-menu
 									className="fixed z-[80] min-w-[120px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg p-1"
 									style={{ left: quoteMenu.x, top: quoteMenu.y }}
-									onMouseDown={(ev) => ev.preventDefault()}
+									onMouseDown={(ev) => {
+										ev.preventDefault();
+										ev.stopPropagation();
+									}}
 									onClick={(ev) => ev.stopPropagation()}
 								>
 									<button
@@ -1532,13 +1677,13 @@ export function ChatPane({ convId, members, title }: Props) {
 										className="w-full text-left px-2 py-1.5 rounded-sm text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)]"
 										onClick={quoteSelectedText}
 									>
-										选择引用内容
+										引用此内容
 									</button>
 								</div>
 							)}
-							</div>
 						</div>
-					</ConvScopeProvider>
+					</div>
+				</ConvScopeProvider>
 			</div>
 
 			{/* Floating composer — overlays the bottom of the message area so chat
@@ -1575,9 +1720,15 @@ export function ChatPane({ convId, members, title }: Props) {
 						}
 						statusSlot={
 							activeAgents.length > 0 ? (
-								<div className={`anim-fade-up border-b border-[var(--color-line)] ${mobile ? "mb-1 pb-1" : "mb-2 pb-2"}`}>
-									<div className={`flex flex-wrap items-center px-1 ${mobile ? "gap-1 text-[10.5px]" : "gap-1.5 text-[11.5px]"}`}>
-										<span className={`${mobile ? "mr-0.5 text-[9px]" : "mr-1 text-[10px]"} font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)]`}>
+								<div
+									className={`anim-fade-up border-b border-[var(--color-line)] ${mobile ? "mb-1 pb-1" : "mb-2 pb-2"}`}
+								>
+									<div
+										className={`flex flex-wrap items-center px-1 ${mobile ? "gap-1 text-[10.5px]" : "gap-1.5 text-[11.5px]"}`}
+									>
+										<span
+											className={`${mobile ? "mr-0.5 text-[9px]" : "mr-1 text-[10px]"} font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)]`}
+										>
 											Agent
 										</span>
 										{activeAgents.map((a) => {

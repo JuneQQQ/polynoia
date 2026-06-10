@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --port 5173",
+    "preview": "vite preview --port 7788",
     "lint": "biome lint .",
     "test": "vitest run"
   },

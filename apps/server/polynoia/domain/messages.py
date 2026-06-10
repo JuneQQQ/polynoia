@@ -88,6 +88,26 @@ class TasksPayload(BaseModel):
     tasks: list[TaskItem]
 
 
+class DiscussionPayload(BaseModel):
+    """Round-table discussion card created only by the explicit `discuss` tool.
+
+    Plain @mentions remain routing/relay signals. The UI only groups messages
+    whose payloads carry this discussion_id, so burst lanes and direct mentions
+    never get accidentally folded into a round table.
+    """
+
+    kind: Literal["discussion"] = "discussion"
+    discussion_id: ULID
+    topic: str
+    participants: list[ULID] = []
+    status: Literal["preparing", "running", "synthesizing", "done", "failed"] = "preparing"
+    trigger: Literal["discuss"] = "discuss"
+    created_by: ULID | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    conclusion_message_id: ULID | None = None
+
+
 HunkLineKind = Literal["add", "del", "ctx"]
 
 
@@ -502,6 +522,7 @@ MessagePayload = Annotated[
         TextPayload,
         ReasoningPayload,
         TasksPayload,
+        DiscussionPayload,
         DiffPayload,
         WebPayload,
         SwatchesPayload,
@@ -535,5 +556,9 @@ class Message(BaseModel):
     payload: MessagePayload
     statuses: list[StatusItem] | None = None
     in_reply_to: ULID | None = None
+    # Per-turn grouping id (one per run_adapter_turn) — ADR-024. Lets the renderer
+    # keep a turn's parts contiguous when concurrent agents interleave by arrival.
+    # Null for pre-turn_id rows / out-of-turn messages.
+    turn_id: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     edited_at: datetime | None = None

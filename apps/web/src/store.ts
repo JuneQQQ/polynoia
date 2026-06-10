@@ -7,6 +7,12 @@
  */
 import { create } from "zustand";
 import { api } from "./lib/api";
+import {
+	findToolCallMessageId,
+	flipStuckCardsOnTurnEnd,
+	mergeTerminalPayload,
+	mergeToolCallPayload,
+} from "./lib/chunkReducers";
 import type {
 	Agent,
 	AskFormPayload,
@@ -471,6 +477,8 @@ export type ChunkAction =
 			partId: string;
 			messageId: string;
 			senderId?: string | null;
+			turnId?: string | null;
+			discussionId?: string | null;
 	  }
 	| { kind: "text-delta"; partId: string; delta: string }
 	| { kind: "text-end"; partId: string }
@@ -479,13 +487,20 @@ export type ChunkAction =
 			partId: string;
 			messageId: string;
 			senderId?: string | null;
+			turnId?: string | null;
+			discussionId?: string | null;
 	  }
 	| { kind: "reasoning-delta"; partId: string; delta: string }
 	| { kind: "reasoning-end"; partId: string }
 	| {
 			kind: "stream-resume";
 			senderId: string;
-			parts: { id: string; kind: "text" | "reasoning"; text: string }[];
+			parts: {
+				id: string;
+				kind: "text" | "reasoning";
+				text: string;
+				discussion_id?: string | null;
+			}[];
 	  }
 	| {
 			kind: "card";
@@ -493,6 +508,7 @@ export type ChunkAction =
 			payload: MessagePayload;
 			messageId: string;
 			senderId?: string | null;
+			turnId?: string | null;
 	  };
 
 export const useStore = create<Store>((set, get) => ({
@@ -1048,11 +1064,17 @@ export const useStore = create<Store>((set, get) => ({
 			const partKind = action.kind === "reasoning-start" ? "reasoning" : "text";
 			const senderId = action.senderId || fallbackSender;
 			const streamKey = `${senderId}::${action.partId}`; // collision-safe across agents
+			const payload = {
+				kind: partKind,
+				body: [{ t: "p", c: "" }],
+				...(action.discussionId ? { discussion_id: action.discussionId } : {}),
+			} as Message["payload"];
 			const placeholder: Message = {
 				id: action.messageId,
 				conv_id: convId,
 				sender_id: senderId,
-				payload: { kind: partKind, body: [{ t: "p", c: "" }] },
+				payload,
+				turn_id: action.turnId ?? null,
 				created_at: new Date().toISOString(),
 			};
 			const nextById = new Map(cur.msgById);
@@ -1097,7 +1119,13 @@ export const useStore = create<Store>((set, get) => ({
 					id: messageId,
 					conv_id: convId,
 					sender_id: senderId,
-					payload: { kind: partKind, body: [{ t: "p", c: part.text }] },
+					payload: {
+						kind: partKind,
+						body: [{ t: "p", c: part.text }],
+						...(part.discussion_id
+							? { discussion_id: part.discussion_id }
+							: {}),
+					} as Message["payload"],
 					created_at: new Date().toISOString(),
 				};
 				if (!nextById.has(messageId)) order.push(messageId);
@@ -1146,10 +1174,19 @@ export const useStore = create<Store>((set, get) => ({
 			// rebuild the messages array. Components subscribe per-message.
 			const oldMsg = cur.msgById.get(entry.messageId);
 			if (!oldMsg) return;
+			const oldPayload = oldMsg.payload as Message["payload"] & {
+				discussion_id?: string | null;
+			};
 			const nextById = new Map(cur.msgById);
 			nextById.set(entry.messageId, {
 				...oldMsg,
-				payload: { kind: entry.kind, body: [{ t: "p", c: newText }] },
+				payload: {
+					kind: entry.kind,
+					body: [{ t: "p", c: newText }],
+					...(oldPayload.discussion_id
+						? { discussion_id: oldPayload.discussion_id }
+						: {}),
+				},
 			});
 			const newStreaming = new Map(cur.streamingTexts);
 			newStreaming.set(foundKey, { ...entry, text: newText });
@@ -1196,29 +1233,19 @@ export const useStore = create<Store>((set, get) => ({
 					message: data.message,
 					ts: Date.now(),
 				});
-				// Turn ended (idle/aborted/error) → any of THIS agent's tool-call
-				// cards still stuck at pending/running never got a part.completed
-				// (turn died mid-tool-input). Flip them to a terminal state so the
-				// card stops showing "进行中" forever (the「卡住」symptom).
-				let patchedById: Map<string, Message> | null = null;
-				if (status === "idle" || status === "aborted" || status === "error") {
-					const terminal = status === "error" ? "error" : "completed";
-					for (const mid of cur.messageOrder) {
-						const msg = cur.msgById.get(mid);
-						if (!msg || msg.sender_id !== agentId) continue;
-						const p = msg.payload as { kind?: string; state?: string };
-						if (
-							p?.kind === "tool-call" &&
-							(p.state === "pending" || p.state === "running")
-						) {
-							if (!patchedById) patchedById = new Map(cur.msgById);
-							patchedById.set(mid, {
-								...msg,
-								payload: { ...p, state: terminal } as Message["payload"],
-							});
-						}
-					}
-				}
+				// Turn ended (idle/aborted/error) → any of THIS agent's tool-call /
+				// terminal cards still stuck at pending/running never got a
+				// part.completed (turn died mid-tool-input). Flip them to a terminal
+				// state so the card stops showing "进行中" forever (the「卡住」symptom).
+				const patchedById =
+					status === "idle" || status === "aborted" || status === "error"
+						? flipStuckCardsOnTurnEnd(
+								cur.messageOrder,
+								cur.msgById,
+								agentId,
+								status === "error",
+							)
+						: null;
 				convs.set(convId, {
 					...cur,
 					agentStatus: newStatus,
@@ -1245,37 +1272,27 @@ export const useStore = create<Store>((set, get) => ({
 				}
 			}
 			if (action.cardKind === "tool-call") {
-				const nextToolId = (action.payload as { tool_call_id?: unknown })
-					.tool_call_id;
-				if (typeof nextToolId === "string" && nextToolId) {
-					for (const mid of cur.messageOrder) {
-						const msg = cur.msgById.get(mid);
-						const p = msg?.payload as { kind?: string; tool_call_id?: unknown };
-						if (p?.kind === "tool-call" && p.tool_call_id === nextToolId) {
-							messageId = mid;
-							break;
-						}
-					}
-				}
+				const dupId = findToolCallMessageId(
+					cur.messageOrder,
+					cur.msgById,
+					(action.payload as { tool_call_id?: unknown }).tool_call_id,
+				);
+				if (dupId) messageId = dupId;
 			}
 			const existing = cur.msgById.get(messageId);
 			const nextById = new Map(cur.msgById);
 			if (existing) {
 				let mergedPayload = action.payload;
-				if (action.cardKind === "tool-call") {
-					// A terminal (error/completed) tool-call chunk must NEVER erase the
-					// args the running card already showed. Keep prior input/preview if
-					// the new chunk dropped them — so the model's tool-call JSON stays
-					// visible on error.
-					const prev = existing.payload as any;
-					const next = action.payload as any;
-					const nextHasInput = next.input && Object.keys(next.input).length > 0;
-					mergedPayload = {
-						...next,
-						input: nextHasInput ? next.input : (prev?.input ?? next.input),
-						input_preview: next.input_preview ?? prev?.input_preview ?? null,
-					};
-				}
+				if (action.cardKind === "tool-call")
+					mergedPayload = mergeToolCallPayload(
+						existing.payload,
+						action.payload,
+					);
+				if (action.cardKind === "terminal")
+					mergedPayload = mergeTerminalPayload(
+						existing.payload,
+						action.payload,
+					);
 				nextById.set(messageId, { ...existing, payload: mergedPayload });
 				convs.set(convId, {
 					...cur,
@@ -1289,6 +1306,7 @@ export const useStore = create<Store>((set, get) => ({
 					conv_id: convId,
 					sender_id: cardSender,
 					payload: action.payload,
+					turn_id: action.turnId ?? null,
 					created_at: new Date().toISOString(),
 				});
 				convs.set(convId, {
@@ -1358,11 +1376,9 @@ export function selectAgentStatuses(
 }
 
 /** True iff this card is still IN PROGRESS — actively running / not yet committed.
- * Live ordering is by ARRIVAL: a write tool-call card streams (and is appended)
- * BEFORE the tool actually runs, so a still-"写入中" card can land in the list
- * ahead of a sibling file whose diff card committed first → the writing card
- * wrongly sorts above an already-done one. We float these to the BOTTOM (newest
- * activity belongs last) — see floatInProgressLast. */
+ * This is a status helper only. Timeline order must remain append/stream order:
+ * moving live cards to the bottom splits a natural tool sequence and makes bash
+ * cards appear detached from the "N 步工具调用" group that owns them. */
 export function isInProgressCard(m: Message): boolean {
 	const p = m.payload as
 		| {
@@ -1381,25 +1397,6 @@ export function isInProgressCard(m: Message): boolean {
 	return false;
 }
 
-/** Stable-partition a display list so IN-PROGRESS cards sit at the END (newest
- * activity last), while everything else keeps its existing order. Pure; returns
- * the SAME array reference when nothing moves (no in-progress card), so callers'
- * memoization isn't defeated in the common case. */
-export function floatInProgressLast(msgs: Message[]): Message[] {
-	let anyLive = false;
-	for (const m of msgs) {
-		if (isInProgressCard(m)) {
-			anyLive = true;
-			break;
-		}
-	}
-	if (!anyLive) return msgs;
-	const done: Message[] = [];
-	const live: Message[] = [];
-	for (const m of msgs) (isInProgressCard(m) ? live : done).push(m);
-	return [...done, ...live];
-}
-
 /** Selector helper: get an ordered messages array for a conv (memoized at call site). */
 export function selectMessages(s: Store, convId: string): Message[] {
 	const cs = s.convs.get(convId);
@@ -1409,9 +1406,7 @@ export function selectMessages(s: Store, convId: string): Message[] {
 		const m = cs.msgById.get(id);
 		if (m) out.push(m);
 	}
-	// In-progress cards (still "写入中" / running) belong at the bottom, even
-	// though they ARRIVED before a sibling's already-committed card.
-	return floatInProgressLast(out);
+	return out;
 }
 
 /** Selector helper: subscribe to a single message by id (component-level memo target). */

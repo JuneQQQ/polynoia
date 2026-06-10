@@ -45,6 +45,26 @@ export type TasksPayload = {
 	contract?: string;
 };
 
+export type DiscussionStatus =
+	| "preparing"
+	| "running"
+	| "synthesizing"
+	| "done"
+	| "failed";
+
+export type DiscussionPayload = {
+	kind: "discussion";
+	discussion_id: ULID;
+	topic: string;
+	participants: ULID[];
+	status: DiscussionStatus;
+	trigger?: "discuss";
+	created_by?: ULID | null;
+	started_at?: string | null;
+	ended_at?: string | null;
+	conclusion_message_id?: ULID | null;
+};
+
 export type HunkLine = ["add" | "del" | "ctx", number, string];
 export type Hunk = { header: string; lines: HunkLine[] };
 export type DiffPayload = {
@@ -302,6 +322,7 @@ export type MessagePayload =
 	| TextPayload
 	| ReasoningPayload
 	| TasksPayload
+	| DiscussionPayload
 	| DiffPayload
 	| WebPayload
 	| SwatchesPayload
@@ -333,6 +354,10 @@ export type Message = {
 	/** Workspace main HEAD sha at this message's creation (workspace convs only).
 	 * Drives「回到这个对话」code restore. Null = DM / no workspace. */
 	code_sha?: string | null;
+	/** Per-turn grouping id (one per run_adapter_turn). Lets the renderer keep a
+	 * turn's parts contiguous even when concurrent agents' parts interleave by
+	 * arrival — see ADR-024. Null for pre-turn_id rows. */
+	turn_id?: string | null;
 	created_at: string;
 	edited_at?: string | null;
 };

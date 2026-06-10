@@ -82,7 +82,12 @@ import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
 
-from polynoia.adapters._utils import _new_id, _reasoning_seconds, _stringify_tool_output
+from polynoia.adapters._utils import (
+    _new_id,
+    _reasoning_seconds,
+    _stringify_tool_output,
+    apply_proxy_egress,
+)
 from polynoia.adapters.base import (
     AdapterCapabilities,
     AdapterEvent,
@@ -436,25 +441,8 @@ class CodexAdapter:
         )
         config_path.write_text(_merge_mcp_into_config(existing, mcp_block), encoding="utf-8")
 
-        # ── Proxy egress control (proxy_kind) ───────────────────────
-        _env = dict(env or {})
-        if proxy_kind == "direct":
-            for _k in (
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "http_proxy",
-                "https_proxy",
-                "all_proxy",
-            ):
-                _env.pop(_k, None)
-        elif proxy_kind == "custom" and proxy:
-            _env["HTTP_PROXY"] = proxy
-            _env["HTTPS_PROXY"] = proxy
-            _env["ALL_PROXY"] = proxy
-            _env["http_proxy"] = proxy
-            _env["https_proxy"] = proxy
-            _env["all_proxy"] = proxy
+        # Proxy egress (system inherit / direct strip / custom override) — shared.
+        _env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return CodexSession(
             sandbox=sandbox,
             codex_home=codex_home,

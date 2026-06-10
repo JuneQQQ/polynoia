@@ -8,16 +8,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from polynoia.api.contacts_routes import router as contacts_router
 from polynoia.api.conversations_routes import router as conversations_router
-from polynoia.api.ws_conv import ws_router
 from polynoia.api.onboarding import router as onboarding_router
 from polynoia.api.routes import router
 from polynoia.api.terminal import router as terminal_router
 from polynoia.api.workspace_files import router as workspace_files_router
 from polynoia.api.workspaces_routes import router as workspaces_router
+from polynoia.api.ws_conv import ws_router
 from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import SessionLocal, dispose_engine
-from polynoia.storage.repo import reap_orphan_tool_calls
+from polynoia.storage.repo import (
+    reap_orphan_terminal_cards,
+    reap_orphan_tool_calls,
+    reap_stale_process_runs,
+)
 
 # App-level logging. uvicorn configures only its own loggers and leaves the
 # root handler-less, so our `logging.getLogger("polynoia.*")` calls would be
@@ -36,12 +40,33 @@ async def lifespan(_app: FastAPI):
     # Reap any tool-call payloads left at running/pending from a previous
     # process that died mid-turn (uvicorn --reload, kill, OOM …). Without
     # this, the UI's 进行中 spinner sticks forever on those tool cards.
+    # Also reap process-run rows left at starting/running by a prior instance —
+    # their pids/pgids are stale, so just mark them killed (DB-only) to clear the
+    # right-rail panel's phantom-running entries. (No OS kill: the pgid may have
+    # been reused by an unrelated process.)
     async with SessionLocal() as _s:
         _reaped = await reap_orphan_tool_calls(_s)
+        _reaped_proc = await reap_stale_process_runs(_s)
+        # Close chat terminal cards stranded at 运行中 by the dead prior instance.
+        # reap_stale_process_runs only clears the right-rail PANEL (and skips
+        # already-killed runs); this reconciles the CHAT cards regardless of
+        # whether a process_run still exists for them.
+        _reaped_term = await reap_orphan_terminal_cards(_s)
+        await _s.commit()
     if _reaped:
         logging.getLogger("polynoia.main").info(
             "reaped %d orphan tool-call(s) left at running/pending",
             _reaped,
+        )
+    if _reaped_proc:
+        logging.getLogger("polynoia.main").info(
+            "reaped %d stale process-run(s) (marked killed)",
+            _reaped_proc,
+        )
+    if _reaped_term:
+        logging.getLogger("polynoia.main").info(
+            "closed %d orphan terminal card(s) left at 运行中",
+            _reaped_term,
         )
     # Hydrate custom-workspace locations into the sandbox resolver so agents on
     # any conv resolve the right real dir + integration branch after a restart
@@ -79,8 +104,43 @@ async def lifespan(_app: FastAPI):
                 _dirty = True
         if _dirty:
             await _s.commit()
+
+    # Authoritative background-process liveness sweeper. The MCP-side monitor
+    # dies with the agent's MCP subprocess (turn end / CLI restart), stranding
+    # terminal cards at 运行中 for dead processes. The backend owns the pgids —
+    # probe them periodically, close dead rows, and RE-BROADCAST the corrected
+    # cards so open clients converge without a refresh.
+    import asyncio as _asyncio
+
+    async def _liveness_sweeper() -> None:
+        from polynoia.api.routes import _broadcast_to_conv
+        from polynoia.transport.ui_message_chunk import encode_polynoia_card
+
+        _log = logging.getLogger("polynoia.liveness")
+        while True:
+            await _asyncio.sleep(30)
+            try:
+                async with SessionLocal() as _db:
+                    closed = await _repo.sweep_process_liveness(_db)
+                    await _db.commit()
+                for conv_id, msg_id, sender_id, payload in closed:
+                    _log.info("liveness: closed dead process card %s", msg_id)
+                    try:
+                        frame = encode_polynoia_card(
+                            "terminal", payload, msg_id,
+                            sender_id=sender_id, sender_label=sender_id,
+                        )
+                        await _broadcast_to_conv(conv_id, frame)
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                _log.exception("liveness sweep failed")
+
+    _sweeper_task = _asyncio.create_task(_liveness_sweeper())
+
     yield
     # Shutdown
+    _sweeper_task.cancel()
     await dispose_engine()
 
 

@@ -14,17 +14,21 @@ import type { TerminalPayload } from "../../lib/types";
  * status pill, click to toggle. Expanded body shows the REAL streamed terminal
  * output (not JSON). Auto-expands while running, AUTO-COLLAPSES to the one-line
  * summary when the command finishes; already-finished runs (hydrated from
- * history) start collapsed. Updates in place as the server re-emits data-terminal. */
+ * history) start collapsed. Updates in place as the server re-emits data-terminal.
+ * Lives inside the "N 步工具调用" fold (see toolFold.ts) so a run of commands stays
+ * tidy rather than a stack of standalone cards. */
 export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 	const [open, setOpen] = useState(() => payload.running);
 	const userTouched = useRef(false);
 	const prevRunning = useRef(payload.running);
 	const bodyRef = useRef<HTMLDivElement>(null);
 
-	// Auto-collapse the moment the command finishes (unless the user toggled).
+	// Auto-open while the command is running, then auto-collapse the moment it
+	// finishes. If the user manually toggles, their choice wins.
 	useEffect(() => {
-		if (!userTouched.current && prevRunning.current && !payload.running) {
-			setOpen(false);
+		if (!userTouched.current) {
+			if (payload.running) setOpen(true);
+			else if (prevRunning.current) setOpen(false);
 		}
 		prevRunning.current = payload.running;
 	}, [payload.running]);
@@ -83,9 +87,13 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 				<span className="font-mono font-semibold text-[11.5px] flex-shrink-0">
 					bash
 				</span>
-				<span className="rounded bg-[var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-[var(--color-fg-3)]">
-					{payload.mode === "background" ? "background" : "blocking"}
-				</span>
+				{/* Only label the special case — a long-running process auto-promoted to
+				    the background. A normal command needs no "blocking" badge. */}
+				{payload.mode === "background" && (
+					<span className="rounded bg-[var(--color-accent-soft)] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-[var(--color-accent)]">
+						后台
+					</span>
+				)}
 				<span className="font-mono text-[11px] text-[var(--color-fg-3)] truncate flex-1">
 					{payload.label ? `${payload.label} · ${payload.command}` : payload.command}
 				</span>

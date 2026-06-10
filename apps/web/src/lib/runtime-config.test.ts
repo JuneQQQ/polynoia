@@ -14,7 +14,7 @@ beforeAll(() => {
       setItem: (k: string, v: string) => void store.set(k, v),
       removeItem: (k: string) => void store.delete(k),
     },
-    location: { protocol: "http:", host: "localhost:5173" },
+    location: { protocol: "http:", host: "localhost:7788" },
   };
 });
 
@@ -55,6 +55,6 @@ describe("getServerWsBase", () => {
 
   it("in a plain browser with no override, falls back to same-origin host", () => {
     setCapacitor(null);
-    expect(getServerWsBase()).toBe("ws://localhost:5173");
+    expect(getServerWsBase()).toBe("ws://localhost:7788");
   });
 });

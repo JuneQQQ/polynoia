@@ -69,6 +69,7 @@ async def adapter_events_to_chunks(
     conv_id: str,
     sender_label: str | None = None,
     is_final: bool = True,
+    turn_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Translate an AdapterEvent async iterator into AI SDK UIMessageChunk frames.
 
@@ -130,6 +131,7 @@ async def adapter_events_to_chunks(
                     id=ev.part_id,
                     sender_id=agent_id,
                     sender_label=sender_label or agent_id,
+                    turn_id=turn_id,
                 ))
                 open_text_parts.add(ev.part_id)
             elif part_kind == "reasoning":
@@ -137,6 +139,7 @@ async def adapter_events_to_chunks(
                     id=ev.part_id,
                     sender_id=agent_id,
                     sender_label=sender_label or agent_id,
+                    turn_id=turn_id,
                 ))
                 open_reasoning_parts.add(ev.part_id)
             else:
@@ -146,6 +149,7 @@ async def adapter_events_to_chunks(
                     ev.message_id,
                     sender_id=agent_id,
                     sender_label=sender_label or agent_id,
+                    turn_id=turn_id,
                 )
             continue
 
@@ -208,6 +212,7 @@ async def adapter_events_to_chunks(
                     ev.message_id,
                     sender_id=agent_id,
                     sender_label=sender_label or agent_id,
+                    turn_id=turn_id,
                 )
             continue
 

@@ -4,6 +4,9 @@ from types import SimpleNamespace
 
 from polynoia.api.routes import (
     _effective_mention_routing_text,
+    _is_bare_ack_bounce,
+    _recover_leaked_dispatch,
+    _recover_raw_tool_protocol,
     _single_direct_mention_target,
     _with_orchestrator_mention_routing_hint,
 )
@@ -121,3 +124,106 @@ def test_non_trigger_routes_by_current_text() -> None:
         "开工以后再说 @制图",
         previous_user_texts=["请 @文澜 写 alpha"],
     ) == "开工以后再说 @制图"
+
+
+# --- bare-ack-bounce suppression -------------------------------------------
+# A no-work turn (think + text, zero tool/diff) that @mentions back the agent
+# who just pinged it is a content-free acknowledgement; spawning the pinger
+# again only ping-pongs pleasantries until the depth cap. See `_is_bare_ack_bounce`.
+
+
+def test_bare_ack_bounce_back_to_pinger_is_suppressed() -> None:
+    # 文澜 was pinged by 阿核, did no work, replies "@阿核 收到感谢" → drop.
+    assert _is_bare_ack_bounce(
+        target="orch", parent_agent_id="orch", turn_did_work=False
+    ) is True
+
+
+def test_real_handoff_after_work_is_not_suppressed() -> None:
+    # 数擎 delivered a diff, then @阿核 "done, please review" → must spawn.
+    assert _is_bare_ack_bounce(
+        target="orch", parent_agent_id="orch", turn_did_work=True
+    ) is False
+
+
+def test_fresh_mention_to_non_pinger_is_not_suppressed() -> None:
+    # No work, but @mentions someone who did NOT just ping us → real ask, spawn.
+    assert _is_bare_ack_bounce(
+        target="writer", parent_agent_id="orch", turn_did_work=False
+    ) is False
+
+
+def test_root_turn_with_no_pinger_is_not_suppressed() -> None:
+    # A user-initiated turn has no parent agent → nothing to bounce back to.
+    assert _is_bare_ack_bounce(
+        target="orch", parent_agent_id=None, turn_did_work=False
+    ) is False
+
+
+# --- leaked dispatch recovery (model emits dispatch as text tool-call markup) ---
+
+
+def test_recover_leaked_dispatch_parses_and_strips() -> None:
+    text = (
+        "我先派文澜把规格定下来。\n\n"
+        '<parameter name="tasks">[{"agent":"文澜","note":"写 spec","files":["docs/spec.md"]}]</parameter> '
+        '<parameter name="contract">项目契约:端口 8000</parameter> '
+        '<parameter name="need_continue">true</parameter> </invoke>'
+    )
+    cleaned, dispatch = _recover_leaked_dispatch(text)
+    # markup fully stripped → only the human-readable line remains
+    assert "<parameter" not in cleaned
+    assert "</invoke>" not in cleaned
+    assert cleaned == "我先派文澜把规格定下来。"
+    # dispatch recovered with parsed tasks + flags
+    assert dispatch is not None
+    assert dispatch["tasks"] == [
+        {"agent": "文澜", "note": "写 spec", "files": ["docs/spec.md"]}
+    ]
+    assert dispatch["need_continue"] is True
+    assert dispatch["contract"] == "项目契约:端口 8000"
+
+
+def test_recover_leaked_dispatch_strips_markup_without_valid_tasks() -> None:
+    text = '收到。<parameter name="foo">bar</parameter></invoke>'
+    cleaned, dispatch = _recover_leaked_dispatch(text)
+    assert cleaned == "收到。"
+    assert dispatch is None
+
+
+def test_recover_leaked_dispatch_noop_on_plain_text() -> None:
+    text = "我先看一眼当前文件，再实现。"
+    cleaned, dispatch = _recover_leaked_dispatch(text)
+    assert cleaned == text
+    assert dispatch is None
+
+
+# --- raw MCP protocol recovery (adapter leaks tool_response as text) ----------
+
+
+def test_recover_raw_tool_response_synthesizes_tool_card() -> None:
+    text = (
+        "components.json 落盘。\n"
+        '<tool_response> {"type":"write","path":"backend/data/components.json",'
+        '"diff":"+ data","status":"ok"} </tool_response>\n'
+        "接下来写事故数据。"
+    )
+    cleaned, parts = _recover_raw_tool_protocol(text)
+
+    assert "<tool_response>" not in cleaned
+    assert "backend/data/components.json" not in cleaned
+    assert cleaned == "components.json 落盘。\n\n接下来写事故数据。"
+    assert len(parts) == 1
+    assert parts[0]["kind"] == "tool-call"
+    assert parts[0]["name"] == "write"
+    assert parts[0]["state"] == "completed"
+    assert parts[0]["input"] == {"path": "backend/data/components.json"}
+    assert parts[0]["summary"] == "backend/data/components.json"
+
+
+def test_recover_incomplete_raw_tool_protocol_hides_from_marker() -> None:
+    text = '准备写\n<tool_response> {"type":"write","path":"a.md"'
+    cleaned, parts = _recover_raw_tool_protocol(text)
+
+    assert parts == []
+    assert cleaned == "准备写\n\n> 工具调用协议内容已隐藏。"

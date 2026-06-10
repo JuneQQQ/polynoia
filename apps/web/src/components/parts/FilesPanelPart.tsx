@@ -6,12 +6,14 @@
  * Reuses FilePart's helpers (parseWorkspaceFileSrc / variantFor / formatBytes)
  * so the icon + preview/download routing stay identical to the single-file card.
  */
-import { Download, ExternalLink, Globe } from "lucide-react";
+import { Download, ExternalLink, Globe, PackageCheck } from "lucide-react";
 import { api } from "../../lib/api";
+import { isMobile } from "../../lib/platform";
 import { assetUrl } from "../../lib/runtime-config";
 import type { FilesPayload, LinkItem } from "../../lib/types";
 import { useStore } from "../../store";
 import { formatBytes, parseWorkspaceFileSrc, variantFor } from "./FilePart";
+import { Markdown } from "./TextPart";
 
 function FileRow({
 	src,
@@ -56,7 +58,7 @@ function FileRow({
 	};
 
 	return (
-		<div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[var(--color-surface-2)] transition group">
+		<div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[var(--color-surface-3)] transition group">
 			<button
 				type="button"
 				onClick={wsFile ? onPreview : undefined}
@@ -90,7 +92,11 @@ function FileRow({
 			<button
 				type="button"
 				onClick={onDownload}
-				className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[var(--color-fg-2)] text-[11px] font-medium hover:bg-[var(--color-line)] transition flex-shrink-0"
+				className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[var(--color-fg-3)] text-[11px] font-medium hover:bg-[var(--color-line)] hover:text-[var(--color-fg)] transition flex-shrink-0 ${
+					// Touch has no hover — keep the action always visible there. On
+					// desktop reveal it on row-hover to keep the tray clean.
+					isMobile() ? "" : "opacity-0 group-hover:opacity-100"
+				}`}
 			>
 				<Download size={11} />
 				下载
@@ -127,7 +133,7 @@ function LinkRow({ link }: { link: LinkItem }) {
 	};
 
 	return (
-		<div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[var(--color-surface-2)] transition group">
+		<div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-[var(--color-surface-3)] transition group">
 			<a
 				href={href}
 				target={kind === "web" ? "_blank" : undefined}
@@ -165,26 +171,48 @@ function LinkRow({ link }: { link: LinkItem }) {
 export function FilesPanelPart({ payload }: { payload: FilesPayload }) {
 	const { message, files, links } = payload;
 	const linkList = links ?? [];
+	const count = files.length + linkList.length;
 	return (
-		<div className="w-full max-w-[360px] rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] overflow-hidden">
+		<div className="w-full max-w-[420px] rounded-2xl border border-[var(--color-line)] bg-[var(--color-surface)] overflow-hidden shadow-[var(--shadow-sm)]">
+			{/* Deliverable header — small accent badge + label + entry count. Anchors
+			    the card as an orchestrator hand-off rather than a loose file list. */}
+			<div className="flex items-center gap-2 px-3.5 pt-2.5 pb-1.5">
+				<div className="w-[22px] h-[22px] rounded-lg grid place-items-center flex-shrink-0 bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
+					<PackageCheck size={13} />
+				</div>
+				<span className="text-[12px] font-semibold text-[var(--color-fg-2)] tracking-wide">
+					交付物
+				</span>
+				{count > 0 && (
+					<span className="ml-auto text-[10.5px] font-mono text-[var(--color-fg-3)] px-1.5 py-0.5 rounded-md bg-[var(--color-surface-2)]">
+						{count} 项
+					</span>
+				)}
+			</div>
+
+			{/* Agent-authored summary — rendered as markdown (bold / lists / `code`)
+			    instead of raw text, so `**…**` no longer leaks as literal asterisks. */}
 			{message && (
-				<div className="px-3 py-2 text-[13px] text-[var(--color-fg)] leading-relaxed border-b border-[var(--color-line)]">
-					{message}
+				<div className="px-3.5 pb-2.5 text-[13px] text-[var(--color-fg)] leading-relaxed">
+					<Markdown text={message} />
 				</div>
 			)}
-			<div className="flex flex-col p-1">
-				{files.map((f, i) => (
-					<FileRow
-						key={`f-${f.name}-${i}`}
-						src={f.src}
-						name={f.name}
-						sizeBytes={f.size_bytes}
-					/>
-				))}
-				{linkList.map((l, i) => (
-					<LinkRow key={`l-${l.url}-${i}`} link={l} />
-				))}
-			</div>
+
+			{count > 0 && (
+				<div className="flex flex-col gap-0.5 p-1.5 border-t border-[var(--color-line)] bg-[var(--color-surface-2)]/50">
+					{files.map((f, i) => (
+						<FileRow
+							key={`f-${f.name}-${i}`}
+							src={f.src}
+							name={f.name}
+							sizeBytes={f.size_bytes}
+						/>
+					))}
+					{linkList.map((l, i) => (
+						<LinkRow key={`l-${l.url}-${i}`} link={l} />
+					))}
+				</div>
+			)}
 		</div>
 	);
 }

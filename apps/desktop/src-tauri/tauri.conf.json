@@ -5,7 +5,7 @@
   "identifier": "com.polynoia.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @polynoia/web dev",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:7788",
     "beforeBuildCommand": "pnpm --filter @polynoia/web build",
     "frontendDist": "../../web/dist"
   },
