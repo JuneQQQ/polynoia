@@ -226,4 +226,6 @@ def test_recover_incomplete_raw_tool_protocol_hides_from_marker() -> None:
     cleaned, parts = _recover_raw_tool_protocol(text)
 
     assert parts == []
-    assert cleaned == "准备写\n\n> 工具调用协议内容已隐藏。"
+    assert cleaned.startswith("准备写\n\n> 工具调用格式错误:")
+    assert "write(path, content)" in cleaned
+    assert "<tool_response>" not in cleaned

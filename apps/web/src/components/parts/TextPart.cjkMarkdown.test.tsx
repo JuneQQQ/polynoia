@@ -60,7 +60,8 @@ describe("stripRawToolProtocol", () => {
 		const out = stripRawToolProtocol(input);
 		expect(out).toContain("先写文件");
 		expect(out).toContain("继续说明");
-		expect(out).toContain("工具调用协议内容已隐藏");
+		expect(out).toContain("工具调用格式错误");
+		expect(out).toContain("write(path, content)");
 		expect(out).not.toContain("<tool_call>");
 		expect(out).not.toContain('"content":"x"');
 	});
@@ -70,7 +71,8 @@ describe("stripRawToolProtocol", () => {
 			'准备写\n<tool_call>{"name":"write","parameters":{"path":"a.md","content":"很长';
 		const out = stripRawToolProtocol(input);
 		expect(out).toContain("准备写");
-		expect(out).toContain("工具调用协议内容已隐藏");
+		expect(out).toContain("工具调用格式错误");
+		expect(out).toContain("bash(command, description)");
 		expect(out).not.toContain("<tool_call>");
 		expect(out).not.toContain("很长");
 	});
@@ -81,7 +83,8 @@ describe("stripRawToolProtocol", () => {
 		const out = stripRawToolProtocol(input);
 		expect(out).toContain("components.json 落盘。");
 		expect(out).toContain("继续写事故数据。");
-		expect(out).toContain("工具调用协议内容已隐藏");
+		expect(out).toContain("工具调用格式错误");
+		expect(out).toContain("read(path)");
 		expect(out).not.toContain("<tool_response>");
 		expect(out).not.toContain("backend/data/components.json");
 	});

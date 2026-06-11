@@ -331,7 +331,8 @@ export function fixCjkMarkdown(s: string): string {
 
 const RAW_TOOL_MARKER_RE = /<(?:tool_call|tool_result|tool_response)>/g;
 const RAW_TOOL_CLOSE_RE = /<\/(?:tool_call|tool_result|tool_response)>/g;
-const HIDDEN_TOOL_NOTICE = "> 工具调用协议内容已隐藏。";
+const HIDDEN_TOOL_NOTICE =
+	"> 工具调用格式错误:模型把工具协议输出到了正文,系统已隐藏该协议内容。正确方式是调用平台注入的真实工具 schema,不要打印 tool_call / tool_response 标签或 JSON。例:写文件用 `write(path, content)`,读文件用 `read(path)`,执行命令用 `bash(command, description)`。";
 
 function findJsonLikeEnd(text: string, start: number): number | null {
 	const opener = text[start];

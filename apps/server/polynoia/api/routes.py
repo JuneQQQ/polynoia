@@ -3197,6 +3197,12 @@ _RAW_TOOL_PROTOCOL_MARKER_RE = re.compile(
 _RAW_TOOL_PROTOCOL_CLOSE_RE = re.compile(
     r"</(?:tool_call|tool_result|tool_response)>"
 )
+RAW_TOOL_PROTOCOL_NOTICE = (
+    "> 工具调用格式错误:模型把工具协议输出到了正文,系统已隐藏该协议内容。"
+    "正确方式是调用平台注入的真实工具 schema,不要打印 tool_call / "
+    "tool_response 标签或 JSON。例:写文件用 `write(path, content)`,"
+    "读文件用 `read(path)`,执行命令用 `bash(command, description)`。"
+)
 
 
 def _find_json_like_end(text: str, start: int) -> int | None:
@@ -3313,8 +3319,11 @@ def _recover_raw_tool_protocol(text: str) -> tuple[str, list[dict]]:
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if hidden:
-        notice = "> 工具调用协议内容已隐藏。"
-        cleaned = f"{cleaned}\n\n{notice}" if cleaned else notice
+        cleaned = (
+            f"{cleaned}\n\n{RAW_TOOL_PROTOCOL_NOTICE}"
+            if cleaned
+            else RAW_TOOL_PROTOCOL_NOTICE
+        )
     return cleaned, recovered
 
 
