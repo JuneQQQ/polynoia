@@ -110,6 +110,7 @@ async def list_conversations(
     *,
     archived: bool | None = None,
     workspace_id: str | None = None,
+    member: str | None = None,
     pinned: bool | None = None,
     unread_only: bool = False,
     q: str | None = None,
@@ -119,6 +120,15 @@ async def list_conversations(
         stmt = stmt.where(ConversationRow.archived == archived)
     if workspace_id is not None:
         stmt = stmt.where(ConversationRow.workspace_id == workspace_id)
+    if member is not None:
+        # Membership filter for the unified "all threads with agent X" view.
+        # members is JSON text (e.g. ["you","01ABC"]); match the QUOTED token so a
+        # member that is a prefix of another ("agentX" vs "agentXY") can't false-
+        # hit. Mirrors the q-search JSON-cast-LIKE pattern (SQLite JSON1 unassumed).
+        from sqlalchemy import func
+        stmt = stmt.where(
+            func.cast(ConversationRow.members, String).like(f'%"{member}"%')
+        )
     if pinned is not None:
         stmt = stmt.where(ConversationRow.pinned == pinned)
     if unread_only:
@@ -139,10 +149,14 @@ async def list_conversations(
             func.lower(ConversationRow.title).like(like)
             | ConversationRow.id.in_(msg_hit_subq)
         )
+    # Order is STABLE while browsing: pinned, then real activity (last MESSAGE
+    # time), then creation order. Deliberately NOT updated_at — that bumps on
+    # read/draft/role edits, so sorting by it made a conversation jump to the top
+    # the moment you clicked it (markConvRead). created_at never moves.
     stmt = stmt.order_by(
         ConversationRow.pinned.desc(),
         ConversationRow.last_message_at.desc().nullslast(),
-        ConversationRow.updated_at.desc(),
+        ConversationRow.created_at.desc(),
     )
     result = await session.execute(stmt)
     return [_conv_from_row(r) for r in result.scalars().all()]
@@ -169,6 +183,24 @@ async def create_conversation(session: AsyncSession, c: Conversation) -> Convers
     ))
     await session.flush()
     return c
+
+
+async def set_workspace_id(
+    session: AsyncSession, conv_id: str, workspace_id: str | None
+) -> bool:
+    """Attach (``workspace_id`` set) or detach (``None``) a project on a conv.
+
+    The IA model: a conversation is a plain thread by default; a workspace/project
+    is an OPTIONAL capability attached lazily ("挂工作区") and detachable. This sets
+    ONLY the link — members + orchestrator are deliberately left untouched so the
+    group invariant survives. Returns False if the conv doesn't exist.
+    """
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False
+    row.workspace_id = workspace_id
+    await session.flush()
+    return True
 
 
 async def set_archived(
@@ -203,6 +235,16 @@ async def reset_unread(session: AsyncSession, conv_id: str) -> None:
         .where(ConversationRow.id == conv_id)
         .values(unread=0)
     )
+
+
+async def set_title(session: AsyncSession, conv_id: str, title: str) -> bool:
+    """Rename a conversation. Returns False if the conv doesn't exist."""
+    row = await session.get(ConversationRow, conv_id)
+    if row is None:
+        return False
+    row.title = title
+    await session.flush()
+    return True
 
 
 async def set_draft_text(session: AsyncSession, conv_id: str, draft_text: str) -> bool:

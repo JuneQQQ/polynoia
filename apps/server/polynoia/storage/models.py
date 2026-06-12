@@ -70,9 +70,9 @@ class AgentRow(Base):
     # Contact-level skills: [{name, instructions, description?}] — injected into
     # the agent's identity/system prompt at turn time.
     skills: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    # Coarse-grained MCP tool exposure role. Drives which subset of polynoia
-    # MCP tools this agent can call. See `polynoia.mcp.tools.ROLE_TOOLS`.
-    # Values: orchestrator | coder | designer | writer | generalist.
+    # Runtime MCP tool role. Kept for compatibility with existing contact rows;
+    # the adapter resolves the effective role from conversation structure.
+    # Values: orchestrator | group_member | generalist.
     tool_role: Mapped[str] = mapped_column(
         String(16), default="generalist", nullable=False,
     )
@@ -366,7 +366,7 @@ class PendingEditRow(Base):
 #
 # An agent in a private 1:1 (no project) calls `request_project_access(reason)`.
 # That creates a row in status="pending" + broadcasts a `data-pending-access`
-# card. The user picks WHICH project to expose and clicks 批准/拒绝. On accept
+# card. The user picks WHICH project to grant and clicks 批准/拒绝. On accept
 # the chosen workspace_id is recorded; the AdapterPool then mounts that project
 # (write-enabled) for this (agent, conv) on the next turn. Mirrors PendingEdit.
 class PendingAccessRow(Base):

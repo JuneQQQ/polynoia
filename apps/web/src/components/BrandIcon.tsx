@@ -166,7 +166,14 @@ export function BrandIcon({
 	const fill = isWeb ? c.flat : `url(#${gradId})`;
 	const sheen = !isWeb;
 	const ring = platform === "macos";
-	const gScale = concept === "triad" ? (platform === "ios" ? 1 : 0.9) : 1;
+	const gScale =
+		concept === "triad"
+			? platform === "macos"
+				? 1.16
+				: platform === "ios"
+					? 1
+					: 0.9
+			: 1;
 	const gTransform =
 		gScale === 1
 			? undefined

@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conversation-first IA Mock</title>
+  <style>
+    :root {
+      --bg: #f6f1e8;
+      --panel: #fffaf2;
+      --panel-2: #efe6d7;
+      --line: #d9cbbb;
+      --text: #28241f;
+      --muted: #84796b;
+      --accent: #d47a45;
+      --green: #4f9f72;
+      --blue: #4d7fcf;
+      --shadow: 0 16px 40px rgba(65, 48, 32, 0.12);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .app {
+      height: 100vh;
+      min-height: 720px;
+      display: grid;
+      grid-template-columns: 310px minmax(560px, 1fr) 360px;
+      overflow: hidden;
+    }
+
+    aside, main, .project {
+      border-right: 1px solid var(--line);
+      min-width: 0;
+    }
+
+    .sidebar {
+      background: #ebe2d2;
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .icon-button {
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.45);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      cursor: pointer;
+    }
+
+    .primary {
+      border: 0;
+      height: 48px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .search {
+      height: 42px;
+      padding: 0 14px;
+      border: 1px solid transparent;
+      background: rgba(255,255,255,.52);
+      color: var(--text);
+      font-size: 15px;
+    }
+
+    .section-title {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .thread-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: auto;
+    }
+
+    .thread {
+      border: 1px solid transparent;
+      padding: 12px;
+      background: transparent;
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 12px;
+      cursor: pointer;
+    }
+
+    .thread.active {
+      background: rgba(255,255,255,.62);
+      border-color: #e2d5c5;
+      box-shadow: 0 1px 0 rgba(0,0,0,.03);
+    }
+
+    .avatar {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      background: var(--green);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 800;
+      border-radius: 12px;
+    }
+
+    .avatar.orange { background: #cf7233; }
+    .avatar.blue { background: var(--blue); }
+
+    .thread strong {
+      display: block;
+      font-size: 15px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .thread span {
+      display: block;
+      margin-top: 5px;
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chat {
+      background: #fbf7ef;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      min-width: 0;
+    }
+
+    .topbar {
+      height: 72px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      gap: 20px;
+    }
+
+    .topbar h2 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .scope {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .ghost {
+      height: 38px;
+      border: 1px solid var(--line);
+      background: transparent;
+      padding: 0 14px;
+      color: var(--text);
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .scope-switch {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.42);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      padding: 10px 28px;
+      gap: 10px;
+    }
+
+    .scope-card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 12px 14px;
+      min-height: 74px;
+    }
+
+    .scope-card.active {
+      border-color: #d98957;
+      box-shadow: inset 4px 0 0 var(--accent);
+    }
+
+    .scope-card b {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+
+    .scope-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .messages {
+      overflow: auto;
+      padding: 28px;
+    }
+
+    .message {
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr);
+      gap: 14px;
+      margin-bottom: 24px;
+      max-width: 920px;
+    }
+
+    .bubble {
+      background: rgba(255,255,255,.62);
+      border: 1px solid #eee1cf;
+      padding: 16px 18px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.02);
+    }
+
+    .bubble h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+
+    .bubble p {
+      margin: 0 0 10px;
+      line-height: 1.7;
+    }
+
+    .bubble p:last-child { margin-bottom: 0; }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .chip {
+      border: 1px solid #ead6c8;
+      background: #fff6ee;
+      color: #9b5d38;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .composer {
+      padding: 16px 28px 22px;
+      border-top: 1px solid var(--line);
+      background: rgba(251,247,239,.9);
+    }
+
+    .compose-box {
+      min-height: 92px;
+      border: 1px solid #cfc0ae;
+      background: #fffdf8;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+
+    .placeholder {
+      color: #a19586;
+      font-size: 16px;
+    }
+
+    .compose-tools {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .mini {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .send {
+      width: 44px;
+      height: 44px;
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      font-size: 24px;
+      cursor: pointer;
+      border-radius: 50%;
+    }
+
+    .project {
+      background: #fff8ef;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow: auto;
+    }
+
+    .project-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+    }
+
+    .project-title h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .empty-project {
+      border: 1px dashed #d9c5b2;
+      padding: 18px;
+      background: #fffdf8;
+    }
+
+    .empty-project b {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .empty-project p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .asset-card {
+      border: 1px solid #e1d4c4;
+      background: var(--panel);
+      padding: 14px;
+    }
+
+    .asset-card b {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .asset-card span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .step-num {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #efe0d2;
+      color: #9b5d38;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .step p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    @media (max-width: 1100px) {
+      .app { grid-template-columns: 280px 1fr; }
+      .project { display: none; }
+      .scope-switch { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        height: auto;
+        min-height: 100vh;
+        grid-template-columns: 1fr;
+      }
+      .sidebar { display: none; }
+      .topbar { padding: 0 18px; }
+      .scope-switch, .messages, .composer { padding-left: 18px; padding-right: 18px; }
+      .message { grid-template-columns: 38px 1fr; }
+      .avatar { width: 38px; height: 38px; font-size: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>Polynoia</h1>
+        <button class="icon-button" title="归档">▤</button>
+      </div>
+      <button class="primary">＋ 新建对话</button>
+      <input class="search" value="" placeholder="搜索会话 / Agent / 项目" />
+
+      <div class="section-title">所有会话</div>
+      <div class="thread-list">
+        <div class="thread active">
+          <div class="avatar orange">阿</div>
+          <div>
+            <strong>状态页上线讨论</strong>
+            <span>群聊 · 私有对话 · 3 Agent</span>
+          </div>
+        </div>
+        <div class="thread">
+          <div class="avatar blue">数</div>
+          <div>
+            <strong>和数擎看数据导入</strong>
+            <span>单聊 · 已绑定 缺陷追踪系统</span>
+          </div>
+        </div>
+        <div class="thread">
+          <div class="avatar">制</div>
+          <div>
+            <strong>React 缺陷追踪系统</strong>
+            <span>项目内群聊 · main 工作区</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="topbar">
+        <div>
+          <h2>状态页上线讨论</h2>
+          <div class="scope"><span class="dot"></span> 当前:私有群聊,尚未绑定项目</div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost">绑定项目</button>
+          <button class="ghost">成员</button>
+        </div>
+      </header>
+
+      <section class="scope-switch" aria-label="会话作用域">
+        <div class="scope-card active">
+          <b>1. 先开聊</b>
+          <p>不要求先建项目。DM 或群聊都能直接开始讨论。</p>
+        </div>
+        <div class="scope-card">
+          <b>2. 需要产物时挂工作区</b>
+          <p>用户点击绑定项目,从这一刻开始写入项目 worktree。</p>
+        </div>
+        <div class="scope-card">
+          <b>3. 项目承接正式资产</b>
+          <p>main、文件、提交、运行服务、附件都归项目管理。</p>
+        </div>
+      </section>
+
+      <section class="messages">
+        <article class="message">
+          <div class="avatar orange">我</div>
+          <div class="bubble">
+            <h3>拉几个 Agent 先聊</h3>
+            <p>做一个上线状态页,先讨论接口、文案和前端信息架构。现在还不确定要不要建项目。</p>
+            <div class="chips">
+              <span class="chip">@阿核</span>
+              <span class="chip">@数擎</span>
+              <span class="chip">@制图</span>
+              <span class="chip">@文澜</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="message">
+          <div class="avatar orange">阿</div>
+          <div class="bubble">
+            <h3>协调者自动出现</h3>
+            <p>这是多人会话,必须有协调者。我先组织一轮讨论,但现在不写文件,所以仍留在私有会话。</p>
+            <p>如果讨论收敛为正式交付,再提示绑定已有项目或新建项目。</p>
+          </div>
+        </article>
+
+        <article class="message">
+          <div class="avatar blue">数</div>
+          <div class="bubble">
+            <h3>会话升级提示</h3>
+            <p>数擎准备实现 <span class="chip">backend/</span>。这已经从讨论变成产物任务,系统提示绑定工作区。</p>
+            <div class="chips">
+              <span class="chip">绑定到:上线状态页项目</span>
+              <span class="chip">或新建项目并绑定</span>
+              <span class="chip">保留历史消息</span>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <footer class="composer">
+        <div class="compose-box">
+          <div class="placeholder">发消息给群聊 · 输入 @ 召唤成员</div>
+          <div class="compose-tools">
+            <span class="mini">当前写入:私有 sandbox · 绑定项目后进入项目 worktree</span>
+            <button class="send" title="发送">↑</button>
+          </div>
+        </div>
+      </footer>
+    </main>
+
+    <aside class="project">
+      <div class="project-title">
+        <h2>项目资产容器</h2>
+        <button class="icon-button" title="项目设置">☰</button>
+      </div>
+
+      <div class="empty-project">
+        <b>当前会话还没绑定项目</b>
+        <p>这里不阻止开聊。只有当任务需要文件、提交、运行服务或正式交付时,才把会话挂到项目。</p>
+      </div>
+
+      <div class="asset-card">
+        <b>绑定后右侧显示</b>
+        <span>main 工作区 / 文件树 / 提交历史 / 运行服务 / 附件</span>
+      </div>
+
+      <div class="asset-card">
+        <b>升级路径</b>
+        <div class="timeline">
+          <div class="step">
+            <div class="step-num">1</div>
+            <p>用户先在联系人或群聊里发起任务。</p>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <p>Agent 即将写文件时,系统要求绑定项目。</p>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <p>绑定后创建 worktree,所有 diff 和 merge 进入项目 main。</p>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <p>会话历史不丢,私有草稿可选择导入项目。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="asset-card">
+        <b>保留项目的意义</b>
+        <span>项目不是协作入口,而是正式产物、权限、文件、服务和长期上下文的归属。</span>
+      </div>
+    </aside>
+  </div>
+</body>
+</html>

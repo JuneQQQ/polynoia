@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.domain.entities import new_ulid
@@ -56,13 +56,21 @@ async def set_pending_edit_status(
     confuse the review UI on next page load."""
     if status not in ("accepted", "rejected", "timeout", "abandoned"):
         raise ValueError(f"invalid status {status!r}")
-    row = await session.get(PendingEditRow, pending_id)
-    if row is None or row.status != "pending":
-        return False  # only flip from pending → final
-    row.status = status
-    row.decided_at = datetime.utcnow()
+    # ATOMIC conditional flip: `UPDATE … WHERE status='pending'` is a single
+    # statement and SQLite serializes writers, so under two concurrent decide()
+    # calls (separate aiosqlite connections, no shared session/lock) EXACTLY ONE
+    # matches a still-pending row (rowcount==1); the loser matches 0 rows. A prior
+    # read-check-write across two sessions let BOTH read 'pending' and double-flip
+    # (double-decide). The conflict track guards its read-check-write with
+    # workspace_merge_lock + a re-check; CHARTER mandates pending-edit mirror it —
+    # this is the equivalent atomicity for the edit gate.
+    result = await session.execute(
+        update(PendingEditRow)
+        .where(PendingEditRow.id == pending_id, PendingEditRow.status == "pending")
+        .values(status=status, decided_at=datetime.utcnow())
+    )
     await session.flush()
-    return True
+    return (result.rowcount or 0) == 1
 
 
 async def has_waiting_pending_edits(session: AsyncSession, conv_id: str) -> bool:

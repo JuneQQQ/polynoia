@@ -379,6 +379,21 @@ export function App() {
 			window.removeEventListener("polynoia:edit-conv-roles", onEditRoles);
 	}, []);
 
+	// Open a conversation from anywhere deep (e.g. the agent drawer's "与 ta 的所有
+	// 对话" list) — no onSelectConv prop reaches RightDrawer, so it dispatches this
+	// event and we route it to the same open-conv path the sidebar uses.
+	useEffect(() => {
+		const onSelectConv = (ev: Event) => {
+			const d = (ev as CustomEvent<{ id?: string; members?: string[]; title?: string }>)
+				.detail;
+			if (!d?.id) return;
+			openConvAndSwitchToChat(d.id, d.members ?? [], d.title ?? "");
+		};
+		window.addEventListener("polynoia:select-conv", onSelectConv);
+		return () =>
+			window.removeEventListener("polynoia:select-conv", onSelectConv);
+	}, []);
+
 	useEffect(() => {
 		const onConvRemoved = (ev: Event) => {
 			const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
@@ -391,6 +406,21 @@ export function App() {
 			window.removeEventListener("polynoia:conv-archived", onConvRemoved);
 			window.removeEventListener("polynoia:conv-deleted", onConvRemoved);
 		};
+	}, []);
+
+	// Rename from the sidebar ⋮ → update the OPEN conversation's header title
+	// immediately (activeConv.title is local state; without this it stays stale
+	// until the conv is reselected).
+	useEffect(() => {
+		const onRenamed = (ev: Event) => {
+			const d = (ev as CustomEvent<{ convId?: string; title?: string }>).detail;
+			if (!d?.convId || !d.title) return;
+			setActiveConv((cur) =>
+				cur && cur.id === d.convId ? { ...cur, title: d.title as string } : cur,
+			);
+		};
+		window.addEventListener("polynoia:conv-renamed", onRenamed);
+		return () => window.removeEventListener("polynoia:conv-renamed", onRenamed);
 	}, []);
 
 	const globalContactModals = (
@@ -442,7 +472,7 @@ export function App() {
 					<div className="text-[18px] font-semibold text-[var(--color-fg)] mb-2">
 						欢迎使用 Polynoia
 					</div>
-					<div className="text-[12.5px]">从左侧选一个联系人或项目开始</div>
+					<div className="text-[12.5px]">从左侧选择一个会话,或「新建对话」开始</div>
 				</div>
 			</main>
 		);

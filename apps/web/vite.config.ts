@@ -8,10 +8,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // Bucket heavy vendor libs into their own chunks so they cache
-        // independently + load in parallel. The lazy() boundaries (CodeEditor,
-        // doc renderers, diff views) already defer these off the boot path;
-        // this keeps each lazy chunk clean + the eager markdown/highlight stack
-        // separate from app code.
+        // independently + load in parallel.
+        // - "cm" (CodeMirror ~2.3MB) is now OFF the boot path: SourcePreview is
+        //   lazy()'d in DocPreviewPane (it was the one static import pulling the
+        //   whole CodeMirror stack eager). Loads only when a source file is
+        //   previewed / the code editor opens.
+        // - "md" (react-markdown + rehype-highlight ~2.3MB) is STILL eager: TextPart
+        //   is in the always-loaded PARTS_REGISTRY and statically imports it. TODO:
+        //   lazy-load the markdown renderer behind a plain-text fallback to defer it
+        //   too (the remaining big first-paint chunk).
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
           if (/codemirror|@uiw|@replit/.test(id)) return "cm";

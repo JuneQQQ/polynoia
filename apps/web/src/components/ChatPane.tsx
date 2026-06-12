@@ -647,6 +647,10 @@ export function ChatPane({ convId, members, title }: Props) {
 				const { messages: older, has_more } = await api.convMessages(convId, {
 					limit: 50,
 					before: cursor,
+					// Pair the timestamp with the oldest row's id (composite cursor) so
+					// scroll-up can advance past a millisecond shared by >50 rows —
+					// without it the conversation start is unreachable.
+					beforeId: oldestId,
 				});
 				hydrateMessages(convId, older, { mode: "prepend", hasMore: has_more });
 				// After render restore relative scroll so view doesn't jump
@@ -1453,13 +1457,44 @@ export function ChatPane({ convId, members, title }: Props) {
 								</button>
 							)}
 						</div>
-						{/* Group: coordinator identity now lives in the avatar cluster
-              (first avatar + purple ring), so no subtitle. DM: show tagline. */}
-						{!isGroup && (
+						{/* Subtitle carries the IA SCOPE. Bound (group OR DM) → a CLICKABLE
+              workspace line that opens the workspace settings modal (the flat
+              sidebar has no projects section, so this is the management
+              entry). Unbound group → 私有群聊; unbound DM → tagline. */}
+						{convSummary && inWorkspace ? (
+							<button
+								type="button"
+								onClick={() =>
+									window.dispatchEvent(
+										new CustomEvent("polynoia:edit-project", {
+											detail: { workspaceId: convSummary.workspace_id },
+										}),
+									)
+								}
+								title="工作区设置"
+								className="text-[11px] text-[var(--color-fg-3)] mt-0.5 flex items-center gap-1.5 hover:text-[var(--color-accent)] transition"
+							>
+								<span
+									aria-hidden
+									className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+									style={{ background: "var(--color-green)" }}
+								/>
+								已接入工作区 · 写入沙箱
+							</button>
+						) : isGroup && convSummary ? (
+							<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5 flex items-center gap-1.5">
+								<span
+									aria-hidden
+									className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+									style={{ background: "var(--color-fg-4)" }}
+								/>
+								私有群聊
+							</div>
+						) : !isGroup ? (
 							<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
 								{memberAgents[0]?.tagline ?? "Agent"}
 							</div>
-						)}
+						) : null}
 					</div>
 					<div className="flex -space-x-1.5">
 						{/* Coordinator-first: the conv's orchestrator is ranked #1 in the
@@ -1497,8 +1532,10 @@ export function ChatPane({ convId, members, title }: Props) {
 							})}
 					</div>
 					<div className="flex items-center gap-1 ml-2">
-						{/* Search lives in the top-left (sidebar / ⌘K) and 群聊设置 moved to
-              the conversation's ⋮ menu in the sidebar — header stays minimal. */}
+						{/* Workspace binding is a CREATE-TIME, immutable property of the
+              conversation (unbinding would corrupt the cross-chat context) —
+              so there's no post-hoc ⋮ bind/unbind here. The header just shows
+              the binding state via the scope line under the title. */}
 						<button
 							type="button"
 							onClick={() =>

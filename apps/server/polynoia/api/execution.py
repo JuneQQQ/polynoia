@@ -88,7 +88,14 @@ class ConversationRuntime:
         self.pending_dispatches.pop(conv_id, None)
         self.discussions.pop(conv_id, None)
         self.pending_discussions.pop(conv_id, None)
+        self.continue_phases.pop(conv_id, None)  # multi-phase auto-advance counter
         self.live.pop(conv_id, None)
+        # ask_user state is keyed by ask_id (not conv_id). Safe to drop here: prune
+        # only runs when the conv is fully idle (no inflight), and an OPEN ask blocks
+        # its turn in `inflight` — so anything reaching here is already orphaned.
+        for _aid in [a for a, c in self.ask_conv.items() if c == conv_id]:
+            self.pending_asks.pop(_aid, None)
+            self.ask_conv.pop(_aid, None)
         prefix = f"{conv_id}:"
         for key in list(self.agent_turn):
             if key.startswith(prefix):

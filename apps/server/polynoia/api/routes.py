@@ -612,9 +612,16 @@ async def create_conversation_endpoint(body: dict):
     title = (body.get("title") or "").strip()
     members = body.get("members") or []
     if not title or not members:
-        return {"error": "title + members required"}, 400
+        raise HTTPException(status_code=400, detail="title + members required")
     if "you" not in members:
         members = ["you", *members]
+    # Boundary: a conversation must have at least ONE agent member — "you" alone
+    # is not a conversation (it's the "群聊 · 0 Agent" degenerate row). Reject it
+    # here so neither a DM nor a group can be created empty.
+    if not any(m != "you" for m in members):
+        raise HTTPException(
+            status_code=400, detail="conversation needs at least one agent member"
+        )
     direct = bool(body.get("direct")) or len(members) == 2
     member_roles = body.get("member_roles") or {}
     if not isinstance(member_roles, dict):
@@ -710,6 +717,7 @@ async def list_conv_messages(
     conv_id: str,
     limit: int = 50,
     before: str | None = None,
+    before_id: str | None = None,
 ):
     """Paginated chat history. Default page = newest 50.
 
@@ -717,6 +725,9 @@ async def list_conv_messages(
         limit: page size (default 50)
         before: ISO timestamp cursor — only return messages strictly older
                 than this. Used for scroll-up lazy-load.
+        before_id: the cursor row's id, forming a COMPOSITE cursor with ``before``
+                so paging can advance past a millisecond shared by >limit rows
+                (else the conversation start is unreachable on scroll-up).
 
     Response shape:
         {"messages": [<chronological>], "has_more": bool}
@@ -727,6 +738,7 @@ async def list_conv_messages(
             conv_id,
             limit=limit,
             before=before,
+            before_id=before_id,
         )
         # Orphaned-burst recovery: a `tasks` card with lanes still pending/run
         # but NO live registry entry was orphaned mid-flight (server restart, or
@@ -1581,6 +1593,25 @@ async def apply_diff(body: dict):
             os.unlink(patch_path)
 
 
+def _message_payload_kinds() -> set[str]:
+    """Valid message-payload `kind`s, derived once from the MessagePayload
+    discriminated union (domain/messages.py — the source of truth)."""
+    import typing as _t
+
+    from polynoia.domain.messages import MessagePayload as _MP
+
+    out: set[str] = set()
+    members = _t.get_args(_t.get_args(_MP)[0]) if _t.get_args(_MP) else ()
+    for m in members:
+        fld = getattr(m, "model_fields", {}).get("kind")
+        if fld is not None:
+            out |= {a for a in _t.get_args(fld.annotation) if isinstance(a, str)}
+    return out
+
+
+_VALID_MSG_KINDS = _message_payload_kinds()
+
+
 @router.post("/api/messages")
 async def create_message(body: dict):
     """Persist an arbitrary user-side message — used by image/file attachments
@@ -1595,19 +1626,40 @@ async def create_message(body: dict):
     conv_id = body.get("conv_id")
     payload = body.get("payload")
     if not conv_id or not isinstance(payload, dict) or "kind" not in payload:
-        return {"error": "conv_id + payload(with kind) required"}, 400
+        raise HTTPException(status_code=400, detail="conv_id + payload(with kind) required")
+    # Reject unknown payload kinds: an unknown kind has no PARTS_REGISTRY component
+    # on the client → a non-renderable card silently 200-persists. Guard on a
+    # non-empty allowlist so a derivation miss can never block all writes. Storage
+    # still keeps the raw dict (forward-compat); this is a gate, not a transform.
+    _kind = payload.get("kind")
+    # `_kind` may be any JSON value (a list/dict from a malformed body) — a bare
+    # `_kind in set` would raise TypeError (unhashable) → 500. Require a str first.
+    if _VALID_MSG_KINDS and (not isinstance(_kind, str) or _kind not in _VALID_MSG_KINDS):
+        raise HTTPException(status_code=400, detail=f"unknown message kind: {_kind!r}")
     sender_id = body.get("sender_id") or "you"
     in_reply_to = body.get("in_reply_to") or None
     msg_id = (body.get("msg_id") or "").strip() or None
     async with SessionLocal() as session:
-        mid = await storage_repo.append_message(
-            session,
-            conv_id=conv_id,
-            sender_id=sender_id,
-            payload=payload,
-            in_reply_to=in_reply_to,
-            msg_id=msg_id,
-        )
+        if msg_id:
+            # A caller-supplied optimistic id may be replayed (client retry /
+            # double-send) — upsert so the second write is idempotent (updates in
+            # place) instead of colliding on the PK with an IntegrityError.
+            mid = await storage_repo.upsert_message(
+                session,
+                conv_id=conv_id,
+                sender_id=sender_id,
+                payload=payload,
+                msg_id=msg_id,
+                in_reply_to=in_reply_to,
+            )
+        else:
+            mid = await storage_repo.append_message(
+                session,
+                conv_id=conv_id,
+                sender_id=sender_id,
+                payload=payload,
+                in_reply_to=in_reply_to,
+            )
         await session.commit()
     return {"ok": True, "id": mid}
 
@@ -1994,7 +2046,7 @@ async def present_file(body: dict):
                 link["bytes"] = entry["bytes"]
             links.append(link)
     if not conv_id or not ws or (not paths and not links):
-        return {"error": "conv_id + ws + path(s) or links required"}, 400
+        raise HTTPException(status_code=400, detail="conv_id + ws + path(s) or links required")
     agent_id = (body.get("agent_id") or "system").strip()
     async with SessionLocal() as _session:
         _conv = await storage_repo.get_conversation(_session, conv_id)
@@ -2030,8 +2082,14 @@ async def present_file(body: dict):
     # ONE panel for the whole bundle (not a card per file): a one-line hand-off
     # message + the file list. `message` is the agent's note to the user.
     message = body.get("message") or body.get("caption") or None
+    # Stamp the agent's current turn so this present/files ANCHOR card carries a
+    # stable turn_id (event-log invariant: dispatch/discuss/present cards must be
+    # correlatable to their producing turn). `present` is a REST callback OUTSIDE
+    # run_adapter_turn, so we read the live turn from the runtime's conv:agent map.
+    _present_turn = _conv_agent_turn.get(f"{conv_id}:{agent_id}")
     payload = {
         "kind": "files",
+        "turn_id": _present_turn,
         "message": message,
         "files": [
             {
@@ -2059,6 +2117,8 @@ async def present_file(body: dict):
         + json.dumps(mid)
         + ',"sender_id":'
         + json.dumps(agent_id)
+        + ',"turn_id":'
+        + json.dumps(_present_turn)
         + ',"data":'
         + json.dumps(payload, ensure_ascii=False)
         + "}\n\n"
@@ -2092,18 +2152,38 @@ async def wait_for_pending_edit(pending_id: str, timeout: float = 60.0):
         await asyncio.sleep(0.5)
 
 
+# Serializes the read-check-write of a pending-edit decision so two concurrent
+# decide() calls can't both read 'pending' and double-flip (a single-process
+# asyncio.Lock, mirroring the conflict track's workspace_merge_lock — CHARTER
+# mandates the two gates move in lockstep). set_pending_edit_status also does a
+# conditional UPDATE…WHERE status='pending' as cross-connection defense.
+# Keyed by running loop so it's safe under pytest's per-test event loops (a
+# module-level Lock binds to the import-time loop → "bound to a different loop").
+_decide_locks: dict[int, asyncio.Lock] = {}
+
+
+def _pending_decide_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lk = _decide_locks.get(id(loop))
+    if lk is None:
+        lk = asyncio.Lock()
+        _decide_locks[id(loop)] = lk
+    return lk
+
+
 @router.post("/api/pending-edits/{pending_id}/decide")
 async def decide_pending_edit(pending_id: str, body: dict):
     """User clicks ✓ or ✗ — flip status. Body: ``{ decision: accept|reject }``.
 
     Idempotent: deciding an already-decided edit returns the existing state
-    (no double-flip).
+    (no double-flip). The decision critical section is serialized by
+    ``_pending_decide_lock`` so concurrent deciders agree on one terminal status.
     """
     decision = body.get("decision")
     if decision not in ("accept", "reject"):
         raise HTTPException(400, "decision must be 'accept' or 'reject'")
     target = "accepted" if decision == "accept" else "rejected"
-    async with SessionLocal() as session:
+    async with _pending_decide_lock(), SessionLocal() as session:
         row = await storage_repo.get_pending_edit(session, pending_id)
         if row is None:
             raise HTTPException(404, "pending edit not found")
@@ -2155,7 +2235,7 @@ async def create_pending_access_endpoint(body: dict):
     agent_id = body.get("agent_id")
     reason = body.get("reason") or ""
     if not (conv_id and agent_id):
-        return {"error": "conv_id + agent_id required"}, 400
+        raise HTTPException(status_code=400, detail="conv_id + agent_id required")
     # The spawning adapter reports its STATIC id (claudeCode/codex/opencoder) as
     # POLYNOIA_AGENT_ID, not the contact's ULID. For a private DM the real
     # contact id is encoded in the conv id (`dm-<agentId>`) — use it so the grant
@@ -2190,7 +2270,7 @@ async def wait_for_pending_access(pending_id: str, timeout: float = 60.0):
         async with SessionLocal() as session:
             row = await storage_repo.get_pending_access(session, pending_id)
         if row is None:
-            return {"error": "pending access not found"}, 404
+            raise HTTPException(status_code=404, detail="pending access not found")
         if row.status != "pending":
             return _pending_access_to_dict(row)
         if asyncio.get_event_loop().time() >= deadline:
@@ -2206,15 +2286,15 @@ async def decide_pending_access(pending_id: str, body: dict):
     re-spawns with that project mounted (write-enabled)."""
     decision = body.get("decision")
     if decision not in ("accept", "reject"):
-        return {"error": "decision must be 'accept' or 'reject'"}, 400
+        raise HTTPException(status_code=400, detail="decision must be 'accept' or 'reject'")
     ws_id = body.get("workspace_id")
     if decision == "accept" and not ws_id:
-        return {"error": "workspace_id required to accept"}, 400
+        raise HTTPException(status_code=400, detail="workspace_id required to accept")
     target = "accepted" if decision == "accept" else "rejected"
     async with SessionLocal() as session:
         row = await storage_repo.get_pending_access(session, pending_id)
         if row is None:
-            return {"error": "pending access not found"}, 404
+            raise HTTPException(status_code=404, detail="pending access not found")
         if row.status == "pending":
             await storage_repo.set_pending_access_status(
                 session,

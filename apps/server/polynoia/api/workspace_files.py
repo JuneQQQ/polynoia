@@ -192,6 +192,21 @@ async def get_workspace_working_diff(ws_id: str):
     return await sandbox.working_tree_diff()
 
 
+@router.post("/api/workspaces/{ws_id}/discard-working")
+async def discard_workspace_working(ws_id: str):
+    """「丢弃工作区改动」: drop uncommitted root changes (tracked restored,
+    untracked removed; ignored paths incl. .polynoia/ untouched; worktrees
+    untouched). Takes the workspace merge lock; 409 while a merge is open."""
+    _workspace_root(ws_id)
+    sandbox = Sandbox.open_workspace_if_exists(ws_id)
+    if sandbox is None:
+        raise HTTPException(404, "workspace not found")
+    res = await sandbox.discard_working_changes()
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("error") or "discard failed")
+    return res
+
+
 @router.put("/api/workspaces/{ws_id}/files/raw")
 async def write_workspace_file(ws_id: str, path: str, request: Request):
     """Overwrite a workspace file + auto-commit on workspace's main branch.

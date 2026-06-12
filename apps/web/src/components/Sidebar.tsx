@@ -3,10 +3,13 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FolderPlus,
+  Hash,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  Pin,
   Plug,
   Plus,
   Search,
@@ -31,6 +34,21 @@ const ADAPTER_LABEL: Record<string, string> = {
   codex: "Codex",
   opencoder: "OpenCode",
 };
+
+/** Compact list-row time: today → HH:mm; this year → M/D; older → YYYY/M/D. */
+function fmtConvTime(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}/${md}`;
+}
+import { ConvActionsMenu } from "./ConvActionsMenu";
 import { ConvRolesModal } from "./ConvRolesModal";
 import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
@@ -60,6 +78,9 @@ export function Sidebar({
 
   // "+ 新建对话" modal — workspace 内才显示
   const [newConvOpen, setNewConvOpen] = useState(false);
+  // IA: project-less "新建对话" — Layer-1 全局入口,workspace=null,允许直接发起
+  // 单聊/群聊而无需先建项目;之后可「挂工作区」或「升级为项目」。
+  const [newConvGlobalOpen, setNewConvGlobalOpen] = useState(false);
   // Project create/edit is desktop/web-only (mobile is a lightweight IM subset).
   const mobile = _isMobile();
   // "+ 新建项目" modal — 全局 sidebar 模式才显示。编辑既有项目时复用同一个
@@ -71,14 +92,6 @@ export function Sidebar({
   const [projectEditMode, setProjectEditMode] = useState<"settings" | "members">(
     "settings",
   );
-  // Which project row's ⋮ overflow menu is open (by workspace id; null = none).
-  const [projectMenuOpen, setProjectMenuOpen] = useState<string | null>(null);
-  useEffect(() => {
-    if (!projectMenuOpen) return;
-    const close = () => setProjectMenuOpen(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [projectMenuOpen]);
   // Delete a project (+ its conversations) after confirmation, then refresh the
   // workspace list and leave it if it was the active one.
   const deleteProject = useCallback(
@@ -113,24 +126,55 @@ export function Sidebar({
   // 通过 editingContact 区分:null = 创建,有值 = 编辑。
   const [newContactOpen, setNewContactOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Agent | null>(null);
-  // Which contact row's ⋮ overflow menu is open (by agent id; null = none).
-  // Mirrors the ConvRow menu, but kept at this level because contact rows are
-  // an inline .map without their own component/state.
-  const [contactMenuOpen, setContactMenuOpen] = useState<string | null>(null);
-  // Close the contact ⋮ menu on any outside click (same pattern as ConvRow).
-  useEffect(() => {
-    if (!contactMenuOpen) return;
-    const close = () => setContactMenuOpen(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [contactMenuOpen]);
 
   // 适配器管理(原 OnboardingModal)— 二级,从 NewContactModal footer / 联系人空状态进入
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
+  // 淡化项目:侧栏没有「新建项目」主入口了,改由对话内「接入工作区」弹窗按需触发。
+  useEffect(() => {
+    const onNew = () => {
+      setEditingWorkspace(null);
+      setProjectEditMode("settings");
+      setNewProjectOpen(true);
+    };
+    window.addEventListener("polynoia:new-project", onNew);
+    return () => window.removeEventListener("polynoia:new-project", onNew);
+  }, []);
+
+  // Management entries for the flat IA — the contacts/projects sections are
+  // gone, so editing comes from inside: the agent drawer dispatches
+  // edit-contact, the chat header's workspace scope line dispatches
+  // edit-project. getState() avoids stale-closure agent/workspace lists.
+  useEffect(() => {
+    const onEditContact = (ev: Event) => {
+      const id = (ev as CustomEvent<{ agentId?: string }>).detail?.agentId;
+      if (!id) return;
+      const a = useStore.getState().agents.find((x) => x.id === id);
+      if (!a) return;
+      setEditingContact(a);
+      setNewContactOpen(true);
+    };
+    const onEditProject = (ev: Event) => {
+      const id = (ev as CustomEvent<{ workspaceId?: string }>).detail?.workspaceId;
+      if (!id) return;
+      const w = useStore.getState().workspaces.find((x) => x.id === id);
+      if (!w) return;
+      setEditingWorkspace(w);
+      setProjectEditMode("settings");
+      setNewProjectOpen(true);
+    };
+    window.addEventListener("polynoia:edit-contact", onEditContact);
+    window.addEventListener("polynoia:edit-project", onEditProject);
+    return () => {
+      window.removeEventListener("polynoia:edit-contact", onEditContact);
+      window.removeEventListener("polynoia:edit-project", onEditProject);
+    };
+  }, []);
+
   // 顶级 sidebar 两个 section 的折叠状态(默认都展开)
-  const [projectsOpen, setProjectsOpen] = useState(true);
-  const [contactsOpen, setContactsOpen] = useState(true);
+  // Secondary now that "所有会话" is the hero list — collapsed by default.
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const [contactsOpen, setContactsOpen] = useState(false);
 
   // 顶级 search 输入(过滤 projects + contacts)
   const [query, setQuery] = useState("");
@@ -250,6 +294,63 @@ export function Sidebar({
       window.removeEventListener("polynoia:conv-updated", onConvChanged);
     };
   }, [refreshWsConvs]);
+
+  // IA (conversation-first): the UNIFIED "所有会话" list — every non-archived
+  // conversation regardless of binding (DM / 群聊 / 项目内). This is the Layer-1
+  // hero; Contacts + Projects become secondary management sections below.
+  const [allConvs, setAllConvs] = useState<ConversationSummary[]>([]);
+  const [convsOpen, setConvsOpen] = useState(true);
+  const refreshAllConvs = useCallback(async () => {
+    try {
+      const list = await api.conversations({ archived: false });
+      // Defensive: drop degenerate conversations that have no agent member (only
+      // "you") — the "群聊 · 0 Agent" boundary row. The backend now rejects
+      // creating these; this guards legacy rows too.
+      setAllConvs(
+        list.filter((c) => (c.members ?? []).some((m) => m !== "you")),
+      );
+    } catch {
+      setAllConvs([]);
+    }
+  }, []);
+  useEffect(() => {
+    refreshAllConvs();
+  }, [refreshAllConvs]);
+  // One user action often fires conv-updated AND resync-lists back-to-back —
+  // trailing-debounce so a burst of events costs ONE /api/conversations call.
+  const refreshDebounceRef = useRef<number | null>(null);
+  useEffect(() => {
+    const on = () => {
+      if (refreshDebounceRef.current !== null) {
+        window.clearTimeout(refreshDebounceRef.current);
+      }
+      refreshDebounceRef.current = window.setTimeout(() => {
+        refreshDebounceRef.current = null;
+        void refreshAllConvs();
+      }, 80);
+    };
+    window.addEventListener("polynoia:conv-updated", on);
+    window.addEventListener("polynoia:conv-members-changed", on);
+    window.addEventListener("polynoia:resync-lists", on);
+    window.addEventListener("polynoia:conv-deleted", on);
+    window.addEventListener("polynoia:conv-archived", on);
+    return () => {
+      window.removeEventListener("polynoia:conv-updated", on);
+      window.removeEventListener("polynoia:conv-members-changed", on);
+      window.removeEventListener("polynoia:resync-lists", on);
+      window.removeEventListener("polynoia:conv-deleted", on);
+      window.removeEventListener("polynoia:conv-archived", on);
+      if (refreshDebounceRef.current !== null) {
+        window.clearTimeout(refreshDebounceRef.current);
+      }
+    };
+  }, [refreshAllConvs]);
+  // O(1) agent lookup for the row map (vs agents.find per row per render).
+  const agentById = useMemo(() => {
+    const m = new Map<string, Agent>();
+    for (const a of agents) m.set(a.id, a);
+    return m;
+  }, [agents]);
 
   // Heartbeat for adapter-backed contacts — every 30s probe the underlying
   // CLI to refresh online/offline status (CLI uninstalled / credential
@@ -642,6 +743,7 @@ export function Sidebar({
           <NewProjectModal
             editing={editingWorkspace}
             editMode={projectEditMode}
+            onDelete={deleteProject}
             onClose={() => {
               setNewProjectOpen(false);
               setEditingWorkspace(null);
@@ -682,15 +784,28 @@ export function Sidebar({
             header's expand button or Cmd+B. Desktop only — on mobile the
             sidebar is the full-screen home list, never collapsed. */}
         {!mobile && (
-        <button
-          type="button"
-          onClick={toggleSidebar}
-          title="收起侧栏 (⌘/Ctrl+B)"
-          aria-label="收起侧栏"
-          className="absolute top-4 right-4 p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors"
-        >
-          <PanelLeftClose size={16} />
-        </button>
+        <div className="absolute top-4 right-4 flex items-center gap-0.5">
+          {/* Archive entry — archived conversations leave the flat list; this
+              is the only Layer-1 way back to them. */}
+          <button
+            type="button"
+            onClick={() => setView("archive")}
+            title={t("viewArchive", lang)}
+            aria-label={t("viewArchive", lang)}
+            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors"
+          >
+            <Archive size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            title="收起侧栏 (⌘/Ctrl+B)"
+            aria-label="收起侧栏"
+            className="p-1.5 rounded-md text-[var(--color-sidebar-muted)] hover:text-[var(--color-sidebar-fg)] hover:bg-[var(--color-sidebar-hover)] transition-colors"
+          >
+            <PanelLeftClose size={16} />
+          </button>
+        </div>
         )}
         {/* Brand mark — the 三色交叠 (triad) concept per the 图标 9版 handoff:
             the in-app logo uses column 2 on all platforms (web favicon stays
@@ -824,6 +939,22 @@ export function Sidebar({
             className="opacity-0 -translate-x-1 group-hover:opacity-50 group-hover:translate-x-0 transition-all duration-200 text-[var(--color-sidebar-muted)]"
           />
         </button>
+        {/* IA: 直接发起对话 — 无需先进项目。单聊/群聊都从这里开,workspace 可选。 */}
+        <button
+          type="button"
+          onClick={() => setNewConvGlobalOpen(true)}
+          className="group press-down w-full flex items-center gap-2 px-3 py-2 text-[14px] text-[var(--color-sidebar-fg)] rounded-sm bg-transparent hover:bg-[var(--color-sidebar-hover)] focus:bg-[var(--color-sidebar-hover)] outline-none transition-colors duration-150"
+        >
+          <Plus
+            size={14}
+            className="flex-shrink-0 text-[var(--color-accent)]"
+          />
+          <span className="flex-1 text-left">新建对话</span>
+          <ChevronRight
+            size={12}
+            className="opacity-0 -translate-x-1 group-hover:opacity-50 group-hover:translate-x-0 transition-all duration-200 text-[var(--color-sidebar-muted)]"
+          />
+        </button>
         <div className="relative">
           <Search
             size={14}
@@ -872,59 +1003,54 @@ export function Sidebar({
             没有匹配的对话
           </div>
         )}
-        {/* Contacts (first — projects depend on contacts as members,
-            so contacts ranks above projects in the natural flow) */}
+        {/* 整体拉平:单条会话流。联系人/项目不再独立成区 —— 发起对话时从全局
+            花名册选成员、可选绑定现有项目;项目文件在右侧「产物面板」查看。 */}
         <div>
-          <SectionHeader
-            label={t("contacts", lang)}
-            count={filteredContacts.length}
-            open={contactsOpen}
-            onToggle={() => setContactsOpen((v) => !v)}
-            onAction={() => setNewContactOpen(true)}
-            actionTitle={t("newAgent", lang)}
-          />
-          {contactsOpen && (
-            <>
-              {filteredContacts.length === 0 && !q && (
+          {(() => {
+            const k = q.trim().toLowerCase();
+            const rows = k
+              ? allConvs.filter((c) => c.title.toLowerCase().includes(k))
+              : allConvs;
+            if (rows.length === 0) {
+              return (
                 <button
                   type="button"
-                  onClick={() => setNewContactOpen(true)}
-                  className="group w-full mx-0 mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm border border-dashed border-[var(--color-sidebar-line)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-200"
+                  onClick={() => setNewConvGlobalOpen(true)}
+                  className="group w-full mt-1 flex items-center justify-center gap-1.5 px-2 py-3 rounded-sm border border-dashed border-[var(--color-sidebar-line)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-200"
                 >
-                  <Plus
-                    size={11}
-                    className="transition-transform duration-300 group-hover:rotate-90"
-                  />
-                  <span>{t("newFirstContact", lang)}</span>
+                  <Plus size={12} className="transition-transform duration-300 group-hover:rotate-90" />
+                  <span>{k ? "没有匹配的会话" : "发起第一个对话"}</span>
                 </button>
-              )}
-              {filteredContacts.map((a, idx) => {
-                const isAdapter = Object.prototype.hasOwnProperty.call(adapterReady, a.id);
-                const ready = isAdapter ? adapterReady[a.id] : true;
-                const active = activeConvId === `dm-${a.id}`;
-                return (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => onSelectConv(`dm-${a.id}`, [a.id, "you"], a.name)}
-                    style={{
-                      animationDelay: `${idx * 30}ms`,
-                    }}
-                    className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 rounded-sm text-left transition-all duration-200 ${
-                      mobile ? "py-3.5" : "py-2.5"
-                    } ${
-                      // While this row's ⋮ menu is open, lift it into its own
-                      // stacking context (z-30) so the menu — rendered with
-                      // top-full and thus overlapping the NEXT row — paints
-                      // above the sibling rows below it instead of behind them.
-                      contactMenuOpen === a.id ? "z-30" : ""
-                    } ${
+              );
+            }
+            const lastPinnedIdx = rows.reduce(
+              (acc, c, i) => (c.pinned ? i : acc),
+              -1,
+            );
+            return rows.map((c, idx) => {
+              const active = activeConvId === c.id;
+              const repId = c.group
+                ? c.orchestrator_member_id || c.members.find((m) => m !== "you")
+                : c.members.find((m) => m !== "you");
+              const rep = repId ? agentById.get(repId) : undefined;
+              // 淡化项目:列表里不再写出工作区名字,只在末尾留一个工作区色小点(hover 看名字)。
+              const ws = c.workspace_id
+                ? workspaces.find((w) => w.id === c.workspace_id) ?? null
+                : null;
+              const agentCount = c.members.filter((m) => m !== "you").length;
+              const sub = c.direct ? "单聊" : `群聊 · ${agentCount} Agent`;
+              const time = fmtConvTime(c.last_message_at);
+              const hasDraft = !!c.draft_text?.trim() || (c.draft_attachments?.length ?? 0) > 0;
+              const running = (c.running_agents?.length ?? 0) > 0;
+              return (
+                <div key={c.id}>
+                  <div
+                    className={`group relative flex items-center rounded-sm transition-all duration-200 focus-within:bg-[var(--color-sidebar-hover)] ${
                       active
                         ? "bg-[var(--color-sidebar-active)]"
                         : "hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px]"
                     }`}
                   >
-                    {/* 2px 左侧 active 标记 */}
                     {active && (
                       <span
                         aria-hidden
@@ -932,342 +1058,89 @@ export function Sidebar({
                         style={{ background: "var(--color-accent)" }}
                       />
                     )}
-                    <div className="relative flex-shrink-0">
-                      {/* Circle avatar — softer, "people-like" per Polynoia.html
-                          mockup. Sized 32px to match the design's r=16 dots. */}
-                      <div
-                        className={`rounded-full grid place-items-center text-white font-medium tracking-wide transition-transform duration-200 group-hover:scale-[1.04] ${
-                          mobile ? "w-10 h-10 text-[13px]" : "w-8 h-8 text-[11px]"
-                        }`}
-                        style={{ background: a.color }}
-                      >
-                        {a.initials}
-                      </div>
-                      {isAdapter && (
-                        <span
-                          title={ready ? t("online", lang) : t("offlineStatus", lang)}
-                          className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-[var(--color-sidebar)] ${
-                            ready ? "bg-green-500 dot-online" : "bg-gray-500"
-                          }`}
-                        />
-                      )}
-                      {/* Custom-contact mark — tiny purple dot at top-right,
-                          replaces the chunky inline pill. Quieter right edge
-                          per the mockup. */}
-                      {a.custom && (
-                        <span
-                          aria-hidden
-                          title={t("customContact", lang) || "custom"}
-                          className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-purple-400/80 ring-2 ring-[var(--color-sidebar)]"
-                        />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div
-                        className={`truncate text-[var(--color-sidebar-fg)] leading-snug ${
-                          mobile ? "text-[15.5px]" : "text-[13.5px]"
-                        }`}
-                      >
-                        {a.name}
-                      </div>
-                      <div
-                        className={`text-[var(--color-sidebar-muted)] truncate mt-0.5 leading-tight font-mono ${
-                          mobile ? "text-[12px]" : "text-[11px]"
-                        }`}
-                      >
-                        {isAdapter && !ready
-                          ? t("offlineHint", lang)
-                          : (() => {
-                              // Show "Adapter · model" — the actual backend
-                              // routing, not a free-text tagline. Falls back
-                              // to tagline/role only when no setup info.
-                              const ad = a.setup?.adapter_id ?? null;
-                              const m = a.setup?.model ?? null;
-                              if (ad && m) return `${ADAPTER_LABEL[ad] ?? ad} · ${m}`;
-                              if (ad) return ADAPTER_LABEL[ad] ?? ad;
-                              return a.tagline ?? a.role ?? t("agent", lang);
-                            })()}
-                      </div>
-                      {/* Capability tags — surfaced in the primary contact list
-                          (previously only in Marketplace). Cap at 3 to keep the
-                          row compact. */}
-                      {a.caps && a.caps.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {a.caps.slice(0, 3).map((cap) => (
-                            <span
-                              key={cap}
-                              className="text-[9px] leading-none px-1.5 py-0.5 rounded-sm bg-[var(--color-sidebar-line)] text-[var(--color-sidebar-muted)]"
-                            >
-                              {cap}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {/* ⋮ overflow menu — only for user-created contacts
-                        (template adapter rows like "claudeCode" can't be
-                        edited; they're managed via Adapter Manager). Mirrors
-                        the ConvRow menu; uses role="button" spans because the
-                        row itself is a <button> (no nested buttons). */}
-                    {a.custom && (
-                      <>
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          title={t("editContact", lang)}
-                          aria-label={t("editContact", lang)}
-                          aria-haspopup="menu"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setContactMenuOpen((cur) => (cur === a.id ? null : a.id));
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              setContactMenuOpen((cur) => (cur === a.id ? null : a.id));
-                            }
-                          }}
-                          className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
-                        >
-                          <MoreHorizontal
-                            size={16}
-                            className="text-[var(--color-sidebar-muted)]"
-                          />
-                        </span>
-                        {contactMenuOpen === a.id && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectConv(c.id, c.members, c.title)}
+                      className="flex-1 min-w-0 flex items-center gap-3 pl-4 pr-1 py-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-accent)] rounded-sm"
+                    >
+                      <div className="relative flex-shrink-0">
+                        {rep ? (
                           <div
-                            role="menu"
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            className="absolute right-2 top-full -mt-1 z-50 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
+                            className={`grid place-items-center text-white text-[11px] font-medium w-8 h-8 ${
+                              c.direct ? "rounded-full" : "rounded-lg"
+                            }`}
+                            style={{ background: rep.color }}
                           >
-                            <span
-                              role="menuitem"
-                              tabIndex={0}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setContactMenuOpen(null);
-                                setEditingContact(a);
-                                setNewContactOpen(true);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  setContactMenuOpen(null);
-                                  setEditingContact(a);
-                                  setNewContactOpen(true);
-                                }
-                              }}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left cursor-pointer"
-                            >
-                              <Pencil size={12} />
-                              {t("editContact", lang)}
-                            </span>
-                            <span
-                              role="menuitem"
-                              tabIndex={0}
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                setContactMenuOpen(null);
-                                if (
-                                  !window.confirm(
-                                    `删除联系人「${a.name}」?该操作不可撤销。`,
-                                  )
-                                )
-                                  return;
-                                const r = await api.deleteContact(a.id);
-                                if (r?.error) {
-                                  window.alert(r.error);
-                                  return;
-                                }
-                                const list = await api.agents();
-                                useStore.setState({ agents: list });
-                              }}
-                              onKeyDown={async (e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  setContactMenuOpen(null);
-                                  if (
-                                    !window.confirm(
-                                      `删除联系人「${a.name}」?该操作不可撤销。`,
-                                    )
-                                  )
-                                    return;
-                                  const r = await api.deleteContact(a.id);
-                                  if (r?.error) {
-                                    window.alert(r.error);
-                                    return;
-                                  }
-                                  const list = await api.agents();
-                                  useStore.setState({ agents: list });
-                                }
-                              }}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 text-left cursor-pointer"
-                            >
-                              <Trash2 size={12} />
-                              删除
-                            </span>
+                            {rep.initials}
+                          </div>
+                        ) : (
+                          <div className="w-8 h-8 grid place-items-center rounded-lg bg-[var(--color-sidebar-hover)] text-[var(--color-sidebar-muted)]">
+                            <Hash size={15} />
                           </div>
                         )}
-                      </>
-                    )}
-                  </button>
-                );
-              })}
-            </>
-          )}
-        </div>
-
-        {/* Projects (second — depends on contacts being created first) */}
-        <div>
-          <SectionHeader
-            label={t("projects", lang)}
-            count={filteredWorkspaces.length}
-            open={projectsOpen}
-            onToggle={() => setProjectsOpen((v) => !v)}
-            onAction={mobile ? undefined : () => setNewProjectOpen(true)}
-            actionTitle={t("newProject", lang)}
-          />
-          {projectsOpen && (
-            <>
-              {filteredWorkspaces.length === 0 && !q && !mobile && (
-                <button
-                  type="button"
-                  onClick={() => setNewProjectOpen(true)}
-                  className="group w-full mx-0 mt-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-sm border border-dashed border-[var(--color-sidebar-line)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-200"
-                >
-                  <Plus
-                    size={11}
-                    className="transition-transform duration-300 group-hover:rotate-90"
-                  />
-                  <span>{t("newFirstProject", lang)}</span>
-                </button>
-              )}
-              {filteredWorkspaces.map((ws, idx) => {
-                const srv = servers.find((s) => s.id === ws.server_id);
-                return (
-                  <button
-                    key={ws.id}
-                    type="button"
-                    onClick={() => setActiveWorkspace(ws.id)}
-                    style={{
-                      animationDelay: `${idx * 30}ms`,
-                    }}
-                    className={`anim-stagger group relative w-full flex items-center gap-3 pl-4 pr-3 py-2.5 rounded-sm text-left hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px] transition-all duration-200 ${
-                      projectMenuOpen === ws.id ? "z-30" : ""
-                    }`}
-                  >
-                    {/* 项目色块 sits in the SAME 32-px column as contact
-                        circles, so contacts and projects align vertically as
-                        one unified list. The block itself stays small +
-                        square so a quick glance still reads "project ≠ DM". */}
-                    <div className="w-8 h-8 flex-shrink-0 grid place-items-center">
-                      <span
-                        aria-hidden
-                        className="w-2.5 h-2.5 transition-transform duration-200 group-hover:rotate-45"
-                        style={{ background: ws.color }}
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[13.5px] truncate text-[var(--color-sidebar-fg)] leading-snug">
-                        {ws.name}
+                        {/* Live: at least one agent currently working in this conv. */}
+                        {running && (
+                          <span
+                            title="Agent 正在工作"
+                            className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-green-500 dot-online ring-2 ring-[var(--color-sidebar)]"
+                          />
+                        )}
                       </div>
-                      <div className="text-[11px] text-[var(--color-sidebar-muted)] truncate mt-0.5 leading-tight font-mono">
-                        {ws.role} · {srv?.name ?? ws.server_id}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="flex-1 text-[13.5px] truncate text-[var(--color-sidebar-fg)] leading-snug">
+                            {c.title}
+                          </span>
+                          {c.pinned && (
+                            <Pin
+                              size={11}
+                              className="flex-shrink-0 text-[var(--color-accent)] rotate-45"
+                              aria-label="已置顶"
+                            />
+                          )}
+                          {time && (
+                            <span className="flex-shrink-0 text-[10px] font-mono text-[var(--color-sidebar-muted)]">
+                              {time}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-[var(--color-sidebar-muted)] mt-0.5 leading-tight font-mono flex items-center gap-1.5 min-w-0">
+                          {hasDraft && (
+                            <span className="flex-shrink-0 text-[var(--color-accent)]">
+                              [草稿]
+                            </span>
+                          )}
+                          <span className="truncate">{sub}</span>
+                          {ws && (
+                            <span
+                              title={`工作区:${ws.name}`}
+                              className="flex-shrink-0 w-1.5 h-1.5 rounded-[1px]"
+                              style={{ background: ws.color }}
+                            />
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    {/* ⋮ overflow menu — mirrors the contact row: 编辑项目 /
-                        删除项目. role="button" spans because the row itself is a
-                        <button> (no nested buttons). */}
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      title={t("editProject", lang)}
-                      aria-label={t("editProject", lang)}
-                      aria-haspopup="menu"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setProjectMenuOpen((cur) => (cur === ws.id ? null : ws.id));
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.stopPropagation();
-                          e.preventDefault();
-                          setProjectMenuOpen((cur) =>
-                            cur === ws.id ? null : ws.id,
-                          );
-                        }
-                      }}
-                      className="flex-shrink-0 p-1 rounded-sm opacity-0 group-hover:opacity-60 hover:opacity-100 hover:bg-[var(--color-sidebar-active)] transition-opacity duration-150 cursor-pointer outline-none focus-visible:opacity-100"
-                    >
-                      <MoreHorizontal
-                        size={16}
-                        className="text-[var(--color-sidebar-muted)]"
-                      />
-                    </span>
-                    {projectMenuOpen === ws.id && (
-                      <div
-                        role="menu"
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => e.stopPropagation()}
-                        className="absolute right-2 top-full -mt-1 z-50 min-w-[140px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1"
-                      >
-                        <span
-                          role="menuitem"
-                          tabIndex={0}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setProjectMenuOpen(null);
-                            setEditingWorkspace(ws);
-                            setProjectEditMode("settings");
-                            setNewProjectOpen(true);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              setProjectMenuOpen(null);
-                              setEditingWorkspace(ws);
-                              setProjectEditMode("settings");
-                              setNewProjectOpen(true);
-                            }
-                          }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)] text-left cursor-pointer"
-                        >
-                          <Pencil size={12} />
-                          {t("editProject", lang)}
+                      {c.unread > 0 && (
+                        <span className="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-[var(--color-accent)] text-white text-[10px] font-medium grid place-items-center">
+                          {c.unread > 99 ? "99+" : c.unread}
                         </span>
-                        <span
-                          role="menuitem"
-                          tabIndex={0}
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            setProjectMenuOpen(null);
-                            await deleteProject(ws);
-                          }}
-                          onKeyDown={async (e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              setProjectMenuOpen(null);
-                              await deleteProject(ws);
-                            }
-                          }}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 text-left cursor-pointer"
-                        >
-                          <Trash2 size={12} />
-                          {t("deleteProject", lang)}
-                        </span>
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </>
-          )}
+                      )}
+                    </button>
+                    <div className="flex-shrink-0 pr-2 pl-0.5">
+                      <ConvActionsMenu conv={c} onChanged={refreshAllConvs} />
+                    </div>
+                  </div>
+                  {/* Divider between the pinned block and the rest. */}
+                  {idx === lastPinnedIdx && idx < rows.length - 1 && (
+                    <div
+                      aria-hidden
+                      className="mx-4 my-1 h-px bg-[var(--color-sidebar-line)]"
+                    />
+                  )}
+                </div>
+              );
+            });
+          })()}
         </div>
       </div>
 
@@ -1276,6 +1149,7 @@ export function Sidebar({
         <NewProjectModal
           editing={editingWorkspace}
           editMode={projectEditMode}
+          onDelete={deleteProject}
           onClose={() => {
             setNewProjectOpen(false);
             setEditingWorkspace(null);
@@ -1324,6 +1198,18 @@ export function Sidebar({
               // ignore
             }
             setEditingContact(null);
+          }}
+        />
+      )}
+      {newConvGlobalOpen && (
+        <NewConvModal
+          workspace={null}
+          onClose={() => setNewConvGlobalOpen(false)}
+          onOpenConv={(id, members, title) => {
+            // Standalone conv (no workspace) — surfaces in Inbox/search; resync
+            // the list views, then jump to it.
+            window.dispatchEvent(new CustomEvent("polynoia:resync-lists"));
+            onSelectConv(id, members, title);
           }}
         />
       )}

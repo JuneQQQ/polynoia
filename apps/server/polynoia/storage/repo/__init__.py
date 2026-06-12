@@ -14,6 +14,7 @@ from polynoia.storage.repo.agents import (
 )
 from polynoia.storage.repo.cleanup import (
     close_terminal_card_for_run,
+    reap_orphan_burst_tasks,
     reap_orphan_terminal_cards,
     reap_orphan_tool_calls,
 )
@@ -47,6 +48,8 @@ from polynoia.storage.repo.conversations import (
     set_members,
     set_merge_mode,
     set_pinned,
+    set_title,
+    set_workspace_id,
 )
 from polynoia.storage.repo.messages import (
     append_message,
@@ -153,6 +156,7 @@ __all__ = [
     "list_workspace_memory",
     "list_workspaces",
     "mark_process_run_killed",
+    "reap_orphan_burst_tasks",
     "reap_orphan_terminal_cards",
     "reap_orphan_tool_calls",
     "reap_stale_process_runs",
@@ -170,6 +174,8 @@ __all__ = [
     "set_pending_access_status",
     "set_pending_edit_status",
     "set_pinned",
+    "set_title",
+    "set_workspace_id",
     "sweep_process_liveness",
     "update_conflict_files",
     "update_message_payload",

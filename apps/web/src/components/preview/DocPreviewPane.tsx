@@ -17,11 +17,13 @@ import { MarkdownDoc } from "./MarkdownDoc";
 import { OfficePreview } from "./OfficePreview";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
 import { SheetPreview } from "./SheetPreview";
-import { SourcePreview } from "./SourcePreview";
 
 // Lazy: heavy renderers not needed at boot — CrepeEditor (Milkdown, ~80KB),
-// MarpPreview (Marp core, ~50KB), WorkbookPreview (xlsx, ~40KB). They load only
-// when a .md / .marp / .xlsx file is actually previewed.
+// MarpPreview (Marp core, ~50KB), WorkbookPreview (xlsx, ~40KB), SourcePreview
+// (CodeMirror, ~2.3MB!). They load only when that file type is actually previewed.
+// SourcePreview MUST be lazy: a static import pulls the whole CodeMirror stack
+// onto the eager boot graph (it's reached via App→PreviewPane→RightPreviewFile→
+// this pane, all static) — the single biggest first-paint chunk.
 const CrepeEditor = lazy(() =>
 	import("./CrepeEditor").then((m) => ({ default: m.CrepeEditor })),
 );
@@ -30,6 +32,9 @@ const MarpPreview = lazy(() =>
 );
 const WorkbookPreview = lazy(() =>
 	import("./WorkbookPreview").then((m) => ({ default: m.WorkbookPreview })),
+);
+const SourcePreview = lazy(() =>
+	import("./SourcePreview").then((m) => ({ default: m.SourcePreview })),
 );
 
 const _DocFallback = (
@@ -199,12 +204,14 @@ export function DocPreviewPane({
 	}
 	if (kind === "code") {
 		return workspaceId ? (
-			<SourcePreview
-				key={path}
-				workspaceId={workspaceId}
-				path={path}
-				content={content}
-			/>
+			<Suspense fallback={_DocFallback}>
+				<SourcePreview
+					key={path}
+					workspaceId={workspaceId}
+					path={path}
+					content={content}
+				/>
+			</Suspense>
 		) : (
 			<Empty text="源码预览需要在项目对话(workspace)里。" />
 		);

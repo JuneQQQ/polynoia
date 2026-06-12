@@ -141,10 +141,8 @@ class ClaudeCodeAdapter:
         proxy_kind: str = "system",
         skills: list[str] | None = None,
     ) -> ClaudeCodeSession:
-        # P1.1 routing — group convs in a workspace share git via worktrees;
-        # a project-external DM opens its agent's workspace READ-ONLY (ADR-019)
-        # so read/grep/glob can inspect the project (writes already blocked by
-        # the advisory role); everything else uses a legacy per-conv sandbox.
+        # P1.1 routing — group convs in a workspace share git via worktrees.
+        # Project access for DMs is explicit; there is no read-only fallback role.
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id, conv_id=conv_id, agent_id=agent_id,

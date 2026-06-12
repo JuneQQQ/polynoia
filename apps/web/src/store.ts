@@ -673,7 +673,13 @@ export const useStore = create<Store>((set, get) => ({
 			servicesView: false,
 		}),
 	openCommitsTab: () =>
-		set({ commitsTabOpen: true, activeCenterTab: COMMITS_TAB }),
+		// Also collapse the right preview rail: the entry button lives INSIDE it,
+		// so leaving it open guarantees the diff column gets squeezed unreadable.
+		set((s) => ({
+			commitsTabOpen: true,
+			activeCenterTab: COMMITS_TAB,
+			preview: { ...s.preview, open: false },
+		})),
 	closeCommitsTab: () =>
 		set((s) => ({
 			commitsTabOpen: false,
@@ -1064,9 +1070,26 @@ export const useStore = create<Store>((set, get) => ({
 			const partKind = action.kind === "reasoning-start" ? "reasoning" : "text";
 			const senderId = action.senderId || fallbackSender;
 			const streamKey = `${senderId}::${action.partId}`; // collision-safe across agents
+			// IDEMPOTENT REPLAY: AI SDK 6 can re-emit a text-start for an in-flight
+			// part on SSE/WS reconnect. Preserve any text already accumulated by prior
+			// deltas (from the live buffer, else the existing message body) instead of
+			// zeroing it — a bare reset silently blanks a half-streamed reply on screen.
+			const _existingBuf = cur.streamingTexts.get(streamKey);
+			let priorText = _existingBuf?.text ?? "";
+			if (!priorText) {
+				const _b = (
+					cur.msgById.get(action.messageId)?.payload as
+						| { body?: Array<{ c?: unknown }> }
+						| undefined
+				)?.body;
+				if (Array.isArray(_b))
+					priorText = _b
+						.map((x) => (typeof x?.c === "string" ? x.c : ""))
+						.join("");
+			}
 			const payload = {
 				kind: partKind,
-				body: [{ t: "p", c: "" }],
+				body: [{ t: "p", c: priorText }],
 				...(action.discussionId ? { discussion_id: action.discussionId } : {}),
 			} as Message["payload"];
 			const placeholder: Message = {
@@ -1083,7 +1106,7 @@ export const useStore = create<Store>((set, get) => ({
 			newStreaming.set(streamKey, {
 				messageId: action.messageId,
 				senderId,
-				text: "",
+				text: priorText,
 				kind: partKind,
 			});
 			const order = cur.messageOrder.includes(action.messageId)

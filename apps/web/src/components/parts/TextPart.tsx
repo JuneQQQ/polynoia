@@ -324,6 +324,14 @@ function InlineMarkdown({ text }: { text: string }) {
 // ZWSP *after* an opening `**` → structurally cannot reintroduce that bug. Both
 // directions are pinned in TextPart.cjkMarkdown.test.tsx against the real
 // react-markdown + remark-gfm render path.
+// KNOWN LIMITATION (TextPart.unicode.test.tsx pins 2 red cases): inserting a U+200B
+// before a closing `**`/`__` only fixes flanking when a CJK/fullwidth char precedes
+// it (`重要**` / fullwidth `）**` — the latter works because `）` is itself CJK-class,
+// not because of the ZWSP). When an ASCII half-width `)` precedes the close
+// (`**说明(重要)**结论`), the ZWSP can't change micromark's right-flanking and the `**`
+// still leak as literals. A real fix needs `remark-cjk-friendly`, deliberately NOT
+// pulled in (it conflicts with this repo's workspace lockfile). So those cases stay
+// red as documentation rather than shipping a no-op preprocess for them.
 const CJK_CLOSE_RE = /([一-鿿　-〿＀-￯])(\*\*|__)/g;
 export function fixCjkMarkdown(s: string): string {
 	return s.replace(CJK_CLOSE_RE, "$1​$2");

@@ -1,3 +1,4 @@
+import { getServerHttpBase } from "./runtime-config";
 /** HTTP API client — Polynoia server REST. */
 import type {
 	Agent,
@@ -7,7 +8,6 @@ import type {
 	Server,
 	Workspace,
 } from "./types";
-import { getServerHttpBase } from "./runtime-config";
 
 export type AdapterProbe = {
 	id: string;
@@ -290,6 +290,9 @@ export const api = {
 		members: string[];
 		color?: string;
 		server_id?: string;
+		/** Optional: bind to an EXISTING absolute directory on disk (the user's own
+		 * project path) instead of an auto-managed sandbox. */
+		path?: string;
 	}) =>
 		postJSON<{ workspace: Workspace; main_conv_id: string | null }>(
 			"/api/workspaces",
@@ -297,9 +300,9 @@ export const api = {
 		),
 	/** Installed skill packages (folder per skill). */
 	listSkills: () =>
-		getJSON<{ name: string; description: string; path: string; builtin?: boolean }[]>(
-			"/api/skills",
-		),
+		getJSON<
+			{ name: string; description: string; path: string; builtin?: boolean }[]
+		>("/api/skills"),
 	/** Install skill(s) from a git URL or local path. A source can be a single
 	 * skill OR a collection (e.g. a plugin's skills/), so it returns a LIST. */
 	installSkill: (source: string, name?: string) =>
@@ -352,7 +355,16 @@ export const api = {
 	}) => postJSON<ConversationSummary>("/api/conversations", body),
 	deleteConv: (convId: string) =>
 		deleteJSON<{ ok: boolean }>(`/api/conversations/${convId}`),
-	deleteMessage: (convId: string, msgId: string, options?: { silent?: boolean }) =>
+	/** Rename a conversation. Returns the updated conv summary. */
+	renameConv: (convId: string, title: string) =>
+		patchJSON<ConversationSummary>(`/api/conversations/${convId}/title`, {
+			title,
+		}),
+	deleteMessage: (
+		convId: string,
+		msgId: string,
+		options?: { silent?: boolean },
+	) =>
 		deleteJSON<{ ok: boolean }>(
 			`/api/conversations/${convId}/messages/${msgId}${options?.silent ? "?silent=true" : ""}`,
 		),
@@ -426,11 +438,19 @@ export const api = {
 	 * `created_at` to walk further into the past. */
 	convMessages: (
 		convId: string,
-		opts: { limit?: number; before?: string | null } = {},
+		opts: {
+			limit?: number;
+			before?: string | null;
+			beforeId?: string | null;
+		} = {},
 	) => {
 		const qs = new URLSearchParams();
 		if (opts.limit) qs.set("limit", String(opts.limit));
 		if (opts.before) qs.set("before", opts.before);
+		// Composite cursor: pair the timestamp with the oldest row's id so we can
+		// page past a millisecond shared by more rows than fit one page (else the
+		// conversation start is unreachable on scroll-up).
+		if (opts.beforeId) qs.set("before_id", opts.beforeId);
 		const q = qs.toString();
 		return getJSON<{
 			messages: Array<{
@@ -481,6 +501,31 @@ export const api = {
 		patchJSON<ConversationSummary>(`/api/conversations/${convId}/merge_mode`, {
 			mode,
 		}),
+	/** IA: attach a project (workspace) to a conversation, or detach it
+	 * (`workspaceId: null`). Workspaces are an OPTIONAL, lazily-attached
+	 * capability — a thread starts plain and gains a sandbox only when needed.
+	 * Server appends a system event; returns the updated conv summary. */
+	setConvWorkspace: (convId: string, workspaceId: string | null) =>
+		patchJSON<ConversationSummary>(`/api/conversations/${convId}/workspace`, {
+			workspace_id: workspaceId,
+		}),
+	/** IA: promote a DM/group into a project — mint a fresh sandbox-backed
+	 * workspace seeded from the conv's members and attach it. 409s if the
+	 * conv already has a workspace. */
+	promoteConvToProject: (
+		convId: string,
+		body?: { name?: string; color?: string },
+	) =>
+		postJSON<{ workspace: Workspace; conversation: ConversationSummary }>(
+			`/api/conversations/${convId}/promote`,
+			body ?? {},
+		),
+	/** IA: every conversation (DM + group, across all projects or none) that
+	 * this agent is a member of — the unified "我和 X 的所有对话" view. */
+	agentConversations: (agentId: string, opts?: { archived?: boolean }) =>
+		getJSON<ConversationSummary[]>(
+			`/api/agents/${agentId}/conversations${opts?.archived ? "?archived=true" : ""}`,
+		),
 
 	// Onboarding — adapter layer
 	probeAdapters: () => getJSON<AdapterProbe[]>("/api/onboarding/adapters"),
@@ -619,7 +664,9 @@ export const api = {
 
 	/** Stop a managed process run. */
 	stopService: (processId: string) =>
-		deleteJSON<{ ok: boolean; killed: boolean }>(`/api/process-runs/${processId}`),
+		deleteJSON<{ ok: boolean; killed: boolean }>(
+			`/api/process-runs/${processId}`,
+		),
 
 	/** Apply a Diff card to the conv's sandbox. Server reconstructs unified
 	 * diff from hunks + git apply + commit. Returns new short sha on success.
@@ -802,6 +849,10 @@ export const api = {
 	/** Uncommitted working-tree changes vs HEAD on the workspace root. */
 	workspaceWorkingDiff: (wsId: string) =>
 		getJSON<CommitDiff>(`/api/workspaces/${wsId}/working-diff`),
+	/** 丢弃工作区根目录的未提交改动(tracked 还原 + untracked 删除;ignored 与
+	 * worktree 不动)。合并进行中返回 409。 */
+	workspaceDiscardWorking: (wsId: string) =>
+		postJSON<{ ok: boolean }>(`/api/workspaces/${wsId}/discard-working`),
 
 	/** Trigger a browser download of a single workspace file (any type/size). */
 	downloadWorkspaceFile: (wsId: string, path: string) => {

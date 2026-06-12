@@ -116,7 +116,9 @@ export function computeDiscussions(
 			isConclusionText(payload)
 		) {
 			info.conclusionMsgId = m.id;
-			info.messageIds.push(m.id);
+			// Do NOT add the conclusion to the transcript messageIds — it renders in
+			// the dedicated 结论 box; adding it here double-renders it in the expanded
+			// transcript and inflates the "查看过程 N" count.
 			for (const participantId of participantIds(info)) {
 				if (activeByParticipant.get(participantId) === info) {
 					activeByParticipant.delete(participantId);

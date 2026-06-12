@@ -72,7 +72,7 @@ class AgentSkill(BaseModel):
 
 
 class Agent(BaseModel):
-    """A role — 1 Provider can host N Agents (e.g. claude → designer/reviewer/codeAgent)."""
+    """A contact/agent profile hosted by a provider."""
 
     id: ULID = Field(default_factory=new_ulid)
     name: str
@@ -89,14 +89,10 @@ class Agent(BaseModel):
     custom: bool = False
     system_prompt: str | None = None
     tools_whitelist: list[str] = []
-    # Coarse-grained MCP tool exposure role.
-    # orchestrator → read-only + call_agent (no edit/write/bash)
-    # coder        → full toolset (read/edit/write/apply_patch/bash/grep/glob/revert)
-    # designer     → read/edit/write/grep/glob (no bash, no apply_patch, no revert)
-    # writer       → read/edit/write/grep/glob (same as designer)
-    # generalist   → everything except call_agent (default for back-compat)
+    # Runtime MCP tool role. Persona labels (writer/designer/backend/etc.) do not
+    # gate tools; actual role is resolved from conversation structure.
     tool_role: Literal[
-        "orchestrator", "coder", "designer", "writer", "generalist",
+        "orchestrator", "group_member", "generalist",
     ] = "generalist"
     # Reusable capability/prompt presets bound at the contact level. Injected
     # into this agent's identity layer at turn time.

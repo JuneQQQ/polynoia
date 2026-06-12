@@ -27,14 +27,19 @@ def test_maybe_prune_frees_idle_conv():
     rt.live[c] = {}
     rt.agent_turn[f"{c}:agent-a"] = "turn-1"
     rt.agent_discussion[f"{c}:agent-a"] = "disc-1"
+    rt.continue_phases[c] = 3
+    rt.pending_asks["ask-1"] = None  # orphaned unanswered ask for this conv
+    rt.ask_conv["ask-1"] = c
     rt.maybe_prune_conv(c)
     for d in (
         rt.agent_tasks, rt.agent_locks, rt.tool_activity, rt.bursts,
-        rt.discussions, rt.pending_dispatches, rt.live,
+        rt.discussions, rt.pending_dispatches, rt.live, rt.continue_phases,
     ):
         assert c not in d
     assert f"{c}:agent-a" not in rt.agent_turn
     assert f"{c}:agent-a" not in rt.agent_discussion
+    assert "ask-1" not in rt.pending_asks
+    assert "ask-1" not in rt.ask_conv
 
 
 def test_maybe_prune_keeps_conv_with_inflight_task():

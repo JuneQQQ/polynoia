@@ -8,7 +8,7 @@ Covers:
     - resolved_by is attributed to the acting agent (turn_agent_id)
     - conflict_id inference from the agent's single open conflict
     - inference ambiguity (0 or >1) → ask for an explicit id
-    - tier exposure: builders get it; orchestrator/critic/advisory don't
+    - tier exposure: solo/coordinator get it; group workers don't
 """
 from __future__ import annotations
 
@@ -130,11 +130,9 @@ def test_tier_exposure():
     """Manual user side-picking is retired, so resolve_conflict is exposed to every
     role that may resolve a conflict on its own:
       · orchestrator — group arbiter (resolves a teammate's branch)
-      · solo/DM builders (coder/generalist/designer/writer) — resolve their OWN branch
+      · generalist — solo/DM agent resolves its OWN branch
     But NOT to:
-      · group_member — group workers escalate to the orchestrator (judge-and-party)
-      · critic/advisory — read-only tiers."""
-    for role in ("orchestrator", "coder", "generalist", "designer", "writer"):
+      · group_member — group workers escalate to the orchestrator (judge-and-party)."""
+    for role in ("orchestrator", "generalist"):
         assert "resolve_conflict" in tools_for_role(role), role
-    for role in ("group_member", "critic", "advisory"):
-        assert "resolve_conflict" not in tools_for_role(role), role
+    assert "resolve_conflict" not in tools_for_role("group_member")

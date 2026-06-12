@@ -80,7 +80,7 @@ async def delete_messages_from(
 
     No-op (returns 0) if ``from_msg_id`` isn't in this conv.
     """
-    from sqlalchemy import func
+    from sqlalchemy import and_, func, or_
 
     from polynoia.storage.models import (
         MessageRow,
@@ -90,19 +90,30 @@ async def delete_messages_from(
     if target is None or target.conv_id != conv_id:
         return 0
     cutoff = target.created_at
+    # Boundary must match list_messages' (created_at DESC, id DESC) ORDER, not a
+    # bare timestamp: created_at is millisecond-granular, so a same-ms sibling with
+    # an EARLIER ULID is chronologically BEFORE the rewind target and must be KEPT.
+    # Delete a MessageRow iff it is at-or-after the target in (created_at, id) order.
+    _msg_at_or_after = or_(
+        MessageRow.created_at > cutoff,
+        and_(MessageRow.created_at == cutoff, MessageRow.id >= target.id),
+    )
     count = (
         await session.execute(
             select(func.count())
             .select_from(MessageRow)
             .where(MessageRow.conv_id == conv_id)
-            .where(MessageRow.created_at >= cutoff)
+            .where(_msg_at_or_after)
         )
     ).scalar_one()
     await session.execute(
         MessageRow.__table__.delete()
         .where(MessageRow.conv_id == conv_id)
-        .where(MessageRow.created_at >= cutoff)
+        .where(_msg_at_or_after)
     )
+    # Conflict/pending rows have no ULID aligned with messages; the timestamp cutoff
+    # is the right (intentionally inclusive) boundary — they were produced by the
+    # work being rewound, so erring toward cleanup is correct.
     for tbl in (ConflictRow, PendingEditRow, PendingAccessRow):
         await session.execute(
             tbl.__table__.delete()
@@ -135,11 +146,14 @@ async def upsert_message(
     sender_id: str,
     payload: dict[str, Any],
     msg_id: str,
+    in_reply_to: str | None = None,
 ) -> str:
     """Insert a message, or overwrite its payload if a row with ``msg_id``
     already exists. Lets a tool-call/diff part persist incrementally (the moment
     it completes, so a mid-stream refresh keeps the trace) AND be re-written at
-    turn-end with its final state — same stable id, no duplicate row. Caller
+    turn-end with its final state — same stable id, no duplicate row. Also makes
+    the optimistic-id write path idempotent: a client retry/double-send of the
+    same pre-allocated id updates in place instead of colliding on the PK. Caller
     commits."""
     row = await session.get(MessageRow, msg_id)
     if row is not None:
@@ -148,7 +162,7 @@ async def upsert_message(
         return msg_id
     return await append_message(
         session, conv_id=conv_id, sender_id=sender_id,
-        payload=payload, msg_id=msg_id,
+        payload=payload, msg_id=msg_id, in_reply_to=in_reply_to,
     )
 
 
@@ -318,6 +332,7 @@ async def list_messages(
     *,
     limit: int = 50,
     before: str | None = None,
+    before_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Paginated message fetch — NEWEST page first, then scroll-up cursor.
 
@@ -326,20 +341,41 @@ async def list_messages(
         limit: page size (default 50)
         before: ISO-8601 timestamp; only return messages strictly older than this.
                 None = fetch the latest page.
+        before_id: the cursor row's id, pairing with ``before`` to form a COMPOSITE
+                cursor ``(created_at, id)`` that matches the page ORDER. Without it,
+                rows sharing the cursor's millisecond that didn't fit the prior page
+                are stranded — with >limit rows at one instant, paging cannot advance
+                past them and the conversation START becomes unreachable.
 
     Returns:
         (messages_in_chronological_order, has_more)
         - ``messages``: list ordered OLDEST → NEWEST (ready to render)
         - ``has_more``: True if a full page was returned (older messages exist)
     """
+    from sqlalchemy import and_, or_
 
     stmt = select(MessageRow).where(MessageRow.conv_id == conv_id)
     if before:
         try:
             cutoff = datetime.fromisoformat(before.rstrip("Z"))
-            stmt = stmt.where(MessageRow.created_at < cutoff)
         except ValueError:
-            pass  # malformed cursor → ignore, behave as fresh fetch
+            cutoff = None  # malformed cursor → ignore, behave as fresh fetch
+        if cutoff is not None:
+            if before_id:
+                # Composite cursor: strictly OLDER than (cutoff, before_id) in the
+                # (created_at DESC, id DESC) order — the only way to reliably page
+                # past a millisecond shared by more rows than fit one page.
+                stmt = stmt.where(
+                    or_(
+                        MessageRow.created_at < cutoff,
+                        and_(
+                            MessageRow.created_at == cutoff,
+                            MessageRow.id < before_id,
+                        ),
+                    )
+                )
+            else:
+                stmt = stmt.where(MessageRow.created_at < cutoff)
     # We fetch DESC + limit so we get the newest N below the cursor; then
     # reverse for client-side chronological rendering. Tie-break by id so cards
     # sharing a created_at (a tool-call card + the diff card it produced can land

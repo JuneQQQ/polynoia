@@ -2047,11 +2047,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 if contract:
                     tp["contract"] = contract
                 tp_id = f"tasks-{uuid.uuid4().hex[:10]}"
+                # Stamp the dispatch turn's id so this burst/tasks ANCHOR card has a
+                # stable turn_id (event-log invariant: dispatch/discuss/present cards
+                # must be correlatable to the turn that produced them). Set once on
+                # the column at creation; _mark_burst_task re-emits only overwrite
+                # `row.payload` (not the turn_id column), so it survives every worker
+                # completion. The registry below reuses this stamped `tp`.
+                tp = _stamp_turn(tp)
                 await emit(
                     'data: {"type":"data-tasks","data":'
                     + json.dumps(tp, ensure_ascii=False)
                     + ',"id":' + json.dumps(tp_id)
                     + ',"sender_id":' + json.dumps(batch_author)
+                    + ',"turn_id":' + json.dumps(turn_id)
                     + "}\n\n"
                 )
                 async with SessionLocal() as _db:
@@ -2167,6 +2175,39 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     if _su and _su.adapter_id:
                         _pids.append(_pid)
                 if not _topic or len(_pids) < 2:
+                    # discuss() resolved to <2 valid participants (typo'd / hallucinated
+                    # names, alias collisions mapping to one id, self-exclusion, or a
+                    # participant without an adapter). record_discuss ALREADY returned
+                    # success synchronously and told the model to STOP and await a
+                    # conclusion — so a silent skip here strands the orchestrator with no
+                    # card, no error, no further output. Fail LOUDLY: surface a system
+                    # note so the dead-end is visible (and, on the next turn, the
+                    # orchestrator sees it in history and can proceed without discuss).
+                    log.warning(
+                        "discuss drain no-op: conv=%s topic=%r resolved=%d (<2) — emitting failure note",
+                        conv_id, _topic, len(_pids),
+                    )
+                    _noop_id = f"sys-disc-noop-{uuid.uuid4().hex[:8]}"
+                    _noop_payload = _stamp_turn({
+                        "kind": "text",
+                        "body": [{"t": "p", "c": (
+                            "⚠️ 讨论未能发起:指定的参与者解析后不足两位"
+                            "(可能是名字拼写/重名/未接入适配器)。请不要再发起讨论,"
+                            "直接安排工作或向用户说明缺什么。"
+                        )}],
+                    })
+                    async with SessionLocal() as _ndb:
+                        await storage_repo.append_message(
+                            _ndb, conv_id=conv_id, sender_id="system",
+                            payload=_noop_payload, msg_id=_noop_id,
+                        )
+                        await _ndb.commit()
+                    await emit(
+                        'data: {"type":"data-text","data":'
+                        + json.dumps(_noop_payload, ensure_ascii=False)
+                        + ',"id":' + json.dumps(_noop_id)
+                        + ',"sender_id":"system"}\n\n'
+                    )
                     continue
                 # Open the session (seeder = the convening orchestrator) and
                 # pre-charge in-flight for ALL seeds SYNCHRONOUSLY (before any
@@ -2190,6 +2231,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         "conclusion_message_id": None,
                         "round": 1,
                         "max_rounds": _DISCUSSION_MAX_ROUNDS,
+                        # Stable turn_id on the discuss ANCHOR (event-log invariant)
+                        # — the creating turn; persist=False status re-emits leave the
+                        # turn_id column intact, so it survives the round-table's life.
+                        "turn_id": turn_id,
                     }
                     await emit_discussion_card(
                         anchor_id=_anchor_id,
@@ -2224,6 +2269,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             "conclusion_message_id": None,
                             "round": 1,
                             "max_rounds": _DISCUSSION_MAX_ROUNDS,
+                            # Stable turn_id on the discuss ANCHOR (event-log invariant).
+                            "turn_id": turn_id,
                         }
                         await emit_discussion_card(
                             anchor_id=_anchor_id,

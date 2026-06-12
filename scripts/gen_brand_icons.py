@@ -100,13 +100,20 @@ def favicon_web_mono() -> str:
     return _svg(body, title="Polynoia")
 
 
-def icon_squircle_triad(path: str, *, ring: bool, glyph_scale: float, title: str) -> str:
+def icon_squircle_triad(
+    path: str, *, ring: bool, glyph_scale: float, title: str, pad: float = 1.0
+) -> str:
     body = _DEFS
     body += f'<path d="{path}" fill="url(#c)"/>'         # cream tile
     body += _triad(glyph_scale)                          # three discs
     body += f'<path d="{path}" fill="url(#s)"/>'         # top sheen
     if ring:                                             # macOS hairline ring
         body += f'<path d="{path}" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>'
+    if pad != 1.0:
+        # Apple's macOS icon grid sizes the art at 824/1024 ≈ 0.80 of the canvas
+        # with transparent margin — full-bleed icons read oversized in the dock.
+        # iOS is the opposite (system-masked, full-bleed) → no pad there.
+        body = f'<g transform="translate(50 50) scale({pad}) translate(-50 -50)">{body}</g>'
     return _svg(body, title=title)
 
 
@@ -126,7 +133,7 @@ def main() -> None:
         ROOT / "apps/web/public/favicon.svg": favicon_web_mono(),
         ROOT / "assets/brand/favicon-web-mono.svg": favicon_web_mono(),
         ROOT / "assets/brand/icon-desktop.svg": icon_squircle_triad(
-            SQ_MAC, ring=True, glyph_scale=1.0, title="Polynoia"),
+            SQ_MAC, ring=True, glyph_scale=1.16, title="Polynoia", pad=0.82),
         ROOT / "assets/brand/icon-mobile.svg": icon_squircle_triad(
             SQ_IOS, ring=False, glyph_scale=1.0, title="Polynoia"),
         ROOT / "assets/brand/logo.svg": logo_web_triad(),

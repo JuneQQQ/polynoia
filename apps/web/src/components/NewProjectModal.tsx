@@ -7,7 +7,7 @@
  *   - 全局 store 增量更新 workspaces 列表
  *   - 切到该 workspace + 自动跳进 main conv
  */
-import { FolderPlus, Pencil, Users, X } from "lucide-react";
+import { FolderPlus, Pencil, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent, Workspace } from "../lib/types";
@@ -42,6 +42,9 @@ type Props = {
 	/** Called after a successful edit (sidebar ⋮「编辑项目」). */
 	onSaved?: () => void | Promise<void>;
 	editMode?: "settings" | "members";
+	/** Edit mode only: render a 删除项目 entry that hands the workspace back to
+	 * the caller (which owns the confirm + API call). */
+	onDelete?: (ws: Workspace) => void | Promise<void>;
 };
 
 export function NewProjectModal({
@@ -50,6 +53,7 @@ export function NewProjectModal({
 	editing = null,
 	onSaved,
 	editMode = "settings",
+	onDelete,
 }: Props) {
 	const isEdit = editing !== null;
 	const isMemberEdit = isEdit && editMode === "members";
@@ -57,6 +61,9 @@ export function NewProjectModal({
 	const [name, setName] = useState(editing?.name ?? "");
 	const [desc, setDesc] = useState(editing?.desc ?? "");
 	const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
+	// Optional: bind to an EXISTING directory (the user's own project path).
+	// Empty = auto-managed sandbox. Only offered on create.
+	const [path, setPath] = useState("");
 	// Pre-select the project's current members (minus the implicit "you") so
 	// edit mode shows the real roster and lets the user add/remove members.
 	const [selected, setSelected] = useState<Set<string>>(
@@ -118,6 +125,7 @@ export function NewProjectModal({
 				desc: desc.trim() || undefined,
 				members: Array.from(selected),
 				color,
+				path: path.trim() || undefined,
 			});
 			const members = ["you", ...Array.from(selected)];
 			onCreated(
@@ -188,6 +196,24 @@ export function NewProjectModal({
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 								/>
 							</Field>
+							{/* 工作区路径只在创建时可选 — 绑定后不可改(改了上下文会错乱)。 */}
+							{!isEdit && (
+								<Field label="工作区路径(可选)">
+									<input
+										type="text"
+										value={path}
+										onChange={(e) => setPath(e.target.value)}
+										placeholder="留空 = 自动沙箱;或填已有项目的绝对路径"
+										spellCheck={false}
+										className="w-full text-[12.5px] font-mono px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+									/>
+									<div className="text-[10.5px] text-[var(--color-fg-3)] mt-1.5 leading-relaxed">
+										绑定到你已有的目录:Agent 直接在该项目里工作(已是 git
+										仓库则沿用当前分支),Polynoia 状态存在{" "}
+										<span className="font-mono">.polynoia/</span>,不会自动提交你的文件。
+									</div>
+								</Field>
+							)}
 						</>
 					)}
 					{!isMemberEdit && (
@@ -261,6 +287,22 @@ export function NewProjectModal({
 				</div>
 
 				<div className="px-6 py-4 border-t border-[var(--color-line)] flex items-center justify-end gap-3">
+					{/* 删除项目 — only in edit-settings mode; the flat sidebar has no
+					    project rows anymore, so this modal is the management surface. */}
+					{isEdit && !isMemberEdit && editing && onDelete && (
+						<button
+							type="button"
+							disabled={submitting}
+							onClick={() => {
+								onClose();
+								void onDelete(editing);
+							}}
+							className="mr-auto inline-flex items-center gap-1.5 text-[12.5px] text-[var(--color-red)] hover:underline transition"
+						>
+							<Trash2 size={12} />
+							删除项目
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={onClose}

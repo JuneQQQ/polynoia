@@ -130,18 +130,34 @@ async def build_shared_memory_layer(
     if is_external_dm:
         return await _build_agent_dm_layer(db, agent_id)
 
-    # Group / project conversation → the conv-scoped shared board (unchanged
-    # scope, now kind-layered).
+    # Group / project conversation → the conv-scoped shared board (kind-layered)
+    # PLUS the agent's OWN memory from other conversations. The latter is the
+    # cross-chat continuity the product promises ("单聊里告诉过你的事,群里也该
+    # 记得"): it is strictly the agent's SELF-authored entries (ADR-019), so no
+    # teammate/project detail leaks — same R1 stance as the external-DM branch.
     rows = await list_conv_memory(db, conv_id, limit=50)
-    if not rows:
+    lines: list[str] = []
+    if rows:
+        lines.append("# 共享记忆(本群已锁定的契约 / 决策 / 产物 — 必须遵守)")
+        lines.extend(_render_layered(rows))
+    own_other: list = []
+    if agent_id:
+        own = await list_agent_memory(db, agent_id, limit=30)
+        own_other = [r for r in own if r.conv_id != conv_id][:15]
+        if own_other:
+            lines.append("## 你自己的工作记忆(来自你的其他会话,用于个人延续性)")
+            lines.extend(_render_entries(own_other, headline_only=True))
+    if not lines:
         return None
-    lines = ["# 共享记忆(本群已锁定的契约 / 决策 / 产物 — 必须遵守)"]
-    lines.extend(_render_layered(rows))
     body = "<shared_memory>\n" + "\n".join(lines) + "\n</shared_memory>"
     return ContextLayer.make(
         kind="shared_memory",
         content=body,
         priority=55,  # above briefs/activity/history, below user_turn (90)
         hard=False,
-        meta={"conv_id": conv_id, "entries": str(len(rows))},
+        meta={
+            "conv_id": conv_id,
+            "entries": str(len(rows)),
+            "own_other": str(len(own_other)),
+        },
     )

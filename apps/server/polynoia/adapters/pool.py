@@ -129,14 +129,14 @@ class AdapterPool:
                 return None
 
             # The conv's DESIGNATED orchestrator is self-enabling: force its
-            # EFFECTIVE tool_role to "orchestrator" (dispatch on, write off)
-            # REGARDLESS of the contact's own tool_role — so ANY contact picked
-            # as a group's orchestrator can actually dispatch, independent of how
-            # it was created. The real gate is tool_role: the MCP server filters
-            # tools by POLYNOIA_AGENT_ROLE, and the claudeCode adapter rebuilds
-            # its auto-approve allowlist from it. `allowed=[]` is a legacy
-            # auto-approve hint only (falsy → adapter ignores it, uses the
-            # role-derived list); kept as-is to not perturb existing behavior. ADR-017.
+            # EFFECTIVE tool_role to "orchestrator" regardless of the contact's
+            # stored persona. Any contact picked as a group coordinator can
+            # discuss/dispatch/present. The real gate is tool_role: the MCP
+            # server filters tools by POLYNOIA_AGENT_ROLE, and the claudeCode
+            # adapter rebuilds its auto-approve allowlist from it. `allowed=[]`
+            # is a legacy auto-approve hint only (falsy → adapter ignores it,
+            # uses the role-derived list); kept as-is to not perturb existing
+            # behavior. ADR-017.
             is_conv_orch = (
                 conv is not None
                 and conv.group
@@ -172,7 +172,8 @@ class AdapterPool:
             # Tools follow structural conversation facts (polynoia/tool_policy.py):
             # the designated orchestrator gets orchestration tools, non-orchestrator
             # group members get builder tools without present, and direct/solo chats
-            # keep the full builder set. Agent.tool_role is just a persona label.
+            # keep the full builder set. Agent.tool_role is persisted only for
+            # compatibility; current runtime uses these structural facts.
             from polynoia.tool_policy import effective_tool_role
 
             effective_role = effective_tool_role(

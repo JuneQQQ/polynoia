@@ -10,6 +10,14 @@ from polynoia.storage.models import AgentRow
 # ── Agent ────────────────────────────────────────────────────────────
 
 
+_VALID_RUNTIME_TOOL_ROLES = {"orchestrator", "group_member", "generalist"}
+
+
+def _normalize_tool_role(raw: str | None) -> str:
+    """Read compatibility for rows created before runtime roles were collapsed."""
+    return raw if raw in _VALID_RUNTIME_TOOL_ROLES else "generalist"
+
+
 def _agent_from_row(r: AgentRow) -> Agent:
     setup = AgentSetup(**r.setup) if r.setup else None
     return Agent(
@@ -28,7 +36,7 @@ def _agent_from_row(r: AgentRow) -> Agent:
         custom=r.custom,
         system_prompt=r.system_prompt,
         tools_whitelist=r.tools_whitelist or [],
-        tool_role=(r.tool_role or "generalist"),  # type: ignore[arg-type]
+        tool_role=_normalize_tool_role(r.tool_role),  # type: ignore[arg-type]
         skills=[AgentSkill(**s) for s in (r.skills or [])],
         setup=setup,
         human=r.human,

@@ -18,6 +18,7 @@ from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import SessionLocal, dispose_engine
 from polynoia.storage.repo import (
+    reap_orphan_burst_tasks,
     reap_orphan_terminal_cards,
     reap_orphan_tool_calls,
     reap_stale_process_runs,
@@ -52,6 +53,10 @@ async def lifespan(_app: FastAPI):
         # already-killed runs); this reconciles the CHAT cards regardless of
         # whether a process_run still exists for them.
         _reaped_term = await reap_orphan_terminal_cards(_s)
+        # Reconcile burst (tasks) cards: a mid-burst restart leaves worker lanes
+        # stranded at state='run' with no live turn/dispatcher to settle them →
+        # a zombie 运行中 BurstCard lane. No other reaper touches the tasks card.
+        _reaped_burst = await reap_orphan_burst_tasks(_s)
         await _s.commit()
     if _reaped:
         logging.getLogger("polynoia.main").info(

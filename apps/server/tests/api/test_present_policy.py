@@ -104,6 +104,37 @@ async def test_direct_agent_present_is_allowed(route_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_present_card_carries_turn_id(route_db, monkeypatch) -> None:
+    """present is a REST callback outside run_adapter_turn — it must stamp the
+    agent's LIVE turn (from RUNTIME.agent_turn) so the files ANCHOR card has a
+    stable turn_id (event-log invariant INV2). Regression for the dropped-turn_id
+    bug on dispatch/discuss/present anchors."""
+    conv_id = new_ulid()
+    agent = "agent-direct"
+    async with db_module.SessionLocal() as db:
+        await storage_repo.create_conversation(
+            db,
+            Conversation(id=conv_id, title="dm", members=["you", agent], direct=True, group=False),
+        )
+        await db.commit()
+
+    # Simulate being mid-turn: run_adapter_turn records conv:agent → turn_id here.
+    monkeypatch.setitem(routes._conv_agent_turn, f"{conv_id}:{agent}", "turn-present-xyz")
+
+    res = await routes.present_file(
+        {"conv_id": conv_id, "agent_id": agent, "ws": "conv:direct", "path": "demo.html"}
+    )
+    assert res["ok"] is True
+
+    async with db_module.SessionLocal() as db:
+        msgs, _ = await storage_repo.list_messages(db, conv_id, limit=20)
+    files = [m for m in msgs if m["payload"].get("kind") == "files"]
+    assert len(files) == 1
+    # turn_id must be persisted (column or payload fallback)
+    assert (files[0].get("turn_id") or files[0]["payload"].get("turn_id")) == "turn-present-xyz"
+
+
+@pytest.mark.asyncio
 async def test_direct_agent_present_can_show_links_without_files(route_db) -> None:
     conv_id = new_ulid()
     agent = "agent-direct"

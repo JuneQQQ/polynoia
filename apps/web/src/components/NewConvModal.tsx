@@ -1,19 +1,23 @@
-/** NewConvModal — 项目内"新建对话"弹窗 (Sidebar workspace mode 用)
+/** NewConvModal — "新建对话"弹窗 (单聊 / 群聊)
  *
  * Tab 切换:
- *   - 单聊:选 1 个 workspace 成员 agent → POST /api/conversations (direct=true)
- *   - 群聊:多选 ≥2 + 自定义标题 → POST /api/conversations (group=true)
+ *   - 单聊:选 1 个 agent → POST /api/conversations (direct=true)
+ *   - 群聊:多选 ≥2 + 自定义标题 + 指定协调器 → POST /api/conversations (group=true)
  *
- * 项目外不能建群聊 — 入口在 Sidebar 顶级"新建" view 只能 1v1。
+ * IA: workspace 是 OPTIONAL 的。
+ *   - workspace 非空 → 项目内新建对话,成员限项目成员,conv 继承 workspace_id;
+ *   - workspace 为 null → 独立对话(纯聊天),成员取全局联系人,workspace_id 留空,
+ *     之后可随时「挂工作区」或「升级为项目」。群聊不再以项目为前置。
  */
-import { ChevronRight, Crown, Hash, MessageCircle, Users, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, Crown, Hash, MessageCircle, Plus, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
 
 type Props = {
-  workspace: Workspace;
+  /** 关联项目;null = 独立对话(无项目,workspace_id 留空)。 */
+  workspace: Workspace | null;
   onClose: () => void;
   /** 调用后切到目标 conv */
   onOpenConv: (id: string, members: string[], title: string) => void;
@@ -21,7 +25,59 @@ type Props = {
 
 export function NewConvModal({ workspace, onClose, onOpenConv }: Props) {
   const agents = useStore((s) => s.agents);
+  const workspaces = useStore((s) => s.workspaces);
   const [tab, setTab] = useState<"dm" | "group">("dm");
+  // Project-less mode: choose the workspace to create the conversation under.
+  // "" = 私有对话 (no workspace) · "<id>" = 接入 an existing one · "__new__" =
+  // create a fresh workspace (optionally bound to a real on-disk path) inline,
+  // then bind to it. Binding is a CREATE-TIME, immutable decision — there is no
+  // post-hoc bind/unbind (that would corrupt the cross-chat context), so "想绑定
+  // 就新建对话".
+  const [boundWsId, setBoundWsId] = useState<string>("");
+  const [newWsName, setNewWsName] = useState("");
+  const [newWsPath, setNewWsPath] = useState("");
+  const resolveWorkspaceId = useCallback(
+    async (memberIds: string[]): Promise<string | null> => {
+      if (workspace) return workspace.id;
+      if (boundWsId !== "__new__") return boundWsId || null;
+      const res = await api.createWorkspace({
+        name: newWsName.trim() || "新工作区",
+        members: memberIds,
+        path: newWsPath.trim() || undefined,
+      });
+      useStore.setState((s) => ({ workspaces: [...s.workspaces, res.workspace] }));
+      // The fresh workspace becomes the SELECTED one — without this, a second
+      // create from the still-open modal would mint ANOTHER workspace.
+      setBoundWsId(res.workspace.id);
+      setNewWsName("");
+      setNewWsPath("");
+      return res.workspace.id;
+    },
+    [workspace, boundWsId, newWsName, newWsPath],
+  );
+  // DM dedup: starting a chat with a contact you ALREADY have a DM with (under
+  // the same workspace binding) reopens it instead of stacking duplicates.
+  // "__new__" deliberately skips dedup — a fresh workspace implies a fresh conv.
+  const findExistingDm = useCallback(
+    async (agentId: string) => {
+      if (boundWsId === "__new__") return null;
+      const target = workspace ? workspace.id : boundWsId || null;
+      try {
+        const list = await api.conversations({ archived: false });
+        return (
+          list.find(
+            (c) =>
+              c.direct &&
+              c.members.includes(agentId) &&
+              (c.workspace_id ?? null) === target,
+          ) ?? null
+        );
+      } catch {
+        return null;
+      }
+    },
+    [workspace, boundWsId],
+  );
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -29,12 +85,12 @@ export function NewConvModal({ workspace, onClose, onOpenConv }: Props) {
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  // workspace.members 即项目内可用的 agent
+  // 候选 agent:项目内取 workspace.members;独立对话取全局联系人。
   const memberAgents = useMemo(
-    () => (workspace.members ?? [])
+    () => (workspace ? (workspace.members ?? []) : agents.map((a) => a.id))
       .map((id) => agents.find((a) => a.id === id))
       .filter((a): a is Agent => !!a && a.id !== "you"),
-    [workspace.members, agents],
+    [workspace, agents],
   );
 
   return (
@@ -50,9 +106,13 @@ export function NewConvModal({ workspace, onClose, onOpenConv }: Props) {
       >
         <header className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-line)]">
           <div>
-            <div className="font-display text-[17px] font-medium text-[var(--color-fg)] tracking-wide">在「{workspace.name}」内新建对话</div>
+            <div className="font-display text-[17px] font-medium text-[var(--color-fg)] tracking-wide">
+              {workspace ? `在「${workspace.name}」内新建对话` : "新建对话"}
+            </div>
             <div className="text-[11px] text-[var(--color-fg-3)] mt-1">
-              成员 {memberAgents.length} 个 · 项目内对话可继承 workspace 的仓库 + 长期上下文
+              {workspace
+                ? `成员 ${memberAgents.length} 个 · 项目内对话可继承 workspace 的仓库 + 长期上下文`
+                : `从 ${memberAgents.length} 位联系人中发起单聊或群聊 · 可选接入一个工作区`}
             </div>
           </div>
           <button
@@ -63,6 +123,57 @@ export function NewConvModal({ workspace, onClose, onOpenConv }: Props) {
             <X size={14} />
           </button>
         </header>
+
+        {/* 淡化项目:默认私有对话;需要共享代码沙箱时,接入现有工作区或在此新建一个
+            (可指向你已有的项目路径)。绑定在创建时定下,之后不可改。 */}
+        {!workspace && (
+          <div className="px-5 py-3 border-b border-[var(--color-line)] space-y-2">
+            <div className="flex items-center gap-3">
+              <label className="text-[11px] text-[var(--color-fg-3)] flex-shrink-0 w-12">
+                工作区
+              </label>
+              <select
+                value={boundWsId}
+                onChange={(e) => setBoundWsId(e.target.value)}
+                className="flex-1 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
+              >
+                <option value="">私有对话 · 不接入</option>
+                {workspaces.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+                <option value="__new__">+ 新建工作区…</option>
+              </select>
+            </div>
+            {boundWsId === "__new__" && (
+              <div className="pl-[3.75rem] space-y-2">
+                <input
+                  type="text"
+                  value={newWsName}
+                  onChange={(e) => setNewWsName(e.target.value)}
+                  placeholder="工作区名"
+                  className="w-full text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+                />
+                <input
+                  type="text"
+                  value={newWsPath}
+                  onChange={(e) => setNewWsPath(e.target.value)}
+                  placeholder="已有项目的绝对路径(可选,留空 = 自动沙箱)"
+                  spellCheck={false}
+                  className="w-full text-[11.5px] font-mono px-2.5 py-1.5 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+                />
+                <div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed flex items-start gap-1">
+                  <Plus size={11} className="mt-0.5 flex-shrink-0 text-[var(--color-accent)]" />
+                  <span>
+                    填路径 = Agent 直接在你已有的项目里工作(已是 git
+                    仓库则沿用当前分支)。
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* tabs */}
         <div className="flex border-b border-[var(--color-line)]">
@@ -82,9 +193,9 @@ export function NewConvModal({ workspace, onClose, onOpenConv }: Props) {
 
         <div className="flex-1 overflow-y-auto">
           {tab === "dm" ? (
-            <DMTab agents={memberAgents} workspace={workspace} onOpenConv={onOpenConv} onClose={onClose} />
+            <DMTab agents={memberAgents} resolveWorkspaceId={resolveWorkspaceId} findExistingDm={findExistingDm} onOpenConv={onOpenConv} onClose={onClose} />
           ) : (
-            <GroupTab agents={memberAgents} workspace={workspace} onOpenConv={onOpenConv} onClose={onClose} />
+            <GroupTab agents={memberAgents} resolveWorkspaceId={resolveWorkspaceId} onOpenConv={onOpenConv} onClose={onClose} />
           )}
         </div>
       </div>
@@ -121,12 +232,18 @@ function TabBtn({
 
 function DMTab({
   agents,
-  workspace,
+  resolveWorkspaceId,
+  findExistingDm,
   onOpenConv,
   onClose,
 }: {
   agents: Agent[];
-  workspace: Workspace;
+  /** Resolve the workspace_id to bind at creation (private/existing/new). */
+  resolveWorkspaceId: (memberIds: string[]) => Promise<string | null>;
+  /** An existing DM with this agent under the chosen binding, or null. */
+  findExistingDm: (
+    agentId: string,
+  ) => Promise<import("../lib/api").ConversationSummary | null>;
   onOpenConv: Props["onOpenConv"];
   onClose: () => void;
 }) {
@@ -146,9 +263,17 @@ function DMTab({
     setBusy(true);
     setErr(null);
     try {
+      // Reopen an existing DM with this contact (same binding) instead of
+      // stacking a duplicate conversation.
+      const existing = await findExistingDm(a.id);
+      if (existing) {
+        onClose();
+        onOpenConv(existing.id, existing.members, existing.title);
+        return;
+      }
       const conv = await api.createConversation({
-        workspace_id: workspace.id,
-        title: `${workspace.name} · @${a.id}`,
+        workspace_id: await resolveWorkspaceId([a.id]),
+        title: a.name,
         members: ["you", a.id],
         direct: true,
         group: false,
@@ -222,12 +347,13 @@ function DMTab({
 
 function GroupTab({
   agents,
-  workspace,
+  resolveWorkspaceId,
   onOpenConv,
   onClose,
 }: {
   agents: Agent[];
-  workspace: Workspace;
+  /** Resolve the workspace_id to bind at creation (private/existing/new). */
+  resolveWorkspaceId: (memberIds: string[]) => Promise<string | null>;
   onOpenConv: Props["onOpenConv"];
   onClose: () => void;
 }) {
@@ -280,7 +406,7 @@ function GroupTab({
         if (r) memberRoles[id] = r;
       }
       const conv = await api.createConversation({
-        workspace_id: workspace.id,
+        workspace_id: await resolveWorkspaceId(Array.from(selected)),
         title: title.trim(),
         members: ["you", ...Array.from(selected)],
         direct: false,

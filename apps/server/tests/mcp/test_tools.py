@@ -200,48 +200,30 @@ def test_present_tool_description_teaches_link_handoff():
     assert "http://127.0.0.1:7788/" in desc
     assert "http://127.0.0.1:8000/docs" in desc
     assert "http://127.0.0.1:8770/index.html" in desc
-    assert "/api/deploy/static/<token>/index.html" in desc
+    assert "expose" not in TOOL_REGISTRY
+    assert "expose" not in desc
 
 
 # ── Role-gated tool exposure (ADR-013 + location gate) ───────────
 
 
-def test_advisory_role_is_read_only():
-    """The `advisory` role (homepage-DM consult mode) exposes NO mutating
-    tool — no write/edit/apply_patch/revert and no bash."""
+def test_unknown_role_is_a_configuration_error():
+    """A typo'd / unknown tool_role must fail fast, not silently downgrade."""
     from polynoia.mcp.tools import tools_for_role
 
-    names = set(tools_for_role("advisory").keys())
-    # has read + chat-class
-    assert {"read", "grep", "glob", "remember", "recall", "ask_user", "report"} <= names
-    # but nothing that can change the sandbox or run a shell
-    assert names.isdisjoint({"write", "edit", "apply_patch", "revert", "bash", "dispatch"})
+    with pytest.raises(ValueError, match="unknown tool_role"):
+        tools_for_role("totally-bogus-role")
 
 
-def test_unknown_role_fails_closed_to_advisory():
-    """A typo'd / unknown tool_role must fail CLOSED to read-only, never open.
-
-    Regression guard: the fallback used to be `orchestrator`, which carries
-    edit/write/apply_patch — so an unknown role silently gained write."""
+def test_runtime_roles_are_the_only_tool_roles():
+    """Tool roles are structural runtime roles, not persona labels."""
     from polynoia.mcp.tools import tools_for_role
 
-    names = set(tools_for_role("totally-bogus-role").keys())
-    assert names.isdisjoint({"write", "edit", "apply_patch", "revert", "bash"})
-    # matches the advisory floor exactly
-    assert names == set(tools_for_role("advisory").keys())
-
-
-def test_designer_role_can_write_and_edit():
-    """Sanity: a real persona role (designer) carries the file-mutation tools —
-    both `write` (full create/overwrite) and `edit` (targeted old→new splice, the
-    large-file path). apply_patch/revert are still NOT exposed; the location gate
-    removes even these in a homepage DM."""
-    from polynoia.mcp.tools import tools_for_role
-
-    names = set(tools_for_role("designer").keys())
-    assert "write" in names
-    assert "edit" in names
-    assert not ({"apply_patch", "revert"} & names)
+    for role in ("orchestrator", "group_member", "generalist"):
+        assert tools_for_role(role), role
+    for old_role in ("coder", "designer", "writer", "critic", "advisory"):
+        with pytest.raises(ValueError, match="unknown tool_role"):
+            tools_for_role(old_role)
 
 
 def test_direct_builder_can_present_but_group_member_cannot():

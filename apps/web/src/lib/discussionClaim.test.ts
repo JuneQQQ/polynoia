@@ -51,7 +51,9 @@ describe("computeDiscussions", () => {
 		);
 		const info = result.discussionByAnchorId.get("d1");
 
-		expect(info?.messageIds).toEqual(["a1", "b1"]);
+		// The conclusion (b1) is claimed + surfaced via conclusionMsgId, but NOT
+		// duplicated into the transcript messageIds (it renders in the 结论 box only).
+		expect(info?.messageIds).toEqual(["a1"]);
 		expect(info?.conclusionMsgId).toBe("b1");
 		expect(result.claimedSet.has("a1")).toBe(true);
 		expect(result.claimedSet.has("b1")).toBe(true);

@@ -38,7 +38,19 @@ def _workspace_root(ws_id: str) -> Path:
     Raises 404 if not bootstrapped (no .git yet).
     """
     if ws_id.startswith("conv:"):
-        root = (settings.sandbox_root / ws_id[len("conv:") :]).resolve()
+        sandbox_root = settings.sandbox_root.resolve()
+        try:
+            root = (sandbox_root / ws_id[len("conv:") :]).resolve()
+        except ValueError:  # embedded NUL byte etc. in the id
+            raise HTTPException(400, "invalid workspace id") from None
+        # CONFINE to the sandbox root: a conv id like `../../../../outside` must NOT
+        # escape into an arbitrary host directory — otherwise any host dir with a
+        # `.git` becomes a browsable/writable workspace via the file endpoints
+        # (sandbox escape → arbitrary host repo R/W). Mirror _resolve_safe_path.
+        try:
+            root.relative_to(sandbox_root)
+        except ValueError:
+            raise HTTPException(400, "workspace id escapes sandbox root") from None
     else:
         root = workspace_root_for(ws_id).resolve()
     if not (root / ".git").exists():
@@ -59,7 +71,10 @@ def _resolve_safe_path(workspace_root: Path, rel_path: str) -> Path:
         return workspace_root
     if Path(rel_path).is_absolute():
         raise HTTPException(400, "absolute path not allowed")
-    target = (workspace_root / rel_path).resolve()
+    try:
+        target = (workspace_root / rel_path).resolve()
+    except ValueError:  # embedded NUL byte etc. → reject as bad input, not a 500
+        raise HTTPException(400, "invalid path") from None
     try:
         target.relative_to(workspace_root)
     except ValueError:

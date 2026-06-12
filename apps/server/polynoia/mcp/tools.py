@@ -1496,10 +1496,15 @@ class _RememberTool(_ToolBase):
         if not content:
             return {"kind": "error", "error": "content must be a non-empty string"}
         kind = (args.get("kind") or "decision").strip()
-        ctx.append_audit("memory.remember", {"author": ctx.agent_id, "kind": kind})
+        # Attribute to the WORKER ULID (turn_agent_id), not the static adapter id
+        # ("claudeCode") — agent-level recall (ADR-019 list_agent_memory) filters
+        # by the contact's real id, so rows authored as the adapter id were
+        # invisible to every cross-conversation memory read.
+        author = ctx.turn_agent_id or ctx.agent_id
+        ctx.append_audit("memory.remember", {"author": author, "kind": kind})
         return await _callback_server(
             f"/api/conversations/{ctx.conv_id}/memory",
-            json={"kind": kind, "content": content, "author_agent_id": ctx.agent_id},
+            json={"kind": kind, "content": content, "author_agent_id": author},
             label="remember",
         )
 
@@ -1734,66 +1739,6 @@ class _RequestProjectAccessTool(_ToolBase):
             return {"kind": "error", "error": f"transport failure: {e}"}
 
 
-class _ExposeTool(_ToolBase):
-    name = "expose"
-    description = (
-        "Deploy the conv's sandbox via one of four backends and return a URL/"
-        "download — does NOT emit any chat card by itself. Pair with `present` "
-        "(pass the returned URL/download as a `links` entry) when you want the "
-        "user to see + click the result.\n\n"
-        "Targets:\n"
-        "  · preview   — spin up an ephemeral HTTP server on a random port, "
-        "auto-shuts down after 30 min. Best for instant 'open the HTML' previews "
-        "of static sandboxes.\n"
-        "  · static    — copy the sandbox into a persistent mount served at "
-        "/api/deploy/static/<token>/. Survives server restart. Good for "
-        "longer-lived static demos.\n"
-        "  · container — docker build the sandbox (Dockerfile or auto-generated "
-        "nginx:alpine) + docker run on a random host port. Use ONLY for projects "
-        "that genuinely need a server (framework apps, backends) — overkill for "
-        "pure HTML. Requires a working docker daemon.\n"
-        "  · source    — zip the sandbox and return a one-shot download URL.\n\n"
-        "Returns ``{ok, token, target, url?|download_url?, download_name?, "
-        "download_bytes?, log?}`` on success, ``{ok:false, error, log?}`` on "
-        "failure. The user can manage running services from the Services tab.\n\n"
-        "When the user asked 'how to deploy' but didn't say which target, prefer "
-        "`ask_user` first to let them pick — don't guess."
-    )
-    input_schema: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {
-            "target": {
-                "type": "string",
-                "enum": ["preview", "static", "container", "source"],
-                "description": "Which backend to deploy via (see the tool description).",
-            },
-        },
-        "required": ["target"],
-    }
-
-    async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        target = str(args.get("target") or "").strip().lower()
-        if target not in ("preview", "static", "container", "source"):
-            return {"kind": "error", "error": f"target must be one of preview/static/container/source, got {target!r}"}
-        base = os.environ.get("POLYNOIA_API_BASE")
-        if not base:
-            return {"kind": "error", "error": "expose needs POLYNOIA_API_BASE (no server context)"}
-        try:
-            async with httpx.AsyncClient(
-                base_url=base, timeout=240.0, trust_env=False,
-            ) as client:
-                r = await client.post(
-                    f"/api/conversations/{ctx.conv_id}/expose",
-                    json={"target": target},
-                )
-                r.raise_for_status()
-                data = r.json()
-        except (httpx.RequestError, httpx.HTTPError) as e:
-            return {"kind": "error", "error": f"transport failure: {e}"}
-        ctx.append_audit("agent.expose", {"target": target, "token": data.get("token"), "ok": data.get("ok")})
-        return data
-
-
 class _PresentTool(_ToolBase):
     name = "present"
     description = (
@@ -1804,7 +1749,6 @@ class _PresentTool(_ToolBase):
         "  · a runnable/standalone HTML page (a demo, a report, a slide deck)\n"
         "  · documents — Markdown / PPTX / DOCX / XLSX / PDF / CSV\n"
         "  · images / diagrams / generated data files\n"
-        "  · a deployed/exposed URL (preview server, container, static site)\n"
         "  · a local dev URL for a running app/API that the user can click "
         "(React/Vite, Vue, FastAPI docs, etc.)\n"
         "  · a download URL (a built zip the user can fetch)\n"
@@ -1812,8 +1756,8 @@ class _PresentTool(_ToolBase):
         "that locally, and the per-file diff cards already show every code change. "
         "For a code deliverable, present AT MOST the README + the single runnable "
         "entry (e.g. a built index.html) — or for a framework project that can't "
-        "be opened by clicking the HTML, run a deploy via `expose` and present "
-        "its URL as a link instead. Listing 20 .ts/.py source files is noise.\n\n"
+        "be opened by clicking the HTML, start the dev server and present its "
+        "local URL as a link instead. Listing 20 .ts/.py source files is noise.\n\n"
         "Pass `paths` (a list) to bundle the SELECTED deliverables into one panel "
         "and/or `links` for external URLs; `path` is accepted for one file. "
         "`message` is the one-line hand-off note. Paths are relative to your "
@@ -1821,8 +1765,8 @@ class _PresentTool(_ToolBase):
         "(not per file). Prefer it over pasting file contents into your reply.\n\n"
         "URL hand-off rule: if a preview/deploy/start command prints a URL such as "
         "`http://127.0.0.1:7788/`, `http://127.0.0.1:8000/docs`, "
-        "`http://127.0.0.1:8770/index.html`, or `expose` returns a `url` / "
-        "`download_url`, do NOT merely paste that URL in normal text. Call "
+        "`http://127.0.0.1:8770/index.html`, do NOT merely paste that URL in "
+        "normal text. Call "
         "`present(links=[{url,label,kind}], message=...)` so the chat shows a "
         "clickable deliverable panel.\n\n"
         "Few-shot examples:\n"
@@ -1835,10 +1779,6 @@ class _PresentTool(_ToolBase):
         "`present(links=[{\"url\":\"http://127.0.0.1:7788/\","
         "\"label\":\"打开前端\",\"kind\":\"web\"},{\"url\":\"http://127.0.0.1:8000/docs\","
         "\"label\":\"查看 API\",\"kind\":\"api\"}], message=\"前后端已启动\")`.\n"
-        "  · Exposed static site: after `expose(target=\"static\")` returns "
-        "`/api/deploy/static/<token>/index.html`, call `present(links=[{\"url\":"
-        "\"/api/deploy/static/<token>/index.html\",\"label\":\"打开部署预览\","
-        "\"kind\":\"web\"}], message=\"部署预览已生成\")`.\n\n"
         "This tool is for solo/direct agents and group orchestrators. Regular "
         "group members do not receive it; they should `report` produced files so "
         "the coordinator can validate the main result and present once."
@@ -2118,28 +2058,20 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
         _DispatchTool, _DiscussTool, _ContinueDiscussionTool,
         _RememberTool, _RecallTool, _ReportTool,
         _AskUserTool, _RequestProjectAccessTool, _PresentTool,
-        _ResolveConflictTool, _ExposeTool,
+        _ResolveConflictTool,
     ]
 }
 
 
-# Role → tool-name subset. Drives which polynoia MCP tools the running
-# agent is allowed to list/call. Filter applied in `mcp/server.py` based
-# on POLYNOIA_AGENT_ROLE env (set by the spawning adapter from Agent.tool_role).
+# Role → tool-name subset. Drives which polynoia MCP tools the running agent can
+# list/call. Runtime roles are structural, not persona labels:
+#   · orchestrator — designated group coordinator
+#   · group_member — non-coordinator member inside a group
+#   · generalist   — direct / solo agent
 #
-# DESIGN: a role's tools are NOT hand-listed — they're COMPOSED from a handful
-# of capability AXES below, and role names map onto a few FUNCTIONAL TIERS. This
-# is deliberate: the persona difference (coder vs designer vs writer vs
-# generalist) lives in the SYSTEM PROMPT — what the agent is good at — NOT in the
-# toolset. Builders share one broad toolset; the only tool axes that actually
-# matter are:
-#   · can-mutate    → `write` (the SOLE file-mutation tool; absent = read-only)
-#   · can-shell     → `bash`
-#   · orchestrator? → dispatch/discuss/present  (delegate + present; NO report)
-#   · worker?       → report + request_project_access  (verdict; NO orchestrate)
-#   · group worker? → worker tools, but NO present; the coordinator presents
-# So coder == generalist and designer == writer by construction (same tier) —
-# they differ only by what their system prompt says, not what they can touch.
+# Persona differences (writer/designer/backend/etc.) live in system prompts,
+# capabilities, and project responsibilities. They do NOT create separate tool
+# roles; otherwise the UI implies a false permission model.
 #
 # ── Capability axes (atomic tool groups) ────────────────────────
 _RETRIEVE = {"read", "grep", "glob"}              # look at the sandbox — everyone
@@ -2158,10 +2090,6 @@ _ORCHESTRATE = {"dispatch", "discuss", "continue_discussion"}
 # (judge-and-party) — their conflict goes to the orchestrator. So _RESOLVE lives on
 # the orchestrator + solo builder tiers, and is subtracted from group_member.
 _RESOLVE = {"resolve_conflict"}
-# Deploy/publish — orchestrator AND builders may need to expose a preview URL,
-# container or source zip while wrapping up. Pairs with `present` (the agent
-# surfaces the returned URL via a `links` entry on the deliverable panel).
-_EXPOSE   = {"expose"}
 # `present` (surface deliverables as a card) is available to direct/solo builders
 # and orchestrators. Group members do not get it: they report files and the
 # coordinator validates + presents the canonical main result.
@@ -2173,33 +2101,18 @@ _DELIVER = {"present"}
 # the single audited write path, and delegation is dispatch/discuss not a blocking call.
 
 # ── Functional tiers (role names map onto these) ────────────────
-_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _RESOLVE | _EXPOSE
+_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _RESOLVE
 # Solo/DM builders DO resolve their own conflicts (no orchestrator exists, manual
 # user side-picking is retired). Group WORKERS do NOT (judge-and-party) — their
 # conflict escalates to the orchestrator; _RESOLVE is subtracted from group_member.
-_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE | _EXPOSE
+_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE
 _TIER_ORCHESTRATOR = _TIER_ORCHESTRATOR | _DELIVER
 _TIER_BUILDER      = _TIER_BUILDER | _DELIVER
 _TIER_GROUP_MEMBER = _TIER_BUILDER - _DELIVER - _RESOLVE
-_TIER_BUILDER_NOSHELL = _TIER_BUILDER - _SHELL     # designer/writer: forced explicit `write`, no shell
-_TIER_CONSULT      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _WORKER   # read-only DM consult (no mutate/shell)
-_TIER_AUDITOR      = _RETRIEVE | _RECALL | {"report"}  # read-only burst critic — verdict only, no memory-write
-
 ROLE_TOOLS: dict[str, set[str]] = {
     "orchestrator": _TIER_ORCHESTRATOR,
-    "coder":        _TIER_BUILDER,
-    "generalist":   _TIER_BUILDER,          # == coder (default for back-compat)
+    "generalist":   _TIER_BUILDER,
     "group_member": _TIER_GROUP_MEMBER,     # runtime-only: group workers report, coordinator presents
-    "designer":     _TIER_BUILDER_NOSHELL,
-    "writer":       _TIER_BUILDER_NOSHELL,  # == designer (docs vs HTML/CSS — prompt-only diff)
-    "critic":       _TIER_AUDITOR,
-    # advisory: a read-only floor (the unknown-role fail-closed fallback below,
-    # and an opt-in project restriction). NOTE: there is no longer an automatic
-    # "non-project DM → advisory" downgrade — tool governance lives in the
-    # project now (polynoia/tool_policy.py): outside a project every agent gets
-    # the full builder set; inside, the default is full builder and a project
-    # opts in to restrict. ROLE_TOOLS just maps a role name → its tool tier.
-    "advisory":     _TIER_CONSULT,
 }
 
 
@@ -2209,24 +2122,21 @@ def tools_for_role(
     """Return the filtered TOOL_REGISTRY subset visible to ``role``.
 
     Empty role → generalist (back-compat for agents created before the role
-    field existed). UNKNOWN role → fail-closed to the **most restrictive**
-    set (``advisory``: read-only, no write/bash). A typo in tool_role must
-    never silently upgrade an agent to write capability — note the previous
-    fallback was ``orchestrator``, which DOES carry edit/write, so a typo'd
-    role used to fail OPEN. ``advisory`` is the true read-only floor.
+    field existed). UNKNOWN role → hard error. A typo in tool_role must be
+    visible immediately; silently downgrading to a read-only role hides a broken
+    configuration and makes agent failures hard to diagnose.
 
-    ``allow`` is the contact's per-tool override (Agent.tools_whitelist, surfaced
-    as the 「高级」 tool checkboxes). When non-empty it can only NARROW the role's
-    set (``role ∩ allow``) — it never grants a tool the role doesn't have, so a
-    designer can't be checkbox-upgraded to bash. Empty/None → role set as-is.
+    ``allow`` is a legacy narrowing hook. When non-empty it can only NARROW the
+    role's set (``role ∩ allow``); it never grants a tool the role doesn't have.
     """
     if not role:
         allowed = ROLE_TOOLS["generalist"]
     elif role in ROLE_TOOLS:
         allowed = ROLE_TOOLS[role]
     else:
-        log.warning("unknown tool_role %r → falling back to advisory (read-only)", role)
-        allowed = ROLE_TOOLS["advisory"]
+        raise ValueError(
+            f"unknown tool_role {role!r}; expected one of {sorted(ROLE_TOOLS)}"
+        )
     if allow:
         allowed = allowed & allow  # narrow only — never upgrade
     return {name: impl for name, impl in TOOL_REGISTRY.items() if name in allowed}

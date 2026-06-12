@@ -61,6 +61,7 @@ import {
 } from "../../lib/runtime-config";
 import type { Agent, Workspace } from "../../lib/types";
 import { phaseLabel, useStore } from "../../store";
+import { ConvActionsMenu } from "../ConvActionsMenu";
 import { NewContactModal } from "../NewContactModal";
 
 /* ── 设计稿调色板 ── */
@@ -894,10 +895,15 @@ function ChatListScreen({ onSelectConv }: Props) {
 				? 1
 				: 0;
 		// base 已按最近排序(useEffect 里 last_message_at DESC)。
+		// 置顶永远排最前(与桌面端一致);「名称」模式除外 — 用户显式要 A→Z。
+		const pinRank = (c: ConversationSummary) => (c.pinned ? 1 : 0);
 		// 未读优先:未读数降序;同未读数则保持「最近」次序(V8 sort 稳定)。
 		if (sort === "unread") {
 			return [...base].sort(
-				(a, b) => runningRank(b) - runningRank(a) || b.unread - a.unread,
+				(a, b) =>
+					pinRank(b) - pinRank(a) ||
+					runningRank(b) - runningRank(a) ||
+					b.unread - a.unread,
 			);
 		}
 		// 名称:按会话标题拼音 A→Z(localeCompare "zh" 处理中文拼音排序)。
@@ -906,7 +912,9 @@ function ChatListScreen({ onSelectConv }: Props) {
 				titleFor(a).localeCompare(titleFor(b), "zh"),
 			);
 		}
-		return [...base].sort((a, b) => runningRank(b) - runningRank(a));
+		return [...base].sort(
+			(a, b) => pinRank(b) - pinRank(a) || runningRank(b) - runningRank(a),
+		);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [convs, q, agents, sort]);
 
@@ -930,6 +938,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 						: undefined;
 					return (
 						<div key={c.id}>
+							<div className="group" style={{ display: "flex", alignItems: "center" }}>
 							<button
 								type="button"
 								onClick={() => {
@@ -946,7 +955,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 									}
 									onSelectConv(c.id, c.members, titleFor(c));
 								}}
-								style={rowBtn}
+								style={{ ...rowBtn, paddingRight: 4 }}
 							>
 								<div style={{ position: "relative", flexShrink: 0 }}>
 									<Avatar
@@ -961,6 +970,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 									>
 										<span style={nameStyle(pal)}>{titleFor(c)}</span>
 										{c.group && <EngineChip pal={pal} text="群" />}
+										{c.pinned && <EngineChip pal={pal} text="顶" />}
 										<span
 											style={{
 												marginLeft: "auto",
@@ -1000,6 +1010,12 @@ function ChatListScreen({ onSelectConv }: Props) {
 									</div>
 								</div>
 							</button>
+							{/* ⋮ 会话操作 — same menu as desktop (置顶/重命名/归档/删除);
+							    always visible on touch via its hover:none media rule. */}
+							<div style={{ flexShrink: 0, paddingRight: 10 }}>
+								<ConvActionsMenu conv={c} onChanged={() => void load()} />
+							</div>
+							</div>
 							{i < shown.length - 1 && <Divider pal={pal} indent={83} />}
 						</div>
 					);

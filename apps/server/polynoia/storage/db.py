@@ -5,6 +5,7 @@ SQLite by default (``sqlite+aiosqlite:///./polynoia.db``). Configurable via
 """
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 from sqlalchemy import event
@@ -23,6 +24,14 @@ class Base(DeclarativeBase):
     """Declarative base for all Polynoia ORM tables."""
 
 
+def _json_ser(obj: object) -> str:
+    """Serialize JSON columns WITHOUT ascii-escaping, so CJK is stored as raw
+    UTF-8 (not ``\\uXXXX``). Otherwise a Chinese message body becomes escaped TEXT
+    and the ``lower(cast(payload AS String)) LIKE %query%`` body-search (⌘K) can
+    never match a raw Chinese query — CJK being the product's primary language."""
+    return json.dumps(obj, ensure_ascii=False)
+
+
 def _make_engine() -> AsyncEngine:
     url = settings.db_url
     # SQLite needs StaticPool semantics for in-memory, but file-based works
@@ -34,6 +43,7 @@ def _make_engine() -> AsyncEngine:
             echo=False,
             future=True,
             connect_args={"check_same_thread": False},
+            json_serializer=_json_ser,
         )
 
         # Per-connection PRAGMAs. Default journal_mode=DELETE makes writes block
@@ -59,7 +69,9 @@ def _make_engine() -> AsyncEngine:
             cur.close()
 
         return eng
-    return create_async_engine(url, echo=False, future=True, pool_pre_ping=True)
+    return create_async_engine(
+        url, echo=False, future=True, pool_pre_ping=True, json_serializer=_json_ser
+    )
 
 
 engine: AsyncEngine = _make_engine()

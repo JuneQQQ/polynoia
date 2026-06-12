@@ -234,10 +234,8 @@ class Adapter(Protocol):
               uses ``Sandbox.create_workspace_sandbox`` — a per-(agent, conv)
               worktree inside a shared workspace-level git. Used for group
               convs in a workspace.
-            - Else if ``read_only_workspace_id`` is given (a project-external
-              DM), the adapter opens that workspace READ-ONLY via
-              ``Sandbox.open_workspace_if_exists`` so read/grep/glob can inspect
-              the project (writes are blocked by the advisory role).
+            - Else if ``read_only_workspace_id`` is given, the adapter opens
+              that workspace read-only via ``Sandbox.open_workspace_if_exists``.
             - Otherwise the adapter uses legacy per-conv ``Sandbox.create`` —
               isolated git per conv. Used for DMs / convs without workspace.
 

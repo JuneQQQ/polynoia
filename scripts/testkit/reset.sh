@@ -354,14 +354,14 @@ TEAM = [
         "name": "文澜",
         "model": SONNET,
         "tagline": "文档/报告/纪要",
-        "tool_role": "writer",
+        "tool_role": "generalist",
     },
     {
         "adapter_id": "codex",
         "name": "制图",
         "model": CODEX_MODEL,
         "tagline": "网页/视觉/交互",
-        "tool_role": "designer",
+        "tool_role": "generalist",
     },
     {
         "adapter_id": "opencoder",

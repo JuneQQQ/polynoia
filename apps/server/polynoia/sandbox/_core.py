@@ -586,6 +586,29 @@ class Sandbox:
                 "undo_sha": undo_sha,
             }
 
+    async def discard_working_changes(self) -> dict:
+        """「丢弃工作区改动」: drop UNCOMMITTED changes at the workspace ROOT only.
+
+        tracked modifications → ``git checkout -- .``; untracked files →
+        ``git clean -fd`` (no ``-x``: ignored paths — .polynoia/, node_modules,
+        .venv — are untouched). Agent worktrees are NOT touched. Runs under the
+        workspace merge lock and refuses mid-merge (per the CHARTER invariant,
+        check MERGE_HEAD first rather than blindly aborting someone's merge).
+        """
+        if self.workspace_root is None or self.workspace_id is None:
+            return {"ok": False, "error": "not a workspace"}
+        async with workspace_merge_lock(self.workspace_id):
+            rc_m, _o, _e = await self._workspace_run(
+                ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
+            )
+            if rc_m == 0:
+                return {"ok": False, "error": "merge in progress"}
+            rc1, _o1, err1 = await self._workspace_run(["git", "checkout", "--", "."])
+            rc2, _o2, err2 = await self._workspace_run(["git", "clean", "-fd"])
+            if rc1 != 0 or rc2 != 0:
+                return {"ok": False, "error": (err1 or err2 or "discard failed").strip()}
+            return {"ok": True}
+
     @classmethod
     def open_workspace_if_exists(cls, workspace_id: str) -> "Sandbox | None":
         """Read-only handle to a workspace's shared git (no worktree creation).

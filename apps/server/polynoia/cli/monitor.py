@@ -25,7 +25,6 @@ from polynoia.settings import settings
 AGENT_COLORS = {
     "orchestrator": "\033[1;95m",
     "claudeCode":   "\033[1;36m",
-    "designer":     "\033[1;34m",
     "opencoder":    "\033[1;33m",
     "codex":        "\033[1;32m",
 }

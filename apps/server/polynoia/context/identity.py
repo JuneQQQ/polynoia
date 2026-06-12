@@ -26,13 +26,9 @@ _PLATFORM_BLOCK = (
 # model can SEE exactly what it has. So this is a behavioral capability/constraint
 # line, not an inventory.
 _ROLE_TOOLS_DESC: dict[str, str] = {
-    "orchestrator": "你是**协调者**:拆解 / 派活 / 验收 / 集成,自己不写实现代码。",
-    "coder": "你能读写文件、改代码、跑命令与测试。",
-    "designer": "你能读写文件,但**不能跑命令**(无终端)。",
-    "writer": "你能读写文件,但**不能跑命令**。",
+    "orchestrator": "你是**协调者**:拆解 / 派活 / 验收 / 集成;必要时可以做少量骨架、联调和收尾修改。",
     "generalist": "你能读写文件、改代码、跑命令。",
     "group_member": "你是**群聊成员**:能读写文件、改代码、跑命令;完成后用 `report` 交付,不要自己 `present`。",
-    "advisory": "当前为**只读咨询**:能看不能改、不跑命令、不落盘。",
 }
 
 _TOOL_CALL_FORMAT_RULE = """## 工具调用格式(平台强制)
@@ -64,7 +60,6 @@ _DELIVERABLE_PRESENT_RULE = """## 交付物展示规则(平台强制)
 - 本地预览服务、容器、静态部署、下载包返回的 URL 必须放进 `links`;正文可以简述,但不能替代 `present`。
 - 如果你启动了前后端/单页应用/API 文档等本地服务,也必须把可打开 URL 放进 `present(links=[...])`;
   例如 Vite `http://127.0.0.1:7788/`、FastAPI docs `http://127.0.0.1:8000/docs`。
-- `expose` 只返回 URL,不会自己发聊天卡片;拿到 URL 后紧跟 `present(links=[...])`。
 - 如果你没有 `present`(群聊普通成员通常没有):用 `report` 明确列出产物文件 / URL,由协调者验收并 `present`。
 
 Few-shot:

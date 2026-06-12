@@ -8,10 +8,12 @@
  *   5. Recent activity in this conv — last 5 sender_id matches
  *   6. Action bar: 编辑群内职责 / 移除群聊
  */
-import { ChevronDown, ChevronRight, MessageCircle, Settings, User, UserMinus } from "lucide-react";
+import { ChevronDown, ChevronRight, MessageCircle, Pencil, Settings, Trash2, User, UserMinus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, type ConversationSummary } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
+import { ConfirmDialog } from "../ConfirmDialog";
 
 export function AgentDetailView({ agentId }: { agentId: string }) {
   const agent = useStore((s) => s.agents.find((a) => a.id === agentId));
@@ -46,9 +48,39 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
     };
   }, [activeConvId, refreshConvSummary]);
 
+  const lang = useStore((s) => s.lang);
   const [showFullPersona, setShowFullPersona] = useState(false);
   const [memberBusy, setMemberBusy] = useState(false);
   const [memberErr, setMemberErr] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // 联系人编辑/删除 — the contacts section left the sidebar in the flat IA, so
+  // this drawer is now the management surface for a contact.
+  const editContact = () => {
+    window.dispatchEvent(
+      new CustomEvent("polynoia:edit-contact", { detail: { agentId } }),
+    );
+    closeDrawer();
+  };
+  const deleteContactNow = async () => {
+    setConfirmingDelete(false);
+    setMemberBusy(true);
+    setMemberErr(null);
+    try {
+      const r = await api.deleteContact(agentId);
+      if (r && (r as { ok?: boolean }).ok === false) {
+        setMemberErr((r as { error?: string }).error || "删除失败");
+        return;
+      }
+      const list = await api.agents();
+      useStore.setState({ agents: list });
+      closeDrawer();
+    } catch (e) {
+      setMemberErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMemberBusy(false);
+    }
+  };
 
   if (!agent) {
     return (
@@ -211,7 +243,11 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
         )}
       </div>
 
-      {/* 6. Action bar */}
+      {/* 6. All conversations with this agent — DM + group, across projects. The
+          unified "与 ta 的所有对话" view: one contact can live in many threads. */}
+      {!isYou && !isSystem && <AgentConversationsSection agentId={agent.id} />}
+
+      {/* 7. Action bar */}
       {!isYou && !isSystem && (
         <div className="px-6 py-4 flex flex-col gap-2">
           {memberErr && (
@@ -246,13 +282,137 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
               {memberBusy ? "移除中..." : "移除群聊"}
             </button>
           )}
+          {/* Contact management — only user-created contacts are editable. */}
+          {agent.custom && (
+            <>
+              <button
+                type="button"
+                onClick={editContact}
+                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] transition font-medium"
+              >
+                <Pencil size={12} />
+                {t("editContact", lang)}
+              </button>
+              <button
+                type="button"
+                disabled={memberBusy}
+                onClick={() => setConfirmingDelete(true)}
+                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-red)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition font-medium"
+              >
+                <Trash2 size={12} />
+                {t("deleteContactAction", lang)}
+              </button>
+            </>
+          )}
         </div>
+      )}
+      {confirmingDelete && (
+        <ConfirmDialog
+          title={t("deleteContactAction", lang) + "?"}
+          body={t("confirmDeleteContactBody", lang).replace("{name}", agent.name)}
+          confirmLabel={t("delete", lang)}
+          cancelLabel={t("cancel", lang)}
+          danger
+          onConfirm={deleteContactNow}
+          onCancel={() => setConfirmingDelete(false)}
+        />
       )}
     </div>
   );
 }
 
 // ── Sub-components ──
+
+function AgentConversationsSection({ agentId }: { agentId: string }) {
+  const activeConvId = useStore((s) => s.activeConvId);
+  const closeDrawer = useStore((s) => s.closeRightDrawer);
+  const [convs, setConvs] = useState<ConversationSummary[] | null>(null);
+
+  const refresh = useCallback(() => {
+    let alive = true;
+    api
+      .agentConversations(agentId)
+      .then((list) => alive && setConvs(list))
+      .catch(() => alive && setConvs([]));
+    return () => {
+      alive = false;
+    };
+  }, [agentId]);
+  useEffect(() => refresh(), [refresh]);
+  useEffect(() => {
+    const on = () => refresh();
+    window.addEventListener("polynoia:conv-updated", on);
+    window.addEventListener("polynoia:conv-members-changed", on);
+    window.addEventListener("polynoia:resync-lists", on);
+    return () => {
+      window.removeEventListener("polynoia:conv-updated", on);
+      window.removeEventListener("polynoia:conv-members-changed", on);
+      window.removeEventListener("polynoia:resync-lists", on);
+    };
+  }, [refresh]);
+
+  // Open from the drawer: there is no onSelectConv prop this deep, so mirror the
+  // established `polynoia:edit-conv-roles` pattern — dispatch an event App listens
+  // for (→ openConvAndSwitchToChat), then close the drawer.
+  const open = (c: ConversationSummary) => {
+    window.dispatchEvent(
+      new CustomEvent("polynoia:select-conv", {
+        detail: { id: c.id, members: c.members, title: c.title },
+      }),
+    );
+    closeDrawer();
+  };
+
+  return (
+    <div className="px-6 py-4 border-b border-[var(--color-line)]">
+      <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)] mb-2 font-medium">
+        <MessageCircle size={11} />
+        与 ta 的所有对话{convs ? ` · ${convs.length}` : ""}
+      </div>
+      {convs === null ? (
+        <div className="text-[11.5px] text-[var(--color-fg-3)] italic py-2">加载中…</div>
+      ) : convs.length === 0 ? (
+        <div className="text-[11.5px] text-[var(--color-fg-3)] italic py-2">
+          还没有与 ta 的对话
+        </div>
+      ) : (
+        <ul className="space-y-1 max-h-60 overflow-y-auto -mx-1 px-1">
+          {convs.map((c) => {
+            const active = c.id === activeConvId;
+            return (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => open(c)}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-md flex items-center gap-2 transition ${
+                    active
+                      ? "bg-[var(--color-accent-soft)]"
+                      : "hover:bg-[var(--color-surface-2)]"
+                  }`}
+                >
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[12.5px] truncate text-[var(--color-fg)]">
+                      {c.title}
+                    </span>
+                    <span className="block text-[10px] font-mono text-[var(--color-fg-3)] mt-0.5">
+                      {c.direct ? "单聊" : "群聊"}
+                      {c.workspace_id ? " · 项目" : ""}
+                    </span>
+                  </span>
+                  {active && (
+                    <span className="text-[9px] font-mono text-[var(--color-accent)] flex-shrink-0">
+                      当前
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function Badge({ label, value, mono, accent }: { label: string; value: string; mono?: boolean; accent?: boolean }) {
   return (

@@ -53,6 +53,36 @@ const STR = {
   agent: { zh: "Agent", en: "Agent" },
   online: { zh: "在线", en: "Online" },
   offlineStatus: { zh: "离线 · CLI 未安装或未登录", en: "Offline · CLI missing or not logged in" },
+  /* Conversation ⋮ actions menu */
+  convPin: { zh: "置顶", en: "Pin" },
+  convUnpin: { zh: "取消置顶", en: "Unpin" },
+  convRename: { zh: "重命名", en: "Rename" },
+  convMembersRoles: { zh: "成员与角色", en: "Members & roles" },
+  convArchive: { zh: "归档", en: "Archive" },
+  convDelete: { zh: "删除会话", en: "Delete conversation" },
+  convActionsLabel: { zh: "会话操作", en: "Conversation actions" },
+  renameConvTitle: { zh: "重命名会话", en: "Rename conversation" },
+  save: { zh: "保存", en: "Save" },
+  saving: { zh: "保存中…", en: "Saving…" },
+  cancel: { zh: "取消", en: "Cancel" },
+  confirmDeleteConvTitle: { zh: "删除会话?", en: "Delete conversation?" },
+  confirmDeleteConvBody: {
+    zh: "「{title}」将被永久删除,该操作不可撤销。",
+    en: "“{title}” will be permanently deleted. This cannot be undone.",
+  },
+  confirmArchiveConvTitle: { zh: "归档会话?", en: "Archive conversation?" },
+  confirmArchiveConvBody: {
+    zh: "「{title}」将移入归档,可随时在归档视图恢复。",
+    en: "“{title}” moves to the archive; restore anytime from the archive view.",
+  },
+  delete: { zh: "删除", en: "Delete" },
+  viewArchive: { zh: "查看归档", en: "View archive" },
+  deleteContactAction: { zh: "删除联系人", en: "Delete contact" },
+  confirmDeleteContactBody: {
+    zh: "「{name}」将被删除,该操作不可撤销。历史会话不受影响。",
+    en: "“{name}” will be deleted. This cannot be undone. Past conversations are kept.",
+  },
+  workspaceSettings: { zh: "工作区设置", en: "Workspace settings" },
 } as const;
 
 export type TKey = keyof typeof STR;

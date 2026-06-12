@@ -15,6 +15,7 @@ Mirrors the legacy router pattern (``api/workspace_files.py`` /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -24,6 +25,24 @@ from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 
 router = APIRouter()
+
+# Promote (mint-a-project-from-a-conv) is a check-then-act that spans awaits:
+# read workspace_id is None → mint workspace → attach. Two concurrent promotes on
+# the same conv could BOTH pass the guard and each mint a workspace, leaving an
+# orphan project. Serialize the critical section with a per-event-loop lock so the
+# guard is atomic under asyncio. Per-loop (keyed by running-loop id) because a
+# module-level Lock binds to the import-time loop and explodes under pytest's
+# per-test loops — same idiom as routes.py `_pending_decide_lock`.
+_promote_locks: dict[int, asyncio.Lock] = {}
+
+
+def _promote_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lk = _promote_locks.get(id(loop))
+    if lk is None:
+        lk = asyncio.Lock()
+        _promote_locks[id(loop)] = lk
+    return lk
 
 MAX_DRAFT_ATTACHMENTS = 12
 MAX_DRAFT_ATTACHMENTS_JSON_BYTES = 80_000
@@ -362,6 +381,114 @@ async def set_conv_member_roles(conv_id: str, body: dict):
         await session.commit()
         conv = await storage_repo.get_conversation(session, conv_id)
         return conv.model_dump(mode="json") if conv else {"ok": True}
+
+
+@router.patch("/api/conversations/{conv_id}/title")
+async def rename_conversation(conv_id: str, body: dict):
+    """Rename a conversation. Body: ``{ "title": str }``. Returns the updated conv."""
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    if len(title) > 200:
+        raise HTTPException(status_code=400, detail="title too long (max 200)")
+    async with SessionLocal() as session:
+        ok = await storage_repo.set_title(session, conv_id, title)
+        if not ok:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        await session.commit()
+        conv = await storage_repo.get_conversation(session, conv_id)
+        return conv.model_dump(mode="json") if conv else {"ok": True}
+
+
+@router.patch("/api/conversations/{conv_id}/workspace")
+async def set_conv_workspace(conv_id: str, body: dict):
+    """Attach a project (workspace) to a conversation, or detach it.
+
+    Body: ``{ "workspace_id": str | null }``
+
+    IA model: a conversation is a plain thread by default; a workspace/project is
+    an OPTIONAL capability you attach lazily ("挂工作区") when the chat grows to need
+    a shared codebase / sandbox / deliverables, and can detach again. Attaching
+    NEVER changes members or the group orchestrator invariant — it only links the
+    project. A ``system`` event is appended so every agent sees the context shift
+    on its next turn. Returns the updated conversation.
+    """
+    raw = body.get("workspace_id")
+    ws_id = (str(raw).strip() or None) if raw is not None else None
+    async with SessionLocal() as session:
+        conv = await storage_repo.get_conversation(session, conv_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        ws = None
+        if ws_id is not None:
+            workspaces = await storage_repo.list_workspaces(session)
+            ws = next((w for w in workspaces if w.id == ws_id), None)
+            if ws is None:
+                raise HTTPException(status_code=404, detail=f"workspace not found: {ws_id}")
+        await storage_repo.set_workspace_id(session, conv_id, ws_id)
+        if ws is not None:
+            event = f"📎 已挂载工作区「{ws.name}」— 本对话现在拥有共享代码沙箱与产物。"
+        else:
+            event = "📎 已卸载工作区 — 本对话回到纯聊天模式。"
+        await storage_repo.append_message(
+            session, conv_id=conv_id, sender_id="system",
+            payload={"kind": "text", "body": [{"t": "p", "c": event}]},
+        )
+        await session.commit()
+        conv = await storage_repo.get_conversation(session, conv_id)
+        return conv.model_dump(mode="json")
+
+
+@router.post("/api/conversations/{conv_id}/promote")
+async def promote_conv_to_project(conv_id: str, body: dict | None = None):
+    """Promote a conversation into a project: mint a fresh workspace + attach it.
+
+    The "把对话升级成项目" path — a DM or group that organically grew into real
+    collaborative work gets its own auto-managed sandbox. We mint a Workspace,
+    seed its members from the conv's agent members, and attach it. If the conv
+    ALREADY has a workspace we 409 rather than silently minting a second one, so
+    promote is safe to fire from an over-eager UI.
+
+    Body (optional): ``{ "name": str, "color": str, "server_id": str }``
+    Returns ``{ "workspace": {...}, "conversation": {...} }``.
+    """
+    from polynoia.domain.entities import Workspace, new_ulid
+
+    body = body or {}
+    # Lock spans the whole check→mint→attach→commit so two concurrent promotes
+    # can't both pass the "no workspace yet" guard and mint duplicate projects.
+    async with _promote_lock(), SessionLocal() as session:
+        conv = await storage_repo.get_conversation(session, conv_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        if conv.workspace_id:
+            raise HTTPException(
+                status_code=409, detail="conversation already has a workspace"
+            )
+        name = (str(body.get("name") or "").strip() or conv.title or "新项目").strip()
+        # Seed with the conv's agent members (drop the virtual "you", re-add once).
+        agent_members = [m for m in (conv.members or []) if m != "you"]
+        ws = Workspace(
+            id=new_ulid(),
+            server_id=str(body.get("server_id") or "local"),
+            name=name,
+            color=str(body.get("color") or "#E07A3C"),
+            role="Owner",
+            members=["you", *agent_members],
+        )
+        await storage_repo.upsert_workspace(session, ws)
+        await storage_repo.set_workspace_id(session, conv_id, ws.id)
+        event = f"🚀 本对话已升级为项目「{name}」— 现在拥有共享代码沙箱与产物。"
+        await storage_repo.append_message(
+            session, conv_id=conv_id, sender_id="system",
+            payload={"kind": "text", "body": [{"t": "p", "c": event}]},
+        )
+        await session.commit()
+        conv = await storage_repo.get_conversation(session, conv_id)
+        return {
+            "workspace": ws.model_dump(mode="json"),
+            "conversation": conv.model_dump(mode="json"),
+        }
 
 
 @router.patch("/api/conversations/{conv_id}/merge_mode")

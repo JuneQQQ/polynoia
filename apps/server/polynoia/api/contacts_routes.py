@@ -48,6 +48,25 @@ async def list_agents():
         return result
 
 
+@router.get("/api/agents/{agent_id}/conversations")
+async def list_agent_conversations(agent_id: str, archived: bool | None = None):
+    """Every conversation this agent is a member of — DM and group, across all
+    projects or none.
+
+    Powers the unified "我和 X 的所有对话" drill-down: a single contact can show up
+    in many separate threads (a 1v1, several project groups, a standalone group),
+    and this is the one place that gathers them. Default lists active threads;
+    ``?archived=true`` surfaces the archived ones.
+    """
+    async with SessionLocal() as session:
+        rows = await storage_repo.list_conversations(
+            session,
+            archived=archived if archived is not None else False,
+            member=agent_id,
+        )
+        return [r.model_dump(mode="json") for r in rows]
+
+
 @router.post("/api/agents/{agent_id}/enable")
 async def enable_adapter(agent_id: str):
     """Mark an adapter as onboarded.
@@ -81,12 +100,12 @@ async def disable_adapter(agent_id: str):
 
 
 _VALID_TOOL_ROLES = frozenset({
-    "orchestrator", "coder", "designer", "writer", "generalist",
+    "orchestrator", "group_member", "generalist",
 })
 
 
 def _validate_tool_role(raw: object) -> str:
-    """Validate REST input. Empty → generalist; unknown → 400 fail-closed."""
+    """Validate REST input. Empty → generalist; unknown → 400."""
     if raw is None or raw == "":
         return "generalist"
     if not isinstance(raw, str) or raw not in _VALID_TOOL_ROLES:
@@ -97,38 +116,34 @@ def _validate_tool_role(raw: object) -> str:
     return raw
 
 
-# Real tool names — a mirror of mcp.tools.TOOL_REGISTRY. Unknown names are
-# dropped (fail-safe). `write` is the SOLE file-mutation tool; the old
-# edit/apply_patch/revert/call_agent tools are gone for good (see mcp/tools.py),
-# so they are intentionally NOT listed here.
-_ALL_TOOL_NAMES = frozenset({
-    "read", "write", "bash", "grep", "glob",
-    "dispatch", "discuss", "remember", "recall", "report", "ask_user",
-    "request_project_access", "present",
-})
-
-
 def _validate_tools_whitelist(raw: object) -> list[str]:
     """REST input → clean tool list. Non-list / unknown names dropped. Order
-    preserved, deduped. Empty = contact uses its tool_role's full set."""
+    preserved, deduped.
+
+    Kept for older clients / rows. Runtime tool exposure is now structural
+    (orchestrator / group_member / generalist), so this list is not a way to
+    create extra roles or grant tools.
+    """
     if not isinstance(raw, list):
         return []
+    from polynoia.mcp.tools import TOOL_REGISTRY
+
+    all_tool_names = set(TOOL_REGISTRY)
     seen: set[str] = set()
     out: list[str] = []
     for t in raw:
-        if isinstance(t, str) and t in _ALL_TOOL_NAMES and t not in seen:
+        if isinstance(t, str) and t in all_tool_names and t not in seen:
             seen.add(t)
             out.append(t)
     return out
 
 
 def _caps_from_tools(tool_role: str, tools: list[str]) -> list[str]:
-    """Capability tags (能力标签) derived from the EFFECTIVE tool set, so the
-    contact card honestly reflects what it can do. rule.md: 能力标签."""
+    """Display capability tags derived from the role's visible tool set."""
     from polynoia.mcp.tools import tools_for_role
     eff = set(tools_for_role(tool_role, set(tools) or None).keys())
     caps: list[str] = []
-    if eff & {"write", "edit", "apply_patch"}:
+    if "write" in eff:
         caps.append("写代码")
     if "bash" in eff:
         caps.append("跑命令/测试")
@@ -136,9 +151,7 @@ def _caps_from_tools(tool_role: str, tools: list[str]) -> list[str]:
         caps.append("派活")
     if "discuss" in eff:
         caps.append("讨论")
-    if not (eff & {"write", "edit", "apply_patch", "bash"}) and (
-        eff & {"read", "grep", "glob"}
-    ):
+    if not (eff & {"write", "bash"}) and (eff & {"read", "grep", "glob"}):
         caps.append("只读")
     return caps
 
@@ -241,29 +254,14 @@ async def suggest_contact(body: dict):
     def has(*kw: str) -> bool:
         return any(k in desc or k.lower() in low for k in kw)
 
-    # Role: most-specific first. Read-only intent overrides write roles.
-    readonly = has("只读", "评审", "审查", "review", "不写", "不能改", "不改代码")
+    # Runtime tool role is intentionally coarse. Professional labels such as
+    # frontend / writer / backend affect the persona only, not tool permissions.
     if has("协调", "编排", "拆解", "派活", "orchestr", "调度", "项目经理", "PM"):
         role = "orchestrator"
-    elif has("前端", "界面", "ui", "样式", "css", "html", "设计", "视觉", "网页"):
-        role = "designer"
-    elif has("文档", "文案", "readme", "写作", "翻译", "doc", "markdown", "博客"):
-        role = "writer"
-    elif has("后端", "api", "python", "服务", "数据库", "脚本", "代码", "backend", "测试"):
-        role = "coder"
     else:
         role = "generalist"
 
-    # Tools: role default, narrowed if "不能跑命令 / 只读" intent is present.
-    from polynoia.mcp.tools import ROLE_TOOLS
-    role_tools = list(ROLE_TOOLS.get(role, ROLE_TOOLS["generalist"]))
-    no_bash = has("不能跑", "不跑命令", "无 bash", "no bash", "不执行命令")
-    tools = [t for t in role_tools if not (no_bash and t in ("bash", "apply_patch"))]
-    if readonly:
-        tools = [t for t in tools if t in ("read", "grep", "glob", "dispatch", "discuss")]
-    tools_whitelist = sorted({*tools, *_ALL_TOOL_NAMES.intersection({
-        "remember", "recall", "report", "ask_user", "request_project_access",
-    })})
+    tools_whitelist: list[str] = []
 
     # Pick adapter: prefer an onboarded one (claudeCode > codex > opencoder).
     async with SessionLocal() as session:
@@ -274,16 +272,24 @@ async def suggest_contact(body: dict):
     )
     visuals = ADAPTER_VISUAL_DEFAULTS.get(adapter_id, {})
 
-    role_zh = {
-        "orchestrator": "协调者", "designer": "前端设计师", "writer": "文档写手",
-        "coder": "后端工程师", "generalist": "全能助手",
-    }[role]
+    if role == "orchestrator":
+        persona_zh = "协调者"
+    elif has("前端", "界面", "ui", "样式", "css", "html", "设计", "视觉", "网页"):
+        persona_zh = "前端设计师"
+    elif has("文档", "文案", "readme", "写作", "翻译", "doc", "markdown", "博客"):
+        persona_zh = "文档写手"
+    elif has("后端", "api", "python", "服务", "数据库", "脚本", "代码", "backend", "测试"):
+        persona_zh = "后端工程师"
+    elif has("只读", "评审", "审查", "review", "不写", "不能改", "不改代码"):
+        persona_zh = "评审顾问"
+    else:
+        persona_zh = "全能助手"
     # Name: a short word from the description, else the role label.
-    name = role_zh
-    tagline = f"由描述生成 · {role_zh}"
+    name = persona_zh
+    tagline = f"由描述生成 · {persona_zh}"
     caps = _caps_from_tools(role, tools_whitelist)
     system_prompt = (
-        f"你是一名{role_zh}。\n\n用户对你的期望:{desc}\n\n"
+        f"你是一名{persona_zh}。\n\n用户对你的期望:{desc}\n\n"
         "按这个定位工作;具体的工具规则与协作纪律由平台自动注入,你专注做好本职。"
     )
     return {

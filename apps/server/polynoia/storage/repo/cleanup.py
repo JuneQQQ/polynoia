@@ -90,6 +90,49 @@ async def reap_orphan_terminal_cards(session: AsyncSession) -> int:
     return n
 
 
+# Terminal task-lane states for a burst (tasks) card; anything else is in-flight.
+_TASK_TERMINAL_STATES = {"done", "failed", "cancelled", "skipped", "merged"}
+
+
+async def reap_orphan_burst_tasks(session: AsyncSession) -> int:
+    """Coerce orphaned burst (``kind="tasks"``) lanes still in a non-terminal
+    state to ``"failed"`` on startup.
+
+    Mirrors :func:`reap_orphan_tool_calls` / :func:`reap_orphan_terminal_cards`.
+    A burst lane flips to a terminal state when its worker turn ends or the merge
+    drains it — all in-process. A mid-burst restart strands every still-running
+    lane at ``state="run"`` forever: ``reap_stale_process_runs`` marks the owning
+    process_run ``killed`` but NO reaper reconciles the ``tasks`` card, so the
+    BurstCard shows a zombie 『运行中』 lane that never settles. After a restart no
+    live turn/dispatcher from before survives, so any non-terminal lane is orphaned
+    by definition → flip it to ``failed``. Returns the number of lanes flipped.
+    """
+    result = await session.execute(select(MessageRow))
+    n = 0
+    for row in result.scalars():
+        payload = row.payload if isinstance(row.payload, dict) else None
+        if not payload or payload.get("kind") != "tasks":
+            continue
+        tasks = payload.get("tasks")
+        if not isinstance(tasks, list):
+            continue
+        changed = False
+        new_tasks: list[Any] = []
+        for t in tasks:
+            if isinstance(t, dict) and t.get("state") not in _TASK_TERMINAL_STATES:
+                new_tasks.append({**t, "state": "failed"})
+                changed = True
+            else:
+                new_tasks.append(t)
+        if changed:
+            # ORM JSON columns need a NEW dict assigned to trigger UPDATE.
+            row.payload = {**payload, "tasks": new_tasks}
+            n += 1
+    if n:
+        await session.commit()
+    return n
+
+
 async def close_terminal_card_for_run(
     session: AsyncSession, message_id: str, exit_code: int = -1
 ) -> dict[str, Any] | None:

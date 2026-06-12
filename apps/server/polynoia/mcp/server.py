@@ -2,10 +2,9 @@
 
 Uses the official ``mcp`` Python SDK.
 
-Tool exposure is filtered by ``POLYNOIA_AGENT_ROLE`` env (set by the
-spawning adapter from ``Agent.tool_role``) — see ``ROLE_TOOLS`` in
-``polynoia.mcp.tools``. This makes orchestrator personas read-only,
-keeps designers off the shell, etc.
+Tool exposure is filtered by ``POLYNOIA_AGENT_ROLE`` env — see ``ROLE_TOOLS`` in
+``polynoia.mcp.tools``. Runtime roles are structural: orchestrator,
+group_member, or generalist.
 """
 from __future__ import annotations
 
@@ -164,11 +163,16 @@ def _error_result(payload: dict[str, Any]) -> CallToolResult:
 
 
 def _wrap_result(result: Any) -> list[TextContent] | CallToolResult:
-    """A tool returning ``{"kind":"error"}`` is a FAILED call — flag it via MCP
-    ``isError`` so every adapter renders it errored (not "完成") and the model
-    treats it as a retryable failure. Otherwise return the plain text block."""
+    """A FAILED tool call is flagged via MCP ``isError`` so every adapter renders
+    it errored (not "完成") and the model treats it as a retryable failure. A call
+    is failed when it returns ``{"kind":"error"}`` OR ``{"timed_out": True}`` (the
+    server-level bound elapsed): without the timeout case a hung tool was delivered
+    as a plain content block, so the model could read a timeout as a successful
+    completion. Otherwise return the plain text block."""
     block = _text_block(result)
-    if isinstance(result, dict) and result.get("kind") == "error":
+    if isinstance(result, dict) and (
+        result.get("kind") == "error" or result.get("timed_out") is True
+    ):
         return CallToolResult(isError=True, content=[block])
     return [block]
 
@@ -179,7 +183,7 @@ async def run_server(
     """Run the stdio MCP server bound to (conv_id, agent_id).
 
     Role filtering: ``POLYNOIA_AGENT_ROLE`` env determines which tools
-    are listed AND callable. Unknown role → generalist subset.
+    are listed AND callable. Unknown role is a configuration error.
 
     ``turn_agent_id`` is the per-turn worker ULID (vs ``agent_id`` which is the
     static adapter id); it attributes proactive diff cards to the right agent.
