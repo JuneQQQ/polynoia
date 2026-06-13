@@ -1124,6 +1124,16 @@ export function Sidebar({
 								? (workspaces.find((w) => w.id === c.workspace_id) ?? null)
 								: null;
 							const agentCount = c.members.filter((m) => m !== "you").length;
+							// Group rows show a STACK of member avatars (orchestrator first,
+							// then others, up to 3) instead of a single icon.
+							const memberAgs = c.group
+								? [repId, ...c.members.filter((m) => m !== "you" && m !== repId)]
+										.flatMap((id) => {
+											const a = id ? agentById.get(id) : undefined;
+											return a ? [a] : [];
+										})
+										.slice(0, 3)
+								: [];
 							const sub = c.direct
 								? t("directMessageType", lang)
 								: t("groupChatCountLabel", lang).replace(
@@ -1157,7 +1167,22 @@ export function Sidebar({
 											className="flex-1 min-w-0 flex items-center gap-3 pl-4 pr-1 py-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-accent)] rounded-sm"
 										>
 											<div className="relative flex-shrink-0">
-												{rep ? (
+												{c.group && memberAgs.length >= 2 ? (
+													<div className="flex h-8 items-center -space-x-2">
+														{memberAgs.map((a, i) => (
+															<div
+																key={a.id}
+																className="w-[19px] h-[19px] rounded-full grid place-items-center text-white text-[8.5px] font-medium ring-2 ring-[var(--color-sidebar)]"
+																style={{
+																	background: a.color,
+																	zIndex: memberAgs.length - i,
+																}}
+															>
+																{a.initials}
+															</div>
+														))}
+													</div>
+												) : rep ? (
 													<div
 														className={`grid place-items-center text-white text-[11px] font-medium w-8 h-8 ${
 															c.direct ? "rounded-full" : "rounded-lg"

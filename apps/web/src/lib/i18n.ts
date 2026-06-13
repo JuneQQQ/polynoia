@@ -362,6 +362,8 @@ const STR = {
 	},
 	collapseSkillList: { zh: "收起 skill 列表", en: "Collapse skill list" },
 	expandSkillList: { zh: "展开 skill 列表", en: "Expand skill list" },
+	searchSkills: { zh: "搜索 skill…", en: "Search skills…" },
+	noMatchingSkills: { zh: "没有匹配的 skill", en: "No matching skills" },
 	noInstalledSkills: {
 		zh: "还没有已安装的 skill。可直接粘贴 GitHub 地址或本地路径安装。",
 		en: "No skills installed yet. Paste a GitHub URL or local path to install.",
@@ -684,6 +686,14 @@ const STR = {
 	deleting: { zh: "删除中…", en: "Deleting…" },
 	qualityPanel: { zh: "质量面板 →", en: "Quality panel →" },
 	roleLibrary: { zh: "角色库", en: "Role library" },
+	pickRolePreset: { zh: "从角色库选", en: "Pick from role library" },
+	syncRoleCatalog: {
+		zh: "同步 agency-agents 角色库",
+		en: "Sync agency-agents catalog",
+	},
+	roleCatalogEmpty: { zh: "角色库为空,先同步", en: "Catalog empty — sync first" },
+	noMatchingPresets: { zh: "没有匹配的角色", en: "No matching roles" },
+	searchRolePreset: { zh: "搜索角色…", en: "Search roles…" },
 	noContactsHint2: {
 		zh: "还没有联系人 — 从「角色库」雇佣,或「新建联系人」。",
 		en: 'No contacts yet — hire from "Role library" or "New contact".',

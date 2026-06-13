@@ -123,6 +123,7 @@ export function NewContactModal({
 	);
 	const [skillSrc, setSkillSrc] = useState("");
 	const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+	const [skillQuery, setSkillQuery] = useState("");
 	const [skillBusy, setSkillBusy] = useState<"idle" | "installing" | "err">(
 		"idle",
 	);
@@ -133,6 +134,14 @@ export function NewContactModal({
 			.then(setInstalledSkills)
 			.catch(() => {});
 	}, []);
+	const _skillFilter = skillQuery.trim().toLowerCase();
+	const filteredSkills = _skillFilter
+		? installedSkills.filter(
+				(s) =>
+					s.name.toLowerCase().includes(_skillFilter) ||
+					(s.description ?? "").toLowerCase().includes(_skillFilter),
+			)
+		: installedSkills;
 	const cleanSkills = () =>
 		[...boundSkills].map((name) => ({ name, instructions: "" }));
 	const installSkill = async () => {
@@ -535,7 +544,10 @@ export function NewContactModal({
 											/>
 											<button
 												type="button"
-												onClick={() => setSkillMenuOpen((v) => !v)}
+												onClick={() => {
+												setSkillQuery("");
+												setSkillMenuOpen((v) => !v);
+											}}
 												aria-label={
 													skillMenuOpen
 														? t("collapseSkillList", lang)
@@ -557,10 +569,13 @@ export function NewContactModal({
 														onClick={() => setSkillMenuOpen(false)}
 														className="fixed inset-0 z-[61] cursor-default bg-transparent"
 													/>
-													<div className="absolute z-[62] mt-1 w-full max-h-64 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
-														{installedSkills.length > 0 ? (
-															<div className="py-1">
-																{installedSkills.map((s) => {
+													<div className="absolute bottom-full z-[62] mb-1 w-full max-h-72 flex flex-col rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
+														<div className="p-1.5 border-b border-[var(--color-line)]">
+															<input autoFocus type="text" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} placeholder={t("searchSkills", lang)} className="w-full text-[12px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]" />
+														</div>
+														{filteredSkills.length > 0 ? (
+															<div className="flex-1 min-h-0 overflow-y-auto py-1">
+																{filteredSkills.map((s) => {
 																	const on = boundSkills.has(s.name);
 																	return (
 																		<div
@@ -625,7 +640,9 @@ export function NewContactModal({
 															</div>
 														) : (
 															<p className="px-2.5 py-2 text-[11.5px] text-[var(--color-fg-3)]">
-																{t("noInstalledSkills", lang)}
+																{installedSkills.length === 0
+														? t("noInstalledSkills", lang)
+														: t("noMatchingSkills", lang)}
 															</p>
 														)}
 													</div>
