@@ -477,16 +477,6 @@ const STR = {
 	testConnection: { zh: "测试连接", en: "Test connection" },
 	reconnecting: { zh: "重连中…", en: "Reconnecting…" },
 	saveAndReconnect: { zh: "保存并重连", en: "Save and reconnect" },
-	projectPipeline: { zh: "项目流水线", en: "Project pipeline" },
-	pipelineSubtitle: {
-		zh: "阶段门禁式冲刺 · 自动组队 · SOP 入草稿",
-		en: "Phased sprint gating · auto team assembly · SOP to draft",
-	},
-	teamUpAndLaunch: { zh: "组队启动", en: "Team up & launch" },
-	teamingRules: {
-		zh: "组队规则:槽位优先复用既有联系人(按名字/标签匹配);缺口从角色预设库现雇\n(默认 claude-sonnet)。启动后 SOP 写入群聊草稿,补上你的需求再发送。",
-		en: "Team-up rules: slots prioritize reusing existing contacts (by name/tag match); gaps are filled from the role preset library (default claude-sonnet). After launch, SOP is added to group chat draft; supply your requirements before sending.",
-	},
 	rolePresetLibrary: { zh: "角色预设库", en: "Role preset library" },
 	updateCatalog: { zh: "更新目录", en: "Update catalog" },
 	catalogNotSynced: { zh: "尚未同步角色目录", en: "Catalog not synced yet" },
@@ -694,7 +684,6 @@ const STR = {
 	deleting: { zh: "删除中…", en: "Deleting…" },
 	qualityPanel: { zh: "质量面板 →", en: "Quality panel →" },
 	roleLibrary: { zh: "角色库", en: "Role library" },
-	pipeline: { zh: "流水线", en: "Pipeline" },
 	noContactsHint2: {
 		zh: "还没有联系人 — 从「角色库」雇佣,或「新建联系人」。",
 		en: 'No contacts yet — hire from "Role library" or "New contact".',

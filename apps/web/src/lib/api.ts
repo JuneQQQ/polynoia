@@ -895,26 +895,6 @@ export const api = {
 			`/api/role-presets/${encodeURIComponent(id)}/hire`,
 			body,
 		),
-	/** 项目流水线模板(gstack 式阶段门禁冲刺)。 */
-	pipelines: () =>
-		getJSON<{
-			templates: Array<{
-				key: string;
-				name: string;
-				description: string;
-				stages: string[];
-				slots: string[];
-			}>;
-		}>("/api/pipelines"),
-	pipelineSpawn: (
-		template: string,
-		opts?: { name?: string; adapter_id?: string; model?: string },
-	) =>
-		postJSON<{
-			conversation: { id: string; members: string[]; title: string };
-			workspace: { id: string };
-			roles: Array<{ id: string; name: string; slot: string; hired: boolean }>;
-		}>("/api/pipelines/spawn", { template, ...opts }),
 	/** Per-agent quality profile (composite score + component metrics). */
 	quality: () =>
 		getJSON<{

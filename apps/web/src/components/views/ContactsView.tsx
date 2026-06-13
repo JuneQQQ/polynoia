@@ -5,13 +5,12 @@
  * NO quality-score slop — quality lives in the 📊 panel. Hiring (角色库) and
  * team spin-up (流水线) are the two actions at the top.
  */
-import { Library, Rocket, UserPlus, Users } from "lucide-react";
+import { Library, UserPlus, Users } from "lucide-react";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import { NewContactModal } from "../NewContactModal";
-import { PipelineSpawnModal } from "../PipelineSpawnModal";
 import { RolePresetLibrary } from "../RolePresetLibrary";
 
 /** adapter id → label (kept local; mirrors Sidebar's ADAPTER_LABEL). */
@@ -28,7 +27,6 @@ export function ContactsView() {
 	const openAgentDetail = useStore((s) => s.openAgentDetail);
 	const [newContactOpen, setNewContactOpen] = useState(false);
 	const [roleLibOpen, setRoleLibOpen] = useState(false);
-	const [pipelineOpen, setPipelineOpen] = useState(false);
 
 	const refreshAgents = async () => {
 		try {
@@ -78,13 +76,6 @@ export function ContactsView() {
 						className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] border border-[var(--color-line)] text-[var(--color-fg-2)] hover:bg-[var(--color-line)]/40"
 					>
 						<Library size={13} /> {t("roleLibrary", lang)}
-					</button>
-					<button
-						type="button"
-						onClick={() => setPipelineOpen(true)}
-						className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] border border-[var(--color-line)] text-[var(--color-fg-2)] hover:bg-[var(--color-line)]/40"
-					>
-						<Rocket size={13} /> {t("pipeline", lang)}
 					</button>
 				</div>
 
@@ -141,9 +132,6 @@ export function ContactsView() {
 			)}
 			{roleLibOpen && (
 				<RolePresetLibrary onClose={() => setRoleLibOpen(false)} />
-			)}
-			{pipelineOpen && (
-				<PipelineSpawnModal onClose={() => setPipelineOpen(false)} />
 			)}
 		</div>
 	);
