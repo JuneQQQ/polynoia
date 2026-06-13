@@ -33,7 +33,7 @@ API = "http://localhost:7780"
 OPUS = "claude-opus-4-7"
 SONNET = "claude-sonnet-4-6"
 CODEX_MODEL = "gpt-5.5"
-OPENCODE_MODEL = "opencode-go/glm5.1"
+OPENCODE_MODEL = "opencode-go/glm-5.1"  # opencode-go ids are hyphenated (glm-5.1, not glm5.1)
 
 
 # ── HTTP helpers ────────────────────────────────────────────────────────────

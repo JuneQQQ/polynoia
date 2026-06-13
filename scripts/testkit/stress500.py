@@ -182,9 +182,52 @@ async def run_conv(conv: dict, sem: asyncio.Semaphore, results: list, logf) -> N
         logf.flush()
 
 
+def reap_artifacts() -> int:
+    """Between batches: kill agent-spawned deliverables (background http.server /
+    vite / node dev servers) + any leftover agent subprocess whose cwd is inside a
+    sandbox workspace, so RAM/FDs don't pile up over the run (user constraint:
+    每批次测完务必干掉产物). The backend (cwd=apps/server) and main web are NOT under
+    a sandbox dir → never touched. Linux /proc only; no-op elsewhere. Safe only
+    between batches (no agent turn is in flight at the barrier)."""
+    import os
+    import signal
+    import time as _t
+
+    if not os.path.isdir("/proc"):
+        return 0
+
+    def sandbox_pids() -> list[int]:
+        out: list[int] = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                cwd = os.readlink(f"/proc/{pid}/cwd")
+            except Exception:
+                continue
+            if "/sandbox/" in cwd:
+                out.append(int(pid))
+        return out
+
+    victims = sandbox_pids()
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    _t.sleep(3)
+    for pid in sandbox_pids():  # SIGKILL stragglers
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+    return len(victims)
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--conc", type=int, default=10)
+    ap.add_argument("--batch", type=int, default=10)  # cases/batch; reap 产物 after each
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--dur", type=int, default=3600)
     ap.add_argument("--per", type=int, default=420)
@@ -192,8 +235,8 @@ async def main() -> None:
     global PER
     PER = a.per
     # Only convs that have a draft AND haven't run yet (no messages → no
-    # last_message_at). Skipping already-active ones keeps waves idempotent and
-    # never re-triggers an in-flight turn — state accumulates, never resets.
+    # last_message_at). Skipping already-active ones keeps the run idempotent and
+    # never re-triggers an in-flight turn — DB state accumulates, never reset.
     convs = [
         c
         for c in get("/api/conversations")
@@ -201,20 +244,36 @@ async def main() -> None:
     ]
     convs = convs[: a.limit]
     print(
-        f"STRESS: {len(convs)} fresh convs · conc={a.conc} · per-conv≤{a.per}s · max-dur={a.dur}s",
+        f"STRESS: {len(convs)} fresh convs · conc={a.conc} · batch={a.batch} "
+        f"· per-conv≤{a.per}s · max-dur={a.dur}s",
         flush=True,
     )
-    sem = asyncio.Semaphore(a.conc)
     results: list = []
     logf = open("/tmp/stress500.jsonl", "w", encoding="utf-8")
-    tasks = [asyncio.create_task(run_conv(c, sem, results, logf)) for c in convs]
-    done, pending = await asyncio.wait(tasks, timeout=a.dur)
-    for p in pending:
-        p.cancel()
+    t_start = time.time()
+    # Batched: run a batch (≤conc concurrent), barrier-wait it settles, then reap
+    # 产物 before the next batch — keeps concurrent tasks ≤ conc AND bounds memory.
+    for bi in range(0, len(convs), a.batch):
+        if time.time() - t_start > a.dur:
+            print(f"=== max-dur {a.dur}s reached; stop at {len(results)} ===", flush=True)
+            break
+        chunk = convs[bi : bi + a.batch]
+        sem = asyncio.Semaphore(a.conc)
+        tasks = [asyncio.create_task(run_conv(c, sem, results, logf)) for c in chunk]
+        await asyncio.wait(tasks)  # barrier: whole batch settles before reaping
+        killed = reap_artifacts()
+        oc = Counter(r["outcome"] for r in results)
+        gv = sum(len(r["git_violations"]) for r in results)
+        print(
+            f"--- batch {bi // a.batch + 1} done · ran {len(results)}/{len(convs)} "
+            f"· reaped {killed} 产物 · outcomes={dict(oc)} · git_violations={gv} ---",
+            flush=True,
+        )
     oc = Counter(r["outcome"] for r in results)
     gv = sum(len(r["git_violations"]) for r in results)
     print(
-        f"\n=== STRESS DONE: ran {len(results)}/{len(convs)} · outcomes={dict(oc)} · git_violations={gv} · pending_cancelled={len(pending)} ===",
+        f"\n=== STRESS DONE: ran {len(results)}/{len(convs)} · outcomes={dict(oc)} "
+        f"· git_violations={gv} ===",
         flush=True,
     )
 
