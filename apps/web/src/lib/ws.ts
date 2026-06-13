@@ -1,9 +1,9 @@
+import { getServerWsBase } from "./runtime-config";
 /** WebSocket client + AI SDK 6 UIMessageChunk parser.
  *
  * Wire format: SSE-style frames "data: {json}\n\n" with [DONE] sentinel.
  */
 import type { MessagePayload } from "./types";
-import { getServerWsBase } from "./runtime-config";
 
 export type UIMessageChunk =
 	| { type: "start"; message_id: string }

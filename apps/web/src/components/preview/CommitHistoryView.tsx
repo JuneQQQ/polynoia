@@ -52,6 +52,7 @@ import {
 	parseConvFromText,
 	stripStatSuffix,
 } from "../../lib/commitStory";
+import { type Lang, t } from "../../lib/i18n";
 import type { Agent } from "../../lib/types";
 import { useStore } from "../../store";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -75,17 +76,17 @@ const FALLBACK_COLORS = [
 	"#14B8A6",
 ];
 
-function relTime(iso: string): string {
-	const t = Date.parse(iso);
-	if (Number.isNaN(t)) return "";
-	const s = Math.floor((Date.now() - t) / 1000);
-	if (s < 60) return "刚刚";
+function relTime(iso: string, lang: Lang): string {
+	const ts = Date.parse(iso);
+	if (Number.isNaN(ts)) return "";
+	const s = Math.floor((Date.now() - ts) / 1000);
+	if (s < 60) return t("justNow", lang);
 	const m = Math.floor(s / 60);
-	if (m < 60) return `${m} 分钟前`;
+	if (m < 60) return `${m} ${t("minutesAgo", lang)}`;
 	const h = Math.floor(m / 60);
-	if (h < 24) return `${h} 小时前`;
+	if (h < 24) return `${h} ${t("hoursAgo", lang)}`;
 	const d = Math.floor(h / 24);
-	if (d < 30) return `${d} 天前`;
+	if (d < 30) return `${d} ${t("daysAgo", lang)}`;
 	const mo = Math.floor(d / 30);
 	if (mo < 12) return `${mo} 个月前`;
 	return `${Math.floor(mo / 12)} 年前`;
@@ -93,14 +94,16 @@ function relTime(iso: string): string {
 
 /** Humanize Polynoia's machine-generated commit subjects + strip the embedded
  * `(+N/-M)` stats (the chips beside the row show the REAL numbers). */
-function prettySubject(s: string): string {
-	if (s.startsWith("polynoia: workspace init")) return "初始化工作区";
-	if (s.startsWith("polynoia: merge ")) return "合并分支";
-	if (s.startsWith("polynoia: resolve+merge ")) return "解决冲突并合并";
-	if (s.startsWith("polynoia: capture")) return "收集未提交改动";
+function prettySubject(s: string, lang: Lang): string {
+	if (s.startsWith("polynoia: workspace init"))
+		return t("commitInitWorkspace", lang);
+	if (s.startsWith("polynoia: merge ")) return t("commitMergeBranch", lang);
+	if (s.startsWith("polynoia: resolve+merge "))
+		return t("commitResolveAndMerge", lang);
+	if (s.startsWith("polynoia: capture")) return t("commitCapture", lang);
 	const ue = /^polynoia: (?:revert|apply) diff (.+)$/.exec(s);
 	if (ue)
-		return `${s.startsWith("polynoia: revert") ? "撤销" : "应用"} ${ue[1].split("/").pop()}`;
+		return `${s.startsWith("polynoia: revert") ? t("revert", lang) : t("apply", lang)} ${ue[1].split("/").pop()}`;
 	const u = /^polynoia: user edit (.+)$/.exec(s);
 	if (u) return `用户编辑 ${u[1].split("/").pop()}`;
 	return stripStatSuffix(s.replace(/^polynoia:\s*/, ""));
@@ -123,6 +126,7 @@ const STATUS_DOT: Record<CommitFileDiff["status"], string> = {
 };
 
 function AgentChip({ agent, author }: { agent?: Agent; author: string }) {
+	const lang = useStore((s) => s.lang);
 	if (agent) {
 		return (
 			<span className="inline-flex items-center gap-1 min-w-0">
@@ -137,7 +141,11 @@ function AgentChip({ agent, author }: { agent?: Agent; author: string }) {
 		);
 	}
 	if (author === "polynoia-agent")
-		return <span className="truncate text-[var(--color-fg-3)]">你</span>;
+		return (
+			<span className="truncate text-[var(--color-fg-3)]">
+				{t("you", lang)}
+			</span>
+		);
 	if (ULID_LIKE.test(author)) {
 		// Deleted contact — degrade to a compact grey chip, never the raw ULID.
 		return (
@@ -266,11 +274,12 @@ function GraphCell({
 	width,
 	h,
 }: { row?: GRow; width: number; h: number }) {
+	const lang = useStore((s) => s.lang);
 	const w = width * LANE_W;
 	if (!row)
 		return (
 			<svg width={w} height={h} className="flex-shrink-0" aria-hidden="true">
-				<title>提交图</title>
+				<title>{t("commitGraph", lang)}</title>
 			</svg>
 		);
 	const x = (l: number) => l * LANE_W + LANE_W / 2;
@@ -278,7 +287,7 @@ function GraphCell({
 	const mergeSet = new Set(row.merges);
 	return (
 		<svg width={w} height={h} className="flex-shrink-0" aria-hidden="true">
-			<title>提交树</title>
+			<title>{t("commitTree", lang)}</title>
 			{row.before.map((l, i) => {
 				if (!l) return null;
 				// Lane index is the positional identity of an SVG gutter stroke;
@@ -361,6 +370,7 @@ function WorkingRow({
 	selected,
 	onSelect,
 }: { count: number; selected: boolean; onSelect: () => void }) {
+	const lang = useStore((s) => s.lang);
 	return (
 		<button
 			type="button"
@@ -372,13 +382,15 @@ function WorkingRow({
 			}`}
 		>
 			<FileDiff size={13} className="flex-shrink-0" />
-			<span className="truncate flex-1">工作区改动(未提交)</span>
+			<span className="truncate flex-1">{t("workingChanges", lang)}</span>
 			{count > 0 ? (
 				<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--color-accent)] text-white">
 					{count}
 				</span>
 			) : (
-				<span className="text-[10px] text-[var(--color-fg-3)]">无</span>
+				<span className="text-[10px] text-[var(--color-fg-3)]">
+					{t("none", lang)}
+				</span>
 			)}
 		</button>
 	);
@@ -400,6 +412,7 @@ function FilterBar({
 	query: string;
 	onQuery: (q: string) => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	return (
 		<div className="px-2 py-1.5 border-b border-[var(--color-line)] space-y-1.5">
 			<div className="relative">
@@ -411,7 +424,7 @@ function FilterBar({
 					type="search"
 					value={query}
 					onChange={(e) => onQuery(e.target.value)}
-					placeholder="搜索提交…"
+					placeholder={t("searchCommits", lang)}
 					className="w-full pl-6 pr-2 py-1 text-[11px] rounded border border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 				/>
 			</div>
@@ -423,7 +436,7 @@ function FilterBar({
 						const label =
 							ag?.name ??
 							(a === "polynoia-agent"
-								? "你"
+								? t("you", lang)
 								: ULID_LIKE.test(a)
 									? `已移除·${a.slice(-4)}`
 									: a);
@@ -469,6 +482,7 @@ function CommitRow({
 	indent?: boolean;
 	accent?: string;
 }) {
+	const lang = useStore((s) => s.lang);
 	return (
 		<button
 			type="button"
@@ -484,13 +498,13 @@ function CommitRow({
 		>
 			<div className="flex items-center gap-2 text-[11.5px] text-[var(--color-fg)]">
 				<span className="truncate flex-1" title={c.subject}>
-					{prettySubject(c.subject)}
+					{prettySubject(c.subject, lang)}
 				</span>
 				<StatChips adds={c.additions} dels={c.deletions} />
 			</div>
 			<div className="flex items-center gap-2 text-[10px] text-[var(--color-fg-3)]">
 				<AgentChip agent={findAgent(agents, c.author)} author={c.author} />
-				<span className="flex-shrink-0">{relTime(c.date)}</span>
+				<span className="flex-shrink-0">{relTime(c.date, lang)}</span>
 			</div>
 		</button>
 	);
@@ -508,6 +522,7 @@ function RoundCard({
 	selected: string | null;
 	onSelect: (sha: string) => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	const ag = findAgent(agents, item.author);
 	const [open, setOpen] = useState(false);
 	const color = ag?.color ?? "var(--color-fg-4)";
@@ -528,7 +543,7 @@ function RoundCard({
 					type="button"
 					onClick={() => setOpen((v) => !v)}
 					className="p-0.5 rounded hover:bg-[var(--color-line)]/50 flex-shrink-0"
-					aria-label={open ? "收起回合" : "展开回合"}
+					aria-label={open ? t("collapseRound", lang) : t("expandRound", lang)}
 				>
 					{open ? (
 						<ChevronDown size={12} className="text-[var(--color-fg-3)]" />
@@ -540,7 +555,7 @@ function RoundCard({
 					type="button"
 					onClick={() => onSelect(item.merge.sha)}
 					className="flex-1 min-w-0 text-left flex flex-col gap-0.5"
-					title="查看整个回合的合并 diff"
+					title={t("viewRoundDiff", lang)}
 				>
 					<div className="flex items-center gap-2 text-[11.5px] text-[var(--color-fg)]">
 						<span
@@ -553,15 +568,16 @@ function RoundCard({
 							{ag?.name ??
 								(ULID_LIKE.test(item.author)
 									? `已移除·${item.author.slice(-4)}`
-									: item.author)}{" "}
-							的交付
+									: item.author)}
+							{t("delivery", lang)}
 						</span>
 						<StatChips adds={item.additions} dels={item.deletions} />
 					</div>
 					<div className="flex items-center gap-2 text-[10px] text-[var(--color-fg-3)] pl-[22px]">
 						<GitMerge size={10} className="flex-shrink-0" />
 						<span>
-							{item.commits.length} 个提交 · 已合并 · {relTime(item.merge.date)}
+							{item.commits.length} 个提交 · 已合并 ·{" "}
+							{relTime(item.merge.date, lang)}
 						</span>
 					</div>
 				</button>
@@ -589,6 +605,7 @@ function FileDiffCard({
 	split,
 	defaultOpen,
 }: { file: CommitFileDiff; split: boolean; defaultOpen: boolean }) {
+	const lang = useStore((s) => s.lang);
 	const heavy =
 		file.binary ||
 		file.too_large ||
@@ -650,16 +667,20 @@ function FileDiffCard({
 						type="button"
 						onClick={() => setFull((v) => !v)}
 						className="text-[10px] px-1.5 py-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]/50"
-						title={full ? "仅显示改动附近" : "显示完整文件上下文"}
+						title={
+							full
+								? t("collapseContextTitle", lang)
+								: t("expandContextTitle", lang)
+						}
 					>
-						{full ? "折叠" : "全文"}
+						{full ? t("collapse3", lang) : t("full", lang)}
 					</button>
 				)}
 			</div>
 			{open &&
 				(file.binary ? (
 					<div className="px-4 py-3 text-[11px] text-[var(--color-fg-3)]">
-						二进制文件,不展示 diff。
+						{t("binaryFileDiff", lang)}
 					</div>
 				) : file.too_large ? (
 					<div className="px-4 py-3 text-[11px] text-[var(--color-fg-3)]">
@@ -689,6 +710,7 @@ function FileDiffCard({
 // ── container ───────────────────────────────────────────────────────
 
 export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
+	const lang = useStore((s) => s.lang);
 	const agents = useStore((s) => s.agents);
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 	const split = useStore((s) => s.diffSplit);
@@ -795,7 +817,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 		const q = query.trim().toLowerCase();
 		if (q) {
 			const hit = (c: CommitMeta) =>
-				prettySubject(c.subject).toLowerCase().includes(q) ||
+				prettySubject(c.subject, lang).toLowerCase().includes(q) ||
 				c.subject.toLowerCase().includes(q);
 			items = items.filter((it) =>
 				it.kind === "round"
@@ -804,7 +826,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 			);
 		}
 		return items;
-	}, [commits, filterAgent, query]);
+	}, [commits, filterAgent, query, lang]);
 
 	const dayGroups = useMemo(
 		() =>
@@ -923,7 +945,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 				}),
 			);
 		} catch {
-			window.alert("找不到该对话(可能已删除)。");
+			window.alert(t("convNotFound", lang));
 		}
 	};
 
@@ -933,11 +955,11 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 		try {
 			const p = await api.restorePreview(workspaceId, c.sha);
 			if (!p.ok) {
-				window.alert(p.error || "无法预览回退");
+				window.alert(p.error || t("cannotPreviewRestore", lang));
 				return;
 			}
 			if (p.blocked) {
-				window.alert("有 agent 正在该工作区运行,等它完成或取消后再回退。");
+				window.alert(t("agentRunning", lang));
 				return;
 			}
 			setRestoreAsk({
@@ -948,7 +970,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 				authors: (p.authors ?? []).map(
 					(a: string) =>
 						findAgent(agents, a)?.name ??
-						(a === "polynoia-agent" ? "你" : a.slice(-4)),
+						(a === "polynoia-agent" ? t("you", lang) : a.slice(-4)),
 				),
 			});
 		} catch (e) {
@@ -1006,7 +1028,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 			>
 				{graphMode ? (
 					<div className="px-3 py-1.5 border-b border-[var(--color-line)] text-[10px] text-[var(--color-fg-3)]">
-						提交树 · 线色 = 所属 agent(绿 = main)
+						{t("graphModeInfo", lang)}
 					</div>
 				) : (
 					<FilterBar
@@ -1045,7 +1067,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 								<div className="flex flex-col justify-center gap-0.5 min-w-0 flex-1 pr-3">
 									<div className="flex items-center gap-2 text-[11.5px] text-[var(--color-fg)]">
 										<span className="truncate flex-1" title={c.subject}>
-											{prettySubject(c.subject)}
+											{prettySubject(c.subject, lang)}
 										</span>
 										<StatChips adds={c.additions} dels={c.deletions} />
 									</div>
@@ -1054,7 +1076,9 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 											agent={findAgent(agents, c.author)}
 											author={c.author}
 										/>
-										<span className="flex-shrink-0">{relTime(c.date)}</span>
+										<span className="flex-shrink-0">
+											{relTime(c.date, lang)}
+										</span>
 									</div>
 								</div>
 							</button>
@@ -1062,8 +1086,8 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 					) : timeline.length === 0 ? (
 						<div className="px-3 py-6 text-[11px] text-[var(--color-fg-3)] leading-relaxed">
 							{commits.length === 0
-								? "还没有提交。Agent 对该工作区的改动合并到 main 后会出现在这里。"
-								: "没有匹配的提交。"}
+								? t("noCommitsYet", lang)
+								: t("noMatchingCommits", lang)}
 						</div>
 					) : (
 						dayGroups.map(([day, items]) => (
@@ -1093,10 +1117,10 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 										>
 											<GitMerge size={11} className="flex-shrink-0" />
 											<span className="truncate flex-1">
-												{prettySubject(it.commit.subject)}
+												{prettySubject(it.commit.subject, lang)}
 											</span>
 											<span className="flex-shrink-0">
-												{relTime(it.commit.date)}
+												{relTime(it.commit.date, lang)}
 											</span>
 										</button>
 									) : (
@@ -1139,7 +1163,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 					{selected === WORKING ? (
 						<>
 							<span className="text-[var(--color-fg)] font-medium">
-								工作区改动(未提交)
+								{t("workingChanges", lang)}
 							</span>
 							{diff && (
 								<span className="text-[var(--color-fg-3)]">
@@ -1153,10 +1177,10 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 									disabled={actionBusy}
 									onClick={() => setDiscardAsk(true)}
 									className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40"
-									title="丢弃工作区根目录的全部未提交改动"
+									title={t("discardAllChangesTitle", lang)}
 								>
 									<Trash2 size={11} />
-									丢弃改动
+									{t("discardChanges", lang)}
 								</button>
 							)}
 						</>
@@ -1166,14 +1190,14 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 								className="text-[var(--color-fg)] font-medium truncate max-w-[40%]"
 								title={selectedCommit.subject}
 							>
-								{prettySubject(selectedCommit.subject)}
+								{prettySubject(selectedCommit.subject, lang)}
 							</span>
 							<AgentChip
 								agent={findAgent(agents, selectedCommit.author)}
 								author={selectedCommit.author}
 							/>
 							<span className="text-[var(--color-fg-3)] flex-shrink-0">
-								{relTime(selectedCommit.date)}
+								{relTime(selectedCommit.date, lang)}
 							</span>
 							<CopySha sha={selectedCommit.sha} short={selectedCommit.short} />
 							{diff && (
@@ -1187,10 +1211,10 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 									type="button"
 									onClick={() => openConversation(selectedConv)}
 									className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
-									title="跳到产生这笔提交的对话"
+									title={t("jumpToConvTitle", lang)}
 								>
 									<MessageSquareText size={11} />
-									在对话中查看
+									{t("viewInConv", lang)}
 								</button>
 							)}
 							{mainChain.has(selectedCommit.sha) && (
@@ -1199,10 +1223,10 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 									disabled={actionBusy}
 									onClick={() => askRestore(selectedCommit)}
 									className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40"
-									title="把工作区 main 回退到这个提交(会记录撤销点)"
+									title={t("restoreToCommitTitle", lang)}
 								>
 									<History size={11} />
-									回到这里
+									{t("restoreHere", lang)}
 								</button>
 							)}
 						</>
@@ -1218,19 +1242,25 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 								? "text-[var(--color-accent)]"
 								: "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
 						}`}
-						title={graphMode ? "切换为时间线" : "切换为提交树(graph)"}
+						title={
+							graphMode ? t("switchToTimeline", lang) : t("switchToGraph", lang)
+						}
 					>
 						<GitFork size={12} />
-						{graphMode ? "时间线" : "树"}
+						{graphMode ? t("timeline", lang) : t("tree", lang)}
 					</button>
 					{diff && diff.files.length > 1 && (
 						<button
 							type="button"
 							onClick={() => setExpandAll(!effectiveOpen)}
 							className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]/50"
-							title={effectiveOpen ? "全部折叠" : "全部展开"}
+							title={
+								effectiveOpen
+									? t("collapseAllTitle", lang)
+									: t("expandAllTitle", lang)
+							}
 						>
-							{effectiveOpen ? "折叠全部" : "展开全部"}
+							{effectiveOpen ? t("collapseAll", lang) : t("expandAll", lang)}
 						</button>
 					)}
 					<button
@@ -1244,14 +1274,18 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 						}`}
 						title={
 							narrow
-								? "窗口较窄,已自动切为行内显示"
+								? t("narrowWindowTitle", lang)
 								: effectiveSplit
-									? "切换为行内(unified)"
-									: "切换为并排(split)"
+									? t("switchToUnified", lang)
+									: t("switchToSplit", lang)
 						}
 					>
 						{effectiveSplit ? <Columns2 size={12} /> : <Rows3 size={12} />}
-						{narrow ? "行内(窄屏)" : effectiveSplit ? "并排" : "行内"}
+						{narrow
+							? t("inlineNarrow", lang)
+							: effectiveSplit
+								? t("splitMode", lang)
+								: t("inlineMode", lang)}
 					</button>
 				</div>
 				<div className="flex-1 overflow-y-auto">
@@ -1261,7 +1295,9 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 						</div>
 					) : !diff || diff.files.length === 0 ? (
 						<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
-							{selected === WORKING ? "无未提交改动" : "该提交无文件改动"}
+							{selected === WORKING
+								? t("noUncommittedChanges", lang)
+								: t("noChangesInCommit", lang)}
 						</div>
 					) : (
 						<>
@@ -1275,7 +1311,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 							))}
 							{diff.truncated && (
 								<div className="px-4 py-3 text-[11px] text-[var(--color-fg-3)]">
-									文件过多,仅显示前 200 个。
+									{t("fileTruncated", lang)}
 								</div>
 							)}
 						</>
@@ -1291,8 +1327,8 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 							? `(作者:${restoreAsk.authors.join("、")})`
 							: ""
 					}。\n回退前会记录撤销点,但被撤销的提交将从历史中移出。`}
-					confirmLabel="回退"
-					cancelLabel="取消"
+					confirmLabel={t("restore2", lang)}
+					cancelLabel={t("cancel", lang)}
 					danger
 					onConfirm={doRestore}
 					onCancel={() => setRestoreAsk(null)}
@@ -1300,10 +1336,10 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 			)}
 			{discardAsk && (
 				<ConfirmDialog
-					title="丢弃工作区改动?"
+					title={t("discardChangesConfirmTitle", lang)}
 					body={`将丢弃工作区根目录的全部未提交改动(${workingCount} 个文件):已跟踪文件还原,新增未跟踪文件删除。该操作不可撤销;各 agent 工作分支不受影响。`}
-					confirmLabel="丢弃"
-					cancelLabel="取消"
+					confirmLabel={t("discard", lang)}
+					cancelLabel={t("cancel", lang)}
 					danger
 					onConfirm={doDiscard}
 					onCancel={() => setDiscardAsk(false)}

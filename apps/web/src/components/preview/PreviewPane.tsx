@@ -6,14 +6,10 @@
  * Conflicts/diff-review still hard-take the body (block the tree/preview) until
  * resolved. Resize handle on the left edge (360–900px), persisted.
  */
-import {
-	ArrowLeft,
-	FolderTree,
-	GitPullRequestArrow,
-	X,
-} from "lucide-react";
+import { ArrowLeft, FolderTree, GitPullRequestArrow, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import { DiffReviewPane } from "./DiffReviewPane";
 import { FileTree } from "./FileTree";
@@ -39,6 +35,7 @@ export function PreviewPane() {
 	// scenario 2 of the preview routing: tree → center, chat card → right rail.
 	const openCenterFile = useStore((s) => s.openCenterFile);
 	const previewFile = useStore((s) => s.preview.previewFile);
+	const lang = useStore((s) => s.lang);
 	const [convTitle, setConvTitle] = useState<string | null>(null);
 	// Pending file changes to review → show the green/red diff + accept/reject
 	// here (Cursor-style) instead of the plain file tree.
@@ -79,8 +76,9 @@ export function PreviewPane() {
 		return agents.find((a) => a.id === agentId)?.name ?? null;
 	}, [activeConvId, agents]);
 
-	const workspaceOwnerName = wsName ?? convTitle ?? privateOwnerName ?? "当前";
-	const workspaceTitle = `${workspaceOwnerName} 的工作区`;
+	const workspaceOwnerName =
+		wsName ?? convTitle ?? privateOwnerName ?? t("current", lang);
+	const workspaceTitle = `${workspaceOwnerName}${t("workspaceOfOwner", lang)}`;
 
 	// Resize handle — left edge, 360–900px, persisted.
 	const [width, setWidth] = useState(() => {
@@ -158,7 +156,7 @@ export function PreviewPane() {
 			<div
 				onMouseDown={onMouseDown}
 				onDoubleClick={() => setWidth(480)}
-				title="拖动调节代码区宽度(双击复位)"
+				title={t("dragResizePreviewWidth", lang)}
 				className="absolute top-0 -left-1 bottom-0 w-2 cursor-col-resize z-30 group"
 			>
 				<div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-transparent group-hover:bg-[var(--color-accent)] transition-colors" />
@@ -175,8 +173,8 @@ export function PreviewPane() {
 					<button
 						type="button"
 						onClick={toggleServicesView}
-						title="返回文件列表"
-						aria-label="返回文件列表"
+						title={t("returnToFileList", lang)}
+						aria-label={t("returnToFileList", lang)}
 						className="p-0.5 -ml-0.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-2)] flex-shrink-0"
 					>
 						<ArrowLeft size={15} />
@@ -185,8 +183,8 @@ export function PreviewPane() {
 					<button
 						type="button"
 						onClick={() => openPreviewFile(null)}
-						title="返回文件列表"
-						aria-label="返回文件列表"
+						title={t("returnToFileList", lang)}
+						aria-label={t("returnToFileList", lang)}
 						className="p-0.5 -ml-0.5 rounded hover:bg-[var(--color-line)] text-[var(--color-fg-2)] flex-shrink-0"
 					>
 						<ArrowLeft size={15} />
@@ -200,26 +198,26 @@ export function PreviewPane() {
 				<div className="flex-1 min-w-0">
 					<div className="text-[12px] font-semibold truncate text-[var(--color-fg)]">
 						{reviewing
-							? "代码评审 · 待接受改动"
-								: servicesView
-									? "运行中的服务"
-									: previewFile
-										? (previewFile.split("/").pop() ?? previewFile)
-										: workspaceTitle}
+							? t("codeReviewPendingChanges", lang)
+							: servicesView
+								? t("runningServices", lang)
+								: previewFile
+									? (previewFile.split("/").pop() ?? previewFile)
+									: workspaceTitle}
 					</div>
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)] truncate">
 						{servicesView
 							? `conv · ${activeConvId?.slice(0, 8) ?? "—"}`
 							: previewFile && !reviewing
 								? previewFile
-								: "main · 工作目录"}
+								: t("mainWorkingDirectory", lang)}
 					</div>
 				</div>
 				<button
 					type="button"
 					onClick={closePreview}
-					title="收起右侧面板"
-					aria-label="收起右侧面板"
+					title={t("collapseRightPanel", lang)}
+					aria-label={t("collapseRightPanel", lang)}
 					className="p-1 hover:bg-[var(--color-line)] rounded text-[var(--color-fg-3)]"
 				>
 					<X size={13} />
@@ -240,7 +238,7 @@ export function PreviewPane() {
 						<ServicesView convId={activeConvId} />
 					) : !workspaceId ? (
 						<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
-							无工作区
+							{t("noWorkspace", lang)}
 						</div>
 					) : previewFile ? (
 						<RightPreviewFile workspaceId={workspaceId} path={previewFile} />
@@ -256,7 +254,7 @@ export function PreviewPane() {
 					<>
 						<div
 							onMouseDown={onTermDragStart}
-							title="拖动调节终端高度"
+							title={t("dragResizeTerminalHeight", lang)}
 							className="h-1.5 flex-shrink-0 cursor-row-resize bg-[var(--color-line)] hover:bg-[var(--color-accent)] transition-colors"
 						/>
 						<div

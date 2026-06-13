@@ -6,6 +6,8 @@
  */
 import { Loader2, RefreshCw, ServerCrash } from "lucide-react";
 import { useState } from "react";
+import { t } from "../lib/i18n";
+import { isDesktopApp } from "../lib/platform";
 import {
 	flushServerConfig,
 	getServerHttpBase,
@@ -13,13 +15,13 @@ import {
 	setServerMode,
 	setServerUrl,
 } from "../lib/runtime-config";
-import { isDesktopApp } from "../lib/platform";
 import { useStore } from "../store";
 
 export function ServerUnreachable() {
+	const lang = useStore((s) => s.lang);
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
-	const base = getServerHttpBase() || "本机默认 (同源 / 代理)";
+	const base = getServerHttpBase() || t("localDefaultServer", lang);
 	const mobile = isNativeShell();
 	const desktop = isDesktopApp();
 
@@ -62,16 +64,16 @@ export function ServerUnreachable() {
 					<ServerCrash size={22} style={{ color: "var(--color-red)" }} />
 				</div>
 				<div className="pn-m-kicker mb-2" style={{ color: "var(--color-red)" }}>
-					服务不可用
+					{t("serviceUnavailable", lang)}
 				</div>
 				<h1 className="text-[19px] font-semibold text-[var(--color-fg)] mb-1.5">
-					暂时无法连接 Polynoia 服务
+					{t("cannotConnectTitle", lang)}
 				</h1>
 				<p className="text-[13px] text-[var(--color-fg-3)] leading-relaxed mb-1">
-					请确认服务已启动,且当前设备可以访问该地址。
+					{t("confirmServiceRunning", lang)}
 				</p>
 				<p className="text-[11.5px] font-mono text-[var(--color-fg-3)] mb-5 truncate">
-					当前连接目标: {base || "默认服务地址"}
+					{t("currentTarget", lang)} {base || t("defaultServer", lang)}
 				</p>
 				<button
 					type="button"
@@ -84,7 +86,7 @@ export function ServerUnreachable() {
 					) : (
 						<RefreshCw size={14} />
 					)}
-					{retrying ? "重试中…" : "重试连接"}
+					{retrying ? t("retrying", lang) : t("retryConnection", lang)}
 				</button>
 				{(mobile || desktop) && (
 					<button
@@ -92,7 +94,9 @@ export function ServerUnreachable() {
 						onClick={reselect}
 						className="mt-2.5 w-full text-[12.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] underline underline-offset-2 transition-colors"
 					>
-						{desktop ? "改用自定义地址" : "换个服务器地址"}
+						{desktop
+							? t("useCustomAddress", lang)
+							: t("chooseAnotherServer", lang)}
 					</button>
 				)}
 			</div>

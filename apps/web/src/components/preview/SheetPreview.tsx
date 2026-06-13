@@ -7,6 +7,8 @@
 import { Download } from "lucide-react";
 import { useMemo } from "react";
 import * as XLSX from "xlsx";
+import { type Lang, t } from "../../lib/i18n";
+import { useStore } from "../../store";
 import { csvToXlsxBlob, downloadBlob, printAsPdf } from "./exportUtils";
 
 type Cell = string | number | boolean;
@@ -47,8 +49,8 @@ function colLabel(index: number): string {
 	return label;
 }
 
-function rowsToHtml(rows: Cell[][]): string {
-	if (!rows.length) return "<p>(空表格)</p>";
+function rowsToHtml(rows: Cell[][], lang: Lang): string {
+	if (!rows.length) return `<p>${t("emptyTable", lang)}</p>`;
 	const ncol = Math.max(...rows.map((r) => r.length), 1);
 	return `<table><tbody>${rows
 		.map(
@@ -62,6 +64,7 @@ export function SheetPreview({
 	content,
 	fileName,
 }: { content: string; fileName: string }) {
+	const lang = useStore((s) => s.lang);
 	const { rows, error } = useMemo(() => parseRows(content), [content]);
 	const base = fileName.replace(/\.[^.]+$/, "");
 	const colCount = Math.max(...rows.map((r) => r.length), 1);
@@ -80,7 +83,11 @@ export function SheetPreview({
 				<ExportBtn
 					label="PDF"
 					onClick={() =>
-						printAsPdf(rowsToHtml(rows), base, `<style>${TABLE_CSS}</style>`)
+						printAsPdf(
+							rowsToHtml(rows, lang),
+							base,
+							`<style>${TABLE_CSS}</style>`,
+						)
 					}
 				/>
 			</div>
@@ -90,7 +97,9 @@ export function SheetPreview({
 						{error}
 					</pre>
 				) : rows.length === 0 ? (
-					<div className="text-[12px] text-[var(--color-fg-3)]">(空表格)</div>
+					<div className="text-[12px] text-[var(--color-fg-3)]">
+						{t("emptyTable", lang)}
+					</div>
 				) : (
 					<div className="inline-block min-w-full border border-[#d6dbe3] bg-white font-mono text-[12px] leading-normal text-[#111827] shadow-sm">
 						<div className="sticky top-0 z-20 flex bg-[#f3f6fb] text-[#4b5563]">

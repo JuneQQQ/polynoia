@@ -5,6 +5,8 @@
  * must be class components.
  */
 import { Component, type ReactNode } from "react";
+import { t } from "../../lib/i18n";
+import { useStore } from "../../store";
 
 type Props = {
 	children: ReactNode;
@@ -32,30 +34,50 @@ export class PreviewErrorBoundary extends Component<Props, State> {
 	render() {
 		if (this.state.error) {
 			return (
-				<div className="h-full grid place-items-center bg-[var(--color-surface-2)] p-8">
-					<div className="max-w-[360px] text-center">
-						<div className="text-[13px] font-medium text-[var(--color-fg)] mb-1.5">
-							预览失败
-						</div>
-						<div className="text-[11.5px] text-[var(--color-fg-3)] leading-relaxed mb-3">
-							这个文件无法在网页里渲染(可能是格式特殊或损坏)。可以下载后用本地应用打开。
-						</div>
-						{this.props.downloadHref && (
-							<a
-								href={this.props.downloadHref}
-								download={this.props.fileName}
-								className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-white text-[12px] font-medium no-underline"
-							>
-								下载{this.props.fileName ? ` ${this.props.fileName}` : "文件"}
-							</a>
-						)}
-						<div className="mt-2 text-[10px] font-mono text-[var(--color-fg-4)] truncate">
-							{this.state.error.message}
-						</div>
-					</div>
-				</div>
+				<FailedCard
+					downloadHref={this.props.downloadHref}
+					fileName={this.props.fileName}
+					message={this.state.error.message}
+				/>
 			);
 		}
 		return this.props.children;
 	}
+}
+
+function FailedCard({
+	downloadHref,
+	fileName,
+	message,
+}: {
+	downloadHref?: string;
+	fileName?: string;
+	message: string;
+}) {
+	const lang = useStore((s) => s.lang);
+	return (
+		<div className="h-full grid place-items-center bg-[var(--color-surface-2)] p-8">
+			<div className="max-w-[360px] text-center">
+				<div className="text-[13px] font-medium text-[var(--color-fg)] mb-1.5">
+					{t("previewFailed", lang)}
+				</div>
+				<div className="text-[11.5px] text-[var(--color-fg-3)] leading-relaxed mb-3">
+					{t("previewFailedHint", lang)}
+				</div>
+				{downloadHref && (
+					<a
+						href={downloadHref}
+						download={fileName}
+						className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-white text-[12px] font-medium no-underline"
+					>
+						{t("download", lang)}
+						{fileName ? ` ${fileName}` : "文件"}
+					</a>
+				)}
+				<div className="mt-2 text-[10px] font-mono text-[var(--color-fg-4)] truncate">
+					{message}
+				</div>
+			</div>
+		</div>
+	);
 }

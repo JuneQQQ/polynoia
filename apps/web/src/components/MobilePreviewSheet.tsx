@@ -10,6 +10,7 @@
  * 在 WebView 内由 JS 库渲染 —— 不依赖原生下载。
  */
 import { X } from "lucide-react";
+import { t } from "../lib/i18n";
 import { useStore } from "../store";
 import { RightPreviewFile } from "./preview/RightPreviewFile";
 
@@ -22,6 +23,7 @@ export function MobilePreviewSheet() {
 	const previewFile = useStore((s) => s.preview.previewFile);
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
 	const closePreview = useStore((s) => s.closePreview);
+	const lang = useStore((s) => s.lang);
 
 	// 只接管「单文件只读预览」这条路径。冲突解决 / 评审 / 文件树(previewFile
 	// 为 null)仍是桌面专属,移动端不弹此 sheet。
@@ -46,7 +48,7 @@ export function MobilePreviewSheet() {
 				<button
 					type="button"
 					onClick={closePreview}
-					aria-label="关闭预览"
+					aria-label={t("closePreview", lang)}
 					className="w-10 h-10 grid place-items-center rounded-full text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] press-down"
 				>
 					<X size={22} />

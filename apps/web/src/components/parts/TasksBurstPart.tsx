@@ -19,6 +19,7 @@ import { Check, Loader2, Square, X } from "lucide-react";
 import { memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
 import { type FoldPass, foldPass } from "../../lib/foldPass";
+import { t as tr } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
 import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
 import { useStore } from "../../store";
@@ -156,7 +157,7 @@ function TasksBurstPartInner({
 					Parallel · Burst {burstInfo.index}
 				</span>
 				<span className="font-display text-[14px] text-[var(--color-fg)] truncate flex-1 tracking-wide">
-					{payload.title || "并行任务"}
+					{payload.title || tr("parallelTasks", lang)}
 				</span>
 				<motion.span
 					key={aggregate.label}
@@ -175,7 +176,7 @@ function TasksBurstPartInner({
 			{payload.contract && (
 				<details className="border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/50">
 					<summary className="px-4 py-1.5 cursor-pointer select-none text-[9.5px] font-mono uppercase tracking-[0.2em] text-[var(--color-purple)] hover:text-[var(--color-accent)] transition">
-						契约 · Contract
+						{tr("contractLabel", lang)}
 					</summary>
 					<pre className="px-4 pb-2.5 pt-0.5 text-[11px] leading-relaxed text-[var(--color-fg-2)] whitespace-pre-wrap font-mono max-h-40 overflow-auto">
 						{payload.contract}
@@ -234,7 +235,10 @@ function TasksBurstPartInner({
 										}
 										className="w-7 h-7 rounded-full grid place-items-center text-white text-[10px] font-medium shadow-sm ring-1 ring-black/10 hover:scale-[1.08] transition-transform duration-200"
 										style={{ background: agent.color }}
-										title={`查看 ${agent.name} 详情`}
+										title={tr("viewAgentDetails", lang).replace(
+											"{agentName}",
+											agent.name,
+										)}
 									>
 										{agent.initials}
 									</button>
@@ -254,7 +258,9 @@ function TasksBurstPartInner({
 									<div className="mt-0.5 flex items-center gap-1 text-[10px] font-mono text-[var(--color-fg-3)] min-h-[15px]">
 										{diffStat ? (
 											<>
-												<span title="本泳道已改文件数">✎ {diffStat.files}</span>
+												<span title={tr("laneModifiedFiles", lang)}>
+													✎ {diffStat.files}
+												</span>
 												<span style={{ color: "var(--color-green)" }}>
 													+{diffStat.adds}
 												</span>
@@ -267,7 +273,7 @@ function TasksBurstPartInner({
 										) : (
 											<span
 												className="text-[var(--color-fg-4)]"
-												title="本泳道无文件改动"
+												title={tr("laneNoChanges", lang)}
 											>
 												—
 											</span>
@@ -286,8 +292,11 @@ function TasksBurstPartInner({
 												}),
 											)
 										}
-										title={`停止 ${agent?.name ?? t.agent} 这条泳道`}
-										aria-label="停止这条泳道"
+										title={tr("stopAgentLane", lang).replace(
+											"{agentName}",
+											agent?.name ?? t.agent,
+										)}
+										aria-label={tr("stopLane", lang)}
 										className="p-1 rounded text-[var(--color-fg-4)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/50 transition"
 									>
 										<Square size={10} />
@@ -440,6 +449,7 @@ function BurstChangesSummary({
 	convId: string;
 	burstInfo: BurstInfo;
 }) {
+	const lang = useStore((s) => s.lang);
 	const conv = useStore.getState().convs.get(convId);
 	const byFile = new Map<string, DiffPayload>();
 	if (conv) {
@@ -459,7 +469,9 @@ function BurstChangesSummary({
 	return (
 		<details className="border-t border-[var(--color-line)] bg-[var(--color-surface-2)]/40">
 			<summary className="flex items-center gap-2 px-4 py-2 cursor-pointer select-none text-[9.5px] font-mono uppercase tracking-[0.2em] text-[var(--color-accent)] hover:text-[var(--color-fg)] transition">
-				<span>本轮改动 · {diffs.length} 文件</span>
+				<span>
+					{tr("burstChanges", lang).replace("{count}", String(diffs.length))}
+				</span>
 				<span style={{ color: "var(--color-green)" }}>+{adds}</span>
 				{dels > 0 && <span style={{ color: "var(--color-red)" }}>−{dels}</span>}
 			</summary>

@@ -7,7 +7,8 @@
  */
 import { Users, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api, type ConversationSummary } from "../lib/api";
+import { type ConversationSummary, api } from "../lib/api";
+import { t } from "../lib/i18n";
 import { useStore } from "../store";
 
 type Props = {
@@ -18,6 +19,7 @@ type Props = {
 
 export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 	const memberAgents = useMemo(
 		() =>
 			(conv.members ?? [])
@@ -78,7 +80,7 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 					<div className="flex items-center gap-2.5">
 						<Users size={15} className="text-[var(--color-accent)]" />
 						<span className="font-display text-[18px] font-medium text-[var(--color-fg)] tracking-wide">
-							成员角色
+							{t("memberRoles", lang)}
 						</span>
 					</div>
 					<button
@@ -91,14 +93,13 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 				</header>
 
 				<div className="px-6 py-4 text-[11.5px] text-[var(--color-fg-3)] leading-relaxed">
-					指定每位成员在本对话里的角色定位(文字职责会作为系统事件注入时间线,下一轮所有
-					agent 都看得到)。工具能力由项目统一治理,不在这里单独设。
+					{t("memberRolesHint", lang)}
 				</div>
 
 				<div className="flex-1 overflow-y-auto px-6 pb-4 space-y-3">
 					{memberAgents.length === 0 && (
 						<div className="text-[12px] text-[var(--color-fg-3)] text-center py-6">
-							本对话没有其他成员。
+							{t("noOtherMembers", lang)}
 						</div>
 					)}
 					{memberAgents.map((a) => (
@@ -132,7 +133,7 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 									onChange={(e) =>
 										setDraft((d) => ({ ...d, [a.id]: e.target.value }))
 									}
-									placeholder="如:后端实现 / 前端样式 / 评审者…"
+									placeholder={t("roleDescHint2", lang)}
 									className="w-full mt-1 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] transition-colors"
 								/>
 							</div>
@@ -152,7 +153,7 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 						onClick={onClose}
 						className="text-[13px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:underline transition"
 					>
-						取消
+						{t("cancel", lang)}
 					</button>
 					<button
 						type="button"
@@ -160,7 +161,11 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 						disabled={!dirty || busy}
 						className="btn-primary"
 					>
-						{busy ? "保存中…" : dirty ? "保存修改" : "无变更"}
+						{busy
+							? t("saving", lang)
+							: dirty
+								? t("saveChanges", lang)
+								: t("noChanges", lang)}
 					</button>
 				</footer>
 			</div>

@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import { DocPreviewPane, docKind } from "./DocPreviewPane";
 import { downloadText } from "./exportUtils";
@@ -107,6 +108,7 @@ export function CodeEditor({
 	}, [minimapOn]);
 	const cmViewRef = useRef<EditorView | null>(null);
 	const filesTick = useStore((s) => s.workspaceFilesTick);
+	const lang = useStore((s) => s.lang);
 
 	// Doc-type files (.md/.xlsx/.html/Marp) get a rendered-preview toggle —
 	// WYSIWYG doc (Crepe), embedded workbook, Marp slides, or HTML iframe. CSV is
@@ -120,8 +122,7 @@ export function CodeEditor({
 	// them in CodeMirror shows garbled bytes + saving would corrupt the file. They
 	// are preview-ONLY (read-only): no 源码 toggle, no save, and we skip the text
 	// read entirely (OfficePreview/WorkbookPreview fetch the bytes themselves).
-	const isBinary =
-		kind === "word" || kind === "slides" || kind === "workbook";
+	const isBinary = kind === "word" || kind === "slides" || kind === "workbook";
 	const [preview, setPreview] = useState(() => docKind(path, "") !== "other");
 
 	const dirty = content !== null && content !== original;
@@ -208,7 +209,7 @@ export function CodeEditor({
 				</span>
 				{isBinary && (
 					<span className="text-[10px] font-mono text-[var(--color-fg-4)] px-1.5 py-0.5 rounded bg-[var(--color-surface)]">
-						只读预览
+						{t("readOnlyPreview", lang)}
 					</span>
 				)}
 				{isDoc && !isBinary && (
@@ -221,10 +222,10 @@ export function CodeEditor({
 								? "text-[var(--color-accent)]"
 								: "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
 						}`}
-						title={preview ? "查看 / 编辑源码" : "预览(可导出)"}
+						title={preview ? t("viewEditSource", lang) : "预览(可导出)"}
 					>
 						{preview ? <Pencil size={12} /> : <Eye size={12} />}
-						{preview ? "源码" : "预览"}
+						{preview ? t("source", lang) : "预览"}
 					</button>
 				)}
 				{/* Download the rendered .html — the only export we keep (PDF dropped:
@@ -241,9 +242,9 @@ export function CodeEditor({
 							)
 						}
 						className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface)]"
-						title="下载 .html"
+						title={t("downloadHtml", lang)}
 					>
-						<Download size={12} /> 下载
+						<Download size={12} /> {t("download", lang)}
 					</button>
 				)}
 				{!preview && (
@@ -258,7 +259,7 @@ export function CodeEditor({
 								}
 							}}
 							className="p-1.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface)]"
-							title="查找 / 替换 (Ctrl+F)"
+							title={t("findReplace", lang)}
 						>
 							<Search size={12} />
 						</button>
@@ -271,7 +272,11 @@ export function CodeEditor({
 									? "text-[var(--color-accent)]"
 									: "text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
 							}`}
-							title={minimapOn ? "隐藏小地图" : "显示小地图"}
+							title={
+								minimapOn
+									? t("hideMinimapTitle", lang)
+									: t("showMinimapTitle", lang)
+							}
 						>
 							<MapIcon size={12} />
 						</button>
@@ -283,14 +288,14 @@ export function CodeEditor({
 						onClick={save}
 						disabled={!dirty || saving}
 						className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
-						title="保存 (Ctrl+S)"
+						title={t("saveTitle", lang)}
 					>
 						{saving ? (
 							<Loader2 size={11} className="animate-spin" />
 						) : (
 							<Save size={11} />
 						)}
-						{dirty ? "保存" : "已保存"}
+						{dirty ? t("save", lang) : t("saved", lang)}
 					</button>
 				)}
 			</div>
@@ -335,7 +340,11 @@ export function CodeEditor({
 				<span className="truncate flex-1">{path}</span>
 				<span>{extOf(path).toUpperCase() || "TEXT"}</span>
 				<span>{isWorkbook ? "BINARY" : "UTF-8"}</span>
-				{!isWorkbook && <span>{(content ?? "").split("\n").length} 行</span>}
+				{!isWorkbook && (
+					<span>
+						{(content ?? "").split("\n").length} {t("rows", lang)}
+					</span>
+				)}
 			</footer>
 		</div>
 	);

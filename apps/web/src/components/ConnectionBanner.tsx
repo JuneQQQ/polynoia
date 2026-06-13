@@ -11,9 +11,11 @@
  */
 import { Loader2, RefreshCw, WifiOff } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
+import { t } from "../lib/i18n";
 import { useStore } from "../store";
 
 export function ConnectionBanner() {
+	const lang = useStore((s) => s.lang);
 	const status = useStore((s) => s.connectionStatus);
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
@@ -76,10 +78,10 @@ export function ConnectionBanner() {
 				) : (
 					<Loader2 size={11} className="animate-spin" />
 				)}
-				{offline ? "无法连接服务器" : "连接中断 · 正在重连"}
+				{offline ? t("cannotReachServer", lang) : t("reconnecting2", lang)}
 			</span>
 			<span className="hidden sm:inline text-[11.5px] text-[var(--color-fg-3)] truncate">
-				{offline ? "请确认后端在运行,或检查网络。" : "正在尝试恢复实时连接…"}
+				{offline ? t("offlineHelpText", lang) : t("reconnectingHelpText", lang)}
 			</span>
 			<button
 				type="button"
@@ -93,7 +95,7 @@ export function ConnectionBanner() {
 				) : (
 					<RefreshCw size={11} />
 				)}
-				重试
+				{t("retryButton", lang)}
 			</button>
 		</output>
 	);

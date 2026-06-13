@@ -1,8 +1,8 @@
-import ReactMarkdown from "react-markdown";
 import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { describe, expect, it } from "vitest";
-import { fixCjkMarkdown, stripRawToolProtocol, TextPart } from "./TextPart";
+import { TextPart, fixCjkMarkdown, stripRawToolProtocol } from "./TextPart";
 
 // Renders through the SAME pipeline TextPart uses (react-markdown + remark-gfm),
 // jsdom-free via renderToStaticMarkup. We assert on <strong> presence so the test
@@ -18,7 +18,10 @@ describe("fixCjkMarkdown — closing-side CJK bold gotcha", () => {
 	// followed by a CJK char, fails CommonMark's right-flanking rule → the bold
 	// never closes and the asterisks leak. This is the regression that re-appeared
 	// when fixCjkMarkdown was neutered to a no-op.
-	const closingCases = ["**说明（重要）**这是结论。", "**第三人（最后面）**看了看"];
+	const closingCases = [
+		"**说明（重要）**这是结论。",
+		"**第三人（最后面）**看了看",
+	];
 
 	it.each(closingCases)(
 		"raw input %s is BROKEN (no <strong>) — proves the fix is necessary",
@@ -27,12 +30,9 @@ describe("fixCjkMarkdown — closing-side CJK bold gotcha", () => {
 		},
 	);
 
-	it.each(closingCases)(
-		"fixCjkMarkdown(%s) renders <strong>",
-		(input) => {
-			expect(bold(fixCjkMarkdown(input))).toBe(true);
-		},
-	);
+	it.each(closingCases)("fixCjkMarkdown(%s) renders <strong>", (input) => {
+		expect(bold(fixCjkMarkdown(input))).toBe(true);
+	});
 
 	// The closing-side regex must NOT reintroduce the user's original bug, where
 	// the OLD opening-side ZWSP made `**顾屿 ✓**` render literally.
@@ -104,9 +104,7 @@ describe("TextPart structured inline markdown", () => {
 					body: [
 						{
 							t: "p",
-							c: [
-								{ type: "text", text: "请读取 `docs/spec.md` 后继续" },
-							],
+							c: [{ type: "text", text: "请读取 `docs/spec.md` 后继续" }],
 						},
 					],
 				}}

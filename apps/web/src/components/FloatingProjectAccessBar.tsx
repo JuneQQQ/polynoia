@@ -10,12 +10,14 @@
  */
 import { Check, FolderGit2, Loader2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, type PendingAccess } from "../lib/api";
+import { type PendingAccess, api } from "../lib/api";
+import { t } from "../lib/i18n";
 import { useStore } from "../store";
 
 const EMPTY: readonly PendingAccess[] = [];
 
 export function FloatingProjectAccessBar({ convId }: { convId: string }) {
+	const lang = useStore((s) => s.lang);
 	const list = useStore((s) => s.pendingAccessByConv.get(convId) ?? EMPTY);
 	const hydrate = useStore((s) => s.hydratePendingAccess);
 	const upsert = useStore((s) => s.upsertPendingAccess);
@@ -72,7 +74,7 @@ export function FloatingProjectAccessBar({ convId }: { convId: string }) {
 			/>
 			<span className="inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-accent)] font-medium flex-shrink-0">
 				<FolderGit2 size={11} />
-				项目访问申请
+				{t("projectAccessRequest", lang)}
 			</span>
 			{agent && (
 				<span
@@ -86,7 +88,8 @@ export function FloatingProjectAccessBar({ convId }: { convId: string }) {
 				className="min-w-0 text-[11.5px] text-[var(--color-fg)] truncate"
 				title={req.reason}
 			>
-				{agent?.name ?? req.agent_id}：{req.reason || "申请访问一个项目"}
+				{agent?.name ?? req.agent_id}：
+				{req.reason || t("defaultAccessReason", lang)}
 			</span>
 
 			<div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
@@ -94,7 +97,7 @@ export function FloatingProjectAccessBar({ convId }: { convId: string }) {
 					value={wsId}
 					onChange={(e) => setWsId(e.target.value)}
 					className="text-[11px] px-1.5 py-0.5 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none"
-					title="选择要授权的项目"
+					title={t("selectProjectToAuth", lang)}
 				>
 					{workspaces.map((w) => (
 						<option key={w.id} value={w.id}>
@@ -113,7 +116,7 @@ export function FloatingProjectAccessBar({ convId }: { convId: string }) {
 					) : (
 						<X size={11} />
 					)}
-					拒绝
+					{t("denyButton", lang)}
 				</button>
 				<button
 					type="button"
@@ -126,7 +129,7 @@ export function FloatingProjectAccessBar({ convId }: { convId: string }) {
 					) : (
 						<Check size={11} />
 					)}
-					批准
+					{t("approveButton", lang)}
 				</button>
 			</div>
 		</div>

@@ -22,7 +22,9 @@ import {
 	Terminal,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { type Lang, t } from "../../lib/i18n";
 import type { ToolCallPayload } from "../../lib/types";
+import { useStore } from "../../store";
 
 /** Strip MCP/server prefixes so every adapter shows the SAME clean verb.
  *   mcp__polynoia__write → write   (Claude Code MCP naming)
@@ -59,6 +61,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
 
 const STATE_STYLE = (
 	state: ToolCallPayload["state"],
+	lang: Lang,
 	phase?: "args" | "run",
 ) => {
 	switch (state) {
@@ -66,25 +69,26 @@ const STATE_STYLE = (
 			return {
 				bg: "var(--color-green-soft)",
 				fg: "var(--color-green)",
-				label: "完成",
+				label: t("completed", lang),
 			};
 		case "error":
 			return {
 				bg: "var(--color-red-soft)",
 				fg: "var(--color-red)",
-				label: "出错",
+				label: t("error", lang),
 			};
 		case "running":
 			return {
 				bg: "var(--color-accent-soft)",
 				fg: "var(--color-accent)",
-				label: phase === "args" ? "生成参数" : "进行中",
+				label:
+					phase === "args" ? t("generatingArgs", lang) : t("inProgress", lang),
 			};
 		default:
 			return {
 				bg: "var(--color-line)",
 				fg: "var(--color-fg-3)",
-				label: "待执行",
+				label: t("pending2", lang),
 			};
 	}
 };
@@ -175,6 +179,7 @@ function extractWriteFields(payload: ToolCallPayload): {
  * blinking cursor; once the write completes the canonical `diff` card replaces
  * it. */
 function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
+	const lang = useStore((s) => s.lang);
 	const { path, content } = extractWriteFields(payload);
 	const [open, setOpen] = useState(true);
 	const bodyRef = useRef<HTMLDivElement>(null);
@@ -221,7 +226,7 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
 					}}
 				>
 					<Loader2 size={11} className="animate-spin" />
-					写入中
+					{t("writing", lang)}
 				</span>
 			</button>
 			{open && (
@@ -230,7 +235,9 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
 					className="anim-write-breath font-mono text-[11px] leading-[1.55] p-2.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all text-[var(--color-fg-2)] border-t border-[var(--color-line)]"
 				>
 					{content || (
-						<span className="text-[var(--color-fg-4)] italic">准备写入…</span>
+						<span className="text-[var(--color-fg-4)] italic">
+							{t("preparingWrite", lang)}
+						</span>
 					)}
 					{/* Crisp accent caret (editor-style step blink) instead of a gray
               opacity pulse — reads as a real "落字" cursor. */}
@@ -245,13 +252,14 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
 }
 
 export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
+	const lang = useStore((s) => s.lang);
 	const [expanded, setExpanded] = useState(false);
 	const userTouched = useRef(false);
 	const displayName = cleanToolName(payload.name);
 	const ToolIcon = TOOL_ICONS[displayName.toLowerCase()] ?? Settings;
 	const streamingArgs = payload.state === "running" && !!payload.input_preview;
 	const summary = toolCallHeaderSummary(payload);
-	const ss = STATE_STYLE(payload.state, streamingArgs ? "args" : "run");
+	const ss = STATE_STYLE(payload.state, lang, streamingArgs ? "args" : "run");
 	const isError = payload.state === "error" || !!payload.is_error;
 	// Dedup + ordering fix: a successful file-write already shows as a rich `diff`
 	// card and a `bash` run as a live `terminal` card (both posted by the tools
@@ -285,10 +293,13 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 			: typeof payload.output === "string" && payload.output.trim()
 				? payload.output
 				: typeof (payload as { error?: unknown }).error === "string" &&
-					  ((payload as { error?: string }).error ?? "").trim()
+						((payload as { error?: string }).error ?? "").trim()
 					? ((payload as { error?: string }).error as string)
 					: isError
-						? `${displayName} 执行失败,但平台未返回错误详情。`
+						? t("toolExecutionFailedNoDetails", lang).replace(
+								"{displayName}",
+								displayName,
+							)
 						: "";
 	const hasPreview = !hasInput && !!payload.input_preview;
 	// On error, always reveal the args the model sent — even an empty {} — so the
@@ -354,7 +365,9 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 					{(hasInput || showEmptyInputOnError) && (
 						<div>
 							<div className="px-2.5 py-1 bg-[var(--color-surface-2)] text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold">
-								{showEmptyInputOnError ? "输入(模型未提供参数)" : "输入"}
+								{showEmptyInputOnError
+									? t("inputNoArgs", lang)
+									: t("emptyHintPart1", lang)}
 							</div>
 							<pre className="mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto bg-[var(--color-surface)] text-[var(--color-fg-2)]">
 								{prettyJSON(payload.input)}
@@ -374,10 +387,10 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 											size={9}
 											className="animate-spin text-[var(--color-accent)]"
 										/>
-										输入(生成中)
+										{t("inputGenerating", lang)}
 									</>
 								) : (
-									"输入(原始)"
+									t("inputRaw", lang)
 								)}
 							</div>
 							<pre className="mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto max-h-[260px] overflow-y-auto whitespace-pre-wrap bg-[var(--color-surface)] text-[var(--color-fg-3)]">
@@ -389,16 +402,18 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 						<div>
 							<div className="px-2.5 py-1 bg-[var(--color-surface-2)] text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold flex items-center gap-2">
 								{payload.is_error ? (
-									<span className="text-[var(--color-red)]">输出(错误)</span>
+									<span className="text-[var(--color-red)]">
+										{t("outputError", lang)}
+									</span>
 								) : (
-									<span>输出</span>
+									<span>{t("output", lang)}</span>
 								)}
 							</div>
 							<pre
 								className={`mono text-[11px] leading-[1.55] p-2.5 m-0 overflow-x-auto max-h-[260px] overflow-y-auto whitespace-pre-wrap ${
 									payload.is_error
 										? "bg-[var(--color-red-soft)]/30 text-[var(--color-red)]"
-									: "bg-[var(--color-surface)] text-[var(--color-fg-2)]"
+										: "bg-[var(--color-surface)] text-[var(--color-fg-2)]"
 								}`}
 							>
 								{outIsString

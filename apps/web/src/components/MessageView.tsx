@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { api } from "../lib/api";
+import { t } from "../lib/i18n";
 import { isMobile } from "../lib/platform";
 import type { Message } from "../lib/types";
 import {
@@ -25,8 +26,8 @@ import {
 	useStore,
 } from "../store";
 import { MessagePart } from "./parts";
-import { useConvScope } from "./parts/_context";
 import { cleanToolName } from "./parts/ToolCallPart";
+import { useConvScope } from "./parts/_context";
 
 function isEmptyStreamingTextPayload(payload: Message["payload"]): boolean {
 	if (payload.kind !== "text") return false;
@@ -43,7 +44,9 @@ function payloadText(payload: Message["payload"]): string {
 	return payload.body
 		.map((block) => {
 			if (typeof block.c === "string") return block.c;
-			return block.c.map((seg) => (seg.type === "text" ? seg.text : "")).join("");
+			return block.c
+				.map((seg) => (seg.type === "text" ? seg.text : ""))
+				.join("");
 		})
 		.join("\n")
 		.trim();
@@ -53,7 +56,10 @@ export function isRenderableMessagePayload(
 	payload: Message["payload"],
 	isStreaming: boolean,
 ): boolean {
-	if ((payload.kind === "text" || payload.kind === "reasoning") && !isStreaming) {
+	if (
+		(payload.kind === "text" || payload.kind === "reasoning") &&
+		!isStreaming
+	) {
 		return payloadText(payload).length > 0;
 	}
 	if (payload.kind === "tool-call") {
@@ -121,6 +127,7 @@ function MessageViewInner({
 		selectIsMessageStreaming(s, convId, msgId),
 	);
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 	const convScope = useConvScope();
 	const mobile = isMobile();
 	const [editing, setEditing] = useState(false);
@@ -212,7 +219,7 @@ function MessageViewInner({
 		: null;
 	const replyTargetSender = replyTarget
 		? replyTarget.sender_id === "you"
-			? "我"
+			? t("youLabel", lang)
 			: (agents.find((a) => a.id === replyTarget.sender_id)?.name ?? "Agent")
 		: null;
 	const replyTargetSnippet = (() => {
@@ -269,7 +276,7 @@ function MessageViewInner({
 									background: isYou ? "#5E5749" : "var(--color-red)",
 								}}
 							>
-								{isYou ? "我" : "!"}
+								{isYou ? t("youLabel", lang) : "!"}
 							</div>
 						) : (
 							<button
@@ -293,7 +300,7 @@ function MessageViewInner({
 					<div className="flex items-baseline gap-2 mb-1">
 						{isYou || isSystem ? (
 							<span className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide">
-								{isYou ? "我" : "System"}
+								{isYou ? t("youLabel", lang) : "System"}
 							</span>
 						) : (
 							<button
@@ -302,17 +309,17 @@ function MessageViewInner({
 									agent && useStore.getState().openAgentDetail(agent.id)
 								}
 								className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
-								title="查看详情"
+								title={t("viewDetailsBrief", lang)}
 							>
 								{agent?.name ?? "Agent"}
 							</button>
 						)}
 						{isRemovedSender && (
 							<span
-								title="该成员已被移出本项目,不再参与后续对话"
+								title={t("memberRemoved", lang)}
 								className="text-[9px] font-mono uppercase tracking-[0.14em] px-1.5 py-[1px] rounded-sm font-medium bg-[var(--color-surface-2)] text-[var(--color-fg-4)] line-through decoration-1"
 							>
-								已退出项目
+								{t("leftProject", lang)}
 							</span>
 						)}
 						{!isYou && !isSystem && agent?.id === "orchestrator" && (
@@ -380,7 +387,7 @@ function MessageViewInner({
 						type="button"
 						onClick={scrollToReplyTarget}
 						className="mb-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm bg-[var(--color-surface-2)] hover:bg-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] transition max-w-full"
-						title="跳转到原消息"
+						title={t("jumpToOriginal", lang)}
 					>
 						<CornerUpLeft size={9} className="flex-shrink-0" />
 						<span className="font-medium text-[var(--color-fg-2)]">
@@ -408,14 +415,14 @@ function MessageViewInner({
 									onClick={() => setEditing(false)}
 									className="px-2 py-1 text-[12px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)]"
 								>
-									取消
+									{t("cancel", lang)}
 								</button>
 								<button
 									type="button"
 									onClick={saveEdit}
 									className="px-2 py-1 rounded-sm text-[12px] bg-[var(--color-accent)] text-white"
 								>
-									重新发送
+									{t("resendEdit", lang)}
 								</button>
 							</div>
 						</div>
@@ -423,7 +430,7 @@ function MessageViewInner({
 						<MessagePart
 							payload={
 								isStreaming && isEmptyStreamingTextPayload(msg.payload)
-									? { kind: "typing", note: "正在回复…" }
+									? { kind: "typing", note: t("replying", lang) }
 									: msg.payload
 							}
 							isStreaming={isStreaming}
@@ -453,6 +460,7 @@ function AgentMessageActions({
 	convId: string;
 	pinned: boolean;
 }) {
+	const lang = useStore((s) => s.lang);
 	const [busy, setBusy] = useState(false);
 	const [copied, setCopied] = useState(false);
 
@@ -477,7 +485,8 @@ function AgentMessageActions({
 			convId,
 			msgId,
 			snippet: payloadText().slice(0, 120),
-			senderLabel: agentsList.find((a) => a.id === m.sender_id)?.name ?? "Agent",
+			senderLabel:
+				agentsList.find((a) => a.id === m.sender_id)?.name ?? "Agent",
 		});
 	};
 
@@ -529,13 +538,18 @@ function AgentMessageActions({
 
 	return (
 		<div className="mt-1 flex items-center gap-0.5">
-			<button type="button" onClick={reply} title="引用" className={buttonClass}>
+			<button
+				type="button"
+				onClick={reply}
+				title={t("quoteAction", lang)}
+				className={buttonClass}
+			>
 				<Reply size={11} />
 			</button>
 			<button
 				type="button"
 				onClick={copy}
-				title={copied ? "已复制" : "复制"}
+				title={copied ? t("copiedAgent", lang) : t("copyAgent", lang)}
 				className={buttonClass}
 			>
 				<Copy size={11} />
@@ -543,7 +557,7 @@ function AgentMessageActions({
 			<button
 				type="button"
 				onClick={regenerate}
-				title="重做这一轮"
+				title={t("regenerateThisTurn", lang)}
 				className={buttonClass}
 			>
 				<RefreshCw size={11} />
@@ -552,7 +566,7 @@ function AgentMessageActions({
 				type="button"
 				onClick={togglePin}
 				disabled={busy}
-				title={pinned ? "取消置顶" : "置顶消息"}
+				title={pinned ? t("convUnpin", lang) : t("pinMessageAction", lang)}
 				className={`${buttonClass} ${pinned ? "opacity-100 text-[var(--color-accent)]" : ""}`}
 			>
 				{pinned ? <PinOff size={11} /> : <Pin size={11} />}
@@ -570,6 +584,7 @@ function MessageActions({
 	convId: string;
 	pinned: boolean;
 }) {
+	const lang = useStore((s) => s.lang);
 	const [busy, setBusy] = useState(false);
 	const [copied, setCopied] = useState(false);
 
@@ -650,7 +665,7 @@ function MessageActions({
 		const agentsList = useStore.getState().agents;
 		const senderLabel =
 			m.sender_id === "you"
-				? "我"
+				? t("youLabel", lang)
 				: m.sender_id === "system"
 					? "System"
 					: (agentsList.find((a) => a.id === m.sender_id)?.name ?? "Agent");
@@ -793,7 +808,7 @@ function MessageActions({
 			<button
 				type="button"
 				onClick={reply}
-				title="回复"
+				title={t("replyLabel", lang)}
 				className="p-0.5 rounded-sm opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)] transition-opacity duration-200"
 			>
 				<Reply size={11} />
@@ -801,7 +816,7 @@ function MessageActions({
 			<button
 				type="button"
 				onClick={copy}
-				title={copied ? "已复制" : "复制内容"}
+				title={copied ? t("copiedAgent", lang) : t("copyContent", lang)}
 				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
 					copied
 						? "opacity-90 text-[var(--color-green)]"
@@ -814,7 +829,7 @@ function MessageActions({
 				type="button"
 				onClick={togglePin}
 				disabled={busy}
-				title={pinned ? "取消置顶" : "置顶消息"}
+				title={pinned ? t("convUnpin", lang) : t("pinMessageAction", lang)}
 				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
 					pinned
 						? "opacity-90 text-[var(--color-accent)]"
@@ -829,8 +844,8 @@ function MessageActions({
 				disabled={restoreBusy}
 				title={
 					workspaceId && codeSha
-						? "从此处重来:删除这条及之后的对话,代码回退到此刻"
-						: "从此处重来:删除这条及之后的对话"
+						? t("rewindWithWorkspace", lang)
+						: t("rewindNoWorkspace", lang)
 				}
 				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
 					restoreBusy
@@ -849,7 +864,7 @@ function MessageActions({
 					className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
 				>
 					<Undo2 size={10} />
-					撤销回退
+					{t("undoRevert", lang)}
 				</button>
 			)}
 		</div>

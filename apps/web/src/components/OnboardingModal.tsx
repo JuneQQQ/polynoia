@@ -27,18 +27,20 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { type AdapterProbe, api } from "../lib/api";
+import { t } from "../lib/i18n";
+import { isDesktopApp } from "../lib/platform";
 import {
+	type ServerMode,
 	flushServerConfig,
 	getDesktopEmbeddedBackendUrl,
+	getServerMode,
 	getServerOverride,
 	isNativeShell,
-	getServerMode,
-	type ServerMode,
 	setServerMode,
 	startDesktopEmbeddedBackend,
 } from "../lib/runtime-config";
-import { isDesktopApp } from "../lib/platform";
 import type { ProxyKind } from "../lib/types";
+import { useStore } from "../store";
 
 type ProxyCfg = { proxy: string | null; proxy_kind: ProxyKind };
 
@@ -50,6 +52,7 @@ type Props = {
 };
 
 export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
+	const lang = useStore((s) => s.lang);
 	const [probes, setProbes] = useState<AdapterProbe[] | null>(null);
 	const [refreshing, setRefreshing] = useState(false);
 	const [busy, setBusy] = useState<string | null>(null);
@@ -207,7 +210,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 					<div className="flex items-center gap-2.5">
 						<Sparkles size={15} className="text-[var(--color-accent)]" />
 						<span className="font-display text-[18px] font-medium text-[var(--color-fg)] tracking-wide">
-							接入智能体
+							{t("onboardAgents", lang)}
 						</span>
 					</div>
 					<div className="flex items-center gap-2">
@@ -216,7 +219,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 							onClick={refreshCreds}
 							disabled={credState === "busy"}
 							className="btn-ghost text-[12px] py-1.5 px-3 disabled:opacity-40"
-							title="换了账号 / CLI 重新登录后点这个:重新读取最新登录凭证并踢掉旧会话,下一条消息生效(免重启)"
+							title={t("refreshCredsHint", lang)}
 						>
 							{credState === "busy" ? (
 								<Loader2 size={12} className="animate-spin" />
@@ -226,10 +229,10 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 								<KeyRound size={12} />
 							)}
 							{credState === "busy"
-								? "刷新中…"
+								? t("refreshing", lang)
 								: credState === "done"
-									? "已刷新"
-									: "刷新凭证"}
+									? t("refreshed", lang)
+									: t("refreshCreds", lang)}
 						</button>
 						<button
 							type="button"
@@ -241,14 +244,14 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 								size={12}
 								className={refreshing ? "animate-spin" : ""}
 							/>
-							{refreshing ? "检测中…" : "重新检测"}
+							{refreshing ? t("detecting", lang) : t("redetect", lang)}
 						</button>
 						<button
 							type="button"
 							onClick={guardedClose}
 							disabled={!!busy}
 							className="p-1.5 rounded hover:bg-[var(--color-surface-2)] text-[var(--color-fg-3)] disabled:opacity-40 disabled:cursor-not-allowed transition"
-							title={busy ? "正在处理,请稍候…" : "关闭"}
+							title={busy ? t("processingPleasWait", lang) : t("close", lang)}
 						>
 							<X size={14} />
 						</button>
@@ -256,10 +259,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 				</header>
 
 				<div className="px-5 py-3 text-[11.5px] text-[var(--color-fg-3)] border-b border-[var(--color-line)]">
-					Polynoia 会自动复用你本机已登录的 CLI 凭证(Claude Code Pro / Codex /
-					OpenCode)。下方卡片显示当前主机的检测结果 —— 点
-					<strong className="text-[var(--color-fg-2)] mx-0.5">启用</strong>
-					后,对应 agent 进入左侧联系人列表。
+					{t("onboardingIntro", lang)}
 				</div>
 
 				<div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
@@ -271,7 +271,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 
 					{probes === null && !err && (
 						<div className="text-center py-8 text-[12px] text-[var(--color-fg-3)]">
-							正在探测本机 CLI...
+							{t("detectingCLI", lang)}
 						</div>
 					)}
 
@@ -303,7 +303,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 													className="anim-badge-in text-[9.5px] px-1.5 py-0.5 bg-green-500/20 text-green-700 rounded inline-flex items-center gap-0.5"
 												>
 													<CheckCircle2 size={9} />
-													已启用
+													{t("enabled", lang)}
 												</span>
 											)}
 										</div>
@@ -319,7 +319,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 											className="inline-flex items-center gap-1.5 px-3 py-1 text-[11.5px] rounded border border-[var(--color-line)] text-[var(--color-fg-3)] hover:bg-[var(--color-surface-2)] disabled:opacity-40 transition"
 										>
 											{isBusy && <Loader2 size={11} className="animate-spin" />}
-											{isBusy ? "检测中…" : "禁用"}
+											{isBusy ? t("detecting", lang) : t("disable", lang)}
 										</button>
 									) : (
 										<button
@@ -327,26 +327,30 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 											onClick={() => enable(p.id)}
 											disabled={!ready || isBusy}
 											className="inline-flex items-center gap-1.5 px-3 py-1 text-[11.5px] rounded bg-[var(--color-accent)] text-white disabled:opacity-30 disabled:cursor-not-allowed transition"
-											title={!ready ? "请先安装 + 登录 CLI" : "启用此 agent"}
+											title={
+												!ready
+													? t("installAndLoginCLI", lang)
+													: t("enableThisAgent", lang)
+											}
 										>
 											{isBusy && <Loader2 size={11} className="animate-spin" />}
-											{isBusy ? "检测中…" : "启用"}
+											{isBusy ? t("detecting", lang) : t("enable", lang)}
 										</button>
 									)}
 								</div>
 
 								<div className="relative z-[2] px-3.5 py-2.5 space-y-1.5 text-[11px]">
 									<StatusRow
-										label="安装"
+										label={t("install", lang)}
 										ok={p.installed}
 										value={
 											p.installed
 												? `${p.cli_path}${p.version ? ` · ${p.version}` : ""}`
-												: "未在 PATH 找到"
+												: t("notFoundInPath", lang)
 										}
 									/>
 									<StatusRow
-										label="登录"
+										label={t("loggedIn", lang)}
 										ok={p.authenticated}
 										value={
 											p.authenticated && p.auth_path ? (
@@ -358,7 +362,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 													<span className="font-mono">{p.auth_path}</span>
 												</span>
 											) : (
-												"未检测到凭证"
+												t("noCredentialsDetected", lang)
 											)
 										}
 									/>
@@ -391,6 +395,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 }
 
 function ServerSection() {
+	const lang = useStore((s) => s.lang);
 	const desktop = isDesktopApp();
 	const nativeShell = isNativeShell();
 	const currentMode = getServerMode();
@@ -405,7 +410,9 @@ function ServerSection() {
 					? "custom"
 					: "shared",
 	);
-	const [url, setUrl] = useState(getServerOverride() || "http://127.0.0.1:7780");
+	const [url, setUrl] = useState(
+		getServerOverride() || "http://127.0.0.1:7780",
+	);
 	const [expanded, setExpanded] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [test, setTest] = useState<{
@@ -430,10 +437,10 @@ function ServerSection() {
 	async function runTest() {
 		const base = await effectiveBase();
 		if (mode === "embedded" && !base) {
-			setTest({ kind: "err", msg: "桌面内置后端不可用" });
+			setTest({ kind: "err", msg: t("desktopBackendUnavailable", lang) });
 			return;
 		}
-		setTest({ kind: "testing", msg: "连接中…" });
+		setTest({ kind: "testing", msg: t("connecting", lang) });
 		try {
 			const [healthRes, agentsRes] = await Promise.all([
 				fetch(`${base}/api/health`),
@@ -451,7 +458,7 @@ function ServerSection() {
 		} catch (e) {
 			setTest({
 				kind: "err",
-				msg: "连接失败: " + String((e as Error).message || e),
+				msg: t("connectionFailed", lang) + String((e as Error).message || e),
 			});
 		}
 	}
@@ -480,7 +487,7 @@ function ServerSection() {
 				className="w-full flex items-center gap-2 text-[12px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition-colors"
 			>
 				<Server size={12} />
-				<span>服务器</span>
+				<span>{t("server", lang)}</span>
 				<span className="ml-auto text-[10.5px] text-[var(--color-fg-4)] font-mono">
 					{mode === "embedded"
 						? "embedded"
@@ -517,10 +524,10 @@ function ServerSection() {
 								}`}
 							>
 								{m === "embedded"
-									? "内置"
+									? t("embedded", lang)
 									: m === "shared"
-										? "当前"
-										: "自定义"}
+										? t("current", lang)
+										: t("custom2", lang)}
 							</button>
 						))}
 					</div>
@@ -542,7 +549,7 @@ function ServerSection() {
 						/>
 					) : (
 						<div className="px-2 py-1.5 rounded bg-[var(--color-surface-2)] text-[11px] text-[var(--color-fg-3)]">
-							桌面内置后端,随机端口,不和 Web 端冲突
+							{t("desktopEmbeddedBackendHint", lang)}
 						</div>
 					)}
 					{test.kind !== "idle" && (
@@ -570,7 +577,7 @@ function ServerSection() {
 							disabled={test.kind === "testing"}
 							className="px-2 py-1 text-[10.5px] rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] disabled:opacity-40 transition"
 						>
-							测试连接
+							{t("testConnection", lang)}
 						</button>
 						<button
 							type="button"
@@ -579,7 +586,7 @@ function ServerSection() {
 							className="ml-auto inline-flex items-center gap-1 px-3 py-1 text-[10.5px] rounded bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition"
 						>
 							{saving && <Loader2 size={10} className="animate-spin" />}
-							{saving ? "重连中…" : "保存并重连"}
+							{saving ? t("reconnecting", lang) : t("saveAndReconnect", lang)}
 						</button>
 					</div>
 				</div>
@@ -627,6 +634,7 @@ function Hint({
 	cmd: string;
 	docs: string;
 }) {
+	const lang = useStore((s) => s.lang);
 	return (
 		<div className="mt-1 ml-3.5 pl-2 border-l border-[var(--color-line)]">
 			<div className="text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] mb-0.5">
@@ -641,7 +649,7 @@ function Hint({
 				rel="noreferrer"
 				className="inline-block mt-1 text-[10.5px] text-[var(--color-accent)] hover:underline"
 			>
-				查看文档 →
+				{t("viewDocs", lang)}
 			</a>
 		</div>
 	);
@@ -657,6 +665,7 @@ function ProxyControl({
 	cfg: ProxyCfg;
 	onSave: (cfg: ProxyCfg) => Promise<void>;
 }) {
+	const lang = useStore((s) => s.lang);
 	const [kind, setKind] = useState<ProxyKind>(cfg.proxy_kind);
 	const [url, setUrl] = useState(cfg.proxy ?? "");
 	const [state, setState] = useState<"idle" | "busy" | "done">("idle");
@@ -690,16 +699,16 @@ function ProxyControl({
 			<div className="flex items-center gap-2">
 				<Globe size={10} className="text-[var(--color-fg-3)] flex-shrink-0" />
 				<span className="text-[10.5px] uppercase tracking-wider text-[var(--color-fg-3)] w-10">
-					代理
+					{t("proxy", lang)}
 				</span>
 				<select
 					value={kind}
 					onChange={(e) => setKind(e.target.value as ProxyKind)}
 					className="flex-1 text-[11.5px] px-2 py-1 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
 				>
-					<option value="system">跟随系统 (HTTP_PROXY 等环境变量)</option>
-					<option value="direct">直连 (不走代理)</option>
-					<option value="custom">自定义代理</option>
+					<option value="system">{t("followSystem", lang)}</option>
+					<option value="direct">{t("directConnection", lang)}</option>
+					<option value="custom">{t("customProxy", lang)}</option>
 				</select>
 				<button
 					type="button"
@@ -712,7 +721,7 @@ function ProxyControl({
 					) : state === "done" ? (
 						<Check size={10} />
 					) : null}
-					{state === "done" ? "已保存" : "保存"}
+					{state === "done" ? t("saved", lang) : t("save", lang)}
 				</button>
 			</div>
 			{kind === "custom" && (
@@ -720,13 +729,12 @@ function ProxyControl({
 					type="text"
 					value={url}
 					onChange={(e) => setUrl(e.target.value)}
-					placeholder="如: http://127.0.0.1:7890 或 socks5://host:1080"
+					placeholder={t("proxyUrlHint", lang)}
 					className="w-full text-[11.5px] px-2 py-1 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
 				/>
 			)}
 			<div className="text-[10px] text-[var(--color-fg-3)] leading-relaxed ml-3.5">
-				该适配器所有联系人共用的网络出口。WSL/公司内网/GFW 环境下 LLM
-				请求可能需要代理才能连通。
+				{t("proxyHint", lang)}
 			</div>
 		</div>
 	);

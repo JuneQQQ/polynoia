@@ -50,9 +50,9 @@ describe("classifyFoldable", () => {
 	});
 
 	it("strips MCP prefixes before matching (mcp__polynoia__bash → bash)", () => {
-		expect(classifyFoldable("tool-call", "mcp__polynoia__bash", true).drop).toBe(
-			true,
-		);
+		expect(
+			classifyFoldable("tool-call", "mcp__polynoia__bash", true).drop,
+		).toBe(true);
 		expect(classifyFoldable("tool-call", "mcp__polynoia__write").foldable).toBe(
 			false,
 		);

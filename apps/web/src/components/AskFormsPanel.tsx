@@ -17,6 +17,7 @@ import {
 import { useEffect } from "react";
 import { useState } from "react";
 import { api } from "../lib/api";
+import { t } from "../lib/i18n";
 import type { ConvWebSocket } from "../lib/ws";
 import { type AskFormEntry, useStore } from "../store";
 
@@ -32,6 +33,7 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 	const enqueue = useStore((s) => s.enqueueAskForm);
 	const appendUserMessage = useStore((s) => s.appendUserMessage);
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 
 	// Re-hydrate still-open ask-forms after a refresh (the live data-ask-form
 	// chunk is gone, but the question was persisted). Dedup against whatever is
@@ -97,12 +99,14 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 				<MessageCircleQuestion size={11} />
 				<span>Awaiting your input · {list.length}</span>
 				<span className="ml-auto inline-flex items-center gap-0.5 normal-case tracking-normal text-[var(--color-fg-3)]">
-					{collapsed ? "展开作答" : "收起"}
+					{collapsed ? t("expandToAnswer", lang) : t("collapse", lang)}
 					{collapsed ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
 				</span>
 			</button>
 			{!collapsed && (
-				<div className="mt-2 space-y-2 max-h-[30vh] overflow-y-auto pr-1">
+				// One question per step keeps this short; the cap + overflow is just a
+				// safety net for an unusually long single question / the dimmed queue.
+				<div className="mt-2 space-y-2 max-h-[46vh] overflow-y-auto pr-1">
 					<AskCard af={active} agents={agents} onAnswered={onAnswered} active />
 					{queued.length > 0 && (
 						<>
@@ -145,6 +149,7 @@ function AskCard({
 	onAnswered: (af: AskFormEntry, answer: string) => void;
 	active: boolean;
 }) {
+	const lang = useStore((s) => s.lang);
 	// Per-question answer state, keyed by q.id
 	const [answers, setAnswers] = useState<Record<string, string | string[]>>(
 		() => {
@@ -158,6 +163,26 @@ function AskCard({
 	);
 	// Free-text for the 「其他」 choice, keyed by q.id.
 	const [otherText, setOtherText] = useState<Record<string, string>>({});
+	// STEP WIZARD: show ONE question at a time so the card stays short and never
+	// needs scrolling (the user shouldn't have to scroll inside the ask panel).
+	const total = af.questions.length;
+	const [step, setStep] = useState(0);
+	const cur = Math.min(step, Math.max(0, total - 1));
+	// Is a SINGLE question sufficiently answered (to allow advancing past it)?
+	const qDone = (q: (typeof af.questions)[number]) => {
+		if (q.optional || q.kind === "fill") return true;
+		const v = answers[q.id];
+		if (q.kind === "single")
+			return v === OTHER
+				? (otherText[q.id] ?? "").trim().length > 0
+				: typeof v === "string" && v.length > 0;
+		if (q.kind === "multi") {
+			const arr = Array.isArray(v) ? v : [];
+			if (arr.includes(OTHER) && !(otherText[q.id] ?? "").trim()) return false;
+			return arr.length > 0;
+		}
+		return true;
+	};
 	// 「这问题不够清楚 · 让它展开说」 — instead of answering, bounce a free-form
 	// clarification request back to the asking agent; it re-asks with more detail.
 	const [clarifyOpen, setClarifyOpen] = useState(false);
@@ -269,13 +294,13 @@ function AskCard({
 				)}
 			</div>
 
-			{/* Questions */}
+			{/* Questions — ONE at a time (step wizard); navigate via the footer. */}
 			<div className="pl-4 pr-3 py-2.5 space-y-2.5">
-				{af.questions.map((q, qi) => (
+				{[af.questions[cur]].map((q) => (
 					<div key={q.id}>
 						<div className="flex items-baseline gap-2 mb-1.5">
 							<span className="w-5 h-5 rounded-full grid place-items-center text-[10px] font-medium bg-[var(--color-accent-soft)] text-[var(--color-accent)] flex-shrink-0">
-								{qi + 1}
+								{cur + 1}
 							</span>
 							<div className="flex-1 min-w-0">
 								<div className="text-[12.5px] font-medium text-[var(--color-fg)] flex items-center gap-1.5">
@@ -358,7 +383,7 @@ function AskCard({
 										}}
 									/>
 									<div className="flex-1 min-w-0 text-[12px] font-medium text-[var(--color-fg)]">
-										其他(自己填)
+										{t("otherFillIn", lang)}
 									</div>
 								</button>
 							)}
@@ -366,7 +391,7 @@ function AskCard({
 								<textarea
 									value={otherText[q.id] ?? ""}
 									onChange={(e) => setOther(q.id, e.target.value)}
-									placeholder="输入你的答案…"
+									placeholder={t("enterAnswer", lang)}
 									rows={2}
 									disabled={!active}
 									className="w-full px-2.5 py-2 text-[12.5px] rounded-md border border-[var(--color-accent)]/60 bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
@@ -448,7 +473,7 @@ function AskCard({
 										)}
 									</span>
 									<div className="flex-1 min-w-0 text-[12px] font-medium text-[var(--color-fg)]">
-										其他(自己填)
+										{t("otherFillIn", lang)}
 									</div>
 								</button>
 							)}
@@ -457,7 +482,7 @@ function AskCard({
 									<textarea
 										value={otherText[q.id] ?? ""}
 										onChange={(e) => setOther(q.id, e.target.value)}
-										placeholder="输入你的答案…"
+										placeholder={t("enterAnswer", lang)}
 										rows={2}
 										disabled={!active}
 										className="w-full px-2.5 py-2 text-[12.5px] rounded-md border border-[var(--color-accent)]/60 bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
@@ -478,16 +503,42 @@ function AskCard({
 				))}
 			</div>
 
-			{/* Footer */}
+			{/* Footer — step navigator: progress + Back / Next / Send. One question
+			    per step means the card never needs scrolling. */}
 			<div className="pl-4 pr-3 py-2.5 bg-[var(--color-surface-2)] border-t border-[var(--color-line)] space-y-2">
 				{clarifyOpen && active && (
 					<textarea
 						value={clarifyText}
 						onChange={(e) => setClarifyText(e.target.value)}
 						rows={3}
-						placeholder="告诉它问题哪里不清楚、你想让它展开什么…"
+						placeholder={t("clarifyQuestionPlaceholder", lang)}
 						className="w-full px-2.5 py-2 text-[12px] rounded-md border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] resize-none transition"
 					/>
+				)}
+				{!clarifyOpen && total > 1 && (
+					<div className="flex items-center gap-2 text-[10px] font-mono text-[var(--color-fg-3)]">
+						<span>
+							{t("askStepOf", lang)
+								.replace("{cur}", String(cur + 1))
+								.replace("{total}", String(total))}
+						</span>
+						<span className="flex items-center gap-1">
+							{af.questions.map((qq, i) => (
+								<span
+									key={qq.id}
+									className="w-1.5 h-1.5 rounded-full transition-colors"
+									style={{
+										background:
+											i === cur
+												? "var(--color-accent)"
+												: i < cur
+													? "var(--color-accent-soft)"
+													: "var(--color-line-strong)",
+									}}
+								/>
+							))}
+						</span>
+					</div>
 				)}
 				<div className="flex items-center gap-2">
 					{clarifyOpen ? (
@@ -498,26 +549,47 @@ function AskCard({
 								disabled={!clarifyText.trim() || !active}
 								className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
 							>
-								<Send size={12} /> 发送追问
+								<Send size={12} /> {t("sendClarification", lang)}
 							</button>
 							<button
 								type="button"
 								onClick={() => setClarifyOpen(false)}
 								className="text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] transition"
 							>
-								取消
+								{t("cancel", lang)}
 							</button>
 						</>
 					) : (
 						<>
-							<button
-								type="button"
-								onClick={submit}
-								disabled={!isAnswered || !active}
-								className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-							>
-								<Send size={12} /> Send answer
-							</button>
+							{cur > 0 && (
+								<button
+									type="button"
+									onClick={() => setStep(cur - 1)}
+									disabled={!active}
+									className="px-2.5 py-1.5 text-[11px] rounded border border-[var(--color-line-strong)] text-[var(--color-fg-2)] hover:bg-[var(--color-surface)] transition disabled:opacity-40"
+								>
+									{t("askPrevStep", lang)}
+								</button>
+							)}
+							{cur < total - 1 ? (
+								<button
+									type="button"
+									onClick={() => setStep(cur + 1)}
+									disabled={!qDone(af.questions[cur]) || !active}
+									className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+								>
+									{t("askNextStep", lang)}
+								</button>
+							) : (
+								<button
+									type="button"
+									onClick={submit}
+									disabled={!isAnswered || !active}
+									className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] font-medium rounded bg-[var(--color-accent)] text-white hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+								>
+									<Send size={12} /> {t("sendAnswer", lang)}
+								</button>
+							)}
 							{active && (
 								<button
 									type="button"
@@ -526,7 +598,7 @@ function AskCard({
 									title="把这个问题打回去,让 Agent 把背景和选项讲清楚再问"
 								>
 									<MessageCircleQuestion size={12} />
-									问题不清楚?让它展开说
+									{t("questionUnclear", lang)}
 								</button>
 							)}
 						</>

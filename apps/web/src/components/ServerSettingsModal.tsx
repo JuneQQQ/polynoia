@@ -7,19 +7,19 @@ import { Globe2, HardDrive, Network, Server, X } from "lucide-react";
  * api.ts / ws.ts re-read the base and the conversation socket reconnects.
  */
 import { useEffect, useState } from "react";
+import { isDesktopApp } from "../lib/platform";
 import {
+	type ServerMode,
+	flushServerConfig,
 	getDesktopBackendInfo,
 	getDesktopEmbeddedBackendUrl,
+	getServerMode,
 	getServerOverride,
 	isNativeShell,
-	getServerMode,
-	flushServerConfig,
 	refreshDesktopBackendStatus,
-	type ServerMode,
 	setServerMode,
 	startDesktopEmbeddedBackend,
 } from "../lib/runtime-config";
-import { isDesktopApp } from "../lib/platform";
 
 type TestState = { kind: "idle" | "ok" | "err" | "testing"; msg: string };
 type Identity = {
@@ -81,7 +81,9 @@ export function ServerSettingsModal({
 	async function runTest() {
 		const base = await effectiveBase();
 		if (mode === "embedded" && !base) {
-			const msg = embedded?.message || (zh ? "桌面内置后端不可用" : "Embedded backend unavailable");
+			const msg =
+				embedded?.message ||
+				(zh ? "桌面内置后端不可用" : "Embedded backend unavailable");
 			setTest({ kind: "err", msg });
 			return;
 		}
@@ -91,7 +93,8 @@ export function ServerSettingsModal({
 				fetch(`${base}/api/identity`),
 				fetch(`${base}/api/agents`),
 			]);
-			if (!identityRes.ok) throw new Error(`identity HTTP ${identityRes.status}`);
+			if (!identityRes.ok)
+				throw new Error(`identity HTTP ${identityRes.status}`);
 			if (!agentsRes.ok) throw new Error(`agents HTTP ${agentsRes.status}`);
 			const id = (await identityRes.json()) as Identity;
 			const agents = await agentsRes.json();
@@ -125,7 +128,7 @@ export function ServerSettingsModal({
 	}
 
 	async function save() {
-		if (mode === "custom") setServerMode("custom", (await effectiveBase()));
+		if (mode === "custom") setServerMode("custom", await effectiveBase());
 		else setServerMode(mode);
 		// Await native Preferences write so the new URL survives the reload race.
 		await flushServerConfig();
@@ -194,7 +197,11 @@ export function ServerSettingsModal({
 					<div className="grid gap-2">
 						{modes.map((m) => {
 							const Icon =
-								m === "embedded" ? HardDrive : m === "shared" ? Network : Globe2;
+								m === "embedded"
+									? HardDrive
+									: m === "shared"
+										? Network
+										: Globe2;
 							const title =
 								m === "embedded"
 									? zh
@@ -302,7 +309,9 @@ export function ServerSettingsModal({
 						<div className="rounded border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-[11.5px] font-mono text-[var(--color-fg-3)] space-y-1">
 							<div>mode: {identity.mode || "-"}</div>
 							<div>url: {identity.url || selectedTarget}</div>
-							<div className="truncate">instance: {identity.instance_id || "-"}</div>
+							<div className="truncate">
+								instance: {identity.instance_id || "-"}
+							</div>
 						</div>
 					)}
 				</div>

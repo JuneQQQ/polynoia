@@ -2,6 +2,7 @@ import { Check, Loader2, MessageCircle, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import type { DiscussionInfo } from "../../lib/discussionClaim";
 import { foldPass } from "../../lib/foldPass";
+import { t } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
 import type {
 	DiscussionPayload,
@@ -70,9 +71,7 @@ type TranscriptGroup = {
 	items: TranscriptItem[];
 };
 
-function groupTranscriptItems(
-	messages: readonly Message[],
-): TranscriptGroup[] {
+function groupTranscriptItems(messages: readonly Message[]): TranscriptGroup[] {
 	const sendersWithTerminal = new Set<string>();
 	for (const msg of messages) {
 		if (msg.payload.kind === "terminal") sendersWithTerminal.add(msg.sender_id);
@@ -159,9 +158,7 @@ function DiscussionPartInner({
 	);
 	const foldLiveHistory = !isDone && transcriptGroups.length > 1;
 	const foldedGroups =
-		foldLiveHistory && !showFoldedHistory
-			? transcriptGroups.slice(0, -1)
-			: [];
+		foldLiveHistory && !showFoldedHistory ? transcriptGroups.slice(0, -1) : [];
 	const visibleTranscriptGroups =
 		foldLiveHistory && !showFoldedHistory
 			? transcriptGroups.slice(-1)
@@ -181,8 +178,7 @@ function DiscussionPartInner({
 		),
 	);
 	const participantNames =
-		participantAgents.map((a) => a!.name).join("、") ||
-		(en ? "Participants" : "参与者");
+		participantAgents.map((a) => a!.name).join("、") || t("participants", lang);
 
 	return (
 		<div
@@ -201,10 +197,11 @@ function DiscussionPartInner({
 							size={14}
 							className="shrink-0 text-[var(--color-purple)]"
 						/>
-						<span>{en ? "Discussion" : "讨论"}</span>
+						<span>{t("discussion", lang)}</span>
 						<span className="text-[11px] text-[var(--color-fg-4)]">
 							{participantAgents.length || discussionInfo.participants.size}
-							{en ? " people" : "人"}
+							{lang === "en" ? " " : ""}
+							{t("people", lang)}
 						</span>
 					</span>
 					<span
@@ -215,11 +212,13 @@ function DiscussionPartInner({
 						{en ? status.en : status.zh}
 					</span>
 					<span className="inline-flex items-center px-1.5 py-0.5 rounded-sm bg-[var(--color-surface)] text-[10.5px] font-mono text-[var(--color-fg-3)] whitespace-nowrap shrink-0">
-						{en ? `R ${round}/${maxRounds}` : `第 ${round}/${maxRounds} 轮`}
+						{t("roundIndicator", lang)
+							.replace("{round}", String(round))
+							.replace("{maxRounds}", String(maxRounds))}
 					</span>
 				</div>
 				<div className="mt-1.5 text-[13px] leading-5 text-[var(--color-fg)] truncate">
-					{payload.topic || (en ? "Untitled discussion" : "未命名讨论")}
+					{payload.topic || t("untitledDiscussion", lang)}
 				</div>
 			</div>
 
@@ -249,32 +248,24 @@ function DiscussionPartInner({
 					className="shrink-0 text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
 				>
 					{expanded
-						? en
-							? "Hide"
-							: "收起过程"
-						: en
-							? `Transcript ${transcriptCount}`
-							: `查看过程 ${transcriptCount}`}
+						? t("hideProcess", lang)
+						: t("viewProcess", lang)
+								.replace("{transcriptCount}", String(transcriptCount))
+								.replace("{count}", String(transcriptCount))}
 				</button>
 			</div>
 
 			<div className="bg-[var(--color-accent-soft)]/15 px-3 py-2.5">
 				<div className="mb-1.5 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--color-accent)]">
-					{en ? "Conclusion" : "结论"}
+					{t("conclusion", lang)}
 				</div>
 				<div className="rounded-md border-l-2 border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-2 text-[13px] leading-6 text-[var(--color-fg)]">
 					{conclusionText ? (
 						<Markdown text={conclusionText} />
 					) : payload.status === "failed" ? (
-						en ? (
-							"No conclusion was produced."
-						) : (
-							"没有生成结论。"
-						)
-					) : en ? (
-						"Waiting for synthesis."
+						t("noConclusion", lang)
 					) : (
-						"等待协调者收敛结论。"
+						t("waitingForConclusion", lang)
 					)}
 				</div>
 			</div>
@@ -334,28 +325,27 @@ function DiscussionPartInner({
 									className="anim-fade-up w-full rounded-md border border-dashed border-[var(--color-line)] bg-[var(--color-surface-2)]/60 px-3 py-2 text-left text-[11px] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition"
 								>
 									{showFoldedHistory
-										? en
-											? "Fold earlier contributions"
-											: "折叠前面的发言"
-										: en
-											? `${transcriptGroups.length - 1} earlier contribution${transcriptGroups.length - 1 > 1 ? "s" : ""} folded`
-											: `前 ${transcriptGroups.length - 1} 轮发言已折叠 · 点击展开`}
+										? t("foldEarlierContributions", lang)
+										: t("earlierContributionsFolded", lang)
+												.replace(
+													"{transcriptGroups.length - 1}",
+													String(transcriptGroups.length - 1),
+												)
+												.replace("{count}", String(transcriptGroups.length - 1))
+												.replace(
+													"{s}",
+													transcriptGroups.length - 1 > 1 ? "s" : "",
+												)}
 								</button>
 							)}
 						</div>
 					) : (
 						<div className="py-3 text-center text-[11px] text-[var(--color-fg-4)] italic">
 							{transcriptCount > 0
-								? en
-									? "Restoring transcript…"
-									: "正在恢复讨论过程…"
+								? t("restoringTranscript", lang)
 								: isDone
-									? en
-										? "No transcript"
-										: "没有讨论过程"
-									: en
-										? "Waiting for participants"
-										: "等待成员发言"}
+									? t("noTranscript", lang)
+									: t("waitingForParticipants", lang)}
 						</div>
 					)}
 				</div>

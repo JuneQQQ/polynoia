@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import type { DocKind } from "./DocPreviewPane";
 
@@ -50,6 +51,7 @@ export function OfficePreview({
 }) {
 	const [buf, setBuf] = useState<ArrayBuffer | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const lang = useStore((s) => s.lang);
 	// Re-fetch when an agent rewrites files on main (same trigger CodeEditor uses).
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 	const name = basename(path);
@@ -70,7 +72,7 @@ export function OfficePreview({
 			.then((b) => {
 				if (!alive) return;
 				if (!isZip(b)) {
-					setError("文件不是有效的 OOXML(ZIP)结构,无法预览");
+					setError(t("invalidOfficeFormat", lang));
 					return;
 				}
 				setBuf(b);
@@ -98,7 +100,11 @@ export function OfficePreview({
 	if (kind === "slides")
 		return <PptxView buf={buf} name={name} onDownload={download} />;
 	return (
-		<Fallback name={name} reason="不支持的 Office 类型" onDownload={download} />
+		<Fallback
+			name={name}
+			reason={t("unsupportedOfficeType", lang)}
+			onDownload={download}
+		/>
 	);
 }
 
@@ -193,6 +199,7 @@ function PptxView({
 	// detail); "grid" = small thumbnails many-per-row (overview at a glance).
 	const [mode, setMode] = useState<"scroll" | "grid">("scroll");
 	const [paneW, setPaneW] = useState<number | null>(null);
+	const lang = useStore((s) => s.lang);
 
 	// ResizeObserver, debounced 200ms (a width change re-parses the whole deck).
 	useEffect(() => {
@@ -260,8 +267,8 @@ function PptxView({
 			<div className="sticky top-0 z-10 mb-3 flex w-fit gap-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-surface)] p-0.5 shadow-sm">
 				{(
 					[
-						["scroll", StretchHorizontal, "逐页平铺"],
-						["grid", LayoutGrid, "网格总览"],
+						["scroll", StretchHorizontal, t("slideScrollMode", lang)],
+						["grid", LayoutGrid, t("slideGridMode", lang)],
 					] as const
 				).map(([m, Icon, label]) => (
 					<button
@@ -334,6 +341,7 @@ function Fallback({
 	reason: string;
 	onDownload: () => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	return (
 		<div className="grid place-items-center h-full bg-[var(--color-surface-2)]">
 			<div className="flex flex-col items-center gap-2 p-6 max-w-[360px] text-center">
@@ -349,7 +357,7 @@ function Fallback({
 					onClick={onDownload}
 					className="inline-flex items-center gap-1.5 px-3 py-1.5 mt-1 rounded bg-[var(--color-accent)] text-white text-[11.5px] font-medium hover:opacity-90"
 				>
-					<Download size={12} /> 下载查看
+					<Download size={12} /> {t("downloadToView", lang)}
 				</button>
 			</div>
 		</div>

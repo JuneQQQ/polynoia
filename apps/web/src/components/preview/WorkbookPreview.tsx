@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import { downloadBlob } from "./exportUtils";
 
@@ -161,6 +162,7 @@ export function WorkbookPreview({
 	const dirtyRef = useRef(false);
 	const inputRefs = useRef(new Map<string, HTMLInputElement>());
 	const filesTick = useStore((s) => s.workspaceFilesTick);
+	const lang = useStore((s) => s.lang);
 
 	useEffect(() => {
 		dirtyRef.current = dirty;
@@ -237,11 +239,11 @@ export function WorkbookPreview({
 			setDirty(false);
 			useStore.getState().bumpWorkspaceFiles();
 		} catch (e) {
-			window.alert(`保存失败: ${e}`);
+			window.alert(`${t("saveFailed", lang)}${e}`);
 		} finally {
 			setSaving(false);
 		}
-	}, [workspaceId, path, sheets, dirty, saving]);
+	}, [workspaceId, path, sheets, dirty, saving, lang]);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -327,13 +329,13 @@ export function WorkbookPreview({
 					<span
 						className="w-1.5 h-1.5 rounded-full"
 						style={{ background: "var(--color-amber)" }}
-						title="有未保存的修改"
+						title={t("unsavedChanges", lang)}
 					/>
 				)}
 				<ToolbarButton
 					onClick={save}
 					disabled={!dirty || saving}
-					title="保存 (Ctrl+S)"
+					title={t("saveTitle", lang)}
 					primary
 				>
 					{saving ? (
@@ -343,9 +345,9 @@ export function WorkbookPreview({
 					) : (
 						<Check size={11} />
 					)}
-					{dirty ? "保存" : "已保存"}
+					{dirty ? t("save", lang) : t("saved", lang)}
 				</ToolbarButton>
-				<ToolbarButton onClick={exportWorkbook} title="下载 .xlsx">
+				<ToolbarButton onClick={exportWorkbook} title={t("downloadXlsx", lang)}>
 					<Download size={11} />
 					.xlsx
 				</ToolbarButton>
@@ -443,7 +445,7 @@ export function WorkbookPreview({
 						<button
 							type="button"
 							onClick={addSheet}
-							title="新增工作表"
+							title={t("addNewSheet", lang)}
 							className="mb-1 grid h-6 w-6 place-items-center rounded border border-[#d6dbe3] bg-white text-[#4b5563] hover:border-[#217346] hover:text-[#217346]"
 						>
 							<Plus size={12} />

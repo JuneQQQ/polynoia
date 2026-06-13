@@ -21,7 +21,7 @@ vi.mock("../../store", () => ({
 	useStore: (sel: any) => sel({ agents, openAgentDetail }),
 }));
 
-import { fixCjkMarkdown, TextPart } from "./TextPart";
+import { TextPart, fixCjkMarkdown } from "./TextPart";
 
 const ORCH_ULID = "01HZ0000000000000000000001"; // canonical 26-char ULID
 
@@ -190,9 +190,7 @@ describe("pathological unicode robustness", () => {
 	it("mixed emoji + CJK bold + @mention in one block stays coherent", () => {
 		agents.length = 0;
 		agents.push({ id: ORCH_ULID, name: "林知夏", color: "#3b82f6" });
-		const html = renderString(
-			`✅ @林知夏 已确认 **结论（已通过）** 🎉`,
-		);
+		const html = renderString(`✅ @林知夏 已确认 **结论（已通过）** 🎉`);
 		expect(html).toContain("<button"); // mention chip
 		expect(html).toContain("<strong"); // bold closed despite fullwidth paren
 		expect(html).toContain("🎉");

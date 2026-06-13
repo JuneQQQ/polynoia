@@ -851,6 +851,127 @@ export const api = {
 		getJSON<CommitDiff>(`/api/workspaces/${wsId}/working-diff`),
 	/** 丢弃工作区根目录的未提交改动(tracked 还原 + untracked 删除;ignored 与
 	 * worktree 不动)。合并进行中返回 409。 */
+	/** 角色预设库(agency-agents 目录)。 */
+	rolePresets: (params?: { division?: string; q?: string }) => {
+		const u = new URLSearchParams();
+		if (params?.division) u.set("division", params.division);
+		if (params?.q) u.set("q", params.q);
+		const qs = u.toString();
+		return getJSON<{
+			synced: boolean;
+			total: number;
+			divisions: Array<{ key: string; label: string; count: number }>;
+			presets: Array<{
+				id: string;
+				name: string;
+				division: string;
+				division_label: string;
+				description: string;
+				color: string;
+			}>;
+		}>(`/api/role-presets${qs ? `?${qs}` : ""}`);
+	},
+	rolePreset: (id: string) =>
+		getJSON<{
+			id: string;
+			name: string;
+			division_label: string;
+			description: string;
+			color: string;
+			body: string;
+		}>(`/api/role-presets/${encodeURIComponent(id)}`),
+	rolePresetsSync: () =>
+		postJSON<{ ok: boolean; count: number }>("/api/role-presets/sync"),
+	rolePresetHire: (
+		id: string,
+		body: {
+			adapter_id: string;
+			model: string;
+			name?: string;
+			tool_role?: string;
+		},
+	) =>
+		postJSON<{ contact: Agent }>(
+			`/api/role-presets/${encodeURIComponent(id)}/hire`,
+			body,
+		),
+	/** 项目流水线模板(gstack 式阶段门禁冲刺)。 */
+	pipelines: () =>
+		getJSON<{
+			templates: Array<{
+				key: string;
+				name: string;
+				description: string;
+				stages: string[];
+				slots: string[];
+			}>;
+		}>("/api/pipelines"),
+	pipelineSpawn: (
+		template: string,
+		opts?: { name?: string; adapter_id?: string; model?: string },
+	) =>
+		postJSON<{
+			conversation: { id: string; members: string[]; title: string };
+			workspace: { id: string };
+			roles: Array<{ id: string; name: string; slot: string; hired: boolean }>;
+		}>("/api/pipelines/spawn", { template, ...opts }),
+	/** Per-agent quality profile (composite score + component metrics). */
+	quality: () =>
+		getJSON<{
+			agents: Array<{
+				agent_id: string;
+				name: string;
+				score: number;
+				turns?: number;
+				avg_turn_seconds?: number;
+				tool_calls?: number;
+				tool_errors?: number;
+				tool_ok_rate?: number | null;
+				process_runs?: number;
+				process_failed?: number;
+				process_killed?: number;
+				process_ok_rate?: number | null;
+				benchmark_runs?: number;
+				benchmark_avg?: number | null;
+			}>;
+		}>("/api/quality"),
+	/** Benchmark executions (case × agent × model), newest first. */
+	benchmarkRuns: (params?: { case_key?: string; model?: string }) => {
+		const q = new URLSearchParams();
+		if (params?.case_key) q.set("case_key", params.case_key);
+		if (params?.model) q.set("model", params.model);
+		const qs = q.toString();
+		return getJSON<{
+			runs: Array<{
+				id: string;
+				case_key: string;
+				agent_id: string;
+				adapter_id: string;
+				model: string;
+				conv_id: string | null;
+				workspace_id: string | null;
+				status: string;
+				score: number | null;
+				checks: Array<{ name: string; ok: boolean; detail?: string }>;
+				notes: string;
+				started_at: string;
+				ended_at: string | null;
+			}>;
+		}>(`/api/benchmark/runs${qs ? `?${qs}` : ""}`);
+	},
+	/** Append-only turn-event log for one conversation (forensics/replay). */
+	convEvents: (convId: string, after = 0, limit = 500) =>
+		getJSON<{
+			events: Array<{
+				seq: number;
+				etype: string;
+				turn_id: string | null;
+				sender_id: string | null;
+				ts: string;
+				data: Record<string, unknown>;
+			}>;
+			next: number;
+		}>(`/api/conversations/${convId}/events?after=${after}&limit=${limit}`),
 	workspaceDiscardWorking: (wsId: string) =>
 		postJSON<{ ok: boolean }>(`/api/workspaces/${wsId}/discard-working`),
 

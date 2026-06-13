@@ -166,7 +166,9 @@ function CodeBlock({
 				className="m-0 max-h-[460px] overflow-auto px-3.5 py-3 font-mono text-[12.5px] leading-[1.65] text-[var(--color-fg-2)]"
 				style={{ tabSize: 2 }}
 			>
-				<code className={`${className ?? ""} block min-w-max whitespace-pre bg-transparent`}>
+				<code
+					className={`${className ?? ""} block min-w-max whitespace-pre bg-transparent`}
+				>
 					{children}
 				</code>
 			</pre>
@@ -399,7 +401,9 @@ export function stripRawToolProtocol(text: string): string {
 			break;
 		}
 		cursor = end;
-		const close = /^<\/(?:tool_call|tool_result|tool_response)>/.exec(text.slice(cursor));
+		const close = /^<\/(?:tool_call|tool_result|tool_response)>/.exec(
+			text.slice(cursor),
+		);
 		if (close) cursor += close[0].length;
 		RAW_TOOL_MARKER_RE.lastIndex = cursor;
 		match = RAW_TOOL_MARKER_RE.exec(text);

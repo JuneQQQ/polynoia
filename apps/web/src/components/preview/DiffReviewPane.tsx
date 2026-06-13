@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { type PendingEdit, api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import { inferLang } from "./diffLang";
 import { editToUnified } from "./diffUnified";
@@ -31,6 +32,7 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 	const reviewIndex = useStore((s) => s.reviewIndex);
 	const setReviewIndex = useStore((s) => s.setReviewIndex);
 	const split = useStore((s) => s.diffSplit);
+	const lang = useStore((s) => s.lang);
 	const [busy, setBusy] = useState<"accept" | "reject" | null>(null);
 
 	const pending = list.filter((e) => e.status === "pending");
@@ -54,10 +56,8 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 		return (
 			<div className="h-full grid place-items-center text-[12.5px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)]">
 				<div className="text-center px-6">
-					<div className="mb-1.5">没有待评审的改动</div>
-					<div className="text-[11px]">
-						Agent 在手动模式下提交文件改动时,这里会显示绿色增量 + 接受/拒绝
-					</div>
+					<div className="mb-1.5">{t("noPendingChanges", lang)}</div>
+					<div className="text-[11px]">{t("noPendingChangesHint", lang)}</div>
 				</div>
 			</div>
 		);
@@ -98,8 +98,8 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 							onClick={() => setReviewIndex(idx - 1)}
 							disabled={idx <= 0}
 							className="p-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)] disabled:opacity-30 disabled:cursor-not-allowed"
-							title="上一个改动"
-							aria-label="上一个改动"
+							title={t("previousChange", lang)}
+							aria-label={t("previousChange", lang)}
 						>
 							<ChevronLeft size={13} />
 						</button>
@@ -111,8 +111,8 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 							onClick={() => setReviewIndex(idx + 1)}
 							disabled={idx >= pending.length - 1}
 							className="p-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)] disabled:opacity-30 disabled:cursor-not-allowed"
-							title="下一个改动"
-							aria-label="下一个改动"
+							title={t("nextChange", lang)}
+							aria-label={t("nextChange", lang)}
 						>
 							<ChevronRight size={13} />
 						</button>
@@ -178,7 +178,7 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 					) : (
 						<X size={12} />
 					)}{" "}
-					拒绝
+					{t("denyButton", lang)}
 				</button>
 				<button
 					type="button"
@@ -191,7 +191,7 @@ export function DiffReviewPane({ convId }: { convId: string }) {
 					) : (
 						<Check size={12} />
 					)}{" "}
-					接受
+					{t("acceptButton", lang)}
 				</button>
 			</div>
 		</div>

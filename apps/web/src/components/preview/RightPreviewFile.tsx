@@ -14,6 +14,7 @@
 import { Download, FileX2, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
 import { assetUrl } from "../../lib/runtime-config";
 import { useStore } from "../../store";
@@ -191,6 +192,7 @@ function ErrorCard({
 	workspaceId,
 	reason,
 }: { path: string; workspaceId: string; reason: string }) {
+	const lang = useStore((s) => s.lang);
 	return (
 		<div className="h-full grid place-items-center bg-[var(--color-surface-2)] px-6">
 			<div className="text-center max-w-[320px]">
@@ -199,14 +201,15 @@ function ErrorCard({
 					{basename(path)}
 				</div>
 				<div className="text-[11px] text-[var(--color-fg-3)] mb-3 whitespace-pre-wrap break-all text-left">
-					无法预览:{reason}
+					{t("cannotPreview", lang)}
+					{reason}
 				</div>
 				<button
 					type="button"
 					onClick={() => api.downloadWorkspaceFile(workspaceId, path)}
 					className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[var(--color-accent)] text-white text-[12px] hover:opacity-90"
 				>
-					<Download size={12} /> 下载
+					<Download size={12} /> {t("download", lang)}
 				</button>
 			</div>
 		</div>
@@ -230,6 +233,7 @@ function PptxRender({
 	path,
 }: { workspaceId: string; path: string }) {
 	const filesTick = useStore((s) => s.workspaceFilesTick);
+	const lang = useStore((s) => s.lang);
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const slidesRef = useRef<HTMLDivElement | null>(null);
 	const [buf, setBuf] = useState<ArrayBuffer | null>(null);
@@ -335,14 +339,15 @@ function PptxRender({
 							{basename(path)}
 						</div>
 						<div className="text-[11px] text-[var(--color-fg-3)] mb-3">
-							无法预览:{err}
+							{t("cannotPreview", lang)}
+							{err}
 						</div>
 						<button
 							type="button"
 							onClick={() => api.downloadWorkspaceFile(workspaceId, path)}
 							className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-[var(--color-accent)] text-white text-[12px] hover:opacity-90"
 						>
-							<Download size={12} /> 下载
+							<Download size={12} /> {t("download", lang)}
 						</button>
 					</div>
 				</div>
@@ -374,15 +379,15 @@ function PptxRender({
 }
 
 export function RightPreviewEmpty() {
+	const lang = useStore((s) => s.lang);
 	return (
 		<div className="h-full grid place-items-center bg-[var(--color-surface-2)] px-6">
 			<div className="text-center max-w-[280px]">
 				<div className="text-[13px] text-[var(--color-fg-2)] mb-1.5">
-					暂无预览
+					{t("noPreviewYet", lang)}
 				</div>
 				<div className="text-[11px] text-[var(--color-fg-3)] leading-relaxed">
-					Agent
-					生成文件后,会自动出现在聊天里;点击文件卡片的「打开预览」即可在此查看。
+					{t("emptyStateFilePreviewHint", lang)}
 				</div>
 			</div>
 		</div>

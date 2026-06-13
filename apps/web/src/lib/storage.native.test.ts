@@ -18,55 +18,55 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 const { store } = vi.hoisted(() => ({ store: new Map<string, string>() }));
 
 vi.mock("@capacitor/preferences", () => ({
-  Preferences: new Proxy(
-    {},
-    {
-      get(_t, prop) {
-        switch (prop) {
-          case "keys":
-            return async () => ({ keys: [...store.keys()] });
-          case "get":
-            return async ({ key }: { key: string }) => ({
-              value: store.get(key) ?? null,
-            });
-          case "set":
-            return async ({ key, value }: { key: string; value: string }) => {
-              store.set(key, value);
-            };
-          case "remove":
-            return async ({ key }: { key: string }) => {
-              store.delete(key);
-            };
-          default:
-            // Every other access — crucially `.then` — is an Unimplemented
-            // thrower, exactly like the native proxy. This is the trap.
-            return () => {
-              throw new Error(
-                `"Preferences.${String(prop)}()" is not implemented on ios`,
-              );
-            };
-        }
-      },
-    },
-  ),
+	Preferences: new Proxy(
+		{},
+		{
+			get(_t, prop) {
+				switch (prop) {
+					case "keys":
+						return async () => ({ keys: [...store.keys()] });
+					case "get":
+						return async ({ key }: { key: string }) => ({
+							value: store.get(key) ?? null,
+						});
+					case "set":
+						return async ({ key, value }: { key: string; value: string }) => {
+							store.set(key, value);
+						};
+					case "remove":
+						return async ({ key }: { key: string }) => {
+							store.delete(key);
+						};
+					default:
+						// Every other access — crucially `.then` — is an Unimplemented
+						// thrower, exactly like the native proxy. This is the trap.
+						return () => {
+							throw new Error(
+								`"Preferences.${String(prop)}()" is not implemented on ios`,
+							);
+						};
+				}
+			},
+		},
+	),
 }));
 
 beforeAll(() => {
-  (globalThis as { Capacitor?: unknown }).Capacitor = {
-    isNativePlatform: () => true,
-  };
-  store.set("polynoia-server-url", "http://10.2.255.109:7780");
+	(globalThis as { Capacitor?: unknown }).Capacitor = {
+		isNativePlatform: () => true,
+	};
+	store.set("polynoia-server-url", "http://10.2.255.109:7780");
 });
 
 describe("storage.ts native (Capacitor Preferences) path", () => {
-  it("warms the cache without tripping the proxy's .then trap", async () => {
-    // storage.ts reads `Capacitor` at module-init for its NATIVE flag, so the
-    // beforeAll above must run before this dynamic import (vitest isolates the
-    // module registry per test file, so the flag is computed fresh here).
-    const mod = await import("./storage");
-    await expect(mod.prefetchStorage()).resolves.toBeUndefined();
-    expect(mod.storage.getItem("polynoia-server-url")).toBe(
-      "http://10.2.255.109:7780",
-    );
-  });
+	it("warms the cache without tripping the proxy's .then trap", async () => {
+		// storage.ts reads `Capacitor` at module-init for its NATIVE flag, so the
+		// beforeAll above must run before this dynamic import (vitest isolates the
+		// module registry per test file, so the flag is computed fresh here).
+		const mod = await import("./storage");
+		await expect(mod.prefetchStorage()).resolves.toBeUndefined();
+		expect(mod.storage.getItem("polynoia-server-url")).toBe(
+			"http://10.2.255.109:7780",
+		);
+	});
 });

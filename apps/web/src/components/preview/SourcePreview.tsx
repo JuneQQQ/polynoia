@@ -11,13 +11,14 @@
  * Reloads on workspaceFilesTick when not dirty, so an agent rewriting the
  * file shows up live without losing local edits.
  */
-import { Prec, type Extension } from "@codemirror/state";
+import { type Extension, Prec } from "@codemirror/state";
 import { type EditorView, keymap } from "@codemirror/view";
 import { vscodeKeymap } from "@replit/codemirror-vscode-keymap";
 import CodeMirror from "@uiw/react-codemirror";
 import { Loader2, Save } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 import { langExtForPath } from "./CodeEditor";
 
@@ -37,6 +38,7 @@ export function SourcePreview({
 	const [saving, setSaving] = useState(false);
 	const viewRef = useRef<EditorView | null>(null);
 	const filesTick = useStore((s) => s.workspaceFilesTick);
+	const lang = useStore((s) => s.lang);
 
 	const dirty = value !== original;
 
@@ -78,11 +80,11 @@ export function SourcePreview({
 			await api.workspaceFileWrite(workspaceId, path, value);
 			setOriginal(value);
 		} catch (e) {
-			window.alert(`保存失败: ${e}`);
+			window.alert(`${t("saveFailed", lang)}${e}`);
 		} finally {
 			setSaving(false);
 		}
-	}, [workspaceId, path, value, dirty, saving]);
+	}, [workspaceId, path, value, dirty, saving, lang]);
 
 	const saveRef = useRef(save);
 	useEffect(() => {
@@ -116,21 +118,21 @@ export function SourcePreview({
 			    header). Keeps vertical space for the actual code. */}
 			<div className="flex items-center gap-1 px-2 py-1 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
 				<span className="text-[10px] font-mono text-[var(--color-fg-4)] flex-1">
-					{dirty ? "未保存" : "已保存"} · UTF-8
+					{dirty ? t("unsaved", lang) : t("saved", lang)} · UTF-8
 				</span>
 				<button
 					type="button"
 					onClick={save}
 					disabled={!dirty || saving}
 					className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:bg-[var(--color-line)] disabled:text-[var(--color-fg-3)] hover:opacity-90 transition"
-					title="保存 (Ctrl+S)"
+					title={t("saveTitle", lang)}
 				>
 					{saving ? (
 						<Loader2 size={10} className="animate-spin" />
 					) : (
 						<Save size={10} />
 					)}
-					{dirty ? "保存" : "已保存"}
+					{dirty ? t("save", lang) : t("saved", lang)}
 				</button>
 			</div>
 			<div className="flex-1 overflow-hidden">

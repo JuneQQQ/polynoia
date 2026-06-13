@@ -15,9 +15,27 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockAgents = [
-	{ id: "01AGENTONE", name: "阿尔法", initials: "A", color: "#E07A3C", role: "后端" },
-	{ id: "01AGENTTWO", name: "贝塔", initials: "B", color: "#5B8FF9", role: "前端" },
-	{ id: "01AGENTTHREE", name: "伽马", initials: "G", color: "#27AE60", role: "评审" },
+	{
+		id: "01AGENTONE",
+		name: "阿尔法",
+		initials: "A",
+		color: "#E07A3C",
+		role: "后端",
+	},
+	{
+		id: "01AGENTTWO",
+		name: "贝塔",
+		initials: "B",
+		color: "#5B8FF9",
+		role: "前端",
+	},
+	{
+		id: "01AGENTTHREE",
+		name: "伽马",
+		initials: "G",
+		color: "#27AE60",
+		role: "评审",
+	},
 ];
 
 const mockWorkspaces: Array<{ id: string; name: string }> = [];
@@ -32,7 +50,9 @@ vi.mock("../store", () => {
 
 // createConversation is never invoked under renderToStaticMarkup (no click
 // events fire); a no-op stub keeps the import resolvable.
-vi.mock("../lib/api", () => ({ api: { createConversation: () => Promise.resolve({}) } }));
+vi.mock("../lib/api", () => ({
+	api: { createConversation: () => Promise.resolve({}) },
+}));
 
 import { NewConvModal } from "./NewConvModal";
 

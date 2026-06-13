@@ -196,6 +196,230 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────
+   Extra theme presets (selectable via ThemeToggle). Each is a full
+   palette override of :root (the light base), in the same var contract
+   as [data-theme="dark"]. Kept intentional & coherent (anti-slop).
+   ─────────────────────────────────────────────────────────────────  */
+
+/* Nord — the canonical Polar Night + Snow Storm + Frost palette (nordtheme.com).
+   Cool, calm, high-craft; clear 3-step depth so the UI has body, not a flat wash. */
+[data-theme="nord"] {
+	--color-bg: #2e3440;
+	--color-surface: #3b4252;
+	--color-surface-2: #353c4a;
+	--color-surface-3: #313845;
+	--color-sidebar: #272c38;
+	--color-sidebar-2: #21252f;
+	--color-sidebar-line: rgba(216, 222, 233, 0.1);
+	--color-sidebar-hover: rgba(216, 222, 233, 0.07);
+	--color-sidebar-active: rgba(136, 192, 208, 0.16);
+	--color-sidebar-fg: #e5e9f0;
+	--color-sidebar-muted: #7e889c;
+	--color-line: #434c5e;
+	--color-line-2: #4c566a;
+	--color-line-strong: #5b667d;
+	--color-line-hair: rgba(216, 222, 233, 0.12);
+	--color-fg: #eceff4;
+	--color-fg-2: #d8dee9;
+	--color-fg-3: #97a0b3;
+	--color-fg-4: #6b7488;
+	--color-accent: #88c0d0;
+	--color-accent-soft: rgba(136, 192, 208, 0.18);
+	--color-accent-dim: #6ba6b8;
+	--color-code-bg: rgba(136, 192, 208, 0.14);
+	--color-code-fg: #8fbcbb;
+	--color-code-block-bg: #2b303b;
+	--color-code-header-bg: rgba(59, 66, 82, 0.82);
+	--color-green: #a3be8c;
+	--color-green-soft: rgba(163, 190, 140, 0.18);
+	--color-amber: #ebcb8b;
+	--color-amber-soft: rgba(235, 203, 139, 0.18);
+	--color-red: #bf616a;
+	--color-red-soft: rgba(191, 97, 106, 0.2);
+	--color-blue: #81a1c1;
+	--color-blue-soft: rgba(129, 161, 193, 0.18);
+	--color-purple: #b48ead;
+	--color-purple-soft: rgba(180, 142, 173, 0.18);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.42), 0 3px 10px rgba(0, 0, 0, 0.3);
+	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.55), 0 8px 22px -8px
+		rgba(0, 0, 0, 0.4);
+	--ring-inset: inset 0 1px 0 rgba(236, 239, 244, 0.05);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(136, 192, 208, 0.55);
+	--glow-accent: 0 0 0 1px rgba(136, 192, 208, 0.35), 0 6px 26px -8px
+		rgba(136, 192, 208, 0.45);
+	--ring-input-focus: 0 0 0 3px rgba(136, 192, 208, 0.18), var(--shadow-sm);
+	--mesh-1: rgba(136, 192, 208, 0.05);
+	--mesh-2: rgba(94, 129, 172, 0.045);
+	--mesh-3: rgba(180, 142, 173, 0.03);
+	--grain-opacity: 0.03;
+	--grain-blend: soft-light;
+}
+
+/* Everforest (dark, medium) — warm sand text on a soft green-grey base. Genuinely
+   GREEN-identified (not near-black), gentle on the eyes. github.com/sainnhe/everforest */
+[data-theme="forest"] {
+	--color-bg: #2d353b;
+	--color-surface: #343f44;
+	--color-surface-2: #2f383e;
+	--color-surface-3: #2b3338;
+	--color-sidebar: #232a2e;
+	--color-sidebar-2: #1e2327;
+	--color-sidebar-line: rgba(211, 198, 170, 0.1);
+	--color-sidebar-hover: rgba(211, 198, 170, 0.06);
+	--color-sidebar-active: rgba(167, 192, 128, 0.16);
+	--color-sidebar-fg: #d3c6aa;
+	--color-sidebar-muted: #859289;
+	--color-line: #3d484d;
+	--color-line-2: #475258;
+	--color-line-strong: #56635f;
+	--color-line-hair: rgba(211, 198, 170, 0.1);
+	--color-fg: #d3c6aa;
+	--color-fg-2: #beb59a;
+	--color-fg-3: #93a194;
+	--color-fg-4: #6a7a6f;
+	--color-accent: #a7c080;
+	--color-accent-soft: rgba(167, 192, 128, 0.18);
+	--color-accent-dim: #8aa06a;
+	--color-code-bg: rgba(167, 192, 128, 0.14);
+	--color-code-fg: #83c092;
+	--color-code-block-bg: #2b3338;
+	--color-code-header-bg: rgba(52, 63, 68, 0.82);
+	--color-green: #a7c080;
+	--color-green-soft: rgba(167, 192, 128, 0.18);
+	--color-amber: #dbbc7f;
+	--color-amber-soft: rgba(219, 188, 127, 0.18);
+	--color-red: #e67e80;
+	--color-red-soft: rgba(230, 126, 128, 0.18);
+	--color-blue: #7fbbb3;
+	--color-blue-soft: rgba(127, 187, 179, 0.18);
+	--color-purple: #d699b6;
+	--color-purple-soft: rgba(214, 153, 182, 0.18);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.28);
+	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.52), 0 8px 22px -8px
+		rgba(0, 0, 0, 0.38);
+	--ring-inset: inset 0 1px 0 rgba(211, 198, 170, 0.05);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(167, 192, 128, 0.55);
+	--glow-accent: 0 0 0 1px rgba(167, 192, 128, 0.35), 0 6px 26px -8px
+		rgba(167, 192, 128, 0.4);
+	--ring-input-focus: 0 0 0 3px rgba(167, 192, 128, 0.18), var(--shadow-sm);
+	--mesh-1: rgba(167, 192, 128, 0.05);
+	--mesh-2: rgba(127, 187, 179, 0.04);
+	--mesh-3: rgba(214, 153, 182, 0.03);
+	--grain-opacity: 0.03;
+	--grain-blend: soft-light;
+}
+
+/* Tokyo Night — deep indigo night + vivid violet/blue accents. A genuinely
+   distinct cool-indigo (not near-black). github.com/enkia/tokyo-night */
+[data-theme="dusk"] {
+	--color-bg: #1a1b26;
+	--color-surface: #24283b;
+	--color-surface-2: #1f2233;
+	--color-surface-3: #1b1e2e;
+	--color-sidebar: #16161e;
+	--color-sidebar-2: #121219;
+	--color-sidebar-line: rgba(192, 202, 245, 0.09);
+	--color-sidebar-hover: rgba(192, 202, 245, 0.06);
+	--color-sidebar-active: rgba(122, 162, 247, 0.18);
+	--color-sidebar-fg: #c0caf5;
+	--color-sidebar-muted: #767c9d;
+	--color-line: #2a2e42;
+	--color-line-2: #343a54;
+	--color-line-strong: #45496a;
+	--color-line-hair: rgba(192, 202, 245, 0.1);
+	--color-fg: #c0caf5;
+	--color-fg-2: #a9b1d6;
+	--color-fg-3: #787c99;
+	--color-fg-4: #565a78;
+	--color-accent: #bb9af7;
+	--color-accent-soft: rgba(187, 154, 247, 0.18);
+	--color-accent-dim: #9d7cd8;
+	--color-code-bg: rgba(187, 154, 247, 0.14);
+	--color-code-fg: #7dcfff;
+	--color-code-block-bg: #1b1e2e;
+	--color-code-header-bg: rgba(36, 40, 59, 0.82);
+	--color-green: #9ece6a;
+	--color-green-soft: rgba(158, 206, 106, 0.16);
+	--color-amber: #e0af68;
+	--color-amber-soft: rgba(224, 175, 104, 0.16);
+	--color-red: #f7768e;
+	--color-red-soft: rgba(247, 118, 142, 0.18);
+	--color-blue: #7aa2f7;
+	--color-blue-soft: rgba(122, 162, 247, 0.16);
+	--color-purple: #bb9af7;
+	--color-purple-soft: rgba(187, 154, 247, 0.18);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.55), 0 3px 10px rgba(0, 0, 0, 0.4);
+	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.66), 0 8px 22px -8px
+		rgba(0, 0, 0, 0.48);
+	--ring-inset: inset 0 1px 0 rgba(192, 202, 245, 0.05);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(187, 154, 247, 0.55);
+	--glow-accent: 0 0 0 1px rgba(187, 154, 247, 0.35), 0 6px 26px -8px
+		rgba(187, 154, 247, 0.45);
+	--ring-input-focus: 0 0 0 3px rgba(187, 154, 247, 0.18), var(--shadow-sm);
+	--mesh-1: rgba(187, 154, 247, 0.06);
+	--mesh-2: rgba(122, 162, 247, 0.05);
+	--mesh-3: rgba(125, 207, 255, 0.03);
+	--grain-opacity: 0.04;
+	--grain-blend: soft-light;
+}
+
+/* Mono — minimal high-contrast ink on warm paper (light family). Overrides
+   only what differs from :root; neutral graphite accent, near-zero ambiance. */
+[data-theme="mono"] {
+	--color-bg: #fafafa;
+	--color-surface: #ffffff;
+	--color-surface-2: #f5f5f5;
+	--color-surface-3: #eeeeee;
+	--color-sidebar: #f0f0f0;
+	--color-sidebar-2: #e8e8e8;
+	--color-sidebar-line: rgba(20, 20, 20, 0.1);
+	--color-sidebar-hover: rgba(20, 20, 20, 0.05);
+	--color-sidebar-active: rgba(20, 20, 20, 0.09);
+	--color-sidebar-fg: #1a1a1a;
+	--color-sidebar-muted: #767676;
+	--color-line: #e6e6e6;
+	--color-line-2: #d8d8d8;
+	--color-line-strong: #bcbcbc;
+	--color-line-hair: rgba(20, 20, 20, 0.08);
+	--color-fg: #141414;
+	--color-fg-2: #3d3d3d;
+	--color-fg-3: #6e6e6e;
+	--color-fg-4: #969696;
+	--color-accent: #2d2d2d;
+	--color-accent-soft: #e8e8e8;
+	--color-accent-dim: #000000;
+	--color-code-bg: rgba(20, 20, 20, 0.06);
+	--color-code-fg: #1a1a1a;
+	--color-code-block-bg: #fbfbfb;
+	--color-code-header-bg: rgba(245, 245, 245, 0.86);
+	--color-green: #2f7d4f;
+	--color-green-soft: #dcefe2;
+	--color-amber: #8a6d00;
+	--color-amber-soft: #f2eccf;
+	--color-red: #b3382b;
+	--color-red-soft: #f2d6d2;
+	--color-blue: #2f5fa8;
+	--color-blue-soft: #d9e2f0;
+	--color-purple: #5a3fb0;
+	--color-purple-soft: #ddd6f0;
+	--color-focus: rgba(20, 20, 20, 0.5);
+	--glow-accent: 0 0 0 1px rgba(20, 20, 20, 0.25), 0 6px 22px -8px
+		rgba(20, 20, 20, 0.3);
+	--ring-input-focus: 0 0 0 3px rgba(20, 20, 20, 0.12), var(--shadow-sm);
+	--mesh-1: rgba(20, 20, 20, 0.015);
+	--mesh-2: rgba(20, 20, 20, 0.01);
+	--mesh-3: rgba(20, 20, 20, 0.008);
+	--grain-opacity: 0.02;
+	--grain-blend: multiply;
+}
+
+/* ─────────────────────────────────────────────────────────────────
    Base layout
    ─────────────────────────────────────────────────────────────────  */
 
@@ -317,10 +541,12 @@ html[data-capacitor="1"] .pn-mobile-shell {
 	will-change: transform, opacity;
 }
 
-
 .pn-mobile-fixed-header {
 	position: fixed;
-	top: calc(var(--pn-visual-top, 0px) + max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px)));
+	top: calc(
+		var(--pn-visual-top, 0px) +
+		max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px))
+	);
 	left: 0;
 	right: 0;
 }
@@ -329,7 +555,11 @@ html[data-capacitor="1"] .pn-mobile-shell {
 	position: fixed;
 	left: 0;
 	right: 0;
-	top: calc(var(--pn-visual-top, 0px) + max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px)) + var(--pn-mobile-chat-header-h, 57px));
+	top: calc(
+		var(--pn-visual-top, 0px) +
+		max(var(--pn-status-safe-top, env(safe-area-inset-top)), var(--conn-h, 0px)) +
+		var(--pn-mobile-chat-header-h, 57px)
+	);
 	bottom: 0;
 	overflow: hidden;
 }
@@ -343,8 +573,14 @@ html[data-capacitor="1"] .pn-mobile-chat-scroll {
 html[data-capacitor="1"] input,
 html[data-capacitor="1"] textarea,
 html[data-capacitor="1"] select {
-	scroll-margin-top: calc(var(--pn-status-safe-top, env(safe-area-inset-top)) + 64px);
-	scroll-margin-bottom: calc(var(--pn-status-safe-bottom, env(safe-area-inset-bottom)) + 96px);
+	scroll-margin-top: calc(
+		var(--pn-status-safe-top, env(safe-area-inset-top)) +
+		64px
+	);
+	scroll-margin-bottom: calc(
+		var(--pn-status-safe-bottom, env(safe-area-inset-bottom)) +
+		96px
+	);
 }
 
 body {

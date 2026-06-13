@@ -10,6 +10,7 @@
 import { Check, ChevronDown, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
+import { t } from "../lib/i18n";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
 
@@ -76,6 +77,7 @@ export function NewContactModal({
 	prefill = null,
 }: Props) {
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 	const isEdit = editing !== null;
 	// In create mode, a heuristic suggestion can seed fields (对话式创建).
 	const pf = isEdit ? null : prefill;
@@ -121,10 +123,15 @@ export function NewContactModal({
 	);
 	const [skillSrc, setSkillSrc] = useState("");
 	const [skillMenuOpen, setSkillMenuOpen] = useState(false);
-	const [skillBusy, setSkillBusy] = useState<"idle" | "installing" | "err">("idle");
+	const [skillBusy, setSkillBusy] = useState<"idle" | "installing" | "err">(
+		"idle",
+	);
 	const [skillErr, setSkillErr] = useState("");
 	useEffect(() => {
-		api.listSkills().then(setInstalledSkills).catch(() => {});
+		api
+			.listSkills()
+			.then(setInstalledSkills)
+			.catch(() => {});
 	}, []);
 	const cleanSkills = () =>
 		[...boundSkills].map((name) => ({ name, instructions: "" }));
@@ -328,17 +335,17 @@ export function NewContactModal({
 				<div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
 					{adapters === null && (
 						<div className="text-center py-8 text-[12px] text-[var(--color-fg-3)]">
-							加载已接入的适配器...
+							{t("loadingAdapters", lang)}
 						</div>
 					)}
 
 					{adapters !== null && adapters.length === 0 && (
 						<div className="border border-dashed border-[var(--color-line-strong)] rounded p-4 text-center space-y-2">
 							<div className="text-[12.5px] text-[var(--color-fg-2)]">
-								还没有接入任何适配器
+								{t("noAdaptersConnected", lang)}
 							</div>
 							<div className="text-[11px] text-[var(--color-fg-3)]">
-								联系人必须基于已接入的 CLI(Claude Code / Codex / OpenCode)创建
+								{t("contactRequiresAdapter", lang)}
 							</div>
 							<button
 								type="button"
@@ -349,19 +356,21 @@ export function NewContactModal({
 								className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] rounded bg-[var(--color-accent)] text-white"
 							>
 								<Wrench size={12} />
-								打开适配器管理
+								{t("openAdapterManager", lang)}
 							</button>
 						</div>
 					)}
 
 					{adapters !== null && adapters.length > 0 && (
 						<>
-							<Field label="适配器" required>
+							<Field label={t("adapters", lang)} required>
 								<select
 									value={adapterId}
 									onChange={(e) => setAdapterId(e.target.value)}
 									disabled={isEdit}
-									title={isEdit ? "编辑模式下不能改适配器,删后重建" : undefined}
+									title={
+										isEdit ? t("cannotChangeAdapterInEdit", lang) : undefined
+									}
 									className={`w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)] ${
 										isEdit ? "opacity-60 cursor-not-allowed" : ""
 									}`}
@@ -374,7 +383,7 @@ export function NewContactModal({
 								</select>
 							</Field>
 
-							<Field label="模型" required>
+							<Field label={t("model", lang)} required>
 								<div className="space-y-2">
 									{isForcedManual ? (
 										// Claude Code 等没有预设清单 — 强制手输
@@ -382,7 +391,7 @@ export function NewContactModal({
 											type="text"
 											value={customModel}
 											onChange={(e) => setCustomModel(e.target.value)}
-											placeholder="如:claude-sonnet-4-5 / claude-opus-4-7"
+											placeholder={t("modelHint", lang)}
 											className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
 										/>
 									) : (
@@ -405,14 +414,14 @@ export function NewContactModal({
 														{m}
 													</option>
 												))}
-												<option value="__custom__">自定义…</option>
+												<option value="__custom__">{t("custom", lang)}</option>
 											</select>
 											{useCustomModel && (
 												<input
 													type="text"
 													value={customModel}
 													onChange={(e) => setCustomModel(e.target.value)}
-													placeholder="自定义模型 id"
+													placeholder={t("customModelId", lang)}
 													className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
 												/>
 											)}
@@ -427,7 +436,7 @@ export function NewContactModal({
 								</div>
 							</Field>
 
-							<Field label="模型最大上下文长度" required>
+							<Field label={t("maxContextLength", lang)} required>
 								<div className="space-y-1.5">
 									<select
 										value={ctxMode}
@@ -439,7 +448,7 @@ export function NewContactModal({
 												{p.label}
 											</option>
 										))}
-										<option value="custom">自定义…</option>
+										<option value="custom">{t("custom", lang)}</option>
 									</select>
 									{ctxMode === "custom" && (
 										<input
@@ -448,40 +457,37 @@ export function NewContactModal({
 											step={1024}
 											value={customCtx}
 											onChange={(e) => setCustomCtx(e.target.value)}
-											placeholder="自定义 token 总数,如 262144"
+											placeholder={t("customTokenCount", lang)}
 											className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
 										/>
 									)}
 									<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
-										必填,且必须手动指定 ——
-										不再按模型名猜(对第三方/代理模型经常不准)。
-										选你这个模型的真实上下文上限;Polynoia 会扣掉 Claude Code
-										的固定开销(≈35k) 再分给历史/会话/项目几层。
+										{t("contextLengthHint", lang)}
 									</div>
 								</div>
 							</Field>
 
-							<Field label="联系人名称" required>
+							<Field label={t("contactName", lang)} required>
 								<input
 									autoFocus
 									type="text"
 									value={name}
 									onChange={(e) => setName(e.target.value)}
-									placeholder="如:Claude-Fast、Claude-架构师"
+									placeholder={t("contactNameHint", lang)}
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 								/>
 								{nameConflict && (
 									<div className="text-[10.5px] text-[var(--color-amber)] mt-1">
-										已存在同名联系人,建议改名以便区分
+										{t("contactNameConflict", lang)}
 									</div>
 								)}
 							</Field>
 
-							<Field label="人格 / system prompt(可选)">
+							<Field label={t("systemPrompt", lang)}>
 								<textarea
 									value={systemPrompt}
 									onChange={(e) => setSystemPrompt(e.target.value)}
-									placeholder="只写这个 agent 的独特人格 / 风格(如:技术总监,克制直接)。平台/工具说明会自动注入,无需手写。"
+									placeholder={t("systemPromptHint", lang)}
 									rows={3}
 									className="w-full text-[12.5px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] resize-y"
 								/>
@@ -523,14 +529,18 @@ export function NewContactModal({
 												placeholder={
 													boundSkills.size > 0
 														? `已选择 ${boundSkills.size} 个 skill；也可粘贴地址安装`
-														: "GitHub 地址或本地路径:https://github.com/org/repo.git"
+														: t("skillUrlPlaceholder", lang)
 												}
 												className="w-full text-[12px] pl-2.5 pr-9 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] font-mono"
 											/>
 											<button
 												type="button"
 												onClick={() => setSkillMenuOpen((v) => !v)}
-												aria-label={skillMenuOpen ? "收起 skill 列表" : "展开 skill 列表"}
+												aria-label={
+													skillMenuOpen
+														? t("collapseSkillList", lang)
+														: t("expandSkillList", lang)
+												}
 												className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 grid place-items-center rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] transition"
 											>
 												<ChevronDown
@@ -548,74 +558,76 @@ export function NewContactModal({
 														className="fixed inset-0 z-[61] cursor-default bg-transparent"
 													/>
 													<div className="absolute z-[62] mt-1 w-full max-h-64 overflow-y-auto rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
-													{installedSkills.length > 0 ? (
-														<div className="py-1">
-															{installedSkills.map((s) => {
-																const on = boundSkills.has(s.name);
-																return (
-																	<div
-																		key={s.name}
-																		className={`group flex items-stretch gap-1 transition-colors ${
-																			on
-																				? "bg-[var(--color-accent)]/10"
-																				: "hover:bg-[var(--color-surface-2)]"
-																		}`}
-																	>
-																		<button
-																			type="button"
-																			onClick={() =>
-																				setBoundSkills((b) => {
-																					const n = new Set(b);
-																					n.has(s.name) ? n.delete(s.name) : n.add(s.name);
-																					return n;
-																				})
-																			}
-																			className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-2"
+														{installedSkills.length > 0 ? (
+															<div className="py-1">
+																{installedSkills.map((s) => {
+																	const on = boundSkills.has(s.name);
+																	return (
+																		<div
+																			key={s.name}
+																			className={`group flex items-stretch gap-1 transition-colors ${
+																				on
+																					? "bg-[var(--color-accent)]/10"
+																					: "hover:bg-[var(--color-surface-2)]"
+																			}`}
 																		>
-																			<span
-																				className={`mt-0.5 w-4 h-4 rounded border grid place-items-center flex-shrink-0 ${
-																					on
-																						? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
-																						: "border-[var(--color-line-strong)]"
-																				}`}
-																			>
-																				{on && <Check size={11} />}
-																			</span>
-																			<span className="min-w-0">
-																				<span className="block text-[12.5px] font-mono text-[var(--color-fg)] truncate">
-																					{s.name}
-																				</span>
-																				{s.description && (
-																					<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
-																						{s.description}
-																					</span>
-																				)}
-																			</span>
-																		</button>
-																		{s.builtin ? (
-																			<span className="px-2 grid place-items-center text-[10px] text-[var(--color-fg-4)]">
-																				内置
-																			</span>
-																		) : (
 																			<button
 																				type="button"
-																				onClick={() => removeSkill(s.name)}
-																				title={`卸载 skill「${s.name}」`}
-																				aria-label={`卸载 ${s.name}`}
-																				className="px-2 grid place-items-center text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
+																				onClick={() =>
+																					setBoundSkills((b) => {
+																						const n = new Set(b);
+																						n.has(s.name)
+																							? n.delete(s.name)
+																							: n.add(s.name);
+																						return n;
+																					})
+																				}
+																				className="flex-1 min-w-0 text-left flex items-start gap-2 px-2.5 py-2"
 																			>
-																				<Trash2 size={13} />
+																				<span
+																					className={`mt-0.5 w-4 h-4 rounded border grid place-items-center flex-shrink-0 ${
+																						on
+																							? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+																							: "border-[var(--color-line-strong)]"
+																					}`}
+																				>
+																					{on && <Check size={11} />}
+																				</span>
+																				<span className="min-w-0">
+																					<span className="block text-[12.5px] font-mono text-[var(--color-fg)] truncate">
+																						{s.name}
+																					</span>
+																					{s.description && (
+																						<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
+																							{s.description}
+																						</span>
+																					)}
+																				</span>
 																			</button>
-																		)}
-																	</div>
-																);
-															})}
-														</div>
-													) : (
-														<p className="px-2.5 py-2 text-[11.5px] text-[var(--color-fg-3)]">
-															还没有已安装的 skill。可直接粘贴 GitHub 地址或本地路径安装。
-														</p>
-													)}
+																			{s.builtin ? (
+																				<span className="px-2 grid place-items-center text-[10px] text-[var(--color-fg-4)]">
+																					内置
+																				</span>
+																			) : (
+																				<button
+																					type="button"
+																					onClick={() => removeSkill(s.name)}
+																					title={`卸载 skill「${s.name}」`}
+																					aria-label={`卸载 ${s.name}`}
+																					className="px-2 grid place-items-center text-[var(--color-fg-4)] opacity-0 group-hover:opacity-100 hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 transition"
+																				>
+																					<Trash2 size={13} />
+																				</button>
+																			)}
+																		</div>
+																	);
+																})}
+															</div>
+														) : (
+															<p className="px-2.5 py-2 text-[11.5px] text-[var(--color-fg-3)]">
+																{t("noInstalledSkills", lang)}
+															</p>
+														)}
 													</div>
 												</>
 											)}
@@ -626,7 +638,9 @@ export function NewContactModal({
 											disabled={!skillSrc.trim() || skillBusy === "installing"}
 											className="px-3 py-1.5 text-[12px] rounded border border-[var(--color-line-strong)] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)] disabled:opacity-50 whitespace-nowrap"
 										>
-											{skillBusy === "installing" ? "安装中…" : "安装"}
+											{skillBusy === "installing"
+												? t("installing", lang)
+												: t("install", lang)}
 										</button>
 									</div>
 									{skillBusy === "err" && (
@@ -635,7 +649,7 @@ export function NewContactModal({
 								</div>
 							</Field>
 
-							<Field label="颜色">
+							<Field label={t("color", lang)}>
 								<div className="flex gap-1.5">
 									{COLOR_OPTIONS.map((c) => (
 										<button
@@ -673,7 +687,7 @@ export function NewContactModal({
 						className="link-accent text-[12px] inline-flex items-center gap-1"
 					>
 						<Wrench size={11} />
-						管理适配器
+						{t("manageAdapters", lang)}
 					</button>
 					<div className="flex-1" />
 					<button
@@ -681,7 +695,7 @@ export function NewContactModal({
 						onClick={onClose}
 						className="text-[13px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:underline transition"
 					>
-						取消
+						{t("cancel", lang)}
 					</button>
 					<button
 						type="button"
@@ -691,11 +705,11 @@ export function NewContactModal({
 					>
 						{busy
 							? isEdit
-								? "保存中…"
-								: "创建中…"
+								? t("saving", lang)
+								: t("creating", lang)
 							: isEdit
-								? "保存修改"
-								: "创建联系人"}
+								? t("saveChanges", lang)
+								: t("createContact", lang)}
 					</button>
 				</footer>
 			</div>

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import type { Agent } from "../../lib/types";
 import { useStore } from "../../store";
 import { NewContactModal } from "../NewContactModal";
@@ -36,6 +37,7 @@ type Props = {
 export function CreateHubView({ onOpenConv }: Props) {
 	const agents = useStore((s) => s.agents);
 	const providers = useStore((s) => s.providers);
+	const lang = useStore((s) => s.lang);
 	const [query, setQuery] = useState("");
 	const [activeProvider, setActiveProvider] = useState<string | null>(null);
 	// 项目外只能建联系人(1v1) + 自定义 Agent。
@@ -124,7 +126,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 			<header className="flex items-center justify-between px-5 py-3 border-b border-[var(--color-line)] bg-[var(--color-surface)]">
 				<div className="flex items-center gap-2">
 					<Sparkles size={16} className="text-[var(--color-accent)]" />
-					<h1 className="text-[15px] font-semibold">新建</h1>
+					<h1 className="text-[15px] font-semibold">{t("newHub", lang)}</h1>
 					<span className="text-[11px] text-[var(--color-fg-3)] ml-1">
 						已安装 {installable.length} 个 Agent
 					</span>
@@ -139,15 +141,15 @@ export function CreateHubView({ onOpenConv }: Props) {
 						<QuickAction
 							icon={MessageCircle}
 							color="#5B8FF9"
-							title="新建联系人(1v1)"
-							desc="选一个 Agent · 立即开聊"
+							title={t("newDmContact", lang)}
+							desc={t("newDmDesc", lang)}
 							onClick={() => setModal("dm")}
 						/>
 						<QuickAction
 							icon={Bot}
 							color="#9B59B6"
-							title="自定义 Agent"
-							desc="派生角色 · 自定 prompt + 工具"
+							title={t("customAgent", lang)}
+							desc={t("customAgentDesc", lang)}
 							onClick={() => setModal("custom")}
 						/>
 					</div>
@@ -156,10 +158,10 @@ export function CreateHubView({ onOpenConv }: Props) {
 						<div className="flex items-center gap-1.5 mb-1.5">
 							<Sparkles size={13} className="text-[var(--color-accent)]" />
 							<span className="text-[12px] font-semibold text-[var(--color-fg-2)]">
-								对话式创建
+								{t("conversationalCreate", lang)}
 							</span>
 							<span className="text-[10.5px] text-[var(--color-fg-3)]">
-								用一句话描述,自动配好角色 / 工具集 / 人格(可再改)
+								{t("conversationalCreateHint", lang)}
 							</span>
 						</div>
 						<div className="flex gap-2">
@@ -168,7 +170,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 								value={describe}
 								onChange={(e) => setDescribe(e.target.value)}
 								onKeyDown={(e) => e.key === "Enter" && generateFromDescribe()}
-								placeholder="如:一个会写前端、不能跑命令的设计师"
+								placeholder={t("describeExample", lang)}
 								className="flex-1 text-[12.5px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 							/>
 							<button
@@ -177,15 +179,16 @@ export function CreateHubView({ onOpenConv }: Props) {
 								disabled={!describe.trim() || suggesting}
 								className="px-3 py-2 text-[12.5px] rounded bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
 							>
-								{suggesting ? "生成中…" : "生成"}
+								{suggesting ? t("generating", lang) : t("generate", lang)}
 							</button>
 						</div>
 					</div>
 
 					<div className="mt-3 max-w-[640px] text-[11.5px] text-[var(--color-fg-3)] flex items-center gap-1.5">
-						<span className="text-[var(--color-fg-4)]">提示:</span>
-						群聊必须在<b className="text-[var(--color-fg-2)]">项目内</b>创建 —
-						点左侧 Sidebar 任一项目 → 顶部「+ 新建对话」
+						<span className="text-[var(--color-fg-4)]">{t("hint", lang)}</span>
+						{t("groupChatHint1", lang)}
+						<b className="text-[var(--color-fg-2)]">{t("inside", lang)}</b>
+						{t("groupChatHint2", lang)}
 					</div>
 				</section>
 
@@ -193,7 +196,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 				<section className="px-5 pt-6 pb-8">
 					<div className="flex items-center justify-between mb-2">
 						<h2 className="text-[12.5px] font-semibold text-[var(--color-fg-2)]">
-							已安装的 Agent
+							{t("installedAgents", lang)}
 						</h2>
 						<span className="text-[11px] text-[var(--color-fg-3)]">
 							{visible.length} / {installable.length}
@@ -211,7 +214,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 								type="search"
 								value={query}
 								onChange={(e) => setQuery(e.target.value)}
-								placeholder="搜索 agent 名称 / 能力 / 角色"
+								placeholder={t("searchAgentPlaceholder", lang)}
 								className="w-full text-[12px] pl-7 pr-2 py-1.5 rounded border border-[var(--color-line)] bg-[var(--color-surface)] outline-none focus:border-[var(--color-accent)]"
 							/>
 						</div>
@@ -226,7 +229,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 											: "border-[var(--color-line)] hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
 									}`}
 								>
-									全部
+									{t("all", lang)}
 								</button>
 								{visibleProviders.map((p) => (
 									<button
@@ -255,7 +258,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 
 					{visible.length === 0 && (
 						<div className="px-3 py-8 text-center text-[12px] text-[var(--color-fg-3)] border border-dashed border-[var(--color-line)] rounded">
-							没有匹配的 agent
+							{t("noMatchingAgent", lang)}
 						</div>
 					)}
 					<ul className="space-y-1">
@@ -338,7 +341,7 @@ export function CreateHubView({ onOpenConv }: Props) {
 									className="inline-flex items-center gap-1 text-[11.5px] px-2.5 py-1 rounded bg-[var(--color-accent)] text-white opacity-90 hover:opacity-100 transition flex-shrink-0"
 									title={`和 ${a.name} 开始 1v1`}
 								>
-									聊 <ChevronRight size={12} />
+									{t("chat2", lang)} <ChevronRight size={12} />
 								</button>
 							</li>
 						))}
@@ -474,6 +477,7 @@ function DMPicker({
 	onClose: () => void;
 	onPick: (a: Agent) => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	const [q, setQ] = useState("");
 	const filtered = useMemo(() => {
 		const k = q.trim().toLowerCase();
@@ -486,21 +490,21 @@ function DMPicker({
 	}, [agents, q]);
 
 	return (
-		<ModalShell title="选一个 Agent 开始 1v1" onClose={onClose}>
+		<ModalShell title={t("dmPickerTitle", lang)} onClose={onClose}>
 			<div className="p-4 border-b border-[var(--color-line)]">
 				<input
 					autoFocus
 					type="search"
 					value={q}
 					onChange={(e) => setQ(e.target.value)}
-					placeholder="搜索 agent..."
+					placeholder={t("searchAgent", lang)}
 					className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line)] bg-[var(--color-bg)] outline-none focus:border-[var(--color-accent)]"
 				/>
 			</div>
 			<ul className="p-2">
 				{filtered.length === 0 && (
 					<li className="px-3 py-6 text-center text-[12px] text-[var(--color-fg-3)]">
-						没有匹配
+						{t("noMatch", lang)}
 					</li>
 				)}
 				{filtered.map((a) => (

@@ -20,7 +20,9 @@ import {
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { t } from "../../lib/i18n";
 import { assetUrl } from "../../lib/runtime-config";
+import { useStore } from "../../store";
 import { fixCjkMarkdown } from "../parts/TextPart";
 
 /** Resolve a markdown image `src` to something the browser can load.
@@ -122,7 +124,9 @@ function findAnchorTarget(root: HTMLElement, raw: string): HTMLElement | null {
 	);
 	if (el) return el;
 	const slug = githubHeadingSlug(decoded);
-	el = root.querySelector<HTMLElement>(`[id="${slug.replace(/["\\]/g, "\\$&")}"]`);
+	el = root.querySelector<HTMLElement>(
+		`[id="${slug.replace(/["\\]/g, "\\$&")}"]`,
+	);
 	return el;
 }
 
@@ -200,12 +204,19 @@ export function MarkdownDoc({
 	imgBasePath?: string;
 	onEdit?: () => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	const name = path ? (path.split("/").pop() ?? path) : undefined;
 	const imgDocPath = imgBasePath ?? path;
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const fixedContent = useMemo(() => fixCjkMarkdown(content), [content]);
-	const headingIds = useMemo(() => buildHeadingIdMap(fixedContent), [fixedContent]);
-	const scrollToHash = (href: string, event?: MouseEvent<HTMLAnchorElement>) => {
+	const headingIds = useMemo(
+		() => buildHeadingIdMap(fixedContent),
+		[fixedContent],
+	);
+	const scrollToHash = (
+		href: string,
+		event?: MouseEvent<HTMLAnchorElement>,
+	) => {
 		if (!href.startsWith("#")) return false;
 		const root = scrollRef.current;
 		event?.preventDefault();
@@ -246,7 +257,11 @@ export function MarkdownDoc({
 			const id =
 				(offset != null ? headingIds.get(offset) : null) ??
 				githubHeadingSlug(textFromChildren(children));
-			return <h1 {...props} id={id}>{children}</h1>;
+			return (
+				<h1 {...props} id={id}>
+					{children}
+				</h1>
+			);
 		},
 		h2({
 			node,
@@ -257,7 +272,11 @@ export function MarkdownDoc({
 			const id =
 				(offset != null ? headingIds.get(offset) : null) ??
 				githubHeadingSlug(textFromChildren(children));
-			return <h2 {...props} id={id}>{children}</h2>;
+			return (
+				<h2 {...props} id={id}>
+					{children}
+				</h2>
+			);
 		},
 		h3({
 			node,
@@ -268,7 +287,11 @@ export function MarkdownDoc({
 			const id =
 				(offset != null ? headingIds.get(offset) : null) ??
 				githubHeadingSlug(textFromChildren(children));
-			return <h3 {...props} id={id}>{children}</h3>;
+			return (
+				<h3 {...props} id={id}>
+					{children}
+				</h3>
+			);
 		},
 		h4({
 			node,
@@ -279,7 +302,11 @@ export function MarkdownDoc({
 			const id =
 				(offset != null ? headingIds.get(offset) : null) ??
 				githubHeadingSlug(textFromChildren(children));
-			return <h4 {...props} id={id}>{children}</h4>;
+			return (
+				<h4 {...props} id={id}>
+					{children}
+				</h4>
+			);
 		},
 		h5({
 			node,
@@ -290,7 +317,11 @@ export function MarkdownDoc({
 			const id =
 				(offset != null ? headingIds.get(offset) : null) ??
 				githubHeadingSlug(textFromChildren(children));
-			return <h5 {...props} id={id}>{children}</h5>;
+			return (
+				<h5 {...props} id={id}>
+					{children}
+				</h5>
+			);
 		},
 		h6({
 			node,
@@ -301,7 +332,11 @@ export function MarkdownDoc({
 			const id =
 				(offset != null ? headingIds.get(offset) : null) ??
 				githubHeadingSlug(textFromChildren(children));
-			return <h6 {...props} id={id}>{children}</h6>;
+			return (
+				<h6 {...props} id={id}>
+					{children}
+				</h6>
+			);
 		},
 		img({
 			node: _node,
@@ -328,10 +363,10 @@ export function MarkdownDoc({
 						<button
 							type="button"
 							onClick={onEdit}
-							title="编辑此文档"
+							title={t("editDocument", lang)}
 							className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:border-[var(--color-accent)] transition flex-shrink-0"
 						>
-							<Pencil size={11} /> 编辑
+							<Pencil size={11} /> {t("edit", lang)}
 						</button>
 					)}
 				</div>

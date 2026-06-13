@@ -10,6 +10,7 @@
  * so it survives refresh.
  */
 import { Check, MessageCircleQuestion } from "lucide-react";
+import { t } from "../../lib/i18n";
 import type { AskFormPayload, MessagePayload } from "../../lib/types";
 import { useStore } from "../../store";
 
@@ -36,6 +37,7 @@ export function AskFormPart({
 	// Answered: (1) blocking ask_user stamps the answer ONTO this card's payload
 	// (no separate `you` bubble, so the agent's reply stays contiguous); (2) the
 	// legacy <ask-form> text path is answered by a following `you` message.
+	const lang = useStore((s) => s.lang);
 	const stamped =
 		(payload as AskFormPayload & { answer?: string }).answer ?? null;
 	const followingYou = useStore((s) => {
@@ -74,7 +76,9 @@ export function AskFormPart({
 				) : (
 					<MessageCircleQuestion size={12} className="flex-shrink-0" />
 				)}
-				<span>{answered ? "已回复" : "需要你回复"}</span>
+				<span>
+					{answered ? t("answered", lang) : t("needsYourReply", lang)}
+				</span>
 				{payload.title && (
 					<span className="text-[var(--color-fg-3)] font-normal truncate">
 						· {payload.title}
@@ -83,14 +87,11 @@ export function AskFormPart({
 			</div>
 			{answered ? (
 				<div className="text-[12px] text-[var(--color-fg-2)] leading-snug">
-					{clean || "(已回复)"}
+					{clean || t("answeredPlaceholder", lang)}
 				</div>
 			) : (
 				<div className="text-[11.5px] text-[var(--color-fg-3)] leading-snug">
 					{payload.questions.map((q) => q.label).join(" · ")}
-					<span className="block mt-0.5 text-[10.5px] text-[var(--color-accent)]">
-						请在下方面板作答 ↓
-					</span>
 				</div>
 			)}
 		</div>

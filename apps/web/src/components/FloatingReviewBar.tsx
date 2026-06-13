@@ -20,12 +20,14 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { type PendingEdit, api } from "../lib/api";
+import { t } from "../lib/i18n";
 import { useStore } from "../store";
 import { editToUnified } from "./preview/diffUnified";
 
 const EMPTY: readonly PendingEdit[] = [];
 
 export function FloatingReviewBar({ convId }: { convId: string }) {
+	const lang = useStore((s) => s.lang);
 	const list = useStore((s) => s.pendingEditsByConv.get(convId) ?? EMPTY);
 	const hydrate = useStore((s) => s.hydratePendingEdits);
 	const upsert = useStore((s) => s.upsertPendingEdit);
@@ -90,7 +92,9 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 			/>
 			<span className="inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-accent)] font-medium flex-shrink-0">
 				<Loader2 size={11} className="animate-spin" />
-				审阅改动 · {idx + 1}/{pending.length}
+				{t("reviewChanges", lang)
+					.replace("{idx + 1}", String(idx + 1))
+					.replace("{pending.length}", String(pending.length))}
 			</span>
 
 			{/* Current file — click to open it as a center editor tab */}
@@ -98,14 +102,14 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 				type="button"
 				onClick={focusFile}
 				className="inline-flex items-center gap-1.5 min-w-0 px-1.5 py-0.5 rounded hover:bg-[var(--color-line)]/50 transition"
-				title="在中间打开此文件"
+				title={t("openInCenter", lang)}
 			>
 				<FileEdit
 					size={12}
 					className="text-[var(--color-accent)] flex-shrink-0"
 				/>
 				<span className="font-mono text-[11.5px] text-[var(--color-fg)] truncate">
-					{edit.file_path || "(多文件补丁)"}
+					{edit.file_path || t("multiFilePatch", lang)}
 				</span>
 				<span className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] flex-shrink-0">
 					{edit.kind}
@@ -152,8 +156,8 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 					onClick={() => setReviewIndex(idx - 1)}
 					disabled={idx <= 0}
 					className="p-1 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)] disabled:opacity-30 disabled:cursor-not-allowed transition"
-					title="上一个改动"
-					aria-label="上一个改动"
+					title={t("previousChange", lang)}
+					aria-label={t("previousChange", lang)}
 				>
 					<ChevronLeft size={14} />
 				</button>
@@ -162,8 +166,8 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 					onClick={() => setReviewIndex(idx + 1)}
 					disabled={idx >= pending.length - 1}
 					className="p-1 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)] disabled:opacity-30 disabled:cursor-not-allowed transition"
-					title="下一个改动"
-					aria-label="下一个改动"
+					title={t("nextChange", lang)}
+					aria-label={t("nextChange", lang)}
 				>
 					<ChevronRight size={14} />
 				</button>
@@ -181,7 +185,7 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 				) : (
 					<X size={11} />
 				)}
-				拒绝
+				{t("denyButton", lang)}
 			</button>
 			<button
 				type="button"
@@ -194,7 +198,7 @@ export function FloatingReviewBar({ convId }: { convId: string }) {
 				) : (
 					<Check size={11} />
 				)}
-				接受
+				{t("acceptButton", lang)}
 			</button>
 		</div>
 	);
