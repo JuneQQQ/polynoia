@@ -29,6 +29,7 @@ from polynoia.adapters.pool import get_pool
 
 # Conversation-runtime state + shared helpers (defined in routes.py; mutated in
 # place so importing the binding here is safe — see module docstring + CHARTER).
+from polynoia.api import event_log
 from polynoia.api.execution import BurstStateMachine
 from polynoia.api.routes import (
     _AGENT_IDLE_TIMEOUT,
@@ -207,6 +208,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # Broadcast to ALL current connections of this conv (not just this
         # socket's queue). So an agent task spawned by a now-closed connection
         # still reaches whoever is currently attached — refresh-safe streaming.
+        # Side-effect tap: append-only turn_events log (sync, buffered, never
+        # raises — broadcast timing untouched; see api/event_log.py).
+        event_log.tap(conv_id, chunk)
         await _broadcast_to_conv(conv_id, chunk)
 
     # ── Conv-scoped execution state (module-level, survives this connection) ──

@@ -14,6 +14,13 @@ from polynoia.api.contacts_routes import refresh_adapter_credentials
 def fake_sandbox_root(tmp_path, monkeypatch):
     """Point settings.sandbox_root at a tmp tree with one per-conv sandbox and
     one workspace sandbox (each marked with a .git so they're recognized)."""
+    # This test exercises the sandbox-COPY credential path (it asserts a
+    # .polynoia/credentials dir gets materialized). On macOS non-root the
+    # default policy is "direct" (agents read the host Keychain, no copy), so
+    # _copy_host_credentials early-returns and the credentials dir is never
+    # created → the assertion is unreachable. Pin sandbox-copy mode so the test
+    # deterministically tests the copy logic on any host (Mac dev or Linux CI).
+    monkeypatch.setenv("POLYNOIA_DIRECT_CREDS", "0")
     root = tmp_path / "sb"
     conv = root / "01CONVXXXXXXXXXXXXXXXXXXXX"
     (conv / ".git").mkdir(parents=True)

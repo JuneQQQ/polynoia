@@ -17,7 +17,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from polynoia.storage.db import Base
@@ -270,6 +280,55 @@ class ProcessRunRow(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class TurnEventRow(Base):
+    """Append-only log of every streamed chunk (the missing half of event
+    sourcing): chunks were previously folded into mutable Message payloads and
+    lost. One row per chunk (consecutive text/reasoning deltas coalesced by the
+    flusher), ordered by a per-conversation ``seq``. Written as a side-effect
+    of the emit() choke point (api/event_log.py) — forensics, replay, and the
+    agent quality profile all read from here."""
+
+    __tablename__ = "turn_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    etype: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    sender_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    data: Mapped[str] = mapped_column(Text, nullable=False)  # raw chunk JSON
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (Index("ix_turn_events_conv_seq", "conv_id", "seq"),)
+
+
+class BenchmarkRunRow(Base):
+    """One benchmark execution: a testkit case driven end-to-end by ONE agent
+    (contact + model) and scored by that case's acceptance script. Feeds the
+    agent quality profile and the quality panel's case × model matrix."""
+
+    __tablename__ = "benchmark_runs"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    case_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    adapter_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    conv_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0..1
+    checks: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ConvMemoryRow(Base):

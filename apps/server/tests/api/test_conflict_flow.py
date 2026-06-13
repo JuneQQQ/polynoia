@@ -128,6 +128,49 @@ async def test_resolve_endpoint_re_merges_for_real(env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_advances_branch_so_no_remerge_loop(env) -> None:
+    """Regression for BUG-A2-1 (found by scripts/testkit/contention.py real
+    contention): after resolve lands the branch into main, the contributor's
+    branch MUST be advanced to the new main so it is no longer `ahead` — else
+    the next drain re-merges it → re-conflict → infinite resolve loop. Pre-fix,
+    the ag-D branch stayed ahead with its D-SIDE commit and re-probing the merge
+    re-conflicted; post-fix, the worktree is reset to main → ahead=0 → re-probe
+    is clean."""
+    conv_id = new_ulid()
+    ws_id = "wsLoop"
+    async with SessionLocal() as db:
+        await storage_repo.create_conversation(
+            db, Conversation(id=conv_id, title="t", members=["you"])
+        )
+        await db.commit()
+    d, branch, files, _root = await _build_content_conflict(ws_id, conv_id)
+
+    # sanity: pre-resolve the branch IS ahead and DOES conflict
+    assert await d.branch_ahead_of_main(branch) >= 1
+    assert (await d.probe_merge(branch))[0] == "conflict"
+
+    async with SessionLocal() as db:
+        cid = await storage_repo.create_conflict(
+            db, conv_id=conv_id, workspace_id=ws_id, branch=branch,
+            agent_id="ag-D", files=files, card_msg_id="conflict-loop",
+        )
+        await db.commit()
+
+    resp = await resolve_conflict_endpoint(
+        cid, {"resolutions": {"f.txt": "L1\nMERGED\nL3\n"}, "resolved_by": "ag-D"}
+    )
+    assert resp["ok"] is True and resp["status"] == "resolved"
+
+    # THE FIX: branch advanced to main → ahead==0, so the drain (which only
+    # re-merges branches with ahead>0) SKIPS it entirely → no re-merge, no
+    # re-conflict. This is what breaks the infinite loop.
+    assert await d.branch_ahead_of_main(branch) == 0, "branch still ahead → drain would re-merge → loop"
+    # And even if force-probed, it never re-CONFLICTs (already merged → no-op/error,
+    # not a fresh conflict card). The loop required status=='conflict' to recur.
+    assert (await d.probe_merge(branch))[0] != "conflict", "re-probe still conflicts → loop not broken"
+
+
+@pytest.mark.asyncio
 async def test_abandon_endpoint_marks_abandoned(env) -> None:
     conv_id = new_ulid()
     ws_id = "wsP2"

@@ -2609,6 +2609,28 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
                 )
                 await session.commit()
                 fresh = await storage_repo.get_conflict(session, conflict_id)
+                # touched conflict-resolution path — see conflict-closed-loop-CHARTER.md.
+                # BUG-A2-1 fix (found by scripts/testkit/contention.py real
+                # contention): conclude_merge lands the branch into main but leaves
+                # the contributor's worktree on the PRE-resolve base, so the branch
+                # stays `ahead_of_main` and the next drain re-merges it → re-conflict
+                # → an infinite resolve loop (8+ identical open conflict cards). Now
+                # that the conflict is `resolved` (no longer open/resolving), it is
+                # safe to advance the branch worktree to the new main (the helper's
+                # documented precondition), which makes it not-ahead so the drain
+                # stops re-merging it. Still inside workspace_merge_lock. Guard: skip
+                # if ANOTHER conflict still references this branch (multi-conflict).
+                others_open = any(
+                    c.branch == row.branch and c.status in ("open", "resolving")
+                    for c in await storage_repo.list_conflicts(session, row.conv_id)
+                )
+            if not others_open:
+                with suppress(Exception):
+                    await Sandbox.reset_worktree_to_main(
+                        workspace_id=row.workspace_id,
+                        conv_id=row.conv_id,
+                        agent_id=row.agent_id,
+                    )
         else:
             async with SessionLocal() as session:
                 back = await storage_repo.get_conflict(session, conflict_id)
