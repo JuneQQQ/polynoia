@@ -218,13 +218,30 @@ async def run_conv(conv: dict, sem: asyncio.Semaphore, results: list, logf) -> N
         logf.flush()
 
 
+import re as _re
+
+# Deliverable SERVERS that agents spawn and that linger holding RAM/ports — these
+# are safe to reap. NOT agent runtimes.
+_SERVER_RE = _re.compile(
+    r"http\.server|http-server|\bhttp_server\b|\bvite\b|webpack|"
+    r"next (?:dev|start)|\bnpm (?:run )?(?:dev|start|serve)\b|\bserve\b|"
+    r"live-server|php -S|flask run|streamlit|gradio|python3? -m http",
+    _re.I,
+)
+# Agent runtimes / infra — NEVER kill these (the old cwd-only reaper SIGTERM'd
+# claude/codex/opencode + pooled sessions → exit 143 → failed live turns).
+_AGENT_RE = _re.compile(
+    r"\bclaude\b|\bcodex\b|\bopencode\b|/\.venv/bin/|uvicorn polynoia|polynoia\.mcp|bwrap",
+    _re.I,
+)
+
+
 def reap_artifacts() -> int:
-    """Between batches: kill agent-spawned deliverables (background http.server /
-    vite / node dev servers) + any leftover agent subprocess whose cwd is inside a
-    sandbox workspace, so RAM/FDs don't pile up over the run (user constraint:
-    每批次测完务必干掉产物). The backend (cwd=apps/server) and main web are NOT under
-    a sandbox dir → never touched. Linux /proc only; no-op elsewhere. Safe only
-    between batches (no agent turn is in flight at the barrier)."""
+    """Between batches, kill ONLY agent-spawned deliverable SERVERS (http.server /
+    vite / dev servers …) that linger holding RAM/ports — matched by command, with
+    a sandbox cwd. NEVER kills agent runtimes (claude/codex/opencode/venv/bwrap):
+    the old cwd-only reaper SIGTERM'd live agent processes → `exit code 143` →
+    aborted turns with no deliverable. Linux /proc only; no-op elsewhere."""
     import os
     import signal
     import time as _t
@@ -232,32 +249,38 @@ def reap_artifacts() -> int:
     if not os.path.isdir("/proc"):
         return 0
 
-    def sandbox_pids() -> list[int]:
+    def victims() -> list[int]:
         out: list[int] = []
         for pid in os.listdir("/proc"):
             if not pid.isdigit():
                 continue
             try:
+                with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                    cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
                 cwd = os.readlink(f"/proc/{pid}/cwd")
             except Exception:
                 continue
-            if "/sandbox/" in cwd:
+            if "/sandbox/" not in cwd:
+                continue  # only sandbox-spawned deliverables
+            if _AGENT_RE.search(cmd):
+                continue  # never touch agent runtimes
+            if _SERVER_RE.search(cmd):
                 out.append(int(pid))
         return out
 
-    victims = sandbox_pids()
-    for pid in victims:
+    v = victims()
+    for pid in v:
         try:
             os.kill(pid, signal.SIGTERM)
         except Exception:
             pass
-    _t.sleep(3)
-    for pid in sandbox_pids():  # SIGKILL stragglers
+    _t.sleep(2)
+    for pid in victims():  # SIGKILL stragglers
         try:
             os.kill(pid, signal.SIGKILL)
         except Exception:
             pass
-    return len(victims)
+    return len(v)
 
 
 async def main() -> None:
