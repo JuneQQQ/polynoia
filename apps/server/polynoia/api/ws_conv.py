@@ -2625,6 +2625,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
                 )
                 persisted_user_id = uid
+                # The draft is now SENT → clear it so it stops lingering in the
+                # composer. The UI clears its local input optimistically, but the
+                # persisted conv.draft_text is only cleared here — so WS-sent
+                # messages (and pre-seeded drafts) don't leave the just-sent text
+                # sitting in the box on reload / on other live clients. Suppressed:
+                # a draft-clear hiccup must never block the send.
+                with suppress(Exception):
+                    await storage_repo.set_draft_text(db, conv_id, "")
                 await db.commit()
             # Real-time multi-client sync: echo the human message to OTHER clients
             # tailing this conv (e.g. desktop + web both open on the same group),
