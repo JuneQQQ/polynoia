@@ -44,6 +44,32 @@ CASES = [
 ]
 
 
+def ensure_contacts(models: list[str]) -> None:
+    """Serially pre-create the per-model benchmark contacts BEFORE the concurrent
+    waves. Otherwise N concurrent run_benchmark.py for the same new model race to
+    POST the same 基准·<model> contact → fast rc=1 failures."""
+    try:
+        agents = json.load(urllib.request.urlopen(BASE + "/api/agents", timeout=30))
+    except Exception:
+        agents = []
+    have = {(a.get("setup") or {}).get("model") for a in agents}
+    for m in models:
+        full = f"opencode-go/{m}"
+        if full in have:
+            continue
+        body = json.dumps({
+            "adapter_id": "opencoder", "model": full,
+            "name": f"基准·{m}"[:24], "tagline": f"benchmark · {full}",
+        }).encode()
+        r = urllib.request.Request(BASE + "/api/contacts", data=body,
+                                   headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            urllib.request.urlopen(r, timeout=30)
+            print(f"  + contact 基准·{m}", flush=True)
+        except Exception as e:
+            print(f"  ! contact {m} failed: {e}", flush=True)
+
+
 def reap_artifacts() -> int:
     if not os.path.isdir("/proc"):
         return 0
@@ -131,9 +157,13 @@ async def main() -> None:
     a = ap.parse_args()
     models = a.models.split(",") if a.models else MODELS
     cases = a.cases.split(",") if a.cases else CASES
-    jobs = [(m, c) for m in models for c in cases]
+    # Case-major so concurrent jobs span DIFFERENT models (belt-and-suspenders
+    # with ensure_contacts against the contact-creation race).
+    jobs = [(m, c) for c in cases for m in models]
     print(f"CROSS-MODEL: {len(models)} models × {len(cases)} cases = {len(jobs)} runs "
           f"· conc={a.conc} · timeout={a.timeout}s", flush=True)
+    print("pre-creating benchmark contacts…", flush=True)
+    ensure_contacts(models)
     sem = asyncio.Semaphore(a.conc)
     results: list = []
     logf = open("/tmp/cross_model.jsonl", "w", encoding="utf-8")
