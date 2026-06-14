@@ -1146,7 +1146,18 @@ export function Sidebar({
 								(c.draft_attachments?.length ?? 0) > 0;
 							const running = (c.running_agents?.length ?? 0) > 0;
 							return (
-								<div key={c.id}>
+								// content-visibility:auto → the browser skips layout/paint for
+								// rows scrolled off-screen (huge win on long conv lists, e.g. the
+								// 500-case test set). contain-intrinsic-size reserves ~row height
+								// so the scrollbar stays stable. `auto` remembers the real size
+								// once a row has rendered.
+								<div
+									key={c.id}
+									style={{
+										contentVisibility: "auto",
+										containIntrinsicSize: "auto 60px",
+									}}
+								>
 									<div
 										className={`group relative flex items-center rounded-sm transition-all duration-200 focus-within:bg-[var(--color-sidebar-hover)] ${
 											active
