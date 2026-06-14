@@ -5,6 +5,7 @@ import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
 import { ConnectingSplash } from "./components/ConnectingSplash";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
+import { DesktopPreparing } from "./components/DesktopPreparing";
 import { ConvRolesModal } from "./components/ConvRolesModal";
 import { ServerUnreachable } from "./components/ServerUnreachable";
 import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
@@ -18,8 +19,13 @@ import { InboxView } from "./components/views/InboxView";
 import { type ConversationSummary, api } from "./lib/api";
 import { onBackButton, onNetworkChange, onResume } from "./lib/native";
 import { resolveMobileGate } from "./lib/connectionGate";
-import { isMobile } from "./lib/platform";
-import { getServerOverride, isNativeShell } from "./lib/runtime-config";
+import { isDesktopApp, isMobile } from "./lib/platform";
+import {
+	getDesktopBackendInfo,
+	getServerOverride,
+	isNativeShell,
+	startDesktopEmbeddedBackend,
+} from "./lib/runtime-config";
 import { useStore } from "./store";
 
 export function App() {
@@ -136,6 +142,32 @@ export function App() {
 		// reloadSeed sets serverReachable; failure surfaces via the boot gate.
 		reloadSeed().catch(() => {});
 	}, [reloadSeed, mobile]);
+
+	// Desktop embedded-backend poller. The Tauri shell launches the private
+	// backend, but on a cold first run `uv` must install deps (minutes) before
+	// it answers. Poll start_desktop_backend until it reports "running", then
+	// pull the seed. Idempotent on the Rust side (no double-spawn); a crashed
+	// backend is auto-respawned on the next tick. Stops once running.
+	useEffect(() => {
+		if (!isDesktopApp()) return;
+		if (getDesktopBackendInfo()?.status === "running") return;
+		let stopped = false;
+		let timer: number | undefined;
+		const tick = async () => {
+			const info = await startDesktopEmbeddedBackend().catch(() => null);
+			if (stopped) return;
+			if (info?.status === "running") {
+				reloadSeed().catch(() => {});
+				return;
+			}
+			timer = window.setTimeout(tick, 2500);
+		};
+		tick();
+		return () => {
+			stopped = true;
+			if (timer) clearTimeout(timer);
+		};
+	}, [reloadSeed]);
 
 	// Mobile real-time refresh: re-pull seed lists whenever the app returns to the
 	// foreground or the network recovers — keeping the sidebar/agents/projects
@@ -496,6 +528,13 @@ export function App() {
 	// `gate !== null`): the initial seed couldn't reach the server and nothing
 	// loaded → a clear retry screen instead of an empty shell.
 	if (gate === null && !serverReachable && providers.length === 0) {
+		// Desktop first run: while the embedded backend is still coming up (uv
+		// installing deps), show a calm "preparing" screen instead of the red
+		// unreachable gate. Only fall back to ServerUnreachable once the backend
+		// itself is up but the seed still won't load (a genuinely unreachable state).
+		if (isDesktopApp() && getDesktopBackendInfo()?.status !== "running") {
+			return <DesktopPreparing />;
+		}
 		return <ServerUnreachable />;
 	}
 
