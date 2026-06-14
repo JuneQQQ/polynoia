@@ -21,28 +21,45 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
 RESET_SH = Path(__file__).resolve().parent / "reset.sh"
+SEED_CASES = Path(__file__).resolve().parent / "seed_cases.py"
 
 TEXT_EXT = {".md", ".txt", ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".csv", ".yml", ".yaml"}
 
 
 def case_tasks() -> dict[str, str]:
-    """Parse reset.sh's embedded CASES list → {key: task_text}.
+    """Parse the CASES list → {key: task_text} (single source of truth).
 
-    The block is valid Python source (tuples of adjacent string literals), so
-    ``ast.literal_eval`` is the robust parse — no fragile regex over Chinese
-    prompts with embedded punctuation.
+    Cases now live in seed_cases.py as 7-tuples
+    ``(key, title, who, cat, spec, task, attach)`` (older reset.sh used 4-tuples
+    ``(key, title, who, task)``). We locate the CASES assignment via the module
+    AST and ``literal_eval`` just that node — robust over 500 Chinese prompts and
+    tolerant of both tuple arities. Falls back to reset.sh if seed_cases is absent.
     """
     import ast
 
-    s = RESET_SH.read_text(encoding="utf-8")
-    m = re.search(r"CASES = (\[.*?\n\])", s, re.S)
-    if not m:
-        return {}
-    try:
-        cases = ast.literal_eval(m.group(1))
-    except (ValueError, SyntaxError):
-        return {}
-    return {key: task for key, _title, _who, task in cases}
+    for src in (SEED_CASES, RESET_SH):
+        if not src.exists():
+            continue
+        try:
+            tree = ast.parse(src.read_text(encoding="utf-8"))
+        except (SyntaxError, ValueError):
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "CASES" for t in node.targets
+            ):
+                try:
+                    cases = ast.literal_eval(node.value)
+                except (ValueError, SyntaxError):
+                    return {}
+                out: dict[str, str] = {}
+                for c in cases:
+                    if len(c) >= 6:  # 7-tuple: task at index 5
+                        out[c[0]] = c[5]
+                    elif len(c) == 4:  # legacy 4-tuple: task at index 3
+                        out[c[0]] = c[3]
+                return out
+    return {}
 
 
 @dataclass
