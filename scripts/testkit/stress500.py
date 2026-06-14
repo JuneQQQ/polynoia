@@ -94,6 +94,33 @@ def _post_answer(conv_id: str, ask_id: str) -> bool:
         return False
 
 
+def _error_cards(conv_id: str) -> tuple[int, int]:
+    """(total error cards, auth/rate-limit errors) for a conv.
+
+    HONEST SUCCESS SIGNAL: a turn that fails on auth / 401 / 429 / 'Not logged in'
+    still emits a kind=error card and then goes QUIET → settle-time alone counts it
+    as 'settled', overstating success. So we read the conv's messages and flag
+    error cards (and the auth/rate-limit subset) explicitly."""
+    try:
+        msgs = get(f"/api/conversations/{conv_id}/messages")
+    except Exception:
+        return (0, 0)
+    if isinstance(msgs, dict):
+        msgs = msgs.get("messages", msgs.get("items", []))
+    tot = auth = 0
+    for m in msgs:
+        p = m.get("payload") or {}
+        if p.get("kind") == "error":
+            tot += 1
+            blob = (str(p.get("message", "")) + str(p.get("reason", ""))).lower()
+            if any(k in blob for k in (
+                "logged in", "/login", "401", "403", "429", "unauthorized",
+                "quota", "rate", "balance", "authenticat", "登录", "凭证",
+            )):
+                auth += 1
+    return (tot, auth)
+
+
 async def _connect_send(ws_url: str, payload: str, retries: int = 3) -> bool:
     """Connect + send, retrying — a loaded single-process backend can be slow to
     accept WS handshakes; a transient connect failure shouldn't drop the case."""
@@ -163,17 +190,26 @@ async def run_conv(conv: dict, sem: asyncio.Semaphore, results: list, logf) -> N
         t0 = time.time()
         outcome = await send_and_settle(conv["id"], target, text, PER)
         gbad = git_invariants(conv.get("workspace_id"))
+        errc, autherr = _error_cards(conv["id"])
+        # HONEST result: settle-time says the turn went quiet; error cards say
+        # whether it actually succeeded. ok = settled AND no error card.
+        ok = outcome.startswith("settled") and errc == 0
         rec = {
             "title": conv.get("title"),
             "conv": conv["id"],
             "ws": conv.get("workspace_id"),
             "outcome": outcome,
+            "ok": ok,
+            "err_cards": errc,
+            "auth_err": autherr,
             "git_violations": gbad,
             "secs": round(time.time() - t0),
         }
         results.append(rec)
+        flag = "OK " if ok else ("ERR" if errc else "...")
         print(
-            f"[{len(results):>3}] {outcome:11} {rec['secs']:>4}s git={len(gbad)} | {rec['title']}",
+            f"[{len(results):>3}] {flag} {outcome:11} {rec['secs']:>4}s "
+            f"err={errc}(auth{autherr}) git={len(gbad)} | {rec['title']}",
             flush=True,
         )
         if gbad:
@@ -262,18 +298,24 @@ async def main() -> None:
         tasks = [asyncio.create_task(run_conv(c, sem, results, logf)) for c in chunk]
         await asyncio.wait(tasks)  # barrier: whole batch settles before reaping
         killed = reap_artifacts()
-        oc = Counter(r["outcome"] for r in results)
+        ok = sum(1 for r in results if r.get("ok"))
+        errc = sum(1 for r in results if r.get("err_cards"))
+        autherr = sum(1 for r in results if r.get("auth_err"))
         gv = sum(len(r["git_violations"]) for r in results)
         print(
             f"--- batch {bi // a.batch + 1} done · ran {len(results)}/{len(convs)} "
-            f"· reaped {killed} 产物 · outcomes={dict(oc)} · git_violations={gv} ---",
+            f"· reaped {killed} 产物 · OK={ok} ERR={errc}(auth{autherr}) git_viol={gv} ---",
             flush=True,
         )
     oc = Counter(r["outcome"] for r in results)
+    ok = sum(1 for r in results if r.get("ok"))
+    errc = sum(1 for r in results if r.get("err_cards"))
+    autherr = sum(1 for r in results if r.get("auth_err"))
     gv = sum(len(r["git_violations"]) for r in results)
     print(
-        f"\n=== STRESS DONE: ran {len(results)}/{len(convs)} · outcomes={dict(oc)} "
-        f"· git_violations={gv} ===",
+        f"\n=== STRESS DONE: ran {len(results)}/{len(convs)} · "
+        f"OK(clean)={ok} · ERRORED={errc}(auth={autherr}) · git_viol={gv} · "
+        f"outcomes={dict(oc)} ===",
         flush=True,
     )
 
