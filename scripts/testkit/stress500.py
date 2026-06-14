@@ -280,7 +280,46 @@ def reap_artifacts() -> int:
             os.kill(pid, signal.SIGKILL)
         except Exception:
             pass
+    _prune_workspace_disk()
     return len(v)
+
+
+# Heavy, regenerable dirs that bloat disk (esp. per-workspace npm-cache ~250MB).
+# DB wipe doesn't touch the filesystem, so these accumulate across runs → disk
+# exhaustion (saw /home hit 3G). Pruned between batches; mtime guard skips the
+# active batch's still-writing workspaces.
+_DISK_HOG_DIRS = {
+    "npm-cache", "_cacache", ".cache", "node_modules", ".venv",
+    "dist", "build", ".next", "target", ".gradle", ".pnpm-store",
+}
+
+
+def _prune_workspace_disk() -> int:
+    import os
+    import shutil
+    import time as _t
+
+    base = str(Path.home() / "sandbox" / "polynoia" / "workspaces")
+    if not os.path.isdir(base):
+        return 0
+    now = _t.time()
+    pruned = 0
+    for ws in os.listdir(base):
+        wsp = os.path.join(base, ws)
+        if not os.path.isdir(wsp):
+            continue
+        for root, dirs, _files in os.walk(wsp):
+            for dn in list(dirs):
+                if dn in _DISK_HOG_DIRS:
+                    d = os.path.join(root, dn)
+                    try:
+                        if now - os.path.getmtime(d) > 120:  # skip active writes
+                            shutil.rmtree(d, ignore_errors=True)
+                            pruned += 1
+                    except Exception:
+                        pass
+                    dirs.remove(dn)  # don't descend into a hog dir
+    return pruned
 
 
 async def main() -> None:
