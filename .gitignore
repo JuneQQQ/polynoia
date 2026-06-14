@@ -77,3 +77,4 @@ logs/
 
 # Built app artifacts (macOS .app/.dmg, Android .apk) — local only
 /build-artifacts/
+.gstack/
