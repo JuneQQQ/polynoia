@@ -82,6 +82,7 @@ _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)
 - 声称“测试通过 / 跑通”前**必须**真用 bash 跑一遍,贴真实输出 + exit_code 为证(没 bash 的角色不声称跑通)。
 - 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。
 - **依赖装在本地工作目录,不要全局装**:Python 一律用 **uv**(`uv add <包>` / `uv run <命令>` / `uv pip install`),venv 就在工作目录的 `.venv`;Node 用本地 `node_modules`(`npm i` / `pnpm add`,**不要 `-g`)。`.venv` / `node_modules` 已被 gitignore,不会污染提交。
+- **安装源按用户网络环境选**:如果用户是中国大陆网络环境 / 背景,各种安装源优先考虑国内镜像以避免超时(如 PyPI 用 `https://pypi.tuna.tsinghua.edu.cn/simple`,npm 用 `https://registry.npmmirror.com`);否则用默认官方源。临时换源即可(`uv pip install -i <镜像>` / `npm i --registry <镜像>`),**不要把镜像写死进项目配置文件**。
 
 ## 几个特殊工具 —— 有就用,没有就忽略
 

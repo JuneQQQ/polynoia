@@ -263,15 +263,11 @@ fn backend_command(
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
-    // First-run dependency install goes through PyPI. Mainland networks routinely
-    // time out on files.pythonhosted.org, so default to a fast mirror UNLESS the
-    // user already configured one. Overridable: set UV_DEFAULT_INDEX / UV_INDEX_URL
-    // in the environment to point elsewhere (or back to PyPI).
-    if std::env::var_os("UV_DEFAULT_INDEX").is_none()
-        && std::env::var_os("UV_INDEX_URL").is_none()
-    {
-        cmd.env("UV_DEFAULT_INDEX", "https://pypi.tuna.tsinghua.edu.cn/simple");
-    }
+    // First-run dependency install goes through whatever index uv is configured
+    // to use (PyPI by default). We intentionally do NOT hardcode a regional
+    // mirror here — install-source choice (e.g. a domestic mirror for mainland
+    // networks) is left to the user's own uv config / UV_DEFAULT_INDEX env, and
+    // agents are reminded of this in the server-side system prompt.
 
     // Pipe backend stdout+stderr to a log file so first-run failures are
     // diagnosable (the old code discarded them with Stdio::null()).
