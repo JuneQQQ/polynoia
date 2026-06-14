@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm --filter @polynoia/web dev",
     "devUrl": "http://127.0.0.1:7788",
-    "beforeBuildCommand": "sh -lc 'pnpm --filter @polynoia/web build && if [ -x ../../scripts/prepare_desktop_server_resource.sh ]; then ../../scripts/prepare_desktop_server_resource.sh; else ./scripts/prepare_desktop_server_resource.sh; fi'",
+    "beforeBuildCommand": "pnpm --filter @polynoia/web build && node ../../scripts/prepare-desktop-server.mjs",
     "frontendDist": "../../web/dist"
   },
   "app": {
@@ -31,12 +31,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Polynoia multi-agent IM client",
     "longDescription": "Polynoia desktop client — chat with multiple AI coding agents (Claude Code, OpenCode, Codex) in IM style. Same codebase as the web app, native macOS / Windows / Linux window.",
     "resources": [
-      "resources/server"
+      "resources/server",
+      "resources/bin"
     ],
     "icon": [
       "icons/32x32.png",

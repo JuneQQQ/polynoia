@@ -22,20 +22,30 @@ on demand if no agent has run there yet. No CPU/RAM isolation in P0 (see CLAUDE.
 
 import asyncio
 import contextlib
-import fcntl
 import json
 import logging
 import os
-import pty
-import signal
 import struct
-import termios
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from polynoia.sandbox import Sandbox
 from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import WorkspaceRow
+
+# The interactive terminal is a real Unix PTY (fcntl/pty/termios/signal). Those
+# modules don't exist on Windows, so importing them at top level would crash the
+# whole server on import. Guard them: on a non-POSIX host the server still starts
+# fine and only this one WebSocket endpoint degrades (closes with a clear reason).
+try:
+    import fcntl
+    import pty
+    import signal
+    import termios
+
+    _PTY_AVAILABLE = True
+except ImportError:  # pragma: no cover - Windows / non-POSIX
+    _PTY_AVAILABLE = False
 
 log = logging.getLogger("polynoia.terminal")
 
@@ -91,6 +101,12 @@ def _reap(pid: int, master_fd: int) -> None:
 
 @router.websocket("/ws/workspaces/{ws_id}/terminal")
 async def ws_terminal(websocket: WebSocket, ws_id: str):
+    # No Unix PTY on this host (Windows): the interactive terminal can't run.
+    # Close cleanly so the client shows a friendly "unavailable" instead of a
+    # hard connection error, and the rest of the server stays fully functional.
+    if not _PTY_AVAILABLE:
+        await websocket.close(code=4501, reason="terminal unavailable on this platform")
+        return
     # Validate it's a real workspace (don't materialize junk dirs from bogus
     # ids), then bootstrap its main dir on demand — a fresh project has no
     # sandbox on disk until the first agent runs, but the user can still open

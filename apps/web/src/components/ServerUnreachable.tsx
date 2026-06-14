@@ -14,6 +14,7 @@ import {
 	isNativeShell,
 	setServerMode,
 	setServerUrl,
+	startDesktopEmbeddedBackend,
 } from "../lib/runtime-config";
 import { useStore } from "../store";
 
@@ -29,6 +30,9 @@ export function ServerUnreachable() {
 		if (retrying) return;
 		setRetrying(true);
 		try {
+			// On desktop, (re)launch the embedded backend first — it may have died
+			// or still be installing deps on a cold first run — then re-pull.
+			if (desktop) await startDesktopEmbeddedBackend().catch(() => null);
 			await reloadSeed();
 		} catch {
 			/* still down — gate stays */
