@@ -1529,7 +1529,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 tag_discussion_data_cards=not finalize_discussion,
                             )
                             _live_note_chunk(conv_id, agent_id, chunk)
-                            produced = True
+                            # Only REAL content (text/reasoning/tool deltas or a
+                            # data-* card) counts as "produced" — a bare envelope
+                            # frame (start/finish/part-start) does NOT, so a 429 that
+                            # arrives right after `start` can still be retried (the
+                            # empty start bubble is suppressed client-side, no dup).
+                            if (
+                                '"delta":' in chunk
+                                or '"type":"data-' in chunk
+                                or '"type":"tool' in chunk
+                            ):
+                                produced = True
                             await emit(chunk)
                         await emit_agent_status(agent_id, "idle")
                         _live_clear_agent(conv_id, agent_id)
