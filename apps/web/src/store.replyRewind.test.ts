@@ -5,7 +5,11 @@ const s = () => useStore.getState();
 
 describe("reply and rewind store semantics", () => {
 	beforeEach(() => {
-		useStore.setState({ convs: new Map(), replyingTo: null, composerDraft: null });
+		useStore.setState({
+			convs: new Map(),
+			replyingTo: null,
+			composerDraft: null,
+		});
 	});
 
 	it("keeps the quoted target id on locally appended replies", () => {

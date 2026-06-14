@@ -8,13 +8,13 @@
 import { createContext, useContext } from "react";
 
 type ConvScope = {
-  convId: string;
-  /** True only when this conv has a workspace_id (workspace-shared git).
-   * Some actions (apply diff) only make sense in workspace mode. */
-  inWorkspace: boolean;
-  /** Current member roster of this conv. Used to tombstone messages whose
-   * sender is no longer a member (e.g. removed from the project). */
-  members?: string[];
+	convId: string;
+	/** True only when this conv has a workspace_id (workspace-shared git).
+	 * Some actions (apply diff) only make sense in workspace mode. */
+	inWorkspace: boolean;
+	/** Current member roster of this conv. Used to tombstone messages whose
+	 * sender is no longer a member (e.g. removed from the project). */
+	members?: string[];
 };
 
 const ConvScopeContext = createContext<ConvScope | null>(null);
@@ -22,5 +22,5 @@ const ConvScopeContext = createContext<ConvScope | null>(null);
 export const ConvScopeProvider = ConvScopeContext.Provider;
 
 export function useConvScope(): ConvScope | null {
-  return useContext(ConvScopeContext);
+	return useContext(ConvScopeContext);
 }

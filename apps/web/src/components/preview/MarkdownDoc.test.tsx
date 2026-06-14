@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { githubHeadingSlug, MarkdownDoc } from "./MarkdownDoc";
+import { MarkdownDoc, githubHeadingSlug } from "./MarkdownDoc";
 
 describe("MarkdownDoc anchors", () => {
 	it("uses GitHub-style slugs for Chinese numbered headings", () => {
@@ -11,7 +11,9 @@ describe("MarkdownDoc anchors", () => {
 	it("renders stable ids for repeated headings", () => {
 		const html = renderToStaticMarkup(
 			<MarkdownDoc
-				content={"# NimbusPM 产品需求文档(PRD)\n\n## 1. 背景与目标\n\n## 1. 背景与目标"}
+				content={
+					"# NimbusPM 产品需求文档(PRD)\n\n## 1. 背景与目标\n\n## 1. 背景与目标"
+				}
 			/>,
 		);
 

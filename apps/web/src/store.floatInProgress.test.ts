@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isInProgressCard, selectMessages, useStore } from "./store";
 import type { Message } from "./lib/types";
+import { isInProgressCard, selectMessages, useStore } from "./store";
 
 // Minimal message factory — only `payload` matters to the helpers under test.
 function msg(id: string, payload: Record<string, unknown>): Message {
@@ -9,22 +9,38 @@ function msg(id: string, payload: Record<string, unknown>): Message {
 
 describe("isInProgressCard", () => {
 	it("running / pending tool-call is in-progress", () => {
-		expect(isInProgressCard(msg("1", { kind: "tool-call", state: "running" }))).toBe(true);
-		expect(isInProgressCard(msg("2", { kind: "tool-call", state: "pending" }))).toBe(true);
+		expect(
+			isInProgressCard(msg("1", { kind: "tool-call", state: "running" })),
+		).toBe(true);
+		expect(
+			isInProgressCard(msg("2", { kind: "tool-call", state: "pending" })),
+		).toBe(true);
 	});
 	it("completed / error tool-call is NOT in-progress", () => {
-		expect(isInProgressCard(msg("3", { kind: "tool-call", state: "completed" }))).toBe(false);
-		expect(isInProgressCard(msg("4", { kind: "tool-call", state: "error" }))).toBe(false);
+		expect(
+			isInProgressCard(msg("3", { kind: "tool-call", state: "completed" })),
+		).toBe(false);
+		expect(
+			isInProgressCard(msg("4", { kind: "tool-call", state: "error" })),
+		).toBe(false);
 	});
 	it("diff without commit_sha is in-progress (写入中); committed is not", () => {
 		expect(isInProgressCard(msg("5", { kind: "diff" }))).toBe(true);
-		expect(isInProgressCard(msg("6", { kind: "diff", commit_sha: "6ea12f7" }))).toBe(false);
+		expect(
+			isInProgressCard(msg("6", { kind: "diff", commit_sha: "6ea12f7" })),
+		).toBe(false);
 		// An applied (reviewed/accepted) diff without sha is also settled.
-		expect(isInProgressCard(msg("7", { kind: "diff", applied: true }))).toBe(false);
+		expect(isInProgressCard(msg("7", { kind: "diff", applied: true }))).toBe(
+			false,
+		);
 	});
 	it("running terminal is in-progress; finished is not", () => {
-		expect(isInProgressCard(msg("8", { kind: "terminal", running: true }))).toBe(true);
-		expect(isInProgressCard(msg("9", { kind: "terminal", running: false }))).toBe(false);
+		expect(
+			isInProgressCard(msg("8", { kind: "terminal", running: true })),
+		).toBe(true);
+		expect(
+			isInProgressCard(msg("9", { kind: "terminal", running: false })),
+		).toBe(false);
 	});
 	it("text / unknown payloads are never in-progress", () => {
 		expect(isInProgressCard(msg("10", { kind: "text" }))).toBe(false);

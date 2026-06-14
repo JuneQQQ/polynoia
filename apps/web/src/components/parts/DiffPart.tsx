@@ -9,7 +9,9 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import type { DiffPayload } from "../../lib/types";
+import { useStore } from "../../store";
 import { useConvScope } from "./_context";
 
 // `git apply --reverse` can't land once the file diverged from this card's
@@ -28,6 +30,7 @@ export function DiffPart({
 	 * reverting just this one file may leave the batch inconsistent. */
 	inBatch?: boolean;
 }) {
+	const lang = useStore((s) => s.lang);
 	// A `commit_sha` means an agent ALREADY made + committed this edit (a
 	// proactive "what just changed" card) — vs a not-yet-applied proposal.
 	const committed = !!payload.commit_sha;
@@ -43,7 +46,7 @@ export function DiffPart({
 
 	const apply = async () => {
 		if (!scope) {
-			setErr("无法定位对话上下文");
+			setErr(t("cannotLocateConversationContext", lang));
 			return;
 		}
 		setBusy(true);
@@ -61,7 +64,7 @@ export function DiffPart({
 				setApplied(true);
 				setAppliedSha(res.sha || null);
 			} else {
-				setErr(res.error || "应用失败");
+				setErr(res.error || t("applyFailed", lang));
 			}
 		} catch (e) {
 			setErr(String(e));
@@ -82,7 +85,7 @@ export function DiffPart({
 	// NEW commit. Fails if the file changed since (surfaced as an error).
 	const revert = async (hunks?: DiffPayload["hunks"]) => {
 		if (!scope) {
-			setErr("无法定位对话上下文");
+			setErr(t("cannotLocateConversationContext", lang));
 			return;
 		}
 		setRevBusy(true);
@@ -105,14 +108,14 @@ export function DiffPart({
 			} else if (res.ok) {
 				// reverse-applied to a no-op — nothing was committed (the file is
 				// already in this state, or changed since). Don't claim "已撤销".
-				setErr("无改动可撤销(文件可能已变化)");
+				setErr(t("noChangesToRevert", lang));
 			} else if (REVERT_DIVERGED.test(res.error || "")) {
 				// File moved on since this card (e.g. a conflict union-merge) → the
 				// patch can't reverse-apply. Drop the raw git error; the correct undo
 				// for an already-merged edit is the commit-history restore.
 				setDivergedRevert(true);
 			} else {
-				setErr(res.error || "撤销失败");
+				setErr(res.error || t("revertFailed", lang));
 			}
 		} catch (e) {
 			setErr(String(e));
@@ -175,11 +178,17 @@ export function DiffPart({
 					<span
 						className="text-[10px] text-[var(--color-fg-3)] font-mono flex-shrink-0 inline-flex items-center gap-1"
 						title={
-							payload.commit_sha ? `已提交 ${payload.commit_sha}` : "已提交"
+							payload.commit_sha
+								? t("committedSha", lang)
+										.replace("{payload.commit_sha}", payload.commit_sha)
+										.replace("{sha}", payload.commit_sha)
+								: t("committed", lang)
 						}
 					>
 						<Check size={11} className="text-[var(--color-green)]" />
-						{payload.commit_sha ? payload.commit_sha.slice(0, 7) : "已改"}
+						{payload.commit_sha
+							? payload.commit_sha.slice(0, 7)
+							: t("changed", lang)}
 					</span>
 				)}
 			</div>
@@ -200,10 +209,10 @@ export function DiffPart({
 												type="button"
 												onClick={() => revert([h])}
 												disabled={revBusy}
-												title="撤销此块(反向 apply)"
+												title={t("revertThisHunk", lang)}
 												className="inline-flex items-center gap-0.5 px-1 rounded text-[var(--color-fg-3)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 disabled:opacity-40"
 											>
-												<Undo2 size={10} /> 撤销
+												<Undo2 size={10} /> {t("revert", lang)}
 											</button>
 										)}
 								</div>
@@ -248,7 +257,7 @@ export function DiffPart({
 										color: "var(--color-amber)",
 									}}
 								>
-									<Undo2 size={11} /> 已撤销
+									<Undo2 size={11} /> {t("reverted", lang)}
 									{revertSha && (
 										<span className="ml-1 font-mono opacity-70">
 											{revertSha}
@@ -263,7 +272,7 @@ export function DiffPart({
 										color: "var(--color-green)",
 									}}
 								>
-									<Check size={11} /> 已提交
+									<Check size={11} /> {t("committed", lang)}
 								</span>
 							) : (
 								<>
@@ -274,7 +283,7 @@ export function DiffPart({
 											color: "var(--color-green)",
 										}}
 									>
-										<Check size={11} /> 已提交
+										<Check size={11} /> {t("committed", lang)}
 									</span>
 									{confirmRevert ? (
 										<button
@@ -284,7 +293,7 @@ export function DiffPart({
 												revert();
 											}}
 											disabled={revBusy}
-											title="确认:反向 apply 撤销整次改动(在 main 上新增一次提交)"
+											title={t("confirmRevertEntireChange", lang)}
 											className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium bg-[var(--color-red)] text-white hover:opacity-90 transition disabled:opacity-50"
 										>
 											{revBusy ? (
@@ -292,7 +301,7 @@ export function DiffPart({
 											) : (
 												<Undo2 size={11} />
 											)}
-											确认撤销?
+											{t("confirmRevert", lang)}
 										</button>
 									) : (
 										<button
@@ -300,12 +309,12 @@ export function DiffPart({
 											onClick={() => setConfirmRevert(true)}
 											title={
 												inBatch
-													? "仅撤销此文件(本轮共改多个文件,单独撤销可能造成不一致)"
-													: "撤销整次改动(反向 apply,会在 main 上新增一次提交)"
+													? t("revertOnlyThisFile", lang)
+													: t("revertEntireChange", lang)
 											}
 											className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium hover:bg-[var(--color-line)] transition"
 										>
-											<Undo2 size={11} /> 撤销
+											<Undo2 size={11} /> {t("revert", lang)}
 										</button>
 									)}
 								</>
@@ -319,7 +328,7 @@ export function DiffPart({
 										color: "var(--color-green)",
 									}}
 								>
-									<Check size={11} /> 已应用
+									<Check size={11} /> {t("applied", lang)}
 									{appliedSha && (
 										<span className="ml-1 font-mono opacity-70">
 											{appliedSha}
@@ -334,9 +343,9 @@ export function DiffPart({
 										setErr(null);
 									}}
 									className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium hover:bg-[var(--color-line)] transition"
-									title="重置状态(撤销文件改动需手动 git revert)"
+									title={t("resetStateWarning", lang)}
 								>
-									<RotateCcw size={11} /> 重置
+									<RotateCcw size={11} /> {t("reset", lang)}
 								</button>
 							</>
 						) : (
@@ -351,7 +360,7 @@ export function DiffPart({
 								) : (
 									<Check size={11} />
 								)}
-								{busy ? "应用中…" : "应用"}
+								{busy ? t("applying", lang) : t("apply", lang)}
 							</button>
 						)}
 						{divergedRevert && (
@@ -361,9 +370,9 @@ export function DiffPart({
 									background: "var(--color-amber-soft)",
 									color: "var(--color-amber)",
 								}}
-								title="冲突合并等后续改动让该文件偏离了这笔 diff,反向 apply 无法精确撤销"
+								title={t("divergedRevertExplanation", lang)}
 							>
-								该笔已被后续改动覆盖
+								{t("overwrittenByLaterChanges", lang)}
 							</span>
 						)}
 						{err && (

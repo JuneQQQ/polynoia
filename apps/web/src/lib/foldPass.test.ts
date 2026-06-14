@@ -24,10 +24,67 @@ describe("foldPass", () => {
 		expect([...skip]).toEqual(["t1"]);
 	});
 
-	it("does NOT fold a lone reasoning run (no tool in it)", () => {
-		const { firsts, skip } = foldPass([item("r1", "reasoning")], noTerminal);
+	it("surfaces ≥2 consecutive reasoning as a merge group (not a tool fold)", () => {
+		const { firsts, skip, reasoningGroups } = foldPass(
+			[item("r1", "reasoning"), item("r2", "reasoning")],
+			noTerminal,
+		);
+		// Pure-reasoning run: NOT a tool fold, and members stay OUT of `skip`
+		// (so non-merging callers keep rendering them standalone).
 		expect(firsts.size).toBe(0);
 		expect(skip.size).toBe(0);
+		expect([...reasoningGroups.keys()]).toEqual(["r1"]);
+		expect(reasoningGroups.get("r1")).toEqual(["r1", "r2"]);
+	});
+
+	it("does NOT merge reasoning split by a tool call", () => {
+		const { reasoningGroups, firsts } = foldPass(
+			[
+				item("r1", "reasoning"),
+				item("t1", "tool-call", { name: "read" }),
+				item("r2", "reasoning"),
+			],
+			noTerminal,
+		);
+		// The whole run has a tool → it's ONE tool fold, not a reasoning merge.
+		expect(reasoningGroups.size).toBe(0);
+		expect(firsts.get("r1")).toEqual(["r1", "t1", "r2"]);
+	});
+
+	it("a reasoning run with a tool folds as a TOOL group, not a reasoning merge", () => {
+		const { reasoningGroups, firsts } = foldPass(
+			[
+				item("r1", "reasoning"),
+				item("r2", "reasoning"),
+				item("t1", "tool-call", { name: "read" }),
+			],
+			noTerminal,
+		);
+		expect(reasoningGroups.size).toBe(0);
+		expect(firsts.get("r1")).toEqual(["r1", "r2", "t1"]);
+	});
+
+	it("a sender change breaks a reasoning merge (multiSender)", () => {
+		const { reasoningGroups } = foldPass(
+			[
+				item("r1", "reasoning", { sender: "a" }),
+				item("r2", "reasoning", { sender: "b" }),
+			],
+			noTerminal,
+			true,
+		);
+		// Two different senders → two lone reasonings, neither merges.
+		expect(reasoningGroups.size).toBe(0);
+	});
+
+	it("does NOT fold a lone reasoning run (no tool in it)", () => {
+		const { firsts, skip, reasoningGroups } = foldPass(
+			[item("r1", "reasoning")],
+			noTerminal,
+		);
+		expect(firsts.size).toBe(0);
+		expect(skip.size).toBe(0);
+		expect(reasoningGroups.size).toBe(0);
 	});
 
 	it("folds even a single lone tool call (tool calls never render naked)", () => {

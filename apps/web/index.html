@@ -29,7 +29,9 @@
     <script>
       try {
         var t = localStorage.getItem("polynoia-theme");
-        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+        // Any known preset (light/dark/nord/forest/mono/dusk); fall back to dark.
+        var ok = ["light","dark","nord","forest","mono","dusk"];
+        if (t && ok.indexOf(t) !== -1) document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>
     <div id="root"></div>

@@ -8,6 +8,7 @@
  */
 import { Download, ExternalLink, Globe, PackageCheck } from "lucide-react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
 import { assetUrl } from "../../lib/runtime-config";
 import type { FilesPayload, LinkItem } from "../../lib/types";
@@ -24,6 +25,7 @@ function FileRow({
 	name: string;
 	sizeBytes?: number | null;
 }) {
+	const lang = useStore((s) => s.lang);
 	const openPreviewFile = useStore((s) => s.openPreviewFile);
 	const wsFile = parseWorkspaceFileSrc(src);
 	const { Icon, bg, fg, label } = variantFor(name);
@@ -64,7 +66,7 @@ function FileRow({
 				onClick={wsFile ? onPreview : undefined}
 				disabled={!wsFile}
 				className={`flex items-center gap-2.5 min-w-0 flex-1 text-left ${wsFile ? "cursor-pointer" : "cursor-default"}`}
-				title={wsFile ? "点击打开预览" : name}
+				title={wsFile ? t("clickToPreview", lang) : name}
 			>
 				<div
 					className="w-8 h-8 rounded-lg grid place-items-center flex-shrink-0 relative"
@@ -99,7 +101,7 @@ function FileRow({
 				}`}
 			>
 				<Download size={11} />
-				下载
+				{t("download", lang)}
 			</button>
 		</div>
 	);
@@ -109,10 +111,12 @@ function LinkRow({ link }: { link: LinkItem }) {
 	const kind = link.kind ?? "web";
 	const label = link.label || link.url;
 	const Icon = kind === "download" ? Download : Globe;
-	const accent = kind === "download" ? "var(--color-amber)" : "var(--color-blue)";
-	const bg = kind === "download"
-		? "color-mix(in oklab, var(--color-amber) 14%, transparent)"
-		: "color-mix(in oklab, var(--color-blue) 14%, transparent)";
+	const accent =
+		kind === "download" ? "var(--color-amber)" : "var(--color-blue)";
+	const bg =
+		kind === "download"
+			? "color-mix(in oklab, var(--color-amber) 14%, transparent)"
+			: "color-mix(in oklab, var(--color-blue) 14%, transparent)";
 	const size = formatBytes(link.bytes);
 	const isExternal = /^https?:\/\//i.test(link.url);
 	// Resolved href: `assetUrl` rewrites bare `/api/...` paths through the
@@ -152,7 +156,10 @@ function LinkRow({ link }: { link: LinkItem }) {
 					<div className="text-[12.5px] font-medium text-[var(--color-fg)] truncate leading-snug flex items-center gap-1">
 						{label}
 						{kind === "web" && (
-							<ExternalLink size={10} className="text-[var(--color-fg-3)] flex-shrink-0" />
+							<ExternalLink
+								size={10}
+								className="text-[var(--color-fg-3)] flex-shrink-0"
+							/>
 						)}
 					</div>
 					{(link.note || size) && (
@@ -169,6 +176,7 @@ function LinkRow({ link }: { link: LinkItem }) {
 }
 
 export function FilesPanelPart({ payload }: { payload: FilesPayload }) {
+	const lang = useStore((s) => s.lang);
 	const { message, files, links } = payload;
 	const linkList = links ?? [];
 	const count = files.length + linkList.length;
@@ -181,11 +189,11 @@ export function FilesPanelPart({ payload }: { payload: FilesPayload }) {
 					<PackageCheck size={13} />
 				</div>
 				<span className="text-[12px] font-semibold text-[var(--color-fg-2)] tracking-wide">
-					交付物
+					{t("deliverable", lang)}
 				</span>
 				{count > 0 && (
 					<span className="ml-auto text-[10.5px] font-mono text-[var(--color-fg-3)] px-1.5 py-0.5 rounded-md bg-[var(--color-surface-2)]">
-						{count} 项
+						{t("itemCount", lang).replace("{count}", String(count))}
 					</span>
 				)}
 			</div>

@@ -25,144 +25,145 @@
 import type { Message } from "./types";
 
 export type BurstInfo = {
-  /** Message ID of the tasks card that anchors this burst. */
-  anchorMsgId: string;
-  /** Burst index across the entire conv (1-based). */
-  index: number;
-  /** Set of agent_ids assigned in this burst's tasks. */
-  assignees: Set<string>;
-  /** Per-agent ordered list of claimed message IDs. */
-  lanes: Map<string, string[]>;
-  /** sender_id of the tasks card — the orchestrator that owns this burst. */
-  owner: string;
-  /** True once the burst is closed (owner emitted a non-task message). */
-  closed: boolean;
+	/** Message ID of the tasks card that anchors this burst. */
+	anchorMsgId: string;
+	/** Burst index across the entire conv (1-based). */
+	index: number;
+	/** Set of agent_ids assigned in this burst's tasks. */
+	assignees: Set<string>;
+	/** Per-agent ordered list of claimed message IDs. */
+	lanes: Map<string, string[]>;
+	/** sender_id of the tasks card — the orchestrator that owns this burst. */
+	owner: string;
+	/** True once the burst is closed (owner emitted a non-task message). */
+	closed: boolean;
 };
 
 export type ComputeBurstsResult = {
-  /** Tasks card msg id → BurstInfo */
-  burstByAnchorId: Map<string, BurstInfo>;
-  /** Union of all claimed message IDs across all bursts. */
-  claimedSet: Set<string>;
+	/** Tasks card msg id → BurstInfo */
+	burstByAnchorId: Map<string, BurstInfo>;
+	/** Union of all claimed message IDs across all bursts. */
+	claimedSet: Set<string>;
 };
 
 type TasksPayloadShape = {
-  kind: "tasks";
-  title?: string;
-  tasks?: Array<{ id?: string; agent?: string }>;
+	kind: "tasks";
+	title?: string;
+	tasks?: Array<{ id?: string; agent?: string }>;
 };
 
 type BurstTaggedPayload = {
-  burst_card_id?: string | null;
-  burst_task_id?: string | null;
+	burst_card_id?: string | null;
+	burst_task_id?: string | null;
 };
 
 function isTasksPayload(payload: unknown): payload is TasksPayloadShape {
-  return (
-    typeof payload === "object" &&
-    payload !== null &&
-    (payload as { kind?: unknown }).kind === "tasks"
-  );
+	return (
+		typeof payload === "object" &&
+		payload !== null &&
+		(payload as { kind?: unknown }).kind === "tasks"
+	);
 }
 
 export function computeBursts(
-  messageOrder: readonly string[],
-  msgById: Map<string, Message>,
-  // Accepted for back-compat / future hinting; detection no longer needs it.
-  _orchestratorIds?: readonly string[],
+	messageOrder: readonly string[],
+	msgById: Map<string, Message>,
+	// Accepted for back-compat / future hinting; detection no longer needs it.
+	_orchestratorIds?: readonly string[],
 ): ComputeBurstsResult {
-  const burstByAnchorId = new Map<string, BurstInfo>();
-  const claimedSet = new Set<string>();
+	const burstByAnchorId = new Map<string, BurstInfo>();
+	const claimedSet = new Set<string>();
 
-  let active: BurstInfo | null = null;
-  let burstCount = 0;
-  const burstByTaskId = new Map<string, BurstInfo>();
+	let active: BurstInfo | null = null;
+	let burstCount = 0;
+	const burstByTaskId = new Map<string, BurstInfo>();
 
-  for (const msgId of messageOrder) {
-    const m = msgById.get(msgId);
-    if (!m) continue;
+	for (const msgId of messageOrder) {
+		const m = msgById.get(msgId);
+		if (!m) continue;
 
-    const isTasks = isTasksPayload(m.payload);
-    const burstTag =
-      typeof m.payload === "object" && m.payload !== null
-        ? (m.payload as BurstTaggedPayload)
-        : null;
-    const taggedBurst =
-      burstTag?.burst_card_id ? burstByAnchorId.get(burstTag.burst_card_id) : null;
+		const isTasks = isTasksPayload(m.payload);
+		const burstTag =
+			typeof m.payload === "object" && m.payload !== null
+				? (m.payload as BurstTaggedPayload)
+				: null;
+		const taggedBurst = burstTag?.burst_card_id
+			? burstByAnchorId.get(burstTag.burst_card_id)
+			: null;
 
-    // BURST START: any tasks card anchors a burst (only orchestrators emit
-    // them). The card's sender becomes the burst owner.
-    if (isTasks) {
-      // Close previous burst if still open — happens when the orchestrator
-      // emits a second tasks card without an intervening summary
-      if (active) active.closed = true;
+		// BURST START: any tasks card anchors a burst (only orchestrators emit
+		// them). The card's sender becomes the burst owner.
+		if (isTasks) {
+			// Close previous burst if still open — happens when the orchestrator
+			// emits a second tasks card without an intervening summary
+			if (active) active.closed = true;
 
-      burstCount += 1;
-      const tasks = (m.payload as TasksPayloadShape).tasks ?? [];
-      const assignees = new Set<string>();
-      for (const t of tasks) {
-        if (t.agent) assignees.add(t.agent);
-      }
-      active = {
-        anchorMsgId: m.id,
-        index: burstCount,
-        assignees,
-        lanes: new Map(),
-        owner: m.sender_id,
-        closed: false,
-      };
-      burstByAnchorId.set(m.id, active);
-      for (const t of tasks) {
-        if (t.id) burstByTaskId.set(t.id, active);
-      }
-      continue;
-    }
+			burstCount += 1;
+			const tasks = (m.payload as TasksPayloadShape).tasks ?? [];
+			const assignees = new Set<string>();
+			for (const t of tasks) {
+				if (t.agent) assignees.add(t.agent);
+			}
+			active = {
+				anchorMsgId: m.id,
+				index: burstCount,
+				assignees,
+				lanes: new Map(),
+				owner: m.sender_id,
+				closed: false,
+			};
+			burstByAnchorId.set(m.id, active);
+			for (const t of tasks) {
+				if (t.id) burstByTaskId.set(t.id, active);
+			}
+			continue;
+		}
 
-    // Explicit server tags win over timeline inference. This covers worker turns
-    // that arrive after the orchestrator's summary: they still belong in the
-    // burst lane instead of leaking into the main chat stream.
-    const explicitBurst =
-      taggedBurst ??
-      (burstTag?.burst_task_id
-        ? burstByTaskId.get(burstTag.burst_task_id)
-        : undefined);
-    if (explicitBurst && explicitBurst.assignees.has(m.sender_id)) {
-      claimedSet.add(m.id);
-      const lane = explicitBurst.lanes.get(m.sender_id) ?? [];
-      lane.push(m.id);
-      explicitBurst.lanes.set(m.sender_id, lane);
-      continue;
-    }
+		// Explicit server tags win over timeline inference. This covers worker turns
+		// that arrive after the orchestrator's summary: they still belong in the
+		// burst lane instead of leaking into the main chat stream.
+		const explicitBurst =
+			taggedBurst ??
+			(burstTag?.burst_task_id
+				? burstByTaskId.get(burstTag.burst_task_id)
+				: undefined);
+		if (explicitBurst && explicitBurst.assignees.has(m.sender_id)) {
+			claimedSet.add(m.id);
+			const lane = explicitBurst.lanes.get(m.sender_id) ?? [];
+			lane.push(m.id);
+			explicitBurst.lanes.set(m.sender_id, lane);
+			continue;
+		}
 
-    // Outside any burst — leave for linear render
-    if (!active) continue;
+		// Outside any burst — leave for linear render
+		if (!active) continue;
 
-    // BURST END: the owner (orchestrator) emitted a non-tasks message —
-    // its wrap-up summary. BUT the owner's *dispatch-turn narration* also
-    // lands here (it's persisted right after the card, before any worker
-    // streams). Only treat owner-text as the closing summary once ≥1 worker
-    // has been claimed — otherwise we'd close before any lane fills and the
-    // workers would spill into the linear stream (empty "等待开始…" lanes).
-    if (m.sender_id === active.owner) {
-      if (active.lanes.size > 0) {
-        active.closed = true;
-        active = null;
-      }
-      // else: pre-work narration — leave it linear, keep the burst open
-      continue;
-    }
+		// BURST END: the owner (orchestrator) emitted a non-tasks message —
+		// its wrap-up summary. BUT the owner's *dispatch-turn narration* also
+		// lands here (it's persisted right after the card, before any worker
+		// streams). Only treat owner-text as the closing summary once ≥1 worker
+		// has been claimed — otherwise we'd close before any lane fills and the
+		// workers would spill into the linear stream (empty "等待开始…" lanes).
+		if (m.sender_id === active.owner) {
+			if (active.lanes.size > 0) {
+				active.closed = true;
+				active = null;
+			}
+			// else: pre-work narration — leave it linear, keep the burst open
+			continue;
+		}
 
-    // Inside burst: claim if sender is one of the burst's assignees
-    if (active.assignees.has(m.sender_id)) {
-      claimedSet.add(m.id);
-      const lane = active.lanes.get(m.sender_id) ?? [];
-      lane.push(m.id);
-      active.lanes.set(m.sender_id, lane);
-    }
-    // Non-assignee messages inside a burst (e.g. user interjections,
-    // system events) are NOT claimed — they stay in the linear stream
-    // between burst-card and the eventual orchestrator summary.
-  }
+		// Inside burst: claim if sender is one of the burst's assignees
+		if (active.assignees.has(m.sender_id)) {
+			claimedSet.add(m.id);
+			const lane = active.lanes.get(m.sender_id) ?? [];
+			lane.push(m.id);
+			active.lanes.set(m.sender_id, lane);
+		}
+		// Non-assignee messages inside a burst (e.g. user interjections,
+		// system events) are NOT claimed — they stay in the linear stream
+		// between burst-card and the eventual orchestrator summary.
+	}
 
-  return { burstByAnchorId, claimedSet };
+	return { burstByAnchorId, claimedSet };
 }

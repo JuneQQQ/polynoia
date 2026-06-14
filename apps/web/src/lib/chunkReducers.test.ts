@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	findToolCallMessageId,
 	flipStuckCardsOnTurnEnd,
+	flipSupersededRunningTools,
 	mergeTerminalPayload,
 	mergeToolCallPayload,
 } from "./chunkReducers";
@@ -192,9 +193,9 @@ describe("flipStuckCardsOnTurnEnd", () => {
 		expect((patched!.get("m1")!.payload as { state: string }).state).toBe(
 			"error",
 		);
-		expect((patched!.get("m2")!.payload as { exit_code: number }).exit_code).toBe(
-			1,
-		);
+		expect(
+			(patched!.get("m2")!.payload as { exit_code: number }).exit_code,
+		).toBe(1);
 	});
 
 	it("returns null when nothing is stuck (no needless re-render)", () => {
@@ -211,5 +212,83 @@ describe("flipStuckCardsOnTurnEnd", () => {
 			],
 		]);
 		expect(flipStuckCardsOnTurnEnd(["x"], clean, "a", false)).toBeNull();
+	});
+});
+
+describe("flipSupersededRunningTools", () => {
+	const order = ["disp", "term", "other", "newtext"];
+	const byId = new Map<string, Message>([
+		// dispatch tool-call still "running" (its result lags behind the burst)
+		[
+			"disp",
+			msg("disp", "orch", {
+				kind: "tool-call",
+				tool_call_id: "d1",
+				name: "dispatch",
+				input: {},
+				state: "running",
+			}),
+		],
+		// a long terminal — must be LEFT ALONE (own running:false lifecycle)
+		[
+			"term",
+			msg("term", "orch", {
+				kind: "terminal",
+				command: "npm run dev",
+				output: "",
+				running: true,
+			}),
+		],
+		// another agent's running tool — must be untouched
+		[
+			"other",
+			msg("other", "worker", {
+				kind: "tool-call",
+				tool_call_id: "o1",
+				name: "read",
+				input: {},
+				state: "running",
+			}),
+		],
+		// the NEW text part this sender just started (the superseding part)
+		[
+			"newtext",
+			msg("newtext", "orch", { kind: "text", body: [{ t: "p", c: "" }] }),
+		],
+	]);
+
+	it("flips the sender's stuck running tool-call to completed when it emits new output", () => {
+		const patched = flipSupersededRunningTools(order, byId, "orch", "newtext");
+		expect(patched).not.toBeNull();
+		expect((patched!.get("disp")!.payload as { state: string }).state).toBe(
+			"completed",
+		);
+		// terminal left alone, other agent untouched, the new part untouched
+		expect(
+			(patched!.get("term")!.payload as { running: boolean }).running,
+		).toBe(true);
+		expect((patched!.get("other")!.payload as { state: string }).state).toBe(
+			"running",
+		);
+		expect(patched!.get("newtext")!.payload.kind).toBe("text");
+	});
+
+	it("returns null when the sender has no lagging tool-call", () => {
+		const clean = new Map<string, Message>([
+			[
+				"done",
+				msg("done", "orch", {
+					kind: "tool-call",
+					tool_call_id: "d",
+					name: "dispatch",
+					input: {},
+					state: "completed",
+				}),
+			],
+			["t", msg("t", "orch", { kind: "text", body: [{ t: "p", c: "" }] })],
+		]);
+		expect(
+			flipSupersededRunningTools(["done", "t"], clean, "orch", "t"),
+		).toBeNull();
 	});
 });

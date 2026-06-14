@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from polynoia.api.contacts_routes import router as contacts_router
 from polynoia.api.conversations_routes import router as conversations_router
 from polynoia.api.onboarding import router as onboarding_router
+from polynoia.api.quality_routes import router as quality_router
+from polynoia.api.role_presets import router as role_presets_router
 from polynoia.api.routes import router
 from polynoia.api.terminal import router as terminal_router
 from polynoia.api.workspace_files import router as workspace_files_router
@@ -173,6 +175,8 @@ def create_app() -> FastAPI:
     app.include_router(workspaces_router)
     app.include_router(contacts_router)
     app.include_router(conversations_router)
+    app.include_router(quality_router)
+    app.include_router(role_presets_router)
     app.include_router(ws_router)
     return app
 

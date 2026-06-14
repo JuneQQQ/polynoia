@@ -10,6 +10,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
+import { t } from "../../lib/i18n";
+import { useStore } from "../../store";
 
 // Dark theme tuned to the app surface tokens (xterm needs concrete hex, not
 // CSS vars — it paints to a canvas).
@@ -31,7 +33,9 @@ const THEME = {
 
 export function TerminalTab({ workspaceId }: { workspaceId: string }) {
 	const hostRef = useRef<HTMLDivElement | null>(null);
+	const lang = useStore((s) => s.lang);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: lang is only read in the ws.onclose [disconnected] notice; re-running this effect on a language switch would needlessly tear down and recreate the terminal + WebSocket.
 	useEffect(() => {
 		const host = hostRef.current;
 		if (!host) return;
@@ -82,7 +86,8 @@ export function TerminalTab({ workspaceId }: { workspaceId: string }) {
 			else if (typeof ev.data === "string") term.write(ev.data);
 		};
 		ws.onclose = () => {
-			if (!disposed) term.write("\r\n\x1b[2m[已断开]\x1b[0m\r\n");
+			if (!disposed)
+				term.write(`\r\n\x1b[2m${t("disconnected", lang)}\x1b[0m\r\n`);
 		};
 
 		// Keystrokes → binary pty input.
@@ -113,7 +118,7 @@ export function TerminalTab({ workspaceId }: { workspaceId: string }) {
 	return (
 		<div className="flex flex-col h-full bg-[#0e1116]">
 			<div className="px-3 py-1.5 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px] text-[var(--color-fg-3)] mono">
-				终端 · 工作区 main 目录
+				{t("terminalMainDir", lang)}
 			</div>
 			<div ref={hostRef} className="flex-1 min-h-0 overflow-hidden p-1.5" />
 		</div>

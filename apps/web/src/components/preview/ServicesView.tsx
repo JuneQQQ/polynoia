@@ -14,34 +14,49 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type ProcessRunItem } from "../../lib/api";
+import { type ProcessRunItem, api } from "../../lib/api";
+import { type Lang, t } from "../../lib/i18n";
+import { useStore } from "../../store";
 
-function relTime(iso?: string | null) {
+function relTime(iso: string | null | undefined, lang: Lang) {
 	if (!iso) return null;
-	const t = new Date(iso).getTime();
-	if (!Number.isFinite(t)) return null;
-	const diff = (Date.now() - t) / 1000;
-	if (diff < 60) return "刚刚";
-	if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-	if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-	return `${Math.floor(diff / 86400)} 天前`;
+	const ts = new Date(iso).getTime();
+	if (!Number.isFinite(ts)) return null;
+	const diff = (Date.now() - ts) / 1000;
+	if (diff < 60) return t("justNow", lang);
+	if (diff < 3600) return `${Math.floor(diff / 60)} ${t("minutesAgo", lang)}`;
+	if (diff < 86400) return `${Math.floor(diff / 3600)} ${t("hoursAgo", lang)}`;
+	return `${Math.floor(diff / 86400)} ${t("daysAgo", lang)}`;
 }
 
-const STATUS_LABEL: Record<ProcessRunItem["status"], string> = {
-	starting: "启动中",
-	running: "运行中",
-	exited: "已退出",
-	failed: "失败",
-	killed: "已停止",
-	lost: "已丢失",
-};
+function statusLabel(status: ProcessRunItem["status"], lang: Lang): string {
+	switch (status) {
+		case "starting":
+			return t("starting", lang);
+		case "running":
+			return t("running", lang);
+		case "exited":
+			return t("processStatusExited", lang);
+		case "failed":
+			return t("processStatusFailed", lang);
+		case "killed":
+			return t("processStatusStopped", lang);
+		case "lost":
+			return t("processStatusLost", lang);
+		default:
+			return status;
+	}
+}
 
 /** Running (启动中/运行中) processes float to the top; everything else keeps its
  * place. Stable sort over the API's `started_at DESC` order → within each group
  * (running / finished) the time ordering is preserved. */
-const _isLive = (s: ProcessRunItem["status"]) => s === "running" || s === "starting";
+const _isLive = (s: ProcessRunItem["status"]) =>
+	s === "running" || s === "starting";
 function orderRuns(runs: ProcessRunItem[]): ProcessRunItem[] {
-	return [...runs].sort((a, b) => Number(_isLive(b.status)) - Number(_isLive(a.status)));
+	return [...runs].sort(
+		(a, b) => Number(_isLive(b.status)) - Number(_isLive(a.status)),
+	);
 }
 
 function ProcessRow({
@@ -53,10 +68,11 @@ function ProcessRow({
 	onStop: (id: string) => void;
 	busy: boolean;
 }) {
+	const lang = useStore((s) => s.lang);
 	const running = run.status === "running" || run.status === "starting";
 	const ok = run.status === "exited" && (run.exit_code ?? 0) === 0;
 	const bad = run.status === "failed" || run.status === "lost";
-	const started = relTime(run.started_at);
+	const started = relTime(run.started_at, lang);
 	const StatusIcon = running ? Loader2 : ok ? Check : bad ? XCircle : Square;
 	const locate = () => {
 		const el = document.querySelector(`[data-msg-id="${run.message_id}"]`);
@@ -75,7 +91,7 @@ function ProcessRow({
 				<div className="min-w-0 flex-1">
 					<div className="flex items-center gap-1.5">
 						<span className="truncate text-[12px] font-medium">
-							{run.label || "bash 进程"}
+							{run.label || t("bashProcessDefault", lang)}
 						</span>
 						<span className="rounded bg-[var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-[var(--color-fg-3)]">
 							{run.mode === "background" ? "background" : "blocking"}
@@ -88,9 +104,11 @@ function ProcessRow({
 						<span className="inline-flex items-center gap-1">
 							<StatusIcon
 								size={10}
-								className={running ? "animate-spin text-[var(--color-accent)]" : ""}
+								className={
+									running ? "animate-spin text-[var(--color-accent)]" : ""
+								}
 							/>
-							{STATUS_LABEL[run.status]}
+							{statusLabel(run.status, lang)}
 						</span>
 						{run.pid && <span>pid {run.pid}</span>}
 						{run.exit_code !== null && run.exit_code !== undefined && (
@@ -109,7 +127,7 @@ function ProcessRow({
 						type="button"
 						onClick={locate}
 						className="rounded p-1 text-[var(--color-fg-3)] hover:bg-[var(--color-line)] hover:text-[var(--color-fg)]"
-						title="定位到命令卡片"
+						title={t("locateCommandCard", lang)}
 					>
 						<ChevronRight size={13} />
 					</button>
@@ -119,9 +137,13 @@ function ProcessRow({
 							onClick={() => onStop(run.id)}
 							disabled={busy}
 							className="rounded p-1 text-[var(--color-red)] hover:bg-[color-mix(in_oklab,var(--color-red)_18%,transparent)] disabled:opacity-40"
-							title="停止进程"
+							title={t("stopProcess", lang)}
 						>
-							{busy ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
+							{busy ? (
+								<Loader2 size={12} className="animate-spin" />
+							) : (
+								<Square size={12} />
+							)}
 						</button>
 					)}
 				</div>
@@ -131,6 +153,7 @@ function ProcessRow({
 }
 
 export function ServicesView({ convId }: { convId: string }) {
+	const lang = useStore((s) => s.lang);
 	const [processes, setProcesses] = useState<ProcessRunItem[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
@@ -174,14 +197,16 @@ export function ServicesView({ convId }: { convId: string }) {
 	return (
 		<div className="h-full overflow-y-auto px-1 py-2">
 			<div className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-3)]">
-				<span className="min-w-0 flex-1 truncate">运行中的进程</span>
+				<span className="min-w-0 flex-1 truncate">
+					{t("runningProcesses", lang)}
+				</span>
 				<button
 					type="button"
 					onClick={load}
 					disabled={loading}
 					className="rounded p-0.5 text-[var(--color-fg-3)] transition-colors hover:bg-[var(--color-line)] hover:text-[var(--color-fg)]"
-					title={loading ? "刷新中…" : "刷新"}
-					aria-label="刷新进程列表"
+					title={loading ? t("refreshing", lang) : t("refresh", lang)}
+					aria-label={t("refreshProcessList", lang)}
 				>
 					<RefreshCw size={10} className={loading ? "animate-spin" : ""} />
 				</button>
@@ -193,9 +218,9 @@ export function ServicesView({ convId }: { convId: string }) {
 			)}
 			{processes.length === 0 && !loading ? (
 				<div className="px-3 py-8 text-center text-[12px] text-[var(--color-fg-3)]">
-					当前对话没有托管进程。
+					{t("noManagedProcesses", lang)}
 					<div className="mt-1 text-[10.5px] text-[var(--color-fg-4)]">
-						长期命令需要 Agent 调用 <span className="mono">bash(blocking=false)</span>。
+						{t("noManagedProcessesHint", lang)}
 					</div>
 				</div>
 			) : (

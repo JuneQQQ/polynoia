@@ -15,8 +15,8 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { orderByTurn } from "./lib/turnGroup";
-import { selectMessages, useStore } from "./store";
 import type { Message } from "./lib/types";
+import { selectMessages, useStore } from "./store";
 
 const s = () => useStore.getState();
 
@@ -34,7 +34,10 @@ function assertConsistent(convId: string) {
 	for (const id of conv.messageOrder) {
 		expect(seen.has(id), `duplicate id in messageOrder: ${id}`).toBe(false);
 		seen.add(id);
-		expect(conv.msgById.has(id), `messageOrder id missing from msgById: ${id}`).toBe(true);
+		expect(
+			conv.msgById.has(id),
+			`messageOrder id missing from msgById: ${id}`,
+		).toBe(true);
 	}
 	// Every streaming buffer must point at a live message (no ghost buffers).
 	for (const v of conv.streamingTexts.values()) {
@@ -75,7 +78,11 @@ describe("streaming chunk-order chaos", () => {
 			messageId: "m1",
 			senderId: "agent",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "p1", delta: "hello" });
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "p1",
+			delta: "hello",
+		});
 		expect(bodyText(s().convs.get("c")?.msgById.get("m1"))).toBe("hello");
 		assertConsistent("c");
 	});
@@ -110,8 +117,14 @@ describe("streaming chunk-order chaos", () => {
 			messageId: "m9",
 			senderId: "agent",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "p9", delta: "已经写了一半" });
-		expect(bodyText(s().convs.get("c")?.msgById.get("m9"))).toBe("已经写了一半");
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "p9",
+			delta: "已经写了一半",
+		});
+		expect(bodyText(s().convs.get("c")?.msgById.get("m9"))).toBe(
+			"已经写了一半",
+		);
 
 		// Reconnect replays the start. A correct reducer must be idempotent: the
 		// accumulated text survives. A naive one resets the buffer to "" and the
@@ -165,10 +178,26 @@ describe("streaming chunk-order chaos", () => {
 			senderId: "B",
 			turnId: "tB",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pA", delta: "A1" });
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pB", delta: "B1" });
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pA", delta: "A2" });
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pB", delta: "B2" });
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pA",
+			delta: "A1",
+		});
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pB",
+			delta: "B1",
+		});
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pA",
+			delta: "A2",
+		});
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pB",
+			delta: "B2",
+		});
 		s().applyChunkToConv("c", { kind: "text-end", partId: "pA" });
 		s().applyChunkToConv("c", { kind: "text-end", partId: "pB" });
 
@@ -196,7 +225,11 @@ describe("streaming chunk-order chaos", () => {
 			senderId: "A",
 			turnId: "tA",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pA", delta: "alpha" });
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pA",
+			delta: "alpha",
+		});
 		s().applyChunkToConv("c", {
 			kind: "text-start",
 			partId: "pB",
@@ -204,7 +237,11 @@ describe("streaming chunk-order chaos", () => {
 			senderId: "B",
 			turnId: "tB",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pB", delta: "beta" });
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pB",
+			delta: "beta",
+		});
 		s().applyChunkToConv("c", {
 			kind: "card",
 			cardKind: "tool-call",
@@ -238,7 +275,11 @@ describe("streaming chunk-order chaos", () => {
 			senderId: "loner",
 			turnId: null,
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pN", delta: "no turn" });
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pN",
+			delta: "no turn",
+		});
 		const conv = s().convs.get("c");
 		expect(conv?.msgById.get("mN")?.turn_id ?? null).toBe(null);
 		expect(bodyText(conv?.msgById.get("mN"))).toBe("no turn");
@@ -247,7 +288,9 @@ describe("streaming chunk-order chaos", () => {
 		// orderByTurn must keep a null-turn_id message as a singleton bucket and
 		// not throw on the missing key.
 		expect(() => orderByTurn(selectMessages(s(), "c"))).not.toThrow();
-		expect(orderByTurn(selectMessages(s(), "c")).map((m) => m.id)).toEqual(["mN"]);
+		expect(orderByTurn(selectMessages(s(), "c")).map((m) => m.id)).toEqual([
+			"mN",
+		]);
 	});
 
 	it("(5b) a null-turn_id part from a sender mid-turn must not be folded into a STRANGER's turn", () => {
@@ -263,11 +306,19 @@ describe("streaming chunk-order chaos", () => {
 			senderId: "A",
 			turnId: "tA",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pA1", delta: "first" });
-		// user message lands between A's two parts
-		s()._appendLocal("c", { kind: "text", body: [{ t: "p", c: "user interjects" }] }, {
-			msgId: "u-1",
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pA1",
+			delta: "first",
 		});
+		// user message lands between A's two parts
+		s()._appendLocal(
+			"c",
+			{ kind: "text", body: [{ t: "p", c: "user interjects" }] },
+			{
+				msgId: "u-1",
+			},
+		);
 		s().applyChunkToConv("c", {
 			kind: "text-start",
 			partId: "pA2",
@@ -275,17 +326,25 @@ describe("streaming chunk-order chaos", () => {
 			senderId: "A",
 			turnId: "tA",
 		});
-		s().applyChunkToConv("c", { kind: "text-delta", partId: "pA2", delta: "second" });
+		s().applyChunkToConv("c", {
+			kind: "text-delta",
+			partId: "pA2",
+			delta: "second",
+		});
 
 		assertConsistent("c");
 		const ordered = orderByTurn(selectMessages(s(), "c"));
 		// A's two parts fold together (turn tA contiguous). The user message keeps
 		// its own slot. Because tA is first-seen, A's bucket emits first, then the
 		// user singleton — the relative set is preserved and no message is dropped.
-		expect(new Set(ordered.map((m) => m.id))).toEqual(new Set(["mA1", "mA2", "u-1"]));
+		expect(new Set(ordered.map((m) => m.id))).toEqual(
+			new Set(["mA1", "mA2", "u-1"]),
+		);
 		expect(ordered.filter((m) => m.id === "u-1").length).toBe(1); // not duplicated/lost
 		// The user row must remain a distinct singleton, not absorbed into A's text.
-		expect(bodyText(ordered.find((m) => m.id === "u-1"))).toBe("user interjects");
+		expect(bodyText(ordered.find((m) => m.id === "u-1"))).toBe(
+			"user interjects",
+		);
 	});
 
 	// ─── (6) tool-result (terminal) BEFORE its tool-call ─────────────────────
@@ -334,7 +393,13 @@ describe("streaming chunk-order chaos", () => {
 			cardKind: "terminal",
 			messageId: "term-2",
 			senderId: "agent",
-			payload: { kind: "terminal", command: "run", running: false, exit_code: 0, output: "ok" },
+			payload: {
+				kind: "terminal",
+				command: "run",
+				running: false,
+				exit_code: 0,
+				output: "ok",
+			},
 		});
 		// …then an out-of-order EARLIER frame (running:true) replays for the same id.
 		s().applyChunkToConv("c", {

@@ -12,12 +12,19 @@
 import { Crepe } from "@milkdown/crepe";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/nord.css";
-import { BookOpen, Check, Download, FileText, Loader2, Save } from "lucide-react";
+import { asBlob } from "html-docx-js-typescript";
+import {
+	BookOpen,
+	Check,
+	Download,
+	FileText,
+	Loader2,
+	Save,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { asBlob } from "html-docx-js-typescript";
 import { api } from "../../lib/api";
 import { useStore } from "../../store";
 import { downloadBlob, downloadText, printAsPdf } from "./exportUtils";
@@ -226,7 +233,10 @@ export function CrepeEditor({
   .pn-crepe-root .milkdown .ProseMirror { padding: 40px 56px; }
 }`}</style>
 			<div className="flex-1 min-h-0 overflow-auto bg-white">
-				<div ref={rootRef} className="pn-crepe-root mx-auto max-w-[860px] px-4 py-6" />
+				<div
+					ref={rootRef}
+					className="pn-crepe-root mx-auto max-w-[860px] px-4 py-6"
+				/>
 			</div>
 		</div>
 	);

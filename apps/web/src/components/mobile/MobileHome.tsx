@@ -53,7 +53,7 @@ import {
 	type EnabledAdapter,
 	api,
 } from "../../lib/api";
-import { type Lang, saveLang } from "../../lib/i18n";
+import { type Lang, saveLang, t as tr } from "../../lib/i18n";
 import {
 	flushServerConfig,
 	getServerOverride,
@@ -362,7 +362,9 @@ export function MobileHome({ onSelectConv }: Props) {
 					{homeReady && tab === "contacts" && (
 						<ContactsScreen onSelectConv={onSelectConv} />
 					)}
-					{homeReady && tab === "folder" && <ProjectsScreen onSelectConv={onSelectConv} />}
+					{homeReady && tab === "folder" && (
+						<ProjectsScreen onSelectConv={onSelectConv} />
+					)}
 					{homeReady && tab === "me" && <MeScreen />}
 				</div>
 				<TabBar key={tabbarPaintKey} tab={tab} setTab={setTab} />
@@ -667,7 +669,9 @@ function PullToRefresh({
 					color: ready || refreshing ? pal.accent : pal.ink3,
 					opacity: shown > 6 ? 1 : 0,
 					transform: `translateY(${shown - 58}px)`,
-					transition: refreshing ? "transform 180ms ease, opacity 160ms ease" : "opacity 120ms ease",
+					transition: refreshing
+						? "transform 180ms ease, opacity 160ms ease"
+						: "opacity 120ms ease",
 					pointerEvents: "none",
 				}}
 			>
@@ -682,7 +686,9 @@ function PullToRefresh({
 						boxShadow: ready
 							? `0 0 0 1px ${pal.accent}33, 0 8px 24px ${pal.accent}22`
 							: "none",
-						transform: refreshing ? undefined : `rotate(${Math.min(180, pull * 2.2)}deg)`,
+						transform: refreshing
+							? undefined
+							: `rotate(${Math.min(180, pull * 2.2)}deg)`,
 						transition: "box-shadow 160ms ease",
 					}}
 				>
@@ -715,7 +721,10 @@ function PullToRefresh({
 			<div
 				style={{
 					transform: `translateY(${shown}px)`,
-					transition: refreshing || shown === 0 ? "transform 220ms cubic-bezier(.2,.8,.2,1)" : "none",
+					transition:
+						refreshing || shown === 0
+							? "transform 220ms cubic-bezier(.2,.8,.2,1)"
+							: "none",
 					willChange: "transform",
 					minHeight: "100%",
 				}}
@@ -831,7 +840,7 @@ function SortMenu({
 }
 
 function ChatListScreen({ onSelectConv }: Props) {
-	const { pal, t } = useApp();
+	const { pal, t, lang } = useApp();
 	const agents = useStore((st) => st.agents);
 	const workspaces = useStore((st) => st.workspaces);
 	const [convs, setConvs] = useState<ConversationSummary[]>([]);
@@ -877,7 +886,7 @@ function ChatListScreen({ onSelectConv }: Props) {
 	const agentFor = (c: ConversationSummary) =>
 		agents.find((a) => a.id === c.members.find((m) => m !== "you"));
 	const titleFor = (c: ConversationSummary) =>
-		c.title || agentFor(c)?.name || "对话";
+		c.title || agentFor(c)?.name || tr("conversation", lang);
 	const wsFor = (c: ConversationSummary) =>
 		c.workspace_id
 			? workspaces.find((w) => w.id === c.workspace_id)
@@ -938,83 +947,92 @@ function ChatListScreen({ onSelectConv }: Props) {
 						: undefined;
 					return (
 						<div key={c.id}>
-							<div className="group" style={{ display: "flex", alignItems: "center" }}>
-							<button
-								type="button"
-								onClick={() => {
-									// Clear the unread badge on tap: tell the server (so the next
-									// fetch comes back clean) AND optimistically zero the local
-									// count, so the dot disappears the moment you return to the
-									// list instead of waiting for a refetch. Mirrors the desktop
-									// InboxView flow.
-									if (c.unread > 0) {
-										api.markConvRead(c.id).catch(() => undefined);
-										setConvs((cur) =>
-											cur.map((x) => (x.id === c.id ? { ...x, unread: 0 } : x)),
-										);
-									}
-									onSelectConv(c.id, c.members, titleFor(c));
-								}}
-								style={{ ...rowBtn, paddingRight: 4 }}
+							<div
+								className="group"
+								style={{ display: "flex", alignItems: "center" }}
 							>
-								<div style={{ position: "relative", flexShrink: 0 }}>
-									<Avatar
-										initials={a?.initials ?? titleFor(c).slice(0, 2)}
-										color={a?.color ?? pal.accent}
-									/>
-									{a?.online && <OnlineDot pal={pal} />}
-								</div>
-								<div style={{ flex: 1, minWidth: 0 }}>
-									<div
-										style={{ display: "flex", alignItems: "baseline", gap: 7 }}
-									>
-										<span style={nameStyle(pal)}>{titleFor(c)}</span>
-										{c.group && <EngineChip pal={pal} text="群" />}
-										{c.pinned && <EngineChip pal={pal} text="顶" />}
-										<span
+								<button
+									type="button"
+									onClick={() => {
+										// Clear the unread badge on tap: tell the server (so the next
+										// fetch comes back clean) AND optimistically zero the local
+										// count, so the dot disappears the moment you return to the
+										// list instead of waiting for a refetch. Mirrors the desktop
+										// InboxView flow.
+										if (c.unread > 0) {
+											api.markConvRead(c.id).catch(() => undefined);
+											setConvs((cur) =>
+												cur.map((x) =>
+													x.id === c.id ? { ...x, unread: 0 } : x,
+												),
+											);
+										}
+										onSelectConv(c.id, c.members, titleFor(c));
+									}}
+									style={{ ...rowBtn, paddingRight: 4 }}
+								>
+									<div style={{ position: "relative", flexShrink: 0 }}>
+										<Avatar
+											initials={a?.initials ?? titleFor(c).slice(0, 2)}
+											color={a?.color ?? pal.accent}
+										/>
+										{a?.online && <OnlineDot pal={pal} />}
+									</div>
+									<div style={{ flex: 1, minWidth: 0 }}>
+										<div
 											style={{
-												marginLeft: "auto",
-												fontSize: 11.5,
-												color: pal.ink3,
-												whiteSpace: "nowrap",
+												display: "flex",
+												alignItems: "baseline",
+												gap: 7,
 											}}
 										>
-											{fmtTime(c.last_message_at)}
-										</span>
+											<span style={nameStyle(pal)}>{titleFor(c)}</span>
+											{c.group && <EngineChip pal={pal} text="群" />}
+											{c.pinned && <EngineChip pal={pal} text="顶" />}
+											<span
+												style={{
+													marginLeft: "auto",
+													fontSize: 11.5,
+													color: pal.ink3,
+													whiteSpace: "nowrap",
+												}}
+											>
+												{fmtTime(c.last_message_at)}
+											</span>
+										</div>
+										<div
+											style={{
+												display: "flex",
+												alignItems: "center",
+												gap: 6,
+												marginTop: 4,
+												minWidth: 0,
+												maxWidth: "100%",
+												overflow: "hidden",
+											}}
+										>
+											{ws && <ProjectChip pal={pal} ws={ws} />}
+											{running && (
+												<RunningChip
+													pal={pal}
+													text={`${runningAgent?.name ?? "Agent"} · ${phaseLabel(
+														running.phase,
+														running.tool,
+													)}`}
+												/>
+											)}
+											<span style={subStyle(pal)}>
+												{a?.tagline ?? a?.role ?? t.members(c.members.length)}
+											</span>
+											{c.unread > 0 && <UnreadBadge pal={pal} n={c.unread} />}
+										</div>
 									</div>
-									<div
-										style={{
-											display: "flex",
-											alignItems: "center",
-											gap: 6,
-											marginTop: 4,
-											minWidth: 0,
-											maxWidth: "100%",
-											overflow: "hidden",
-										}}
-									>
-										{ws && <ProjectChip pal={pal} ws={ws} />}
-										{running && (
-											<RunningChip
-												pal={pal}
-												text={`${runningAgent?.name ?? "Agent"} · ${phaseLabel(
-													running.phase,
-													running.tool,
-												)}`}
-											/>
-										)}
-										<span style={subStyle(pal)}>
-											{a?.tagline ?? a?.role ?? t.members(c.members.length)}
-										</span>
-										{c.unread > 0 && <UnreadBadge pal={pal} n={c.unread} />}
-									</div>
-								</div>
-							</button>
-							{/* ⋮ 会话操作 — same menu as desktop (置顶/重命名/归档/删除);
+								</button>
+								{/* ⋮ 会话操作 — same menu as desktop (置顶/重命名/归档/删除);
 							    always visible on touch via its hover:none media rule. */}
-							<div style={{ flexShrink: 0, paddingRight: 10 }}>
-								<ConvActionsMenu conv={c} onChanged={() => void load()} />
-							</div>
+								<div style={{ flexShrink: 0, paddingRight: 10 }}>
+									<ConvActionsMenu conv={c} onChanged={() => void load()} />
+								</div>
 							</div>
 							{i < shown.length - 1 && <Divider pal={pal} indent={83} />}
 						</div>
@@ -1310,7 +1328,7 @@ function ProjectConvsScreen({
 	onBack: () => void;
 	onSelectConv: Props["onSelectConv"];
 }) {
-	const { pal, t } = useApp();
+	const { pal, t, lang } = useApp();
 	const agents = useStore((st) => st.agents);
 	const [convs, setConvs] = useState<ConversationSummary[]>([]);
 
@@ -1396,7 +1414,13 @@ function ProjectConvsScreen({
 					<div key={c.id}>
 						<button
 							type="button"
-							onClick={() => onSelectConv(c.id, c.members, c.title || "对话")}
+							onClick={() =>
+								onSelectConv(
+									c.id,
+									c.members,
+									c.title || tr("conversation", lang),
+								)
+							}
 							style={rowBtn}
 						>
 							<div
@@ -1417,7 +1441,9 @@ function ProjectConvsScreen({
 								<div
 									style={{ display: "flex", alignItems: "baseline", gap: 7 }}
 								>
-									<span style={nameStyle(pal)}>{c.title || "对话"}</span>
+									<span style={nameStyle(pal)}>
+										{c.title || tr("conversation", lang)}
+									</span>
 									<span
 										style={{
 											marginLeft: "auto",
@@ -1453,7 +1479,7 @@ const MONO = "ui-monospace, Menlo, monospace";
 /** Mobile-native replica of the desktop「接入智能体」(OnboardingModal): probe the
  * host CLIs, enable/disable each adapter, refresh creds / re-detect, show server. */
 function AdapterManager() {
-	const { pal } = useApp();
+	const { pal, lang } = useApp();
 	const [probes, setProbes] = useState<AdapterProbe[] | null>(null);
 	const [refreshing, setRefreshing] = useState(false);
 	const [busy, setBusy] = useState<string | null>(null);
@@ -1661,7 +1687,7 @@ function AdapterManager() {
 												gap: 3,
 											}}
 										>
-											<CheckCircle2 size={9} /> 已启用
+											<CheckCircle2 size={9} /> {tr("enabled", lang)}
 										</span>
 									)}
 								</div>
@@ -1698,7 +1724,11 @@ function AdapterManager() {
 								}}
 							>
 								{isBusy && <Loader2 size={11} className="animate-spin" />}
-								{isBusy ? "…" : p.enabled ? "禁用" : "启用"}
+								{isBusy
+									? "…"
+									: p.enabled
+										? tr("disable", lang)
+										: tr("enable", lang)}
 							</button>
 						</div>
 						<div
@@ -1715,14 +1745,16 @@ function AdapterManager() {
 								value={
 									p.installed
 										? `${p.cli_path ?? ""}${p.version ? ` · ${p.version}` : ""}`
-										: "未在 PATH 找到"
+										: tr("notFoundInPath", lang)
 								}
 							/>
 							<StatusLine
 								ok={p.authenticated}
-								label="登录"
+								label={tr("loggedIn", lang)}
 								value={
-									p.authenticated && p.auth_path ? p.auth_path : "未检测到凭证"
+									p.authenticated && p.auth_path
+										? p.auth_path
+										: tr("noCredentialsDetected", lang)
 								}
 								mono={!!(p.authenticated && p.auth_path)}
 								icon={
@@ -1732,10 +1764,13 @@ function AdapterManager() {
 								}
 							/>
 							{!p.installed && p.install_hint && (
-								<CmdHint title="安装命令" cmd={p.install_hint} />
+								<CmdHint
+									title={tr("installCommand", lang)}
+									cmd={p.install_hint}
+								/>
 							)}
 							{p.installed && !p.authenticated && p.login_cmd && (
-								<CmdHint title="登录命令" cmd={p.login_cmd} />
+								<CmdHint title={tr("loginCommand", lang)} cmd={p.login_cmd} />
 							)}
 						</div>
 					</div>

@@ -46,7 +46,9 @@ describe("tool-call card dedupe", () => {
 			input_preview?: string | null;
 		};
 		expect(payload.state).toBe("completed");
-		expect(payload.input).toEqual({ tasks: [{ agent: "文澜", note: "写文档" }] });
+		expect(payload.input).toEqual({
+			tasks: [{ agent: "文澜", note: "写文档" }],
+		});
 		expect(payload.input_preview).toBe('{"tasks":[');
 	});
 });

@@ -6,10 +6,13 @@
  * transition between the two is seamless.
  */
 import { Loader2 } from "lucide-react";
+import { t } from "../lib/i18n";
 import { getServerOverride } from "../lib/runtime-config";
+import { useStore } from "../store";
 import { BrandIcon } from "./BrandIcon";
 
 export function ConnectingSplash() {
+	const lang = useStore((s) => s.lang);
 	const server = getServerOverride();
 	return (
 		<div
@@ -34,7 +37,9 @@ export function ConnectingSplash() {
 			</div>
 			<div className="flex items-center gap-2.5 text-[var(--color-fg-2)]">
 				<Loader2 size={18} strokeWidth={2.4} className="animate-spin" />
-				<span className="pn-m-kicker !tracking-[0.2em]">连接中…</span>
+				<span className="pn-m-kicker !tracking-[0.2em]">
+					{t("connecting", lang)}
+				</span>
 			</div>
 			{server && (
 				<p className="mt-4 max-w-[80vw] truncate text-[12.5px] font-mono text-[var(--color-fg-4)]">

@@ -1,8 +1,8 @@
 import { Loader2, PanelRight, Square } from "lucide-react";
 import {
+	Fragment,
 	useCallback,
 	useEffect,
-	Fragment,
 	useLayoutEffect,
 	useMemo,
 	useRef,
@@ -15,9 +15,12 @@ import {
 	activeDiscussionParticipantIds,
 	computeDiscussions,
 } from "../lib/discussionClaim";
-import type { DiscussionPayload, Message, TasksPayload } from "../lib/types";
-import { isMobile } from "../lib/platform";
+import { foldPass } from "../lib/foldPass";
+import { type Lang, t } from "../lib/i18n";
 import { onNetworkChange, onResume } from "../lib/native";
+import { isMobile } from "../lib/platform";
+import { orderByTurn } from "../lib/turnGroup";
+import type { DiscussionPayload, Message, TasksPayload } from "../lib/types";
 import { ConvWebSocket } from "../lib/ws";
 import {
 	type AgentPhase,
@@ -30,13 +33,12 @@ import {
 import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
-import { isRenderableMessagePayload, MessageView } from "./MessageView";
+import { MessageView, isRenderableMessagePayload } from "./MessageView";
 import { DiscussionPart } from "./parts/DiscussionPart";
+import { MergedReasoning } from "./parts/MergedReasoning";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
-import { TypingPart } from "./parts/TypingPart";
 import { ToolCallGroup } from "./parts/ToolCallGroup";
-import { foldPass } from "../lib/foldPass";
-import { orderByTurn } from "../lib/turnGroup";
+import { TypingPart } from "./parts/TypingPart";
 import { ConvScopeProvider } from "./parts/_context";
 
 type Props = {
@@ -50,11 +52,13 @@ function AgentExecutionPlaceholder({
 	agentId,
 	label,
 	mobile,
+	lang,
 }: {
 	agent?: { id: string; name: string; initials: string; color: string };
 	agentId: string;
 	label: string;
 	mobile: boolean;
+	lang: Lang;
 }) {
 	return (
 		<div
@@ -83,12 +87,12 @@ function AgentExecutionPlaceholder({
 							agent && useStore.getState().openAgentDetail(agent.id)
 						}
 						className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
-						title="查看详情"
+						title={t("viewDetailsBrief", lang)}
 					>
 						{agent?.name ?? "Agent"}
 					</button>
 					<span className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-fg-4)]">
-						执行中
+						{t("executing", lang)}
 					</span>
 				</div>
 				<TypingPart payload={{ kind: "typing", note: label }} />
@@ -989,7 +993,7 @@ export function ChatPane({ convId, members, title }: Props) {
 			const ids = orderedMessages.map((m) => m.id);
 			const msgByIdLive =
 				useStore.getState().convs.get(convId)?.msgById ??
-			new Map<string, Message>();
+				new Map<string, Message>();
 			return computeDiscussions(ids, msgByIdLive);
 		}, [burstSig, convId]);
 
@@ -1022,7 +1026,13 @@ export function ChatPane({ convId, members, title }: Props) {
 	// ReasoningPart fold). groupFirstId → the run's ids; groupedSkip → non-first
 	// members. Memoized on the burst signature (no re-run on streaming deltas).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see burstSig note above.
-	const { groupFirstIds, groupedSkip, firstOfRun } = useMemo(() => {
+	const {
+		groupFirstIds,
+		groupedSkip,
+		firstOfRun,
+		reasoningGroupIds,
+		reasoningSkip,
+	} = useMemo(() => {
 		const byId =
 			useStore.getState().convs.get(convId)?.msgById ??
 			new Map<string, Message>();
@@ -1039,7 +1049,7 @@ export function ChatPane({ convId, members, title }: Props) {
 		// file-edit (diff/write) AND terminals/bash-with-output standalone. Claimed
 		// (lane) + burst-anchor messages pass `part: undefined` so they break a run.
 		// Shared with burst lanes via foldPass so both fold identically.
-		const { firsts, skip } = foldPass(
+		const { firsts, skip, reasoningGroups } = foldPass(
 			orderedMessages.map((m) => ({
 				id: m.id,
 				sender: m.sender_id,
@@ -1052,6 +1062,12 @@ export function ChatPane({ convId, members, title }: Props) {
 			(sender) => sendersWithTerminal.has(sender),
 			true,
 		);
+		// ≥2 consecutive reasoning (no tool between) → render as ONE 思考过程 block.
+		// The head renders <MergedReasoning>; the rest are skipped. (foldPass leaves
+		// these OUT of `skip` so non-merging callers/lanes are unaffected.)
+		const reasoningSkip = new Set<string>();
+		for (const ids of reasoningGroups.values())
+			for (let j = 1; j < ids.length; j++) reasoningSkip.add(ids[j]);
 		// Avatar grouping over the VISIBLE render sequence: a run = consecutive
 		// avatar-bearing elements (normal messages + fold groups) from the same
 		// sender; only the FIRST element shows the avatar. So text → fold → text
@@ -1060,15 +1076,16 @@ export function ChatPane({ convId, members, title }: Props) {
 		const firstOfRun = new Set<string>();
 		let prevRunSender: string | null = null;
 		for (const m of orderedMessages) {
-			if (claimedSet.has(m.id) || skip.has(m.id)) continue; // lane / folded
-			// A fold-group HEAD renders as a ToolCallGroup regardless of whether its
-			// first member's payload is individually renderable — e.g. a run that
-			// starts with an empty `reasoning` (len 0) still shows as "N 步工具调用".
-			// Without this guard the empty head fails isRenderableMessagePayload, the
-			// loop skips it, and the avatar mis-attaches to the NEXT message — leaving
-			// the tool-call fold orphaned ABOVE the agent header (rendered under the
-			// previous sender). Treat fold heads as always avatar-bearing.
-			if (!firsts.has(m.id)) {
+			if (claimedSet.has(m.id) || skip.has(m.id) || reasoningSkip.has(m.id))
+				continue; // lane / tool-folded / merged-reasoning member
+			// A fold-group HEAD (tool fold OR merged-reasoning) renders as a group
+			// regardless of whether its first member's payload is individually
+			// renderable — e.g. a run that starts with an empty `reasoning` (len 0)
+			// still shows as "N 步工具调用". Without this guard the empty head fails
+			// isRenderableMessagePayload, the loop skips it, and the avatar mis-attaches
+			// to the NEXT message — leaving the group orphaned ABOVE the agent header.
+			// Treat group heads as always avatar-bearing.
+			if (!firsts.has(m.id) && !reasoningGroups.has(m.id)) {
 				const currentPayload = byId.get(m.id)?.payload ?? m.payload;
 				const currentStreaming = streamingMessageIdsForRender.has(m.id);
 				if (!isRenderableMessagePayload(currentPayload, currentStreaming))
@@ -1081,7 +1098,13 @@ export function ChatPane({ convId, members, title }: Props) {
 			if (m.sender_id !== prevRunSender) firstOfRun.add(m.id);
 			prevRunSender = m.sender_id;
 		}
-		return { groupFirstIds: firsts, groupedSkip: skip, firstOfRun };
+		return {
+			groupFirstIds: firsts,
+			groupedSkip: skip,
+			firstOfRun,
+			reasoningGroupIds: reasoningGroups,
+			reasoningSkip,
+		};
 	}, [
 		burstSig,
 		renderSig,
@@ -1107,11 +1130,17 @@ export function ChatPane({ convId, members, title }: Props) {
 				continue;
 			}
 			if (m.sender_id === "system") continue;
-			if (claimedSet.has(m.id) || groupedSkip.has(m.id)) continue;
+			if (
+				claimedSet.has(m.id) ||
+				groupedSkip.has(m.id) ||
+				reasoningSkip.has(m.id)
+			)
+				continue;
 			if (
 				burstByAnchorId.has(m.id) ||
 				discussionByAnchorId.has(m.id) ||
-				groupFirstIds.has(m.id)
+				groupFirstIds.has(m.id) ||
+				reasoningGroupIds.has(m.id)
 			) {
 				if (lastAgentSender && lastAgentSender !== m.sender_id) flush();
 				lastAgentSender = m.sender_id;
@@ -1128,9 +1157,11 @@ export function ChatPane({ convId, members, title }: Props) {
 		renderSig,
 		claimedSet,
 		groupedSkip,
+		reasoningSkip,
 		burstByAnchorId,
 		discussionByAnchorId,
 		groupFirstIds,
+		reasoningGroupIds,
 	]);
 
 	const [quoteMenu, setQuoteMenu] = useState<{
@@ -1381,8 +1412,8 @@ export function ChatPane({ convId, members, title }: Props) {
 	};
 
 	const senderLabelFor = (m: Message | undefined): string => {
-		if (!m) return "选中内容";
-		if (m.sender_id === "you") return "我";
+		if (!m) return t("selectedText", lang);
+		if (m.sender_id === "you") return t("youLabel", lang);
 		if (m.sender_id === "system") return "System";
 		return agents.find((a) => a.id === m.sender_id)?.name ?? "Agent";
 	};
@@ -1451,9 +1482,12 @@ export function ChatPane({ convId, members, title }: Props) {
 									type="button"
 									onClick={() => useStore.getState().openMembersList()}
 									className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[var(--color-fg-3)] hover:text-[var(--color-accent)] transition"
-									title="查看成员"
+									title={t("viewMembersHeader", lang)}
 								>
-									{memberAgents.length + 1} 成员
+									{t("memberCountHeader", lang).replace(
+										"{count}",
+										String(memberAgents.length + 1),
+									)}
 								</button>
 							)}
 						</div>
@@ -1471,7 +1505,7 @@ export function ChatPane({ convId, members, title }: Props) {
 										}),
 									)
 								}
-								title="工作区设置"
+								title={t("workspaceSettings", lang)}
 								className="text-[11px] text-[var(--color-fg-3)] mt-0.5 flex items-center gap-1.5 hover:text-[var(--color-accent)] transition"
 							>
 								<span
@@ -1479,7 +1513,7 @@ export function ChatPane({ convId, members, title }: Props) {
 									className="w-1.5 h-1.5 rounded-full flex-shrink-0"
 									style={{ background: "var(--color-green)" }}
 								/>
-								已接入工作区 · 写入沙箱
+								{t("workspaceConnected", lang)}
 							</button>
 						) : isGroup && convSummary ? (
 							<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5 flex items-center gap-1.5">
@@ -1488,7 +1522,7 @@ export function ChatPane({ convId, members, title }: Props) {
 									className="w-1.5 h-1.5 rounded-full flex-shrink-0"
 									style={{ background: "var(--color-fg-4)" }}
 								/>
-								私有群聊
+								{t("privateGroup", lang)}
 							</div>
 						) : !isGroup ? (
 							<div className="text-[11px] text-[var(--color-fg-3)] mt-0.5">
@@ -1523,7 +1557,11 @@ export function ChatPane({ convId, members, title }: Props) {
 										}`}
 										style={{ background: a.color }}
 										title={
-											isOrch ? `${a.name} · 本群协调者` : `查看 ${a.name} 详情`
+											isOrch
+												? t("orchestratorTitle", lang)
+														.replace("{a.name}", a.name)
+														.replace("{name}", a.name)
+												: `查看 ${a.name} 详情`
 										}
 									>
 										{a.initials}
@@ -1546,7 +1584,7 @@ export function ChatPane({ convId, members, title }: Props) {
 									? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
 									: "hover:bg-[var(--color-line)] text-[var(--color-fg-3)]"
 							}`}
-							title="产物面板"
+							title={t("outputPanel", lang)}
 						>
 							<PanelRight size={14} />
 						</button>
@@ -1591,26 +1629,26 @@ export function ChatPane({ convId, members, title }: Props) {
 							{loadingOlder && messages.length > 0 && (
 								<div className="flex items-center justify-center gap-2 py-3 text-[11px] text-[var(--color-fg-3)]">
 									<Loader2 size={11} className="animate-spin" />
-									加载更早的消息…
+									{t("loadingOlderMessages", lang)}
 								</div>
 							)}
 							{!hasMoreOlder && messages.length > 10 && (
 								<div className="flex items-center justify-center gap-2 py-2 text-[10.5px] text-[var(--color-fg-4)]">
 									<span className="h-px w-12 bg-[var(--color-line)]" />
-									<span>对话的开始</span>
+									<span>{t("conversationStart", lang)}</span>
 									<span className="h-px w-12 bg-[var(--color-line)]" />
 								</div>
 							)}
 							{!messages.length && (
 								<div className="text-center text-[var(--color-fg-3)] text-[12px] py-12">
-									还没有消息 · 试试发送一条
+									{t("noMessages", lang)}
 									{isGroup && (
 										<div className="mt-3 text-[11px] text-[var(--color-fg-4)]">
-											输入{" "}
+											{t("emptyHintPart1", lang)}{" "}
 											<span className="px-1 py-0.5 rounded bg-[var(--color-surface-2)]">
 												@
 											</span>{" "}
-											召唤群里的某位成员
+											{t("emptyHintPart2", lang)}
 										</div>
 									)}
 								</div>
@@ -1623,6 +1661,7 @@ export function ChatPane({ convId, members, title }: Props) {
 								{orderedMessages.map((m) => {
 									if (claimedSet.has(m.id)) return null; // rendered in a lane
 									if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
+									if (reasoningSkip.has(m.id)) return null; // merged into MergedReasoning
 									const group = groupFirstIds.get(m.id);
 									if (group) {
 										return (
@@ -1630,6 +1669,17 @@ export function ChatPane({ convId, members, title }: Props) {
 												key={m.id}
 												convId={convId}
 												msgIds={group}
+												showAvatar={firstOfRun.has(m.id)}
+											/>
+										);
+									}
+									const rgroup = reasoningGroupIds.get(m.id);
+									if (rgroup) {
+										return (
+											<MergedReasoning
+												key={m.id}
+												convId={convId}
+												msgIds={rgroup}
 												showAvatar={firstOfRun.has(m.id)}
 											/>
 										);
@@ -1683,9 +1733,7 @@ export function ChatPane({ convId, members, title }: Props) {
 									const agent = agents.find((x) => x.id === a.id);
 									const label =
 										a.status === "starting"
-											? lang === "en"
-												? "Starting…"
-												: "正在启动会话…"
+											? t("startingConversation", lang)
 											: phaseLabel(a.phase, a.tool, lang);
 									return (
 										<AgentExecutionPlaceholder
@@ -1694,6 +1742,7 @@ export function ChatPane({ convId, members, title }: Props) {
 											agentId={a.id}
 											label={label}
 											mobile={mobile}
+											lang={lang}
 										/>
 									);
 								})}
@@ -1714,7 +1763,7 @@ export function ChatPane({ convId, members, title }: Props) {
 										className="w-full text-left px-2 py-1.5 rounded-sm text-[12px] text-[var(--color-fg)] hover:bg-[var(--color-surface-2)]"
 										onClick={quoteSelectedText}
 									>
-										引用此内容
+										{t("quoteThis", lang)}
 									</button>
 								</div>
 							)}
@@ -1772,9 +1821,7 @@ export function ChatPane({ convId, members, title }: Props) {
 											const agent = agents.find((x) => x.id === a.id);
 											const label =
 												a.status === "starting"
-													? lang === "en"
-														? "Starting"
-														: "准备中"
+													? t("preparing", lang)
 													: phaseLabel(a.phase, a.tool, lang);
 											return (
 												<button
@@ -1818,9 +1865,9 @@ export function ChatPane({ convId, members, title }: Props) {
 												type="button"
 												onClick={() => wsRef.current?.abort()}
 												className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition"
-												title="全部中断"
+												title={t("abortAll", lang)}
 											>
-												<Square size={10} /> 全部停止
+												<Square size={10} /> {t("stopAll", lang)}
 											</button>
 										)}
 									</div>

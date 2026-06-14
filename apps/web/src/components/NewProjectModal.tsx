@@ -10,6 +10,7 @@
 import { FolderPlus, Pencil, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { t } from "../lib/i18n";
 import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
 
@@ -58,6 +59,7 @@ export function NewProjectModal({
 	const isEdit = editing !== null;
 	const isMemberEdit = isEdit && editMode === "members";
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 	const [name, setName] = useState(editing?.name ?? "");
 	const [desc, setDesc] = useState(editing?.desc ?? "");
 	const [color, setColor] = useState(editing?.color ?? COLOR_OPTIONS[0]);
@@ -183,7 +185,7 @@ export function NewProjectModal({
 									type="text"
 									value={name}
 									onChange={(e) => setName(e.target.value)}
-									placeholder="如:Webhook Router"
+									placeholder={t("projectNameHint", lang)}
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 								/>
 							</Field>
@@ -192,32 +194,30 @@ export function NewProjectModal({
 									type="text"
 									value={desc}
 									onChange={(e) => setDesc(e.target.value)}
-									placeholder="一句话说明项目目标"
+									placeholder={t("projectDescHint", lang)}
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 								/>
 							</Field>
 							{/* 工作区路径只在创建时可选 — 绑定后不可改(改了上下文会错乱)。 */}
 							{!isEdit && (
-								<Field label="工作区路径(可选)">
+								<Field label={t("workspacePath", lang)}>
 									<input
 										type="text"
 										value={path}
 										onChange={(e) => setPath(e.target.value)}
-										placeholder="留空 = 自动沙箱;或填已有项目的绝对路径"
+										placeholder={t("workspacePathHint", lang)}
 										spellCheck={false}
 										className="w-full text-[12.5px] font-mono px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 									/>
 									<div className="text-[10.5px] text-[var(--color-fg-3)] mt-1.5 leading-relaxed">
-										绑定到你已有的目录:Agent 直接在该项目里工作(已是 git
-										仓库则沿用当前分支),Polynoia 状态存在{" "}
-										<span className="font-mono">.polynoia/</span>,不会自动提交你的文件。
+										{t("pathBindingHint", lang)}
 									</div>
 								</Field>
 							)}
 						</>
 					)}
 					{!isMemberEdit && (
-						<Field label="项目颜色">
+						<Field label={t("projectColor", lang)}>
 							<div className="flex gap-1.5">
 								{COLOR_OPTIONS.map((c) => (
 									<button
@@ -241,14 +241,16 @@ export function NewProjectModal({
 							label={
 								<>
 									<Users size={11} className="inline -mt-0.5 mr-1" />
-									项目成员(已选 {selected.size},至少 1 个)
+									{t("projectMembers", lang)
+										.replace("{selected.size}", String(selected.size))
+										.replace("{count}", String(selected.size))}
 								</>
 							}
 							required
 						>
 							{pickable.length === 0 ? (
 								<div className="text-[11.5px] text-[var(--color-fg-3)] py-2">
-									没有可选 agent。先到「新建」页添加联系人。
+									{t("noAvailableAgents", lang)}
 								</div>
 							) : (
 								<div className="flex flex-wrap gap-1.5">
@@ -300,7 +302,7 @@ export function NewProjectModal({
 							className="mr-auto inline-flex items-center gap-1.5 text-[12.5px] text-[var(--color-red)] hover:underline transition"
 						>
 							<Trash2 size={12} />
-							删除项目
+							{t("deleteProject", lang)}
 						</button>
 					)}
 					<button
@@ -308,7 +310,7 @@ export function NewProjectModal({
 						onClick={onClose}
 						className="text-[13px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:underline transition"
 					>
-						取消
+						{t("cancel", lang)}
 					</button>
 					<button
 						type="button"
@@ -318,11 +320,11 @@ export function NewProjectModal({
 					>
 						{submitting
 							? isEdit
-								? "保存中…"
-								: "创建中…"
+								? t("saving", lang)
+								: t("creating", lang)
 							: isEdit
-								? "保存"
-								: "创建项目"}
+								? t("save", lang)
+								: t("createProject", lang)}
 					</button>
 				</div>
 			</div>

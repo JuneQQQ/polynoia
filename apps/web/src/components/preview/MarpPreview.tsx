@@ -8,6 +8,8 @@ import { Marp } from "@marp-team/marp-core";
 import { Download } from "lucide-react";
 import pptxgen from "pptxgenjs";
 import { useCallback, useMemo } from "react";
+import { t } from "../../lib/i18n";
+import { useStore } from "../../store";
 import { downloadBlob, printAsPdf } from "./exportUtils";
 
 /** Split a Marp deck into slides (strip front-matter, split on `---` lines),
@@ -46,6 +48,7 @@ export function MarpPreview({
 	content,
 	fileName,
 }: { content: string; fileName?: string }) {
+	const lang = useStore((s) => s.lang);
 	const { html, css, error } = useMemo(() => {
 		try {
 			const r = marp.render(content);
@@ -57,12 +60,12 @@ export function MarpPreview({
 
 	const srcDoc = useMemo(() => {
 		if (error) {
-			return `<pre style="color:#b00020;padding:12px;white-space:pre-wrap;font:12px ui-monospace,monospace">幻灯渲染失败:\n${escapeHtml(error)}</pre>`;
+			return `<pre style="color:#b00020;padding:12px;white-space:pre-wrap;font:12px ui-monospace,monospace">${t("slideRenderFailed", lang)}\n${escapeHtml(error)}</pre>`;
 		}
 		return `<!doctype html><html><head><meta charset="utf-8"><style>${css}
       html,body{margin:0;padding:0;background:#f2f2f2}
     </style></head><body>${html}</body></html>`;
-	}, [html, css, error]);
+	}, [html, css, error, lang]);
 
 	const base = (fileName ?? "slides").replace(/\.[^.]+$/, "");
 
@@ -101,7 +104,7 @@ export function MarpPreview({
 		<div className="h-full flex flex-col bg-[#f2f2f2]">
 			<div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px] flex-shrink-0">
 				<span className="font-mono truncate flex-1 text-[var(--color-fg-2)]">
-					{fileName ?? "幻灯"}
+					{fileName ?? t("defaultSlidesName", lang)}
 				</span>
 				<button
 					type="button"
@@ -116,7 +119,7 @@ export function MarpPreview({
 				<button
 					type="button"
 					onClick={exportPptx}
-					title="导出 PowerPoint (.pptx,纯文本,不含 Marp 主题样式)"
+					title={t("exportPptxTitle", lang)}
 					className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-line)] text-[10.5px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:border-[var(--color-accent)] transition flex-shrink-0"
 				>
 					.pptx

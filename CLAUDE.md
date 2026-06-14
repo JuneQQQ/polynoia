@@ -125,6 +125,12 @@ make build          # 前后端都 build
 
 ### 6.1 编码规则
 
+- **双语(中 / 英)是硬性要求 —— 不是可选项。** 所有**面向用户**的文案**必须**走 i18n 字典 `apps/web/src/lib/i18n.ts` 的 `t(key, lang)`,**禁止在组件里硬编码中文**。覆盖范围:按钮 / 标签 / 菜单项 / `placeholder` / `title` / `aria-label` / tooltip / 空状态 / `toast` · `alert` · `window.confirm` / 表头 / 徽章。
+  - 每个 key **必须同时给 `zh` 和 `en`**;组件里用 `const lang = useStore((s) => s.lang)` 取语言。
+  - 带变量的文案用 `{name}` 占位,调用处 `t("key", lang).replace("{name}", x)`。
+  - **任何新增 / 改动可见文案的改动,必须在同一改动里补齐 en**,并切到 EN 模式自检(右下角语言切换)。
+  - 例外(不算用户文案,无需 i18n):用户数据、agent 名 / 头像缩写、示例 / 种子内容、代码注释 / JSDoc / `console.*`。
+  - 自检:`grep -rnP '>[^<]*[\x{4e00}-\x{9fff}]' apps/web/src/components` 命中的可见中文(非注释 / 非 `t(`)即为漏网。
 - **Pydantic v2 是后端 source-of-truth**;TS 类型经 `make types` 自动生成,**永不手写 packages/shared 内类型**
 - **不要在 `packages/core` 内 import `react-dom` / `react-native` / DOM API** — 这层必须跨平台干净
 - **每个 Adapter 必须实现 `adapters/base.py:Adapter` Protocol**,把 wire format 翻译成 AdapterEvent

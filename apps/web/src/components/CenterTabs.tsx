@@ -10,6 +10,7 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { GitCommitHorizontal, MessagesSquare, X } from "lucide-react";
 import { Suspense, lazy, useState } from "react";
+import { type Lang, t } from "../lib/i18n";
 import { COMMITS_TAB, useStore } from "../store";
 import { ChatPane } from "./ChatPane";
 
@@ -26,9 +27,9 @@ const CommitHistoryView = lazy(() =>
 	})),
 );
 
-const _PaneFallback = (
+const paneFallback = (lang: Lang) => (
 	<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
-		加载中…
+		{t("loading", lang)}
 	</div>
 );
 
@@ -55,6 +56,7 @@ export function CenterTabs({
 	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
 	const commitsTabOpen = useStore((s) => s.commitsTabOpen);
 	const closeCommits = useStore((s) => s.closeCommitsTab);
+	const lang = useStore((s) => s.lang);
 
 	const reduce = useReducedMotion();
 
@@ -80,7 +82,7 @@ export function CenterTabs({
 						}`}
 					>
 						<MessagesSquare size={12} />
-						聊天
+						{t("chat", lang)}
 					</button>
 					{commitsTabOpen && (
 						<div
@@ -96,12 +98,12 @@ export function CenterTabs({
 								className="inline-flex items-center gap-1.5 pl-3 pr-1 py-2 text-[11.5px]"
 							>
 								<GitCommitHorizontal size={12} />
-								提交历史
+								{t("commitHistory", lang)}
 							</button>
 							<button
 								type="button"
 								onClick={() => closeCommits()}
-								aria-label="关闭提交历史"
+								aria-label={t("closeCommitHistory", lang)}
 								className="pr-2.5 py-2 opacity-0 group-hover:opacity-60 hover:opacity-100"
 							>
 								<X size={11} />
@@ -156,7 +158,10 @@ export function CenterTabs({
 							<button
 								type="button"
 								onClick={() => closeFile(p)}
-								aria-label={`关闭 ${basename(p)}`}
+								aria-label={t("closeFile", lang).replace(
+									"{filename}",
+									basename(p),
+								)}
 								className="pr-2.5 py-2 opacity-0 group-hover:opacity-60 hover:opacity-100"
 							>
 								<X size={11} />
@@ -184,7 +189,7 @@ export function CenterTabs({
 						transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
 					>
 						{workspaceId && (
-							<Suspense fallback={_PaneFallback}>
+							<Suspense fallback={paneFallback(lang)}>
 								<CommitHistoryView workspaceId={workspaceId} />
 							</Suspense>
 						)}
@@ -205,7 +210,7 @@ export function CenterTabs({
 						transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
 					>
 						{workspaceId && (
-							<Suspense fallback={_PaneFallback}>
+							<Suspense fallback={paneFallback(lang)}>
 								<CodeEditor workspaceId={workspaceId} path={p} />
 							</Suspense>
 						)}

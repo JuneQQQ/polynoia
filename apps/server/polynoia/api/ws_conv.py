@@ -29,6 +29,7 @@ from polynoia.adapters.pool import get_pool
 
 # Conversation-runtime state + shared helpers (defined in routes.py; mutated in
 # place so importing the binding here is safe — see module docstring + CHARTER).
+from polynoia.api import event_log
 from polynoia.api.execution import BurstStateMachine
 from polynoia.api.routes import (
     _AGENT_IDLE_TIMEOUT,
@@ -207,6 +208,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # Broadcast to ALL current connections of this conv (not just this
         # socket's queue). So an agent task spawned by a now-closed connection
         # still reaches whoever is currently attached — refresh-safe streaming.
+        # Side-effect tap: append-only turn_events log (sync, buffered, never
+        # raises — broadcast timing untouched; see api/event_log.py).
+        event_log.tap(conv_id, chunk)
         await _broadcast_to_conv(conv_id, chunk)
 
     # ── Conv-scoped execution state (module-level, survives this connection) ──
@@ -1311,10 +1315,24 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             + "}}\n\n"
                         )
 
+                # Upstream rate-limit / transient overload (429 / quota / 被限速 /
+                # overloaded / 401 凭证) is RETRYABLE — the Anthropic Max rolling
+                # window recovers shortly. Raised from the stream loop (only when no
+                # real output streamed yet) → caught below → rides the existing
+                # _RETRY_BACKOFF path so a long run isn't sunk by a transient cap.
+                class _RetryableUpstream(Exception):
+                    pass
+
+                _RATE_MARKERS = (
+                    "429", "401", "被限速", "配额", "rate", "quota", "RPS",
+                    "凭证", "overloaded", "529", "logged in", "/login",
+                )
+
                 for attempt in range(_TURN_RETRIES + 1):
                     # Later attempts wait longer for first output (a slow model
                     # start shouldn't be killed as "hung").
                     idle_to = _AGENT_IDLE_TIMEOUT + attempt * 60.0
+                    produced = False  # any REAL (non-error) chunk emitted this attempt
                     sess = await pool.get_session(agent_id, conv_id)
                     if sess is None:
                         await emit_agent_status(
@@ -1464,6 +1482,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             # start so an agent's text containing `"type":"error"`
                             # can't false-trip a failure.
                             if chunk.startswith('data: {"type":"error"'):
+                                _etxt = _error_text_from_chunk(chunk)
+                                # Retryable upstream rate-limit / overload (429 /
+                                # quota / 凭证 / overloaded) → back off + retry the
+                                # whole turn, but ONLY when no real output streamed
+                                # yet (else a retry double-emits) and retries remain.
+                                if (
+                                    not produced
+                                    and attempt < _TURN_RETRIES
+                                    and any(s in _etxt for s in _RATE_MARKERS)
+                                ):
+                                    raise _RetryableUpstream(_etxt)
                                 turn_failed = True
                                 # Don't forward the raw (live-only) error frame —
                                 # persist it + emit a data-error in its place so
@@ -1471,7 +1500,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 # upstream 401/429 used to vanish on reload).
                                 await _persist_and_emit_error(
                                     emit, conv_id=conv_id, sender_id=agent_id,
-                                    message=_error_text_from_chunk(chunk),
+                                    message=_etxt,
                                     reason="turn_failed", retryable=True,
                                 )
                                 continue
@@ -1500,6 +1529,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 tag_discussion_data_cards=not finalize_discussion,
                             )
                             _live_note_chunk(conv_id, agent_id, chunk)
+                            # Only REAL content (text/reasoning/tool deltas or a
+                            # data-* card) counts as "produced" — a bare envelope
+                            # frame (start/finish/part-start) does NOT, so a 429 that
+                            # arrives right after `start` can still be retried (the
+                            # empty start bubble is suppressed client-side, no dup).
+                            if (
+                                '"delta":' in chunk
+                                or '"type":"data-' in chunk
+                                or '"type":"tool' in chunk
+                            ):
+                                produced = True
                             await emit(chunk)
                         await emit_agent_status(agent_id, "idle")
                         _live_clear_agent(conv_id, agent_id)
@@ -1518,6 +1558,45 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         break  # success
                     except asyncio.CancelledError:
                         raise
+                    except _RetryableUpstream as _rl_exc:
+                        # Upstream rate-limit / transient overload (429 / quota /
+                        # 凭证). The Anthropic Max ROLLING window recovers shortly →
+                        # back off + retry the whole turn. No real output streamed
+                        # (guarded at the raise), so no double-emit. Reuses the
+                        # _RETRY_BACKOFF schedule + the live retry notice.
+                        if attempt < _TURN_RETRIES:
+                            wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+                            with suppress(Exception):
+                                await emit(
+                                    'data: {"type":"data-error","data":'
+                                    + json.dumps(
+                                        {
+                                            "kind": "error",
+                                            "message": f"⏳ 上游限速,退避重试中({attempt + 1}/{_TURN_RETRIES})",
+                                            "agent_id": agent_id,
+                                            "reason": "rate_limit",
+                                            "retryable": False,
+                                        }
+                                    )
+                                    + ',"id":'
+                                    + json.dumps(_retry_notice_id)
+                                    + ',"sender_id":'
+                                    + json.dumps(agent_id)
+                                    + "}\n\n"
+                                )
+                            _retry_shown = True
+                            with suppress(Exception):
+                                await pool.close_session(agent_id, conv_id)
+                            await asyncio.sleep(wait)
+                            continue  # respawn fresh + retry the turn
+                        # retries exhausted → persist the real error + give up
+                        await _clear_retry_notice()
+                        await _persist_and_emit_error(
+                            emit, conv_id=conv_id, sender_id=agent_id,
+                            message=str(_rl_exc), reason="turn_failed", retryable=True,
+                        )
+                        turn_failed = True
+                        break
                     except Exception:
                         # Hung backend (incl. the idle-timeout RuntimeError) with
                         # NOTHING streamed yet → auto-retry up to _TURN_RETRIES with
@@ -2621,6 +2700,14 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
                 )
                 persisted_user_id = uid
+                # The draft is now SENT → clear it so it stops lingering in the
+                # composer. The UI clears its local input optimistically, but the
+                # persisted conv.draft_text is only cleared here — so WS-sent
+                # messages (and pre-seeded drafts) don't leave the just-sent text
+                # sitting in the box on reload / on other live clients. Suppressed:
+                # a draft-clear hiccup must never block the send.
+                with suppress(Exception):
+                    await storage_repo.set_draft_text(db, conv_id, "")
                 await db.commit()
             # Real-time multi-client sync: echo the human message to OTHER clients
             # tailing this conv (e.g. desktop + web both open on the same group),

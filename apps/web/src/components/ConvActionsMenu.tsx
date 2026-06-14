@@ -13,10 +13,19 @@
  * (`@media (hover:none)`) and on keyboard focus — hover-only reveal is
  * unreachable on phones.
  */
-import { Archive, MoreVertical, Pencil, Pin, PinOff, Settings, Trash2, X } from "lucide-react";
+import {
+	Archive,
+	MoreVertical,
+	Pencil,
+	Pin,
+	PinOff,
+	Settings,
+	Trash2,
+	X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, type ConversationSummary } from "../lib/api";
+import { type ConversationSummary, api } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useStore } from "../store";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -33,7 +42,9 @@ export function ConvActionsMenu({
 	const [open, setOpen] = useState(false);
 	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 	const [renaming, setRenaming] = useState(false);
-	const [confirming, setConfirming] = useState<"delete" | "archive" | null>(null);
+	const [confirming, setConfirming] = useState<"delete" | "archive" | null>(
+		null,
+	);
 	const [busy, setBusy] = useState(false);
 	const btnRef = useRef<HTMLButtonElement | null>(null);
 
@@ -78,11 +89,15 @@ export function ConvActionsMenu({
 		try {
 			await api.deleteConv(conv.id);
 			window.dispatchEvent(
-				new CustomEvent("polynoia:conv-deleted", { detail: { convId: conv.id } }),
+				new CustomEvent("polynoia:conv-deleted", {
+					detail: { convId: conv.id },
+				}),
 			);
 			broadcast();
 		} catch (e) {
-			window.alert(`${t("convDelete", lang)}: ${e instanceof Error ? e.message : e}`);
+			window.alert(
+				`${t("convDelete", lang)}: ${e instanceof Error ? e.message : e}`,
+			);
 		} finally {
 			setBusy(false);
 		}
@@ -94,11 +109,15 @@ export function ConvActionsMenu({
 		try {
 			await api.archiveConv(conv.id);
 			window.dispatchEvent(
-				new CustomEvent("polynoia:conv-archived", { detail: { convId: conv.id } }),
+				new CustomEvent("polynoia:conv-archived", {
+					detail: { convId: conv.id },
+				}),
 			);
 			broadcast();
 		} catch (e) {
-			window.alert(`${t("convArchive", lang)}: ${e instanceof Error ? e.message : e}`);
+			window.alert(
+				`${t("convArchive", lang)}: ${e instanceof Error ? e.message : e}`,
+			);
 		} finally {
 			setBusy(false);
 		}
@@ -107,7 +126,9 @@ export function ConvActionsMenu({
 	const editRoles = () => {
 		setOpen(false);
 		window.dispatchEvent(
-			new CustomEvent("polynoia:edit-conv-roles", { detail: { convId: conv.id } }),
+			new CustomEvent("polynoia:edit-conv-roles", {
+				detail: { convId: conv.id },
+			}),
 		);
 	};
 
@@ -119,7 +140,9 @@ export function ConvActionsMenu({
 			else await api.pinConv(conv.id);
 			broadcast();
 		} catch (e) {
-			window.alert(`${t("convPin", lang)}: ${e instanceof Error ? e.message : e}`);
+			window.alert(
+				`${t("convPin", lang)}: ${e instanceof Error ? e.message : e}`,
+			);
 		} finally {
 			setBusy(false);
 		}
@@ -206,7 +229,10 @@ export function ConvActionsMenu({
 			{confirming === "archive" && (
 				<ConfirmDialog
 					title={t("confirmArchiveConvTitle", lang)}
-					body={t("confirmArchiveConvBody", lang).replace("{title}", conv.title)}
+					body={t("confirmArchiveConvBody", lang).replace(
+						"{title}",
+						conv.title,
+					)}
 					confirmLabel={t("convArchive", lang)}
 					cancelLabel={t("cancel", lang)}
 					onConfirm={archive}
@@ -334,7 +360,9 @@ function RenameModal({
 						className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
 					/>
 					{err && (
-						<div className="mt-2 text-[11.5px] text-[var(--color-red)]">{err}</div>
+						<div className="mt-2 text-[11.5px] text-[var(--color-red)]">
+							{err}
+						</div>
 					)}
 				</div>
 				<div className="px-5 py-4 border-t border-[var(--color-line)] flex items-center justify-end gap-3">

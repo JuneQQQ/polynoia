@@ -17,10 +17,15 @@
 import { Loader2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { t } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
 import { isActiveToolMember } from "../../lib/toolActivity";
-import { selectIsMessageStreaming, toolDisplayName, useStore } from "../../store";
-import { isRenderableMessagePayload, MessageView } from "../MessageView";
+import {
+	selectIsMessageStreaming,
+	toolDisplayName,
+	useStore,
+} from "../../store";
+import { MessageView, isRenderableMessagePayload } from "../MessageView";
 
 /** A reasoning payload's body shape (mirrors ReasoningPart.bodyText). */
 type ReasoningBody = Array<{ c?: string | Array<{ text?: string }> }>;
@@ -57,6 +62,7 @@ export function ToolCallGroup({
 	compact?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
+	const lang = useStore((s) => s.lang);
 	const mobile = isMobile();
 	// Once the user clicks the header, their open/closed choice WINS — even while a
 	// bash terminal is still 运行中. Without this, `running`/`anyStreaming` below
@@ -91,52 +97,52 @@ export function ToolCallGroup({
 	// useShallow and re-render this group on every store delta.
 	const { summary, toolCount, running, avColor, avInitials, avName, avId } =
 		useStore(
-		useShallow((s) => {
-			const cs = s.convs.get(convId);
-			const lang = s.lang;
-			const nm: string[] = [];
-			let anyRunning = false;
-			let thinking = false;
-			for (const id of msgIds) {
-				const p = cs?.msgById.get(id)?.payload as
-					| {
-							kind?: string;
-							name?: string;
-							running?: boolean;
-							body?: ReasoningBody;
-					  }
-					| undefined;
-				if (p?.kind === "reasoning") {
-					// Only claim 含思考 when the thinking has VISIBLE text — an empty
-					// reasoning part renders nothing, so the badge had no block to show.
-					if (reasoningHasText(p.body)) thinking = true;
-				} else if (p?.kind === "terminal") {
-					nm.push("bash");
-					if (p.running) anyRunning = true;
-				} else {
-					nm.push(toolDisplayName(p?.name ?? "", lang) || "工具");
+			useShallow((s) => {
+				const cs = s.convs.get(convId);
+				const lang = s.lang;
+				const nm: string[] = [];
+				let anyRunning = false;
+				let thinking = false;
+				for (const id of msgIds) {
+					const p = cs?.msgById.get(id)?.payload as
+						| {
+								kind?: string;
+								name?: string;
+								running?: boolean;
+								body?: ReasoningBody;
+						  }
+						| undefined;
+					if (p?.kind === "reasoning") {
+						// Only claim 含思考 when the thinking has VISIBLE text — an empty
+						// reasoning part renders nothing, so the badge had no block to show.
+						if (reasoningHasText(p.body)) thinking = true;
+					} else if (p?.kind === "terminal") {
+						nm.push("bash");
+						if (p.running) anyRunning = true;
+					} else {
+						nm.push(toolDisplayName(p?.name ?? "", lang) || t("tool", lang));
+					}
+					if (isActiveToolMember(p)) anyRunning = true;
 				}
-				if (isActiveToolMember(p)) anyRunning = true;
-			}
-			const joined =
-				nm.slice(0, 5).join(" · ") +
-				(nm.length > 5 ? " …" : "") +
-				(thinking ? (lang === "en" ? " · thinking" : " · 含思考") : "");
-			const sid = msgIds.length
-				? cs?.msgById.get(msgIds[0])?.sender_id
-				: undefined;
-			const a = sid ? s.agents.find((x) => x.id === sid) : undefined;
-			return {
-				summary: joined,
-				toolCount: nm.length,
-				running: anyRunning,
-				avColor: a?.color ?? null,
-				avInitials: a?.initials ?? "?",
-				avName: a?.name ?? "Agent",
-				avId: a?.id ?? null,
-			};
-		}),
-	);
+				const joined =
+					nm.slice(0, 5).join(" · ") +
+					(nm.length > 5 ? " …" : "") +
+					(thinking ? ` · ${t("withThinking", lang)}` : "");
+				const sid = msgIds.length
+					? cs?.msgById.get(msgIds[0])?.sender_id
+					: undefined;
+				const a = sid ? s.agents.find((x) => x.id === sid) : undefined;
+				return {
+					summary: joined,
+					toolCount: nm.length,
+					running: anyRunning,
+					avColor: a?.color ?? null,
+					avInitials: a?.initials ?? "?",
+					avName: a?.name ?? "Agent",
+					avId: a?.id ?? null,
+				};
+			}),
+		);
 	// Keep the fold OPEN while a member is still streaming OR a bash terminal is
 	// running — so the user watches the live output; it auto-collapses once done.
 	// But once the user has manually toggled, honor THAT (so 收起 actually sticks
@@ -159,7 +165,7 @@ export function ToolCallGroup({
 			>
 				<Wrench size={12} className="text-[var(--color-fg-3)] flex-shrink-0" />
 				<span className="font-medium flex-shrink-0">
-					{toolCount} 步工具调用
+					{toolCount} {t("toolSteps", lang)}
 				</span>
 				<span className="text-[var(--color-fg-3)] truncate font-mono text-[10.5px]">
 					{summary}
@@ -167,11 +173,11 @@ export function ToolCallGroup({
 				{running && (
 					<span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-[var(--color-accent-soft)] text-[var(--color-accent)] text-[10px] font-medium flex-shrink-0">
 						<Loader2 size={10} className="animate-spin" />
-						正在执行
+						{t("executing3", lang)}
 					</span>
 				)}
 				<span className="ml-auto text-[10px] text-[var(--color-fg-4)] flex-shrink-0">
-					{expanded ? "收起 ▾" : "展开 ▸"}
+					{expanded ? t("collapse2", lang) : t("expand", lang)}
 				</span>
 			</button>
 			{expanded && (

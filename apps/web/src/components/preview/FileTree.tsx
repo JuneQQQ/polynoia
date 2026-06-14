@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
 
 type DirEntry = {
@@ -49,6 +50,7 @@ export function FileTree({
 	const [selectMode, setSelectMode] = useState(false);
 	const [selected, setSelected] = useState<Set<string>>(() => new Set());
 	const [zipBusy, setZipBusy] = useState(false);
+	const lang = useStore((s) => s.lang);
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 	const toggleTerminal = useStore((s) => s.toggleTerminal);
 	const terminalOpen = useStore((s) => s.terminalOpen);
@@ -156,7 +158,7 @@ export function FileTree({
 		});
 	};
 
-return (
+	return (
 		<div
 			className="h-full overflow-y-auto py-2 px-1"
 			onContextMenu={(e) => {
@@ -166,12 +168,12 @@ return (
 			onClick={() => setCtxMenu(null)}
 		>
 			<div className="px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] font-semibold">
-				<span className="truncate flex-1">资源管理器</span>
+				<span className="truncate flex-1">{t("explorer", lang)}</span>
 				<button
 					type="button"
 					onClick={openCommits}
 					className="p-0.5 rounded transition-colors text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
-					title="提交历史"
+					title={t("commitHistory", lang)}
 					aria-label="打开提交历史"
 				>
 					<GitCommitHorizontal size={11} />
@@ -180,8 +182,8 @@ return (
 					type="button"
 					onClick={toggleServicesView}
 					className="p-0.5 rounded transition-colors text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
-					title="查看运行中的服务"
-					aria-label="查看运行中的服务"
+					title={t("viewServices", lang)}
+					aria-label={t("viewServices", lang)}
 				>
 					<Server size={11} />
 				</button>
@@ -194,8 +196,12 @@ return (
 							? "text-[var(--color-accent)]"
 							: "text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
 					}`}
-					title={terminalOpen ? "关闭终端" : "打开终端"}
-					aria-label={terminalOpen ? "关闭终端" : "打开终端"}
+					title={
+						terminalOpen ? t("closeTerminal", lang) : t("openTerminal", lang)
+					}
+					aria-label={
+						terminalOpen ? t("closeTerminal", lang) : t("openTerminal", lang)
+					}
 				>
 					<SquareTerminal size={11} />
 				</button>
@@ -208,7 +214,13 @@ return (
 							? "text-emerald-400"
 							: "text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
 					}`}
-					title={refreshing ? "刷新中…" : justRefreshed ? "已刷新 ✓" : "刷新"}
+					title={
+						refreshing
+							? t("refreshing", lang)
+							: justRefreshed
+								? t("refreshedTitle", lang)
+								: t("refresh", lang)
+					}
 					aria-label="刷新文件列表"
 				>
 					<AnimatePresence mode="wait" initial={false}>
@@ -258,7 +270,7 @@ return (
 				<div className="px-2 py-1.5 flex items-center gap-2 border-t border-[var(--color-line)] bg-[var(--color-surface-2)] text-[11px] sticky bottom-0">
 					<span className="flex-1 truncate text-[var(--color-fg-2)]">
 						{selected.size === 0
-							? "勾选要下载的文件或目录"
+							? t("selectFilesToDownload", lang)
 							: `已选 ${selected.size} 项`}
 					</span>
 					{selected.size > 0 && (
@@ -266,9 +278,9 @@ return (
 							type="button"
 							onClick={() => setSelected(new Set())}
 							className="px-1.5 py-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
-							title="清空选择"
+							title={t("clearSelection", lang)}
 						>
-							清空
+							{t("clear", lang)}
 						</button>
 					)}
 					<button
@@ -276,18 +288,21 @@ return (
 						onClick={downloadSelection}
 						disabled={selected.size === 0 || zipBusy}
 						className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--color-accent)] text-white text-[10.5px] font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-						title="把勾选的文件/目录打包成 zip 下载"
+						title={t("downloadAsZip", lang)}
 					>
 						{zipBusy ? <Loader2 size={10} className="animate-spin" /> : null}
-						下载所选
+						{t("downloadSelected", lang)}
 					</button>
 					<button
 						type="button"
-						onClick={() => { setSelectMode(false); setSelected(new Set()); }}
+						onClick={() => {
+							setSelectMode(false);
+							setSelected(new Set());
+						}}
 						className="px-1.5 py-0.5 rounded text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:bg-[var(--color-line)]"
-						title="退出选择"
+						title={t("exitSelection", lang)}
 					>
-						取消
+						{t("cancel", lang)}
 					</button>
 				</div>
 			)}
@@ -304,7 +319,7 @@ return (
 						setCtxMenu(null);
 					}}
 				/>
-)}
+			)}
 		</div>
 	);
 }
@@ -334,13 +349,19 @@ function DirTree({
 	selectMode: boolean;
 	selected: Set<string>;
 	onTogglePath: (path: string) => void;
-	onCtxMenu?: (x: number, y: number, path: string, type: "file" | "dir") => void;
+	onCtxMenu?: (
+		x: number,
+		y: number,
+		path: string,
+		type: "file" | "dir",
+	) => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	const entry = dirs[dirPath];
 	if (!entry) {
 		return depth === 0 ? (
 			<div className="px-3 py-2 text-[11px] text-[var(--color-fg-3)] flex items-center gap-1">
-				<Loader2 size={10} className="animate-spin" /> 加载中
+				<Loader2 size={10} className="animate-spin" /> {t("loading2", lang)}
 			</div>
 		) : null;
 	}
@@ -349,10 +370,10 @@ function DirTree({
 			<div className="flex flex-col items-center justify-center py-10 px-4 text-center">
 				<FolderOpen size={28} className="text-[var(--color-fg-4)] mb-2" />
 				<p className="text-[12px] text-[var(--color-fg-3)] leading-relaxed">
-					工作区还没有文件
+					{t("noFilesYet", lang)}
 				</p>
 				<p className="text-[10.5px] text-[var(--color-fg-4)] mt-1">
-					发给 Agent 让它开始编写代码，文件会自动出现在这里
+					{t("noFilesHint", lang)}
 				</p>
 			</div>
 		);
@@ -375,8 +396,8 @@ function DirTree({
 								: "border-[var(--color-line)] hover:border-[var(--color-fg-3)]"
 						}`}
 						aria-pressed={isSelected}
-						aria-label={isSelected ? "取消勾选" : "勾选"}
-						title={isSelected ? "取消勾选" : "勾选"}
+						aria-label={isSelected ? t("uncheck", lang) : t("check", lang)}
+						title={isSelected ? t("uncheck", lang) : t("check", lang)}
 					>
 						{isSelected && <Check size={9} strokeWidth={3} />}
 					</button>
@@ -481,9 +502,7 @@ function DirTree({
 							onClick={() => onSelect(childPath)}
 							className="flex items-center gap-1 flex-1 min-w-0 px-1 py-0.5 text-[11.5px] cursor-grab active:cursor-grabbing text-left"
 							style={
-								selectMode
-									? undefined
-									: { paddingLeft: 6 + depth * 10 + 12 }
+								selectMode ? undefined : { paddingLeft: 6 + depth * 10 + 12 }
 							}
 							title={`拖到聊天框引用 · ${e.name}`}
 						>
@@ -517,6 +536,7 @@ function ContextMenu({
 	onClose: () => void;
 	onSelectMode: () => void;
 }) {
+	const lang = useStore((s) => s.lang);
 	const [downloading, setDownloading] = useState(false);
 
 	const downloadFile = async () => {
@@ -553,7 +573,14 @@ function ContextMenu({
 		type === "file"
 			? { label: `下载 ${fileName}`, action: downloadFile, icon: null }
 			: { label: `下载 ${fileName} (zip)`, action: downloadAsZip, icon: null },
-		{ label: "多选打包下载…", action: () => { onSelectMode(); onClose(); }, icon: null },
+		{
+			label: t("bulkDownload", lang),
+			action: () => {
+				onSelectMode();
+				onClose();
+			},
+			icon: null,
+		},
 	];
 
 	const menuW = 180;
@@ -562,10 +589,7 @@ function ContextMenu({
 	const adjustedY = y + menuH > window.innerHeight ? y - menuH : y;
 
 	return (
-		<div
-			className="fixed inset-0 z-[100]"
-			onClick={onClose}
-		>
+		<div className="fixed inset-0 z-[100]" onClick={onClose}>
 			<ul
 				className="fixed min-w-[140px] py-1 rounded-md border border-[var(--color-line)] bg-[var(--color-surface-2)] shadow-lg text-[12px] text-[var(--color-fg)]"
 				style={{ left: adjustedX, top: adjustedY }}
@@ -582,9 +606,11 @@ function ContextMenu({
 							{downloading && i === 0 ? (
 								<span className="inline-flex items-center gap-1.5">
 									<Loader2 size={12} className="animate-spin" />
-									下载中…
+									{t("downloading", lang)}
 								</span>
-							) : item.label}
+							) : (
+								item.label
+							)}
 						</button>
 					</li>
 				))}

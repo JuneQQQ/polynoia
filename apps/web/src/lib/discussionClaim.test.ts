@@ -199,7 +199,8 @@ describe("computeDiscussions", () => {
 			byId,
 		);
 
-		expect([...activeDiscussionParticipantIds(result.discussionByAnchorId)].sort())
-			.toEqual(["a", "b", "orch"]);
+		expect(
+			[...activeDiscussionParticipantIds(result.discussionByAnchorId)].sort(),
+		).toEqual(["a", "b", "orch"]);
 	});
 });

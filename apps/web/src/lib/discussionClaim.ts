@@ -36,7 +36,9 @@ function isConclusionText(payload: DiscussionTaggedPayload): boolean {
 	return typeof first === "string" && /^\s*(?:\*\*|##\s*)?讨论结论/.test(first);
 }
 
-function isLegacyOutOfBandDiscussionPart(payload: DiscussionTaggedPayload): boolean {
+function isLegacyOutOfBandDiscussionPart(
+	payload: DiscussionTaggedPayload,
+): boolean {
 	return (
 		payload.kind === "tool-call" ||
 		payload.kind === "reasoning" ||

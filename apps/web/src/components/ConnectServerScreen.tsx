@@ -10,11 +10,13 @@
  */
 import { ArrowRight, Loader2 } from "lucide-react";
 import { useState } from "react";
+import { t } from "../lib/i18n";
 import {
 	flushServerConfig,
 	getServerOverride,
 	setServerUrl,
 } from "../lib/runtime-config";
+import { useStore } from "../store";
 import { BrandIcon } from "./BrandIcon";
 
 type Test = { kind: "idle" | "testing" | "ok" | "err"; msg: string };
@@ -36,6 +38,7 @@ async function fetchWithTimeout(input: string, ms: number): Promise<Response> {
 }
 
 export function ConnectServerScreen() {
+	const lang = useStore((s) => s.lang);
 	// Prefill, in order of preference: the previously-saved server (returning user
 	// whose server is down can just retry) → the host the app was loaded from on
 	// :7780 (live-reload from a LAN box → that box's backend) → the local default.
@@ -65,18 +68,23 @@ export function ConnectServerScreen() {
 	async function runTest() {
 		const b = base();
 		if (!b) return;
-		setTest({ kind: "testing", msg: "连接中…" });
+		setTest({ kind: "testing", msg: t("connecting", lang) });
 		try {
 			const res = await fetchWithTimeout(`${b}/api/agents`, PROBE_TIMEOUT_MS);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const agents = await res.json();
 			const n = Array.isArray(agents) ? agents.length : "?";
-			setTest({ kind: "ok", msg: `已连通 · ${n} 位 Agent` });
+			setTest({
+				kind: "ok",
+				msg: t("connectedAgents", lang).replace("{n}", String(n)),
+			});
 		} catch (e) {
 			const aborted = (e as Error).name === "AbortError";
 			setTest({
 				kind: "err",
-				msg: aborted ? "超时(8 秒无响应)" : String((e as Error).message || e),
+				msg: aborted
+					? t("timeoutError", lang)
+					: String((e as Error).message || e),
 			});
 		}
 	}
@@ -104,8 +112,8 @@ export function ConnectServerScreen() {
 			const aborted = (e as Error).name === "AbortError";
 			setConnectErr(
 				aborted
-					? "连接超时(8 秒无响应)—— 检查地址、网络是否在同一 LAN、服务器是否运行"
-					: `连接失败:${String((e as Error).message || e)}`,
+					? t("connectTimeoutDetail", lang)
+					: `${t("connectionFailed", lang)}${String((e as Error).message || e)}`,
 			);
 			setConnecting(false);
 		}
@@ -137,16 +145,16 @@ export function ConnectServerScreen() {
 						/>
 					</div>
 					<div className="pn-rise pn-d-2 pn-m-kicker mb-3">
-						多 · 智能体 · 协作
+						{t("tagline", lang)}
 					</div>
 					<h1 className="pn-rise pn-d-2 font-display font-medium tracking-[-0.015em] leading-[0.92] text-[clamp(52px,17vw,72px)] text-[var(--color-fg)]">
 						Polynoia
 					</h1>
 					<hr className="pn-rise pn-d-3 pn-m-rule mt-6 mb-6" />
 					<p className="pn-rise pn-d-3 font-display text-[15px] leading-[1.85] text-[var(--color-fg-2)]">
-						把一台 Polynoia 服务器装进口袋。
+						{t("serverDescHeadline", lang)}
 						<br />
-						填入它的地址,这里便实时同步它的会话与 Agent。
+						{t("serverDescBody", lang)}
 					</p>
 				</div>
 
@@ -156,7 +164,7 @@ export function ConnectServerScreen() {
 						htmlFor="pn-server"
 						className="pn-rise pn-d-4 pn-m-kicker block mb-4"
 					>
-						服务器地址
+						{t("serverAddressLabel", lang)}
 					</label>
 					<div className="pn-rise pn-d-4 relative">
 						<input
@@ -185,7 +193,9 @@ export function ConnectServerScreen() {
 							disabled={!url.trim() || test.kind === "testing"}
 							className="pn-m-kicker !tracking-[0.2em] text-[var(--color-fg-2)] underline underline-offset-[6px] decoration-[var(--color-line-strong)] hover:text-[var(--color-fg)] hover:decoration-[var(--color-accent)] transition-colors disabled:opacity-40"
 						>
-							{test.kind === "testing" ? "连接中…" : "测试连接"}
+							{test.kind === "testing"
+								? t("connecting", lang)
+								: t("testConnection", lang)}
 						</button>
 						{test.kind !== "idle" && test.kind !== "testing" && (
 							<span
@@ -210,11 +220,11 @@ export function ConnectServerScreen() {
 						{connecting ? (
 							<>
 								<Loader2 size={18} strokeWidth={2.4} className="animate-spin" />
-								连接中…
+								{t("connecting", lang)}
 							</>
 						) : (
 							<>
-								连接
+								{t("connectButton", lang)}
 								<ArrowRight
 									size={18}
 									strokeWidth={2.4}

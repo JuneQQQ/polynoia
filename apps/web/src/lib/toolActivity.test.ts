@@ -17,9 +17,15 @@ describe("tool activity state", () => {
 
 	it("detects active terminal and tool-call members", () => {
 		expect(isActiveToolMember({ kind: "terminal", running: true })).toBe(true);
-		expect(isActiveToolMember({ kind: "terminal", running: false })).toBe(false);
-		expect(isActiveToolMember({ kind: "tool-call", state: "pending" })).toBe(true);
-		expect(isActiveToolMember({ kind: "tool-call", state: "completed" })).toBe(false);
+		expect(isActiveToolMember({ kind: "terminal", running: false })).toBe(
+			false,
+		);
+		expect(isActiveToolMember({ kind: "tool-call", state: "pending" })).toBe(
+			true,
+		);
+		expect(isActiveToolMember({ kind: "tool-call", state: "completed" })).toBe(
+			false,
+		);
 		expect(isActiveToolMember({ kind: "reasoning" })).toBe(false);
 	});
 });

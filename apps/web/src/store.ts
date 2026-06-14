@@ -10,6 +10,7 @@ import { api } from "./lib/api";
 import {
 	findToolCallMessageId,
 	flipStuckCardsOnTurnEnd,
+	flipSupersededRunningTools,
 	mergeTerminalPayload,
 	mergeToolCallPayload,
 } from "./lib/chunkReducers";
@@ -214,7 +215,7 @@ type Store = {
 	// Active selection
 	activeWorkspaceId: string | null;
 	activeConvId: string | null;
-	view: "inbox" | "marketplace" | "archive" | "chat";
+	view: "inbox" | "marketplace" | "archive" | "chat" | "quality" | "contacts";
 
 	// i18n
 	lang: import("./lib/i18n").Lang;
@@ -273,7 +274,9 @@ type Store = {
 	reloadSeed: () => Promise<void>;
 	setActiveWorkspace: (id: string | null) => void;
 	setActiveConv: (id: string | null) => void;
-	setView: (v: "inbox" | "marketplace" | "archive" | "chat") => void;
+	setView: (
+		v: "inbox" | "marketplace" | "archive" | "chat" | "quality" | "contacts",
+	) => void;
 	setLang: (l: import("./lib/i18n").Lang) => void;
 	/** Active conversation's merge gate (auto = orchestrator resolves conflicts;
 	 * manual = user resolves). Mirrored from ChatPane's convSummary so deep parts
@@ -1102,6 +1105,19 @@ export const useStore = create<Store>((set, get) => ({
 			};
 			const nextById = new Map(cur.msgById);
 			nextById.set(action.messageId, placeholder);
+			// This sender just started generating OUTPUT (text/thinking), which means
+			// every tool call it had in flight has already returned (a sequential
+			// agent doesn't resume the model until tool results are back). Flip any of
+			// its tool-call cards still stuck at running/pending to completed so a
+			// lagging terminal chunk (notably `dispatch`, whose result lands only once
+			// the burst is set up) can't leave an "in-progress" tool ABOVE this newer
+			// text — keeping top→bottom a truthful timeline.
+			const flippedById = flipSupersededRunningTools(
+				cur.messageOrder,
+				nextById,
+				senderId,
+				action.messageId,
+			);
 			const newStreaming = new Map(cur.streamingTexts);
 			newStreaming.set(streamKey, {
 				messageId: action.messageId,
@@ -1115,7 +1131,7 @@ export const useStore = create<Store>((set, get) => ({
 			convs.set(convId, {
 				...cur,
 				messageOrder: order,
-				msgById: nextById,
+				msgById: flippedById ?? nextById,
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,
 			});

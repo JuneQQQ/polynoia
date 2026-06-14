@@ -21,6 +21,7 @@ import {
 	Presentation,
 } from "lucide-react";
 import { api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { assetUrl } from "../../lib/runtime-config";
 import type { FilePayload } from "../../lib/types";
 import { useStore } from "../../store";
@@ -45,9 +46,7 @@ export function parseWorkspaceFileSrc(
 	if (!src.startsWith("/api/workspaces/")) return null;
 	try {
 		const u = new URL(src, "http://_/");
-		const m = u.pathname.match(
-			/^\/api\/workspaces\/([^/]+)\/files\/download$/,
-		);
+		const m = u.pathname.match(/^\/api\/workspaces\/([^/]+)\/files\/download$/);
 		const path = u.searchParams.get("path");
 		if (!m || !path) return null;
 		return { wsId: m[1], path };
@@ -90,6 +89,7 @@ export function variantFor(name: string): Variant {
 }
 
 export function FilePart({ payload }: { payload: FilePayload }) {
+	const lang = useStore((s) => s.lang);
 	const openPreviewFile = useStore((s) => s.openPreviewFile);
 
 	const wsFile = parseWorkspaceFileSrc(payload.src);
@@ -133,14 +133,16 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 		<div
 			className="flex items-center gap-3 w-full max-w-[360px] p-2.5 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] hover:border-[var(--color-accent)] transition group"
 			role="group"
-			aria-label={`文件 ${payload.name}`}
+			aria-label={t("fileLabel", lang)
+				.replace("{payload.name}", payload.name)
+				.replace("{name}", payload.name)}
 		>
 			<button
 				type="button"
 				onClick={wsFile ? onPreview : undefined}
 				disabled={!wsFile}
 				className={`flex items-center gap-2.5 min-w-0 flex-1 text-left ${wsFile ? "cursor-pointer" : "cursor-default"}`}
-				title={wsFile ? "点击打开预览" : payload.name}
+				title={wsFile ? t("clickToPreview", lang) : payload.name}
 			>
 				<div
 					className="w-9 h-9 rounded-lg grid place-items-center flex-shrink-0 relative"
@@ -159,7 +161,8 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 						{payload.name}
 					</div>
 					<div className="text-[11px] text-[var(--color-fg-3)] truncate mt-0.5 font-mono">
-						{[payload.media_type, size].filter(Boolean).join(" · ") || "文件"}
+						{[payload.media_type, size].filter(Boolean).join(" · ") ||
+							t("file", lang)}
 					</div>
 				</div>
 			</button>
@@ -173,7 +176,7 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 					className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[var(--color-fg-2)] text-[11.5px] font-medium hover:bg-[var(--color-line)] transition"
 				>
 					<Download size={11} />
-					下载
+					{t("download", lang)}
 				</button>
 			</div>
 		</div>

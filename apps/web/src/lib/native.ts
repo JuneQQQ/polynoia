@@ -28,9 +28,8 @@ function seedNativeLayoutVars(): void {
 	document.documentElement.dataset.capacitor = "1";
 	document.documentElement.style.setProperty("--kb-h", "0px");
 	try {
-		const cap = (
-			globalThis as { Capacitor?: { getPlatform?: () => string } }
-		).Capacitor;
+		const cap = (globalThis as { Capacitor?: { getPlatform?: () => string } })
+			.Capacitor;
 		const platform = cap?.getPlatform?.();
 		if (platform) document.documentElement.dataset.capPlatform = platform;
 		// iOS WKWebView often resolves env(safe-area-inset-bottom) after the
@@ -65,7 +64,8 @@ function installNativeScrollGuards(): void {
 	if (!isCapacitorNative()) return;
 	const onFocus = (ev: Event) => {
 		const el = ev.target as HTMLElement | null;
-		if (!el?.matches?.("input, textarea, select, [contenteditable='true']")) return;
+		if (!el?.matches?.("input, textarea, select, [contenteditable='true']"))
+			return;
 		pinNativeRootScroll();
 		// WKWebView may scroll the root AFTER focus to reveal the input. Re-focus
 		// with preventScroll where supported, then keep the root pinned while the
@@ -155,9 +155,18 @@ export async function initNative(): Promise<void> {
 			// that still reference it (chat/home paddingBottom) fall back to the
 			// safe-area inset only.
 			Keyboard.setResizeMode?.({ mode: "native" as never }).catch(() => {});
-			void Keyboard.addListener?.("keyboardWillShow", pinNativeRootScroll)?.catch?.(() => {});
-			void Keyboard.addListener?.("keyboardDidShow", pinNativeRootScroll)?.catch?.(() => {});
-			void Keyboard.addListener?.("keyboardWillHide", pinNativeRootScroll)?.catch?.(() => {});
+			void Keyboard.addListener?.(
+				"keyboardWillShow",
+				pinNativeRootScroll,
+			)?.catch?.(() => {});
+			void Keyboard.addListener?.(
+				"keyboardDidShow",
+				pinNativeRootScroll,
+			)?.catch?.(() => {});
+			void Keyboard.addListener?.(
+				"keyboardWillHide",
+				pinNativeRootScroll,
+			)?.catch?.(() => {});
 			document.documentElement.style.setProperty("--kb-h", "0px");
 		}),
 	]).catch(() => {});

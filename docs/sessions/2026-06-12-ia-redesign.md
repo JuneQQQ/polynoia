@@ -109,3 +109,13 @@
 3. `AgentDetailView` 加"与 X 的所有对话"抽屉(`agentConversations` 已备)。
 
 > 这些是导航重排,涉及视觉布局,适合用户在场边看边接;盲改侧栏导航风险高,故止于此。
+
+## 2026-06-13 续:质量体系 + 生态集成(事件日志/质量画像/角色库/流水线/测评集)
+
+- **turn_events 事件日志**:追加式表 + `emit()` 单点同步旁路(缓冲+1s 批量+delta 合并,不动承重时序);`GET /conversations/{id}/events`。浸泡实测 89 事件 seq 无空洞。
+- **质量画像**:`GET /api/quality` 综合分=基准45%+工具25%+进程20%+活跃10%(无证据组件记中性 0.6);侧栏联系人分数 chip + 质量面板(📊)。
+- **角色预设库**:agency-agents(232 角色,MIT)同步/浏览/搜索/雇佣 → 真实联系人(frontmatter→tagline/色,正文→system_prompt)。
+- **项目流水线**:gstack 七阶段 SOP 模板;槽位复用既有联系人/缺口现雇;群聊带 orchestrator + SOP 草稿。
+- **测评集沉淀**(docs/testing/benchmark-suite.md):benchmarks.py(20 用例验收,6 个专项)+ run_benchmark.py(WS 真实轮次驱动+双重沉降判定)+ soak.py(5 类不变量)。
+- **首批基线**:game_2048 × deepseek-v4-flash-free(免费弱模型)PASSED 100%(9/9);× glm-5.1 PASSED 100%;浸泡 3 轮 7 不变量全过。两个弱模型综合分 84 登顶——弱模型论证首组数据。
+- 门禁:后端 528 passed(+15 新测试)/前端 tsc+build 绿。坑:Sidebar 双分支(collapsed/expanded)插 UI 必须认准渲染分支;目录搜索需 name 精确匹配优先。

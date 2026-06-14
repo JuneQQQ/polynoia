@@ -31,8 +31,13 @@ export function mergeToolCallPayload(
 	prev: MessagePayload | undefined,
 	next: MessagePayload,
 ): MessagePayload {
-	const p = prev as { input?: Record<string, unknown>; input_preview?: unknown } | undefined;
-	const n = next as { input?: Record<string, unknown>; input_preview?: unknown };
+	const p = prev as
+		| { input?: Record<string, unknown>; input_preview?: unknown }
+		| undefined;
+	const n = next as {
+		input?: Record<string, unknown>;
+		input_preview?: unknown;
+	};
 	const nextHasInput = !!n.input && Object.keys(n.input).length > 0;
 	return {
 		...(n as object),
@@ -54,6 +59,47 @@ export function mergeTerminalPayload(
 		return prev as MessagePayload;
 	}
 	return next;
+}
+
+/** A sender emitted a NEW output part (text / reasoning). Being a single
+ * SEQUENTIAL agent, it has by definition already finished every tool call it
+ * started earlier — the model only resumes generating text/thinking once all
+ * pending tool results are back. But a tool whose `completed` chunk LAGS stays
+ * stuck at running/pending, so the timeline shows an "in-progress" tool ABOVE
+ * already-rendered later text. The worst offender is `dispatch`: its large
+ * multi-worker args stream for many seconds and its result only lands once the
+ * burst is set up, so it sits at「生成参数/正在执行」while the orchestrator's
+ * following narration is already on screen below it (the "从上往下不是时间轴"
+ * bug). Flip that sender's still-running TOOL-CALL cards to completed so
+ * top→bottom stays a truthful timeline. Scoped to the sender (each agent is
+ * independent) and excludes `exceptMsgId` (the new part itself). Terminals are
+ * left alone — a long bash/server card has its own running:false lifecycle and
+ * turn-end flip. Returns a NEW patched map, or null if nothing changed.
+ * Companion to {@link flipStuckCardsOnTurnEnd}, which only fires at turn END. */
+export function flipSupersededRunningTools(
+	messageOrder: readonly string[],
+	msgById: ReadonlyMap<string, Message>,
+	senderId: string,
+	exceptMsgId: string,
+): Map<string, Message> | null {
+	let patched: Map<string, Message> | null = null;
+	for (const mid of messageOrder) {
+		if (mid === exceptMsgId) continue;
+		const msg = msgById.get(mid);
+		if (!msg || msg.sender_id !== senderId) continue;
+		const p = msg.payload as { kind?: string; state?: string };
+		if (
+			p?.kind === "tool-call" &&
+			(p.state === "pending" || p.state === "running")
+		) {
+			if (!patched) patched = new Map(msgById);
+			patched.set(mid, {
+				...msg,
+				payload: { ...p, state: "completed" } as MessagePayload,
+			});
+		}
+	}
+	return patched;
 }
 
 /** When a turn ends (idle/aborted/error), any of that agent's tool-call /
@@ -78,7 +124,10 @@ export function flipStuckCardsOnTurnEnd(
 			running?: boolean;
 			exit_code?: number | null;
 		};
-		if (p?.kind === "tool-call" && (p.state === "pending" || p.state === "running")) {
+		if (
+			p?.kind === "tool-call" &&
+			(p.state === "pending" || p.state === "running")
+		) {
 			if (!patched) patched = new Map(msgById);
 			patched.set(mid, {
 				...msg,

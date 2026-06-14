@@ -15,6 +15,7 @@ import "@git-diff-view/react/styles/diff-view.css";
 import { GitMerge, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { type Conflict, api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import type { ConflictFile } from "../../lib/types";
 import { useStore } from "../../store";
 import { inferLang } from "./diffLang";
@@ -39,6 +40,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [over, setOver] = useState<Record<string, Choice>>({});
+	const lang = useStore((s) => s.lang);
 
 	const conflict = list.find(
 		(c) => c.status === "open" || c.status === "resolving",
@@ -47,10 +49,8 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 		return (
 			<div className="h-full grid place-items-center text-[12.5px] text-[var(--color-fg-3)] bg-[var(--color-surface-2)]">
 				<div className="text-center px-6">
-					<div className="mb-1.5">没有待解决的冲突</div>
-					<div className="text-[11px]">
-						多个 Agent 改了同一处代码、合并 main 失败时,这里显示冲突并让你解决。
-					</div>
+					<div className="mb-1.5">{t("noConflicts", lang)}</div>
+					<div className="text-[11px]">{t("noConflictsHint", lang)}</div>
 				</div>
 			</div>
 		);
@@ -123,9 +123,11 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 				<span className="font-semibold" style={{ color: "var(--color-amber)" }}>
 					{agentLabel}
 				</span>{" "}
-				的改动和 <span className="font-semibold">{baseLabel}</span>
-				{baseAgents.length ? " 已合入 main 的版本" : " main"} 改到了同一处,Git
-				无法自动合并。 逐个文件选「采用 {baseLabel}」或「采用 {agentLabel}
+				{t("conflictExplainer1", lang)}{" "}
+				<span className="font-semibold">{baseLabel}</span>
+				{baseAgents.length ? ` ${t("conflictExplainer2", lang)}` : " main"}{" "}
+				改到了同一处,Git 无法自动合并。 逐个文件选「采用 {baseLabel}」或「采用{" "}
+				{agentLabel}
 				」,需要合两边就「手动合并」。
 			</div>
 
@@ -156,7 +158,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 											background: "var(--color-line)",
 											color: "var(--color-fg-3)",
 										}}
-										title="代码里有几处不一样,看红/绿即可"
+										title={t("diffBlocksTitle", lang)}
 									>
 										{fdiff.blocks} 处差异
 									</span>
@@ -189,13 +191,13 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 											on={ch.mode === "keep"}
 											onClick={() => setChoice(f, { mode: "keep" })}
 										>
-											保留文件
+											{t("keepFile", lang)}
 										</ChoiceBtn>
 										<ChoiceBtn
 											on={ch.mode === "delete"}
 											onClick={() => setChoice(f, { mode: "delete" })}
 										>
-											删除文件
+											{t("deleteFile", lang)}
 										</ChoiceBtn>
 									</>
 								) : (
@@ -224,7 +226,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 													})
 												}
 											>
-												手动合并
+												{t("manualMerge", lang)}
 											</ChoiceBtn>
 										)}
 									</>
@@ -234,8 +236,8 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 							{/* body: binary note / edit textarea / folded ours-vs-theirs diff */}
 							{isBinary ? (
 								<div className="px-3 py-2 text-[11px] text-[var(--color-fg-3)]">
-									二进制文件 — 无法逐行比较,只能整体采用一侧({baseLabel} /{" "}
-									{agentLabel})。
+									{t("binaryConflictMessage", lang)}
+									{baseLabel} / {agentLabel})。
 								</div>
 							) : ch.mode === "edit" ? (
 								<textarea
@@ -295,8 +297,8 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 								</>
 							) : isModDel ? (
 								<div className="px-3 py-2 text-[11px] leading-relaxed text-[var(--color-fg-3)]">
-									一方改了这个文件、另一方删了它,Git 不知道该听谁的。
-									「保留文件」= 用改动后的版本;「删除文件」= 接受删除。
+									{t("modifyDeleteExplain1", lang)}
+									{t("modifyDeleteExplain2", lang)}
 								</div>
 							) : null}
 						</div>
@@ -314,7 +316,10 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 						>
 							{agent.initials}
 						</span>
-						<span>{agentLabel} 的分支</span>
+						<span>
+							{agentLabel}
+							{t("branchSuffix", lang)}
+						</span>
 					</span>
 				)}
 				{err && (
@@ -341,7 +346,7 @@ export function ConflictResolvePane({ convId }: { convId: string }) {
 					) : (
 						<GitMerge size={12} />
 					)}
-					解决并合并
+					{t("resolveAndMerge", lang)}
 				</button>
 			</div>
 		</div>

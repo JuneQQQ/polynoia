@@ -10,6 +10,7 @@
 import { ArrowUp, FileText, Loader2, Paperclip, Reply, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type DraftAttachment, api } from "../lib/api";
+import { t } from "../lib/i18n";
 import { isMobile } from "../lib/platform";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
@@ -169,6 +170,7 @@ export function Composer({
 	// Lights up the composer outline while a drag is hovering it.
 	const [isDragOver, setIsDragOver] = useState(false);
 	const agents = useStore((s) => s.agents);
+	const lang = useStore((s) => s.lang);
 	const replyingToRaw = useStore((s) => s.replyingTo);
 	const setReplyingTo = useStore((s) => s.setReplyingTo);
 	// One-shot draft push from「从此处重来」(MessageView.rewindHere). When the
@@ -580,8 +582,8 @@ export function Composer({
 	}, [mobile, text]);
 
 	const placeholder = isGroup
-		? "发消息给群聊 · 输入 @ 召唤成员"
-		: `发消息给 ${otherAgent?.name ?? "Agent"}`;
+		? t("groupChatPlaceholder", lang)
+		: t("dmPlaceholder", lang).replace("{name}", otherAgent?.name ?? "Agent");
 
 	return (
 		// No outer container/rectangle/bg at all — fully transparent so the rounded
@@ -595,7 +597,7 @@ export function Composer({
 				{mention && filtered.length > 0 && (
 					<div className="absolute bottom-full left-5 right-5 mb-1 z-30 bg-[var(--color-surface)] border border-[var(--color-line)] rounded-lg shadow-lg overflow-hidden max-h-[280px] overflow-y-auto">
 						<div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[var(--color-fg-3)] border-b border-[var(--color-line)]/50 bg-[var(--color-surface-2)]">
-							召唤 Agent — ↑↓ 选择 · Enter / Tab 插入 · Esc 取消
+							{t("summonAgentHint", lang)}
 						</div>
 						<ul>
 							{filtered.map((a, i) => (
@@ -635,7 +637,7 @@ export function Composer({
 										</div>
 										{members.includes(a.id) && (
 											<span className="text-[9.5px] px-1.5 py-0.5 rounded bg-[var(--color-green-soft)] text-[var(--color-green)] flex-shrink-0">
-												本群
+												{t("inGroupBadge", lang)}
 											</span>
 										)}
 									</button>
@@ -799,7 +801,9 @@ export function Composer({
 						}`}
 					/>
 					{/* Docked control bar — sits INSIDE the box, ChatGPT/Claude-style */}
-					<div className={`flex items-center px-0.5 ${mobile ? "gap-0.5" : "gap-1.5"}`}>
+					<div
+						className={`flex items-center px-0.5 ${mobile ? "gap-0.5" : "gap-1.5"}`}
+					>
 						<input
 							ref={fileInputRef}
 							type="file"

@@ -3,22 +3,25 @@ import { useEffect, useRef, useState } from "react";
 import { CenterTabs } from "./components/CenterTabs";
 import { ChatPane } from "./components/ChatPane";
 import { ChatSearchOverlay } from "./components/ChatSearchOverlay";
-import { ConnectingSplash } from "./components/ConnectingSplash";
 import { ConnectServerScreen } from "./components/ConnectServerScreen";
+import { ConnectingSplash } from "./components/ConnectingSplash";
 import { DesktopPreparing } from "./components/DesktopPreparing";
 import { ConvRolesModal } from "./components/ConvRolesModal";
-import { ServerUnreachable } from "./components/ServerUnreachable";
 import { MobilePreviewSheet } from "./components/MobilePreviewSheet";
 import { RightDrawer } from "./components/RightDrawer";
+import { ServerUnreachable } from "./components/ServerUnreachable";
 import { Sidebar } from "./components/Sidebar";
 import { MobileHome } from "./components/mobile/MobileHome";
 import { PreviewPane } from "./components/preview/PreviewPane";
 import { ArchiveView } from "./components/views/ArchiveView";
+import { ContactsView } from "./components/views/ContactsView";
 import { CreateHubView } from "./components/views/CreateHubView";
 import { InboxView } from "./components/views/InboxView";
+import { QualityPanel } from "./components/views/QualityPanel";
 import { type ConversationSummary, api } from "./lib/api";
-import { onBackButton, onNetworkChange, onResume } from "./lib/native";
 import { resolveMobileGate } from "./lib/connectionGate";
+import { t } from "./lib/i18n";
+import { onBackButton, onNetworkChange, onResume } from "./lib/native";
 import { isDesktopApp, isMobile } from "./lib/platform";
 import {
 	getDesktopBackendInfo,
@@ -42,6 +45,7 @@ export function App() {
 	const toggleSidebar = useStore((s) => s.toggleSidebar);
 	const openMembersList = useStore((s) => s.openMembersList);
 	const resetCenterTabs = useStore((s) => s.resetCenterTabs);
+	const lang = useStore((s) => s.lang);
 	const [editingRolesConv, setEditingRolesConv] =
 		useState<ConversationSummary | null>(null);
 	const [activeConv, setActiveConv] = useState<{
@@ -100,7 +104,8 @@ export function App() {
 		};
 		const onFocusIn = (ev: FocusEvent) => {
 			const el = ev.target as HTMLElement | null;
-			if (!el?.matches?.("input, textarea, select, [contenteditable='true']")) return;
+			if (!el?.matches?.("input, textarea, select, [contenteditable='true']"))
+				return;
 			settleViewport();
 			window.setTimeout(() => {
 				try {
@@ -113,7 +118,9 @@ export function App() {
 		};
 		updateViewportVars();
 		window.addEventListener("resize", settleViewport, { passive: true });
-		window.addEventListener("orientationchange", settleViewport, { passive: true });
+		window.addEventListener("orientationchange", settleViewport, {
+			passive: true,
+		});
 		document.addEventListener("focusin", onFocusIn, { passive: true });
 		window.visualViewport?.addEventListener("resize", settleViewport, {
 			passive: true,
@@ -273,11 +280,9 @@ export function App() {
 		const id = activeConv?.id;
 		if (!id || id.startsWith("dm-")) return;
 		let alive = true;
-		api
-			.getConv(id)
-			.catch(() => {
-				if (alive) setActiveConv(null);
-			});
+		api.getConv(id).catch(() => {
+			if (alive) setActiveConv(null);
+		});
 		return () => {
 			alive = false;
 		};
@@ -404,7 +409,10 @@ export function App() {
 		const onEditRoles = (ev: Event) => {
 			const convId = (ev as CustomEvent<{ convId?: string }>).detail?.convId;
 			if (!convId) return;
-			api.getConv(convId).then(setEditingRolesConv).catch(() => {});
+			api
+				.getConv(convId)
+				.then(setEditingRolesConv)
+				.catch(() => {});
 		};
 		window.addEventListener("polynoia:edit-conv-roles", onEditRoles);
 		return () =>
@@ -416,8 +424,9 @@ export function App() {
 	// event and we route it to the same open-conv path the sidebar uses.
 	useEffect(() => {
 		const onSelectConv = (ev: Event) => {
-			const d = (ev as CustomEvent<{ id?: string; members?: string[]; title?: string }>)
-				.detail;
+			const d = (
+				ev as CustomEvent<{ id?: string; members?: string[]; title?: string }>
+			).detail;
 			if (!d?.id) return;
 			openConvAndSwitchToChat(d.id, d.members ?? [], d.title ?? "");
 		};
@@ -495,6 +504,12 @@ export function App() {
 		if (view === "marketplace") {
 			return <CreateHubView onOpenConv={openConvAndSwitchToChat} />;
 		}
+		if (view === "quality") {
+			return <QualityPanel />;
+		}
+		if (view === "contacts") {
+			return <ContactsView />;
+		}
 		if (view === "archive") {
 			return <ArchiveView onOpenConv={openConvAndSwitchToChat} />;
 		}
@@ -502,9 +517,9 @@ export function App() {
 			<main className="flex-1 grid place-items-center text-[var(--color-fg-3)]">
 				<div className="text-center">
 					<div className="text-[18px] font-semibold text-[var(--color-fg)] mb-2">
-						欢迎使用 Polynoia
+						{t("welcomeMessage", lang)}
 					</div>
-					<div className="text-[12.5px]">从左侧选择一个会话,或「新建对话」开始</div>
+					<div className="text-[12.5px]">{t("welcomeHint", lang)}</div>
 				</div>
 			</main>
 		);
@@ -560,7 +575,7 @@ export function App() {
 							type="button"
 							onClick={() => setActiveConv(null)}
 							className="w-10 h-10 grid place-items-center rounded-full hover:bg-[var(--color-line)] text-[var(--color-fg-2)] press-down flex-shrink-0"
-							aria-label="返回列表"
+							aria-label={t("backToList", lang)}
 						>
 							<ArrowLeft size={22} />
 						</button>
@@ -578,7 +593,7 @@ export function App() {
 									type="button"
 									onClick={openMembersList}
 									className="flex-1 min-w-0 text-left flex flex-col justify-center press-down py-0.5"
-									aria-label="查看群成员"
+									aria-label={t("viewMembers", lang)}
 								>
 									<div className="flex items-baseline gap-2">
 										<span className="truncate font-display text-[16px] font-medium tracking-wide text-[var(--color-fg)]">
@@ -586,7 +601,10 @@ export function App() {
 										</span>
 										{memberAgents.length > 0 && (
 											<span className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-fg-3)] flex-shrink-0">
-												{memberAgents.length + 1}人
+												{t("memberCountBadge", lang).replace(
+													"{count}",
+													String(memberAgents.length + 1),
+												)}
 											</span>
 										)}
 									</div>

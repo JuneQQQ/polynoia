@@ -11,8 +11,10 @@
  * offer the toggle.
  */
 import { Suspense, lazy, useEffect, useState } from "react";
-import { HtmlPreview } from "./HtmlPreview";
+import { t } from "../../lib/i18n";
 import { assetUrl } from "../../lib/runtime-config";
+import { useStore } from "../../store";
+import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownDoc } from "./MarkdownDoc";
 import { OfficePreview } from "./OfficePreview";
 import { PreviewErrorBoundary } from "./PreviewErrorBoundary";
@@ -37,11 +39,15 @@ const SourcePreview = lazy(() =>
 	import("./SourcePreview").then((m) => ({ default: m.SourcePreview })),
 );
 
-const _DocFallback = (
-	<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
-		加载中…
-	</div>
-);
+function DocFallback() {
+	const lang = useStore((s) => s.lang);
+	return (
+		<div className="grid place-items-center h-full text-[12px] text-[var(--color-fg-3)]">
+			{t("loading", lang)}
+		</div>
+	);
+}
+const _DocFallback = <DocFallback />;
 
 /** Source-code extensions that the right rail can preview-edit via
  * CodeMirror. Aligned with CodeEditor's langExtForPath: anything that has
@@ -111,6 +117,7 @@ export function DocPreviewPane({
 	 * editing in that context happens via the host's 源码 toggle. */
 	embedded?: boolean;
 }) {
+	const lang = useStore((s) => s.lang);
 	// Debounce for the live-rendered previews (Marp/HTML) so source edits don't
 	// re-render every keystroke. Crepe owns its own state (no debounce).
 	const [debounced, setDebounced] = useState(content);
@@ -174,7 +181,7 @@ export function DocPreviewPane({
 				</Suspense>
 			</PreviewErrorBoundary>
 		) : (
-			<Empty text="表格编辑需要在项目对话(workspace)里。" />
+			<Empty text={t("spreadsheetNeedsWorkspace", lang)} />
 		);
 	}
 	if (kind === "sheet") {
@@ -189,7 +196,7 @@ export function DocPreviewPane({
 				<OfficePreview workspaceId={workspaceId} path={path} kind={kind} />
 			</PreviewErrorBoundary>
 		) : (
-			<Empty text="Office 文档预览需要在项目对话(workspace)里。" />
+			<Empty text={t("officeNeedsWorkspace", lang)} />
 		);
 	}
 	if (kind === "marp") {
@@ -213,7 +220,7 @@ export function DocPreviewPane({
 				/>
 			</Suspense>
 		) : (
-			<Empty text="源码预览需要在项目对话(workspace)里。" />
+			<Empty text={t("sourceNeedsWorkspace", lang)} />
 		);
 	}
 	return (
