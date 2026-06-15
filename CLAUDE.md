@@ -285,3 +285,8 @@ Aspect ratio: 16:9.
 
 ### 12.4 归档
 所有图示 prompt 沉淀到 `docs/diagrams/<topic>.md`,内含 prompt + 一句话场景说明 + 渲染图(可选)。答辩素材。
+
+## 13. gstack
+
+- **所有网页浏览统一走 gstack 的 `/browse` skill**,**禁止使用 `mcp__claude-in-chrome__*` 工具**。
+- 可用 skill:`/office-hours`、`/plan-ceo-review`、`/plan-eng-review`、`/plan-design-review`、`/design-consultation`、`/design-shotgun`、`/design-html`、`/review`、`/ship`、`/land-and-deploy`、`/canary`、`/benchmark`、`/browse`、`/connect-chrome`、`/qa`、`/qa-only`、`/design-review`、`/setup-browser-cookies`、`/setup-deploy`、`/setup-gbrain`、`/retro`、`/investigate`、`/document-release`、`/document-generate`、`/codex`、`/cso`、`/autoplan`、`/plan-devex-review`、`/devex-review`、`/careful`、`/freeze`、`/guard`、`/unfreeze`、`/gstack-upgrade`、`/learn`。
