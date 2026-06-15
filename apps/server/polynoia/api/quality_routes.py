@@ -6,8 +6,10 @@ api/CLAUDE.md — touches no merge/burst machinery.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -171,7 +173,13 @@ async def quality_overview():
     component are scored neutrally there (the score must not punish absence
     of data — only evidence of failure).
     """
-    await event_log.flush()
+    # Best-effort, time-bounded flush. This is a read-only aggregation, so being
+    # a few un-flushed events stale is harmless — but during a burst the flush
+    # contends for aiosqlite's single writer and can stall the whole request
+    # (the "30s 监控面板" hang seen under the 500-case stress load). Cap it so the
+    # panel always responds; the next refresh picks up anything skipped.
+    with suppress(Exception, asyncio.TimeoutError):
+        await asyncio.wait_for(event_log.flush(), timeout=2.0)
     async with SessionLocal() as session:
         agents = {
             a.id: {"agent_id": a.id, "name": a.name}

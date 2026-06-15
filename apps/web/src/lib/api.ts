@@ -145,10 +145,24 @@ export type ProcessRunItem = {
 /** Back-compat alias for older imports; semantically this is now ProcessRun. */
 export type ServiceItem = ProcessRunItem;
 
-async function getJSON<T>(path: string): Promise<T> {
-	const res = await fetch(apiUrl(path));
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-	return res.json() as Promise<T>;
+async function getJSON<T>(path: string, timeoutMs = 12000): Promise<T> {
+	// Abortable timeout: without it a stalled backend (e.g. a read stuck behind a
+	// write-lock under burst load) leaves the caller spinning forever. With it the
+	// fetch rejects, which callers surface as a retryable error state.
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+	try {
+		const res = await fetch(apiUrl(path), { signal: ctrl.signal });
+		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+		return (await res.json()) as T;
+	} catch (e) {
+		if (e instanceof DOMException && e.name === "AbortError") {
+			throw new Error(`timeout after ${Math.round(timeoutMs / 1000)}s`);
+		}
+		throw e;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function postJSON<T>(path: string, body?: unknown): Promise<T> {

@@ -17,6 +17,44 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
+import { Skeleton } from "../Skeleton";
+
+/** Card-grid skeleton shown while /api/quality is still aggregating. Mirrors the
+ *  real agent-card layout (avatar + name lines + 4 metric bars) for zero shift. */
+function QualityCardsSkeleton() {
+	return (
+		<div
+			className="grid gap-3"
+			style={{ gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))" }}
+			role="status"
+			aria-busy="true"
+		>
+			{Array.from({ length: 4 }).map((_, i) => (
+				<div
+					key={i}
+					className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-3.5 space-y-3"
+				>
+					<div className="flex items-center gap-2.5">
+						<Skeleton w={32} h={32} radius="50%" />
+						<div className="flex-1 space-y-1.5">
+							<Skeleton w="60%" h={12} />
+							<Skeleton w="40%" h={9} />
+						</div>
+						<Skeleton w={32} h={22} />
+					</div>
+					<div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+						{Array.from({ length: 4 }).map((__, j) => (
+							<div key={j} className="space-y-1.5">
+								<Skeleton w="70%" h={9} />
+								<Skeleton w="100%" h={6} radius={9999} />
+							</div>
+						))}
+					</div>
+				</div>
+			))}
+		</div>
+	);
+}
 
 type QualityAgent = Awaited<ReturnType<typeof api.quality>>["agents"][number];
 type BenchRun = Awaited<ReturnType<typeof api.benchmarkRuns>>["runs"][number];
@@ -79,23 +117,43 @@ export function QualityPanel() {
 	const lang = useStore((s) => s.lang);
 	const [quality, setQuality] = useState<QualityAgent[] | null>(null);
 	const [runs, setRuns] = useState<BenchRun[] | null>(null);
-	const [loading, setLoading] = useState(false);
+	// Two INDEPENDENT loaders. Previously a single Promise.all gated both sections
+	// on the slowest call, and `catch → []` disguised a timeout/failure as
+	// "no contacts". Now the fast benchmark table renders immediately, and a
+	// failed quality fetch shows a retryable error state — not a fake empty one.
+	const [qState, setQState] = useState<"loading" | "error" | "ready">("loading");
+	const [qErr, setQErr] = useState("");
+	const [rState, setRState] = useState<"loading" | "error" | "ready">("loading");
 
-	const load = useCallback(async () => {
-		setLoading(true);
+	const loadQuality = useCallback(async () => {
+		setQState("loading");
+		setQErr("");
 		try {
-			const [q, b] = await Promise.all([api.quality(), api.benchmarkRuns()]);
+			const q = await api.quality();
 			setQuality(q.agents);
-			setRuns(b.runs);
-		} catch {
-			setQuality([]);
-			setRuns([]);
-		} finally {
-			setLoading(false);
+			setQState("ready");
+		} catch (e) {
+			setQErr(e instanceof Error ? e.message : String(e));
+			setQState("error");
 		}
 	}, []);
+	const loadRuns = useCallback(async () => {
+		setRState("loading");
+		try {
+			const b = await api.benchmarkRuns();
+			setRuns(b.runs);
+			setRState("ready");
+		} catch {
+			setRState("error");
+		}
+	}, []);
+	const load = useCallback(() => {
+		void loadQuality();
+		void loadRuns();
+	}, [loadQuality, loadRuns]);
+	const loading = qState === "loading" || rState === "loading";
 	useEffect(() => {
-		void load();
+		load();
 	}, [load]);
 
 	const agentOf = (id: string) => agents.find((a) => a.id === id);
@@ -132,11 +190,24 @@ export function QualityPanel() {
 
 			<div className="flex-1 overflow-y-auto p-4 space-y-6">
 				{/* ── per-agent cards ── */}
-				{quality === null ? (
-					<div className="text-[12px] text-[var(--color-fg-3)]">
-						{t("loading", lang)}
+				{qState === "loading" ? (
+					<QualityCardsSkeleton />
+				) : qState === "error" ? (
+					<div className="px-3 py-2 text-[11.5px] rounded bg-[var(--color-red-soft)] text-[var(--color-red)] border border-[var(--color-red)]/30 flex items-center gap-3">
+						<span className="flex-1">
+							{t("loadFailed", lang)}
+							{qErr}
+						</span>
+						<button
+							type="button"
+							onClick={() => void loadQuality()}
+							className="inline-flex items-center gap-1 px-2 py-1 rounded border border-[var(--color-red)]/40 hover:bg-[var(--color-red)]/10"
+						>
+							<RefreshCw size={11} />
+							{t("retryButton", lang)}
+						</button>
 					</div>
-				) : quality.length === 0 ? (
+				) : !quality || quality.length === 0 ? (
 					<div className="text-[12px] text-[var(--color-fg-3)]">
 						{t("noContacts", lang)}
 					</div>
@@ -243,7 +314,25 @@ export function QualityPanel() {
 							&lt;provider/model&gt;
 						</span>
 					</div>
-					{runs === null ? null : runs.length === 0 ? (
+					{rState === "loading" ? (
+						<div className="rounded-lg border border-[var(--color-line)] overflow-hidden p-3 space-y-2">
+							{Array.from({ length: 4 }).map((_, i) => (
+								<Skeleton key={i} w="100%" h={14} />
+							))}
+						</div>
+					) : rState === "error" ? (
+						<div className="px-3 py-2 text-[11.5px] rounded bg-[var(--color-red-soft)] text-[var(--color-red)] border border-[var(--color-red)]/30 flex items-center gap-3">
+							<span className="flex-1">{t("loadFailed", lang)}</span>
+							<button
+								type="button"
+								onClick={() => void loadRuns()}
+								className="inline-flex items-center gap-1 px-2 py-1 rounded border border-[var(--color-red)]/40 hover:bg-[var(--color-red)]/10"
+							>
+								<RefreshCw size={11} />
+								{t("retryButton", lang)}
+							</button>
+						</div>
+					) : !runs || runs.length === 0 ? (
 						<div className="text-[11.5px] text-[var(--color-fg-3)] border border-dashed border-[var(--color-line)] rounded-lg px-4 py-5">
 							{t("noBenchmarkRunsHint", lang)}
 						</div>
