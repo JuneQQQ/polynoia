@@ -977,6 +977,37 @@ button:disabled,
 	animation: icon-shimmer 3s var(--ease-out-soft) infinite;
 }
 
+/* Skeleton placeholder — a soft surface block with a left-to-right sheen sweep.
+   Used while data is still echoing in from the backend so the user sees the
+   shape of what's coming, not bare "empty" text. Reduced-motion: static block. */
+@keyframes skeleton-sheen {
+	0% {
+		background-position: 200% 0;
+	}
+	100% {
+		background-position: -200% 0;
+	}
+}
+.skeleton {
+	border-radius: 6px;
+	background-color: var(--color-surface-2);
+	background-image: linear-gradient(
+		90deg,
+		transparent 0%,
+		color-mix(in srgb, var(--color-line) 55%, transparent) 50%,
+		transparent 100%
+	);
+	background-size: 200% 100%;
+	background-repeat: no-repeat;
+	animation: skeleton-sheen 1.4s var(--ease-out-soft) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	.skeleton {
+		animation: none;
+		background-image: none;
+	}
+}
+
 /* ── Checking state — editorial 风,顶部 1.5px hair-line marquee 缓慢横移,
    配合卡片背景极弱橙色脉冲。比之前的"扫描带"克制 10 倍。 */
 @keyframes hairline-marquee {

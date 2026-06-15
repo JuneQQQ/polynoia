@@ -86,6 +86,10 @@ type ConvState = {
 	/** While a fetch-older request is in-flight, this is true to prevent
 	 * duplicate fetches firing back-to-back on rapid scroll. */
 	loadingOlder: boolean;
+	/** ``true`` once the newest page has been fetched at least once. Lets the
+	 * chat tell "messages still loading" apart from "conversation is genuinely
+	 * empty" — the former shows a skeleton, the latter the empty state. */
+	messagesHydrated: boolean;
 };
 
 export type AgentStatusValue =
@@ -861,6 +865,7 @@ export const useStore = create<Store>((set, get) => ({
 					: [...newOrder, ...existingOrder],
 			hasMoreOlder: hasMore,
 			loadingOlder: false,
+			messagesHydrated: true,
 		});
 		set({ convs });
 	},
@@ -1400,6 +1405,7 @@ function _emptyConvState(): ConvState {
 		agentStatus: new Map(),
 		hasMoreOlder: true, // assume there's history until proven otherwise
 		loadingOlder: false,
+		messagesHydrated: false,
 	};
 }
 

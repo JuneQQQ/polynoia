@@ -216,6 +216,7 @@ const STR = {
 		zh: "加载更早的消息…",
 		en: "Loading earlier messages…",
 	},
+	loadingMessages: { zh: "正在加载消息…", en: "Loading messages…" },
 	conversationStart: { zh: "对话的开始", en: "Start of conversation" },
 	noMessages: {
 		zh: "还没有消息 · 试试发送一条",

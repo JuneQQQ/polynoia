@@ -34,6 +34,7 @@ import { AskFormsPanel } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
 import { MessageView, isRenderableMessagePayload } from "./MessageView";
+import { ChatMessagesSkeleton } from "./Skeleton";
 import { DiscussionPart } from "./parts/DiscussionPart";
 import { MergedReasoning } from "./parts/MergedReasoning";
 import { TasksBurstPart } from "./parts/TasksBurstPart";
@@ -152,6 +153,9 @@ export function ChatPane({ convId, members, title }: Props) {
 	);
 	const loadingOlder = useStore(
 		(s) => s.convs.get(convId)?.loadingOlder ?? false,
+	);
+	const messagesHydrated = useStore(
+		(s) => s.convs.get(convId)?.messagesHydrated ?? false,
 	);
 	const appendUserMessage = useStore((s) => s.appendUserMessage);
 	const appendUserImage = useStore((s) => s.appendUserImage);
@@ -1639,7 +1643,15 @@ export function ChatPane({ convId, members, title }: Props) {
 									<span className="h-px w-12 bg-[var(--color-line)]" />
 								</div>
 							)}
-							{!messages.length && (
+							{/* Initial history still echoing in — show a shape-matched skeleton,
+              never the "no messages" empty state (that would lie about a conv
+              that actually has history but hasn't loaded yet). Keyed on
+              messagesHydrated so the first visit (before the fetch effect even
+              fires) shows the skeleton, not a one-frame empty flash. */}
+							{!messagesHydrated && messages.length === 0 && (
+								<ChatMessagesSkeleton />
+							)}
+							{messagesHydrated && messages.length === 0 && (
 								<div className="text-center text-[var(--color-fg-3)] text-[12px] py-12">
 									{t("noMessages", lang)}
 									{isGroup && (
