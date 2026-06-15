@@ -1808,11 +1808,20 @@ export function ChatPane({ convId, members, title }: Props) {
 					<Composer
 						convId={convId}
 						members={members}
+						// A seeded/persisted draft is a *starter* for a pristine conv. Once
+						// the conv has any history (it's been sent — possibly by another
+						// client or an external driver, which clears draft_text server-side
+						// but leaves this client's convSummary snapshot stale), the starter
+						// must NOT re-fill the box. Gating on an empty stream keeps the
+						// seeded prompt from lingering during/after a running turn. Typing a
+						// follow-up uses the composer's own local state, so it's unaffected.
 						draftText={
-							convSummary?.id === convId ? convSummary.draft_text : undefined
+							convSummary?.id === convId && messages.length === 0
+								? convSummary.draft_text
+								: undefined
 						}
 						draftAttachments={
-							convSummary?.id === convId
+							convSummary?.id === convId && messages.length === 0
 								? convSummary.draft_attachments
 								: undefined
 						}
