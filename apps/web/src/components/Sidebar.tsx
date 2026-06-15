@@ -29,6 +29,7 @@ import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
 import { BrandIcon } from "./BrandIcon";
 import { NewContactModal } from "./NewContactModal";
+import { ConvListSkeleton } from "./Skeleton";
 
 /** Adapter id → human label for display in contact rows. */
 const ADAPTER_LABEL: Record<string, string> = {
@@ -316,6 +317,10 @@ export function Sidebar({
 	// conversation regardless of binding (DM / 群聊 / 项目内). This is the Layer-1
 	// hero; Contacts + Projects become secondary management sections below.
 	const [allConvs, setAllConvs] = useState<ConversationSummary[]>([]);
+	// Distinguishes "first fetch in flight" (show skeleton) from "loaded, genuinely
+	// empty" (show the new-conversation CTA) — without it the list flashes empty
+	// before the rows arrive.
+	const [convsLoaded, setConvsLoaded] = useState(false);
 	const [convsOpen, setConvsOpen] = useState(true);
 	const refreshAllConvs = useCallback(async () => {
 		try {
@@ -328,6 +333,8 @@ export function Sidebar({
 			);
 		} catch {
 			setAllConvs([]);
+		} finally {
+			setConvsLoaded(true);
 		}
 	}, []);
 	useEffect(() => {
@@ -1094,6 +1101,9 @@ export function Sidebar({
 						const rows = k
 							? allConvs.filter((c) => c.title.toLowerCase().includes(k))
 							: allConvs;
+						if (!convsLoaded && !k && rows.length === 0) {
+							return <ConvListSkeleton rows={8} />;
+						}
 						if (rows.length === 0) {
 							return (
 								<button
@@ -1127,7 +1137,10 @@ export function Sidebar({
 							// Group rows show a STACK of member avatars (orchestrator first,
 							// then others, up to 3) instead of a single icon.
 							const memberAgs = c.group
-								? [repId, ...c.members.filter((m) => m !== "you" && m !== repId)]
+								? [
+										repId,
+										...c.members.filter((m) => m !== "you" && m !== repId),
+									]
 										.flatMap((id) => {
 											const a = id ? agentById.get(id) : undefined;
 											return a ? [a] : [];

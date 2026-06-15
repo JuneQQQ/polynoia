@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
-import { Skeleton } from "../Skeleton";
+import { SKELETON_KEYS, Skeleton } from "../Skeleton";
 
 /** Card-grid skeleton shown while /api/quality is still aggregating. Mirrors the
  *  real agent-card layout (avatar + name lines + 4 metric bars) for zero shift. */
@@ -26,12 +26,11 @@ function QualityCardsSkeleton() {
 		<div
 			className="grid gap-3"
 			style={{ gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))" }}
-			role="status"
-			aria-busy="true"
+			aria-hidden="true"
 		>
-			{Array.from({ length: 4 }).map((_, i) => (
+			{SKELETON_KEYS.slice(0, 4).map((k) => (
 				<div
-					key={i}
+					key={k}
 					className="rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-3.5 space-y-3"
 				>
 					<div className="flex items-center gap-2.5">
@@ -43,8 +42,8 @@ function QualityCardsSkeleton() {
 						<Skeleton w={32} h={22} />
 					</div>
 					<div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
-						{Array.from({ length: 4 }).map((__, j) => (
-							<div key={j} className="space-y-1.5">
+						{SKELETON_KEYS.slice(0, 4).map((mk) => (
+							<div key={`${k}-${mk}`} className="space-y-1.5">
 								<Skeleton w="70%" h={9} />
 								<Skeleton w="100%" h={6} radius={9999} />
 							</div>
@@ -121,9 +120,13 @@ export function QualityPanel() {
 	// on the slowest call, and `catch → []` disguised a timeout/failure as
 	// "no contacts". Now the fast benchmark table renders immediately, and a
 	// failed quality fetch shows a retryable error state — not a fake empty one.
-	const [qState, setQState] = useState<"loading" | "error" | "ready">("loading");
+	const [qState, setQState] = useState<"loading" | "error" | "ready">(
+		"loading",
+	);
 	const [qErr, setQErr] = useState("");
-	const [rState, setRState] = useState<"loading" | "error" | "ready">("loading");
+	const [rState, setRState] = useState<"loading" | "error" | "ready">(
+		"loading",
+	);
 
 	const loadQuality = useCallback(async () => {
 		setQState("loading");
@@ -316,8 +319,8 @@ export function QualityPanel() {
 					</div>
 					{rState === "loading" ? (
 						<div className="rounded-lg border border-[var(--color-line)] overflow-hidden p-3 space-y-2">
-							{Array.from({ length: 4 }).map((_, i) => (
-								<Skeleton key={i} w="100%" h={14} />
+							{SKELETON_KEYS.slice(0, 4).map((k) => (
+								<Skeleton key={k} w="100%" h={14} />
 							))}
 						</div>
 					) : rState === "error" ? (

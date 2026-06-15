@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { type ConversationSummary, api } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { useStore } from "../../store";
+import { ConvListSkeleton } from "../Skeleton";
 
 type Props = {
 	onOpenConv: (id: string, members: string[], title: string) => void;
@@ -164,11 +165,7 @@ export function ArchiveView({ onOpenConv }: Props) {
 			</header>
 
 			<div className="flex-1 overflow-y-auto">
-				{loading && (
-					<div className="px-5 py-10 text-center text-[12px] text-[var(--color-fg-3)]">
-						{t("loading", lang)}
-					</div>
-				)}
+				{loading && <ConvListSkeleton rows={6} />}
 				{err && (
 					<div className="mx-5 my-4 px-3 py-2 text-[11.5px] rounded bg-[var(--color-red-soft)] text-[var(--color-red)] border border-[var(--color-red)]/30">
 						{t("loadFailed", lang)}
