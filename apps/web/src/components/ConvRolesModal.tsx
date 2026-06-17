@@ -5,11 +5,12 @@
  * appends a "🎭 角色更新" system event to the conv timeline so all agents
  * see the change next turn (via L4 history).
  */
-import { Library, Users, X } from "lucide-react";
+import { Users, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { type ConversationSummary, api } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useStore } from "../store";
+import { RolePresetPicker } from "./RolePresetPicker";
 
 type Props = {
 	conv: ConversationSummary;
@@ -35,47 +36,6 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 	}));
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
-
-	// agency-agents role catalog — pick a preset to fill a member's role text
-	// (group roles use agency-agents presets OR free custom text).
-	const [presets, setPresets] = useState<
-		{ id: string; name: string; division_label: string; description: string }[]
-	>([]);
-	const [presetSynced, setPresetSynced] = useState(true);
-	const [pickerFor, setPickerFor] = useState<string | null>(null);
-	const [presetQuery, setPresetQuery] = useState("");
-	const [syncing, setSyncing] = useState(false);
-	useEffect(() => {
-		api
-			.rolePresets()
-			.then((r) => {
-				setPresets(r.presets);
-				setPresetSynced(r.synced);
-			})
-			.catch(() => {});
-	}, []);
-	const _pq = presetQuery.trim().toLowerCase();
-	const filteredPresets = _pq
-		? presets.filter(
-				(p) =>
-					p.name.toLowerCase().includes(_pq) ||
-					p.division_label.toLowerCase().includes(_pq) ||
-					p.description.toLowerCase().includes(_pq),
-			)
-		: presets;
-	const syncPresets = async () => {
-		setSyncing(true);
-		try {
-			await api.rolePresetsSync();
-			const r = await api.rolePresets();
-			setPresets(r.presets);
-			setPresetSynced(r.synced);
-		} catch {
-			/* ignore */
-		} finally {
-			setSyncing(false);
-		}
-	};
 
 	useEffect(() => {
 		const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -168,105 +128,21 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 								>
 									{a.name}
 								</button>
-								<div className="relative mt-1">
-									<div className="flex gap-1.5">
-										<input
-											type="text"
-											value={draft[a.id] ?? ""}
-											onChange={(e) =>
-												setDraft((d) => ({ ...d, [a.id]: e.target.value }))
-											}
-											placeholder={t("roleDescHint2", lang)}
-											className="flex-1 min-w-0 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] transition-colors"
-										/>
-										<button
-											type="button"
-											onClick={() => {
-												setPresetQuery("");
-												setPickerFor((p) => (p === a.id ? null : a.id));
-											}}
-											title={t("pickRolePreset", lang)}
-											className="px-2 rounded border border-[var(--color-line-strong)] text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] inline-flex items-center gap-1 text-[11px] whitespace-nowrap flex-shrink-0"
-										>
-											<Library size={12} /> {t("roleLibrary", lang)}
-										</button>
-									</div>
-									{pickerFor === a.id && (
-										<>
-											<button
-												type="button"
-												aria-hidden
-												tabIndex={-1}
-												onClick={() => setPickerFor(null)}
-												className="fixed inset-0 z-[55] cursor-default bg-transparent"
-											/>
-											<div className="absolute right-0 z-[56] mt-1 w-72 max-h-60 flex flex-col rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
-												{presets.length === 0 ? (
-													<div className="p-3 text-[11.5px] text-[var(--color-fg-3)]">
-														{presetSynced ? (
-															t("roleCatalogEmpty", lang)
-														) : (
-															<button
-																type="button"
-																onClick={syncPresets}
-																disabled={syncing}
-																className="text-[var(--color-accent)] hover:underline disabled:opacity-50"
-															>
-																{syncing
-																	? t("syncing", lang)
-																	: t("syncRoleCatalog", lang)}
-															</button>
-														)}
-													</div>
-												) : (
-													<>
-														<div className="p-1.5 border-b border-[var(--color-line)]">
-															<input
-																autoFocus
-																type="text"
-																value={presetQuery}
-																onChange={(e) => setPresetQuery(e.target.value)}
-																placeholder={t("searchRolePreset", lang)}
-																className="w-full text-[12px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
-															/>
-														</div>
-														<div className="flex-1 min-h-0 overflow-y-auto py-1">
-															{filteredPresets.length > 0 ? (
-																filteredPresets.map((p) => (
-																	<button
-																		key={p.id}
-																		type="button"
-																		onClick={() => {
-																			setDraft((d) => ({
-																				...d,
-																				[a.id]: p.description,
-																			}));
-																			setPickerFor(null);
-																		}}
-																		className="w-full text-left px-2.5 py-1.5 hover:bg-[var(--color-surface-2)]"
-																	>
-																		<span className="block text-[12px] font-medium text-[var(--color-fg)] truncate">
-																			{p.name}
-																			<span className="ml-1.5 text-[10px] text-[var(--color-fg-4)]">
-																				{p.division_label}
-																			</span>
-																		</span>
-																		<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
-																			{p.description}
-																		</span>
-																	</button>
-																))
-															) : (
-																<p className="px-2.5 py-2 text-[11px] text-[var(--color-fg-3)]">
-																	{t("noMatchingPresets", lang)}
-																</p>
-															)}
-														</div>
-													</>
-												)}
-											</div>
-										</>
-									)}
+								<div className="flex gap-1.5 mt-1">
+									<input
+										type="text"
+										value={draft[a.id] ?? ""}
+										onChange={(e) =>
+											setDraft((d) => ({ ...d, [a.id]: e.target.value }))
+										}
+										placeholder={t("roleDescHint2", lang)}
+										className="flex-1 min-w-0 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] transition-colors"
+									/>
+									<RolePresetPicker
+										onPick={(p) =>
+											setDraft((d) => ({ ...d, [a.id]: p.description }))
+										}
+									/>
 								</div>
 							</div>
 						</div>
