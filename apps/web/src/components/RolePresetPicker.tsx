@@ -8,7 +8,8 @@
  * storm the API.
  */
 import { Library } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { t } from "../lib/i18n";
 import { type RolePresetRow, filterRolePresets } from "../lib/rolePresets";
@@ -52,6 +53,46 @@ export function RolePresetPicker({
 	const [query, setQuery] = useState("");
 	const [syncing, setSyncing] = useState(false);
 
+	const triggerRef = useRef<HTMLButtonElement>(null);
+	const [pos, setPos] = useState<{
+		left: number;
+		top?: number;
+		bottom?: number;
+	} | null>(null);
+	const DROPDOWN_W = 288; // w-72
+	const DROPDOWN_MAXH = 240; // max-h-60
+	const computePos = useCallback(() => {
+		const el = triggerRef.current;
+		if (!el) return;
+		const r = el.getBoundingClientRect();
+		const gap = 4;
+		const left =
+			align === "right"
+				? Math.max(8, r.right - DROPDOWN_W)
+				: Math.min(r.left, window.innerWidth - DROPDOWN_W - 8);
+		const spaceBelow = window.innerHeight - r.bottom;
+		// Flip above when there's not enough room below and more room above.
+		if (spaceBelow >= DROPDOWN_MAXH || spaceBelow >= r.top) {
+			setPos({ left, top: r.bottom + gap });
+		} else {
+			setPos({ left, bottom: window.innerHeight - r.top + gap });
+		}
+	}, [align]);
+	// While open, pin the portaled dropdown to the trigger across scroll/resize.
+	// Capture-phase scroll catches scrolling in any ancestor (e.g. the modal's
+	// overflow-y-auto member list).
+	useEffect(() => {
+		if (!open) return;
+		computePos();
+		const onMove = () => computePos();
+		window.addEventListener("scroll", onMove, true);
+		window.addEventListener("resize", onMove);
+		return () => {
+			window.removeEventListener("scroll", onMove, true);
+			window.removeEventListener("resize", onMove);
+		};
+	}, [open, computePos]);
+
 	useEffect(() => {
 		let alive = true;
 		loadPresets()
@@ -83,8 +124,9 @@ export function RolePresetPicker({
 	const filtered = filterRolePresets(rows, query);
 
 	return (
-		<div className="relative inline-block">
+		<div className="inline-block">
 			<button
+				ref={triggerRef}
 				type="button"
 				onClick={() => {
 					setQuery("");
@@ -95,80 +137,93 @@ export function RolePresetPicker({
 			>
 				<Library size={12} /> {label ?? t("roleLibrary", lang)}
 			</button>
-			{open && (
-				<>
-					<button
-						type="button"
-						aria-hidden
-						tabIndex={-1}
-						onClick={() => setOpen(false)}
-						className="fixed inset-0 z-[55] cursor-default bg-transparent"
-					/>
-					<div
-						className={`absolute ${align === "right" ? "right-0" : "left-0"} z-[56] mt-1 w-72 max-h-60 flex flex-col rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]`}
-					>
-						{rows.length === 0 ? (
-							<div className="p-3 text-[11.5px] text-[var(--color-fg-3)]">
-								{synced ? (
-									t("roleCatalogEmpty", lang)
-								) : (
-									<button
-										type="button"
-										onClick={sync}
-										disabled={syncing}
-										className="text-[var(--color-accent)] hover:underline disabled:opacity-50"
-									>
-										{syncing ? t("syncing", lang) : t("syncRoleCatalog", lang)}
-									</button>
-								)}
-							</div>
-						) : (
-							<>
-								<div className="p-1.5 border-b border-[var(--color-line)]">
-									<input
-										// biome-ignore lint/a11y/noAutofocus: dropdown search, focus-on-open is intended
-										autoFocus
-										type="text"
-										value={query}
-										onChange={(e) => setQuery(e.target.value)}
-										placeholder={t("searchRolePreset", lang)}
-										className="w-full text-[12px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
-									/>
-								</div>
-								<div className="flex-1 min-h-0 overflow-y-auto py-1">
-									{filtered.length > 0 ? (
-										filtered.map((p) => (
-											<button
-												key={p.id}
-												type="button"
-												onClick={() => {
-													onPick(p);
-													setOpen(false);
-												}}
-												className="w-full text-left px-2.5 py-1.5 hover:bg-[var(--color-surface-2)]"
-											>
-												<span className="block text-[12px] font-medium text-[var(--color-fg)] truncate">
-													{p.name}
-													<span className="ml-1.5 text-[10px] text-[var(--color-fg-4)]">
-														{p.division_label}
-													</span>
-												</span>
-												<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
-													{p.description}
-												</span>
-											</button>
-										))
+			{open &&
+				pos &&
+				createPortal(
+					<>
+						<button
+							type="button"
+							aria-hidden
+							tabIndex={-1}
+							onClick={() => setOpen(false)}
+							className="fixed inset-0 z-[69] cursor-default bg-transparent"
+						/>
+						<div
+							style={{
+								position: "fixed",
+								left: pos.left,
+								top: pos.top,
+								bottom: pos.bottom,
+								width: DROPDOWN_W,
+								maxHeight: DROPDOWN_MAXH,
+							}}
+							className="z-[70] flex flex-col rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]"
+						>
+							{rows.length === 0 ? (
+								<div className="p-3 text-[11.5px] text-[var(--color-fg-3)]">
+									{synced ? (
+										t("roleCatalogEmpty", lang)
 									) : (
-										<p className="px-2.5 py-2 text-[11px] text-[var(--color-fg-3)]">
-											{t("noMatchingPresets", lang)}
-										</p>
+										<button
+											type="button"
+											onClick={sync}
+											disabled={syncing}
+											className="text-[var(--color-accent)] hover:underline disabled:opacity-50"
+										>
+											{syncing
+												? t("syncing", lang)
+												: t("syncRoleCatalog", lang)}
+										</button>
 									)}
 								</div>
-							</>
-						)}
-					</div>
-				</>
-			)}
+							) : (
+								<>
+									<div className="p-1.5 border-b border-[var(--color-line)]">
+										<input
+											// biome-ignore lint/a11y/noAutofocus: dropdown search, focus-on-open is intended
+											autoFocus
+											type="text"
+											value={query}
+											onChange={(e) => setQuery(e.target.value)}
+											placeholder={t("searchRolePreset", lang)}
+											className="w-full text-[12px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+										/>
+									</div>
+									<div className="flex-1 min-h-0 overflow-y-auto py-1">
+										{filtered.length > 0 ? (
+											filtered.map((p) => (
+												<button
+													key={p.id}
+													type="button"
+													onClick={() => {
+														onPick(p);
+														setOpen(false);
+													}}
+													className="w-full text-left px-2.5 py-1.5 hover:bg-[var(--color-surface-2)]"
+												>
+													<span className="block text-[12px] font-medium text-[var(--color-fg)] truncate">
+														{p.name}
+														<span className="ml-1.5 text-[10px] text-[var(--color-fg-4)]">
+															{p.division_label}
+														</span>
+													</span>
+													<span className="block text-[11px] text-[var(--color-fg-3)] truncate">
+														{p.description}
+													</span>
+												</button>
+											))
+										) : (
+											<p className="px-2.5 py-2 text-[11px] text-[var(--color-fg-3)]">
+												{t("noMatchingPresets", lang)}
+											</p>
+										)}
+									</div>
+								</>
+							)}
+						</div>
+					</>,
+					document.body,
+				)}
 		</div>
 	);
 }
