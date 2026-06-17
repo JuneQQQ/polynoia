@@ -7,12 +7,14 @@
  * 入口:Sidebar 顶部 "+ 新建联系人"。
  * 底部 footer 链接 → 打开 AdapterManager(原 OnboardingModal)。
  */
-import { Check, ChevronDown, Sparkles, Trash2, Wrench, X } from "lucide-react";
+import { Check, ChevronDown, Loader2, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { t } from "../lib/i18n";
+import { type RolePresetRow, rolePresetToContactFields } from "../lib/rolePresets";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
+import { RolePresetPicker } from "./RolePresetPicker";
 
 type EnabledAdapter = {
 	id: string;
@@ -192,6 +194,31 @@ export function NewContactModal({
 	// (OnboardingModal "已刷新 ✓" / FileTree justRefreshed). Without it, a
 	// successful create closed the modal with ZERO visible feedback.
 	const [okMsg, setOkMsg] = useState<string | null>(null);
+
+	// Create-mode only: pick an agency role to prefill name/persona/color
+	// (overwrite). Parity with RolePresetLibrary's hire, minus governance.
+	const [selectedPreset, setSelectedPreset] = useState<{
+		id: string;
+		name: string;
+	} | null>(null);
+	const [presetBusy, setPresetBusy] = useState(false);
+	const onPickRolePreset = async (p: RolePresetRow) => {
+		setSelectedPreset({ id: p.id, name: p.name });
+		setName(p.name); // optimistic — name/color need no body fetch
+		setColor(p.color);
+		setPresetBusy(true);
+		try {
+			const { body } = await api.rolePreset(p.id);
+			const f = rolePresetToContactFields(p, body);
+			setName(f.name);
+			setSystemPrompt(f.systemPrompt);
+			setColor(f.color);
+		} catch (e) {
+			setErr(String(e));
+		} finally {
+			setPresetBusy(false);
+		}
+	};
 
 	// Load enabled adapters
 	const load = useCallback(async () => {
@@ -386,6 +413,34 @@ export function NewContactModal({
 
 					{adapters !== null && adapters.length > 0 && (
 						<>
+							{!isEdit && (
+								<Field label={t("pickFromRoleLibrary", lang)}>
+									<div className="flex items-center gap-2 flex-wrap">
+										<RolePresetPicker
+											onPick={onPickRolePreset}
+											align="left"
+										/>
+										{selectedPreset && (
+											<span className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--color-fg-2)]">
+												{presetBusy && (
+													<Loader2 size={11} className="animate-spin" />
+												)}
+												{t("selectedRolePreset", lang).replace(
+													"{name}",
+													selectedPreset.name,
+												)}
+												<button
+													type="button"
+													onClick={() => setSelectedPreset(null)}
+													className="text-[var(--color-fg-3)] hover:text-[var(--color-red)] underline"
+												>
+													{t("clearSelection", lang)}
+												</button>
+											</span>
+										)}
+									</div>
+								</Field>
+							)}
 							<Field label={t("adapters", lang)} required>
 								<select
 									value={adapterId}

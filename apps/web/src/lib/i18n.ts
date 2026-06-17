@@ -714,6 +714,11 @@ const STR = {
 	},
 	noMatchingPresets: { zh: "没有匹配的角色", en: "No matching roles" },
 	searchRolePreset: { zh: "搜索角色…", en: "Search roles…" },
+	pickFromRoleLibrary: {
+		zh: "从角色库选择(可选)",
+		en: "Pick from role library (optional)",
+	},
+	selectedRolePreset: { zh: "已选角色:{name}", en: "Selected role: {name}" },
 	noContactsHint2: {
 		zh: "还没有联系人 — 从「角色库」雇佣,或「新建联系人」。",
 		en: 'No contacts yet — hire from "Role library" or "New contact".',
