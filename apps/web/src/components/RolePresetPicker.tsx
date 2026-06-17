@@ -21,11 +21,17 @@ let _inflight: Promise<Loaded> | null = null;
 async function loadPresets(force = false): Promise<Loaded> {
 	if (!force && _cache) return _cache;
 	if (!force && _inflight) return _inflight;
-	const p = api.rolePresets().then((r) => {
-		_cache = { synced: r.synced, rows: r.presets };
-		_inflight = null;
-		return _cache;
-	});
+	const p = api
+		.rolePresets()
+		.then((r) => {
+			_cache = { synced: r.synced, rows: r.presets };
+			_inflight = null;
+			return _cache;
+		})
+		.catch((e) => {
+			_inflight = null;
+			throw e;
+		});
 	_inflight = p;
 	return p;
 }
