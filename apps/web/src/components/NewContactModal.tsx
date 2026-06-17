@@ -202,7 +202,7 @@ export function NewContactModal({
 		name: string;
 	} | null>(null);
 	const [presetBusy, setPresetBusy] = useState(false);
-	const onPickRolePreset = async (p: RolePresetRow) => {
+	const onPickRolePreset = useCallback(async (p: RolePresetRow) => {
 		setSelectedPreset({ id: p.id, name: p.name });
 		setName(p.name); // optimistic — name/color need no body fetch
 		setColor(p.color);
@@ -218,7 +218,7 @@ export function NewContactModal({
 		} finally {
 			setPresetBusy(false);
 		}
-	};
+	}, []);
 
 	// Load enabled adapters
 	const load = useCallback(async () => {
