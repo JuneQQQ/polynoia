@@ -78,6 +78,53 @@ def _agent_subprocess_path() -> str:
     return os.pathsep.join(parts)
 
 
+# LLM-endpoint auth/config keys that are NOT secrets to hide from the agent —
+# they're the egress + identity config the spawned CLI MUST have to reach its
+# backend. Same rationale as the proxy passthrough in env_for_agent. Passed
+# through from the server process env as a fallback for hosts that export them
+# (e.g. ~/.bashrc). On hosts that keep them ONLY in ~/.claude/settings.json's
+# ``env`` block (the recommended way for custom endpoints), the server process
+# env does NOT have them — see _claude_settings_env() below, which is the
+# canonical source.
+#
+# NOTE: deliberately NOT CLAUDE_CODE_* here. When the Polynoia server is itself
+# launched from inside a Claude Code session (common in dev), its env carries
+# CLAUDE_CODE_SESSION_ID / _SSE_PORT / _CHILD_SESSION — parent-session identity
+# that must NOT leak into sub-agents (the spawned CLI would think it's a child
+# of THIS session). CLAUDE_CODE_* the user genuinely wants lives in the
+# settings.json ``env`` block (e.g. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC),
+# which is passed through separately as a trusted source.
+_LLM_ENDPOINT_ENV_EXACT = {"API_TIMEOUT_MS"}
+_LLM_ENDPOINT_ENV_PREFIXES = ("ANTHROPIC_",)
+
+
+def _claude_settings_env() -> dict[str, str]:
+    """Return the ``env`` block from the host's ``~/.claude/settings.json``.
+
+    Claude Code reads this block and applies it to its own process env (auth
+    token, base URL, model overrides, timeouts). Polynoia's adapter spawns the
+    CLI with ``setting_sources=[]`` to keep the parent's plugins/skills out of
+    sub-agents — but that ALSO stops the CLI from loading settings.json, so on
+    hosts whose ONLY auth is this ``env`` block (custom LLM endpoint, no
+    OAuth/API-key file, nothing exported in the shell) the sandboxed CLI runs
+    unauthenticated and every turn fails as "Not logged in · Please run /login"
+    → "agent turn failed (no further detail)".
+
+    Reading the block here and injecting it into the sandbox env replicates what
+    ``setting_sources=["user"]`` would do for auth, WITHOUT re-enabling
+    plugin/skill loading. Best-effort: missing/malformed file → empty dict.
+    """
+    path = credential_source_home() / ".claude" / "settings.json"
+    try:
+        raw = path.read_text()
+        block = json.loads(raw).get("env")
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(block, dict):
+        return {}
+    return {str(k): str(v) for k, v in block.items() if v is not None}
+
+
 def register_workspace_location(
     workspace_id: str, *, path: str | None = None, integration_branch: str | None = None
 ) -> None:
@@ -2011,6 +2058,19 @@ class Sandbox:
             v = os.environ.get(k)
             if v is not None:
                 env[k] = v
+        # LLM-endpoint auth/config (ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL /
+        # model overrides / API_TIMEOUT_MS). NOT secrets to hide — the spawned
+        # CLI needs them to reach its backend. Passed through from the server
+        # process env (hosts that export them), then OVERWRITTEN by the
+        # canonical source ~/.claude/settings.json ``env`` block (hosts that
+        # keep auth ONLY there — the server env is empty in that case). Applied
+        # BEFORE HOME/POLYNOIA_* so Polynoia's own bookkeeping vars always win.
+        for k, v in os.environ.items():
+            if k in _LLM_ENDPOINT_ENV_EXACT or any(
+                k.startswith(p) for p in _LLM_ENDPOINT_ENV_PREFIXES
+            ):
+                env[k] = v
+        env.update(_claude_settings_env())
         # Direct-creds mode (macOS desktop): DON'T rewrite HOME — let the agent
         # read the host's real ~/.claude + Keychain (the copy model can't carry
         # the macOS Keychain token). Isolated-copy mode rewrites HOME → sandbox.

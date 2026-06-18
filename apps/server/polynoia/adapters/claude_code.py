@@ -707,13 +707,23 @@ async def _translate_claude_stream(
                 elif msg.subtype and msg.subtype != "success":
                     message = msg.subtype
                 else:
-                    # Fall back: include the underlying SDK error list if any
+                    # Fall back: include the underlying SDK error list if any.
+                    # The CLI also surfaces a human message in `result` for
+                    # pre-flight failures that have no api_error_status / errors
+                    # — e.g. an unauthenticated CLI returns
+                    # ``is_error=True, subtype="success", result="Not logged in
+                    # · Please run /login"``. Without checking `result` the user
+                    # sees the useless "agent turn failed (no further detail)"
+                    # AND we miss the "logged in" / "/login" rate markers that
+                    # would route this to the retryable-credential path.
                     errors = getattr(msg, "errors", None) or []
-                    message = (
-                        "; ".join(str(e) for e in errors)
-                        if errors
-                        else "agent turn failed (no further detail)"
-                    )
+                    result_text = (getattr(msg, "result", None) or "").strip()
+                    if errors:
+                        message = "; ".join(str(e) for e in errors)
+                    elif result_text:
+                        message = result_text
+                    else:
+                        message = "agent turn failed (no further detail)"
                 yield TurnFailedEvent(
                     turn_id=turn_id,
                     task_id=task_id,
