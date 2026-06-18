@@ -1327,6 +1327,17 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     "429", "401", "被限速", "配额", "rate", "quota", "RPS",
                     "凭证", "overloaded", "529", "logged in", "/login",
                 )
+                # ...but a CLI with NO credential at all surfaces as
+                # "Not logged in · Please run /login" — it matches the markers
+                # above yet is TERMINAL: a respawn-retry can't conjure missing
+                # creds (an expired/refreshable token instead arrives as a
+                # 401/凭证 and IS worth retrying). Without this guard the
+                # unauthenticated case burns the whole _RETRY_BACKOFF (~230s)
+                # before the real error reaches the user — the opposite of
+                # surfacing it promptly. These substrings are absent from the
+                # retryable 401 text ("...凭证失效,请重新登录 claude /login"),
+                # so genuine 401s still retry.
+                _TERMINAL_AUTH_MARKERS = ("not logged in", "please run /login")
 
                 for attempt in range(_TURN_RETRIES + 1):
                     # Later attempts wait longer for first output (a slow model
@@ -1491,6 +1502,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                     not produced
                                     and attempt < _TURN_RETRIES
                                     and any(s in _etxt for s in _RATE_MARKERS)
+                                    and not any(
+                                        m in _etxt.lower()
+                                        for m in _TERMINAL_AUTH_MARKERS
+                                    )
                                 ):
                                     raise _RetryableUpstream(_etxt)
                                 turn_failed = True

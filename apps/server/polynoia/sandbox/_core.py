@@ -97,6 +97,21 @@ def _agent_subprocess_path() -> str:
 _LLM_ENDPOINT_ENV_EXACT = {"API_TIMEOUT_MS"}
 _LLM_ENDPOINT_ENV_PREFIXES = ("ANTHROPIC_",)
 
+# settings.json is a TRUSTED, user-authored source, so it may ALSO carry
+# CLAUDE_CODE_* (static config the user genuinely wants, e.g.
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) — unlike the os.environ passthrough
+# above, which excludes CLAUDE_CODE_* to avoid leaking the parent session's
+# identity. Everything else in the block (PATH / proxy / LANG / HOME / ...) is
+# deliberately NOT injected: env_for_agent owns those, and letting a key in
+# settings.json silently override the sandbox PATH or the host's chosen proxy
+# egress is outside this path's auth-only scope (and has no opt-out / log).
+_SETTINGS_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_")
+
+
+def _is_settings_auth_key(key: str) -> bool:
+    """Allowlist for keys injected from settings.json's ``env`` block."""
+    return key in _LLM_ENDPOINT_ENV_EXACT or key.startswith(_SETTINGS_ENV_PREFIXES)
+
 
 def _claude_settings_env() -> dict[str, str]:
     """Return the ``env`` block from the host's ``~/.claude/settings.json``.
@@ -112,17 +127,29 @@ def _claude_settings_env() -> dict[str, str]:
 
     Reading the block here and injecting it into the sandbox env replicates what
     ``setting_sources=["user"]`` would do for auth, WITHOUT re-enabling
-    plugin/skill loading. Best-effort: missing/malformed file → empty dict.
+    plugin/skill loading. Only auth/endpoint keys are injected (see
+    _is_settings_auth_key). Best-effort: missing/malformed file → empty dict.
     """
     path = credential_source_home() / ".claude" / "settings.json"
     try:
-        raw = path.read_text()
-        block = json.loads(raw).get("env")
-    except (OSError, ValueError, TypeError):
+        # encoding='utf-8': a non-ASCII value on a non-UTF-8 Windows codepage
+        # must not raise (it would be swallowed below → silent auth drop, on the
+        # exact custom-endpoint platform this path targets).
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
+    # A valid-JSON non-object root (``[]`` / ``42`` / ``null``) has no ``.get`` —
+    # guard before calling it, or env_for_agent (invoked on EVERY agent spawn)
+    # raises an uncaught AttributeError and crashes the turn. Honors the
+    # docstring's "missing/malformed → empty dict" contract.
+    block = data.get("env") if isinstance(data, dict) else None
     if not isinstance(block, dict):
         return {}
-    return {str(k): str(v) for k, v in block.items() if v is not None}
+    return {
+        str(k): str(v)
+        for k, v in block.items()
+        if v is not None and _is_settings_auth_key(str(k))
+    }
 
 
 def register_workspace_location(

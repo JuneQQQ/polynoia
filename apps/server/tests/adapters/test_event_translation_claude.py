@@ -392,3 +392,36 @@ async def test_stream_event_thinking_yields_reasoning_part(claude_msgs_simple) -
     assert completed.part.kind == "reasoning"
     assert completed.part.body[0].c == "let me reason"
     assert started.part_id == delta.part_id == completed.part_id
+
+
+@pytest.mark.asyncio
+async def test_result_is_error_surfaces_result_text_fallback(claude_msgs_simple) -> None:
+    """Regression (FINDING-005): an unauthenticated CLI returns
+    ResultMessage(is_error=True, subtype='success', api_error_status=None,
+    errors=[], result='Not logged in · Please run /login'). The real message
+    must flow out via the ``result`` fallback — not the useless dead-end
+    'agent turn failed (no further detail)' — so the user sees the actual cause
+    (and ws_conv can route it: see _TERMINAL_AUTH_MARKERS)."""
+    msg = ResultMessage(
+        subtype="success",
+        duration_ms=10,
+        duration_api_ms=8,
+        is_error=True,
+        num_turns=0,
+        session_id="s1",
+        total_cost_usd=0.0,
+        usage={},
+    )
+    # No upstream HTTP status and no SDK error list — only the human `result`.
+    msg.api_error_status = None  # type: ignore[attr-defined]
+    msg.result = "Not logged in · Please run /login"  # type: ignore[attr-defined]
+
+    gen = claude_msgs_simple([msg])
+    events = [
+        ev async for ev in _translate_claude_stream(gen, turn_id="t1", task_id="x")
+    ]
+    fail_evs = [e for e in events if e.type == "turn.failed"]
+    assert len(fail_evs) == 1
+    message = fail_evs[0].error.get("message", "")
+    assert message == "Not logged in · Please run /login"
+    assert "no further detail" not in message
