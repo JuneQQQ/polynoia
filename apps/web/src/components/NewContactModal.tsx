@@ -187,6 +187,11 @@ export function NewContactModal({
 	};
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
+	// Transient success flash (✓) shown briefly before the modal closes — the app
+	// has no toast system, so this matches the existing inline-feedback pattern
+	// (OnboardingModal "已刷新 ✓" / FileTree justRefreshed). Without it, a
+	// successful create closed the modal with ZERO visible feedback.
+	const [okMsg, setOkMsg] = useState<string | null>(null);
 
 	// Load enabled adapters
 	const load = useCallback(async () => {
@@ -303,7 +308,16 @@ export function NewContactModal({
 				});
 			}
 			await onCreated();
-			onClose();
+			// Show a brief ✓ confirmation, then close (keep `busy` so the form
+			// can't be re-submitted during the flash). 1100ms matches FileTree's
+			// transient-feedback revert.
+			setOkMsg(
+				t(isEdit ? "contactSaved" : "contactCreated", lang).replace(
+					"{name}",
+					name.trim(),
+				),
+			);
+			setTimeout(onClose, 1100);
 		} catch (e) {
 			setErr(String(e));
 			setBusy(false);
@@ -690,6 +704,12 @@ export function NewContactModal({
 					{err && (
 						<div className="text-[11.5px] text-[var(--color-red)] bg-[var(--color-red-soft)]/40 px-3 py-2 rounded border border-[var(--color-red)]/30">
 							{err}
+						</div>
+					)}
+
+					{okMsg && (
+						<div className="text-[11.5px] text-[#27AE60] bg-[#27AE60]/10 px-3 py-2 rounded border border-[#27AE60]/30">
+							{okMsg}
 						</div>
 					)}
 				</div>

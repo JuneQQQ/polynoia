@@ -163,3 +163,49 @@ async def test_process_crash_when_no_terminal_event() -> None:
     assert types == ["turn.failed"]
     assert events[0].error["subtype"] == "process_crash"
     assert events[0].error["returncode"] == 1
+
+
+def test_v2_mcp_tool_call_running_carries_head_capped_input_preview():
+    """FINDING (codex write streaming): a running mcpToolCall must carry
+    input_preview = the HEAD of the args JSON, so the frontend WriteStreamCard's
+    ``streamingArgs = state==="running" && !!input_preview`` gate fires and the
+    file streams instead of "popping in" fully formed. HEAD-capped (not tail) so
+    the frontend's head-anchored ``"content":"`` parser still extracts content."""
+    from polynoia.adapters.codex import _v2_item_to_toolcall
+
+    big = "<!DOCTYPE html>\n" + ("x" * 5000)
+    item = {
+        "type": "mcpToolCall",
+        "id": "i1",
+        "status": "inProgress",
+        "server": "polynoia",
+        "tool": "write",
+        "arguments": {"path": "index.html", "content": big},
+    }
+    tc = _v2_item_to_toolcall(item)
+    assert tc is not None
+    assert tc.state == "running"
+    assert tc.input_preview, "running write card needs a non-empty input_preview"
+    # HEAD-anchored: the path/content keys (near the start) survive the cap
+    assert '"path"' in tc.input_preview[:80]
+    assert '"content"' in tc.input_preview
+    # capped — NOT the whole 5KB buffer
+    assert len(tc.input_preview) <= 2010
+
+
+def test_v2_mcp_tool_call_small_args_preview_uncapped():
+    """A small args payload is passed through whole (no ellipsis cap)."""
+    from polynoia.adapters.codex import _v2_item_to_toolcall
+
+    item = {
+        "type": "mcpToolCall",
+        "id": "i2",
+        "status": "inProgress",
+        "server": "polynoia",
+        "tool": "write",
+        "arguments": {"path": "a.txt", "content": "hi"},
+    }
+    tc = _v2_item_to_toolcall(item)
+    assert tc is not None and tc.input_preview
+    assert "…" not in tc.input_preview
+    assert '"content"' in tc.input_preview and "hi" in tc.input_preview

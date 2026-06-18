@@ -546,11 +546,18 @@ async def _translate_claude_stream(
                                 # Stream the raw args into the EXPANDABLE body
                                 # (input_preview), not the one-line summary, so
                                 # the user can open the fold and watch them build.
-                                # Send only the TAIL (last ~2k chars) so a multi-KB
+                                # Send only the HEAD (first ~2k chars) so a multi-KB
                                 # dispatch doesn't re-push the whole growing buffer
                                 # every tick (O(N²) → O(N)); the full input lands
                                 # on completion anyway.
-                                preview = buf if len(buf) <= 2000 else ("…" + buf[-2000:])
+                                # MUST be the head, not the tail: the frontend's
+                                # extractWriteFields (ToolCallPart.tsx) is HEAD-anchored
+                                # — it matches the literal ``"content":"`` which sits
+                                # near the START of the args JSON. A tail cap drops that
+                                # anchor → content can't be parsed → the write card
+                                # freezes forever at "准备写入…". Keep the head so the
+                                # anchor survives the whole stream.
+                                preview = buf if len(buf) <= 2000 else (buf[:2000] + "…")
                                 updated = prev.model_copy(update={
                                     "input_preview": preview,
                                     "summary": "生成参数中…",

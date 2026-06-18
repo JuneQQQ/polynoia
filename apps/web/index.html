@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -25,12 +25,12 @@
     />
   </head>
   <body>
-    <!-- Restore the user's chosen theme before paint (no FOUC). Default: dark Atelier. -->
+    <!-- Restore the user's chosen theme before paint (no FOUC). Default: light (warm cream / 暖奶油). -->
     <script>
       try {
         var t = localStorage.getItem("polynoia-theme");
-        // Any known preset (light/dark/nord/forest/mono/dusk); fall back to dark.
-        var ok = ["light","dark","nord","forest","mono","dusk"];
+        // Any known preset; fall back to the html default (light / 暖奶油).
+        var ok = ["dark","light","ink-blue","sage-paper","slate-copper","mist-stone"];
         if (t && ok.indexOf(t) !== -1) document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>

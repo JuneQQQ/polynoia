@@ -22,15 +22,15 @@ const KEY = "polynoia-theme";
 const THEMES: { id: string; nameKey: TKey; bg: string; accent: string }[] = [
 	{ id: "dark", nameKey: "themeDark", bg: "#14110c", accent: "#ec8a4c" },
 	{ id: "light", nameKey: "themeLight", bg: "#f6f2ea", accent: "#e07a3c" },
-	{ id: "nord", nameKey: "themeNord", bg: "#2e3440", accent: "#88c0d0" },
-	{ id: "forest", nameKey: "themeForest", bg: "#2d353b", accent: "#a7c080" },
-	{ id: "dusk", nameKey: "themeDusk", bg: "#1a1b26", accent: "#bb9af7" },
-	{ id: "mono", nameKey: "themeMono", bg: "#fafafa", accent: "#2d2d2d" },
+	{ id: "ink-blue", nameKey: "themeInkBlue", bg: "#101418", accent: "#5f9fce" },
+	{ id: "sage-paper", nameKey: "themeSagePaper", bg: "#f3f5ef", accent: "#4f8f82" },
+	{ id: "slate-copper", nameKey: "themeSlateCopper", bg: "#151615", accent: "#d1844a" },
+	{ id: "mist-stone", nameKey: "themeMistStone", bg: "#f4f3ef", accent: "#647d8f" },
 ];
 
 function current(): string {
-	const t = document.documentElement.dataset.theme || "dark";
-	return THEMES.some((x) => x.id === t) ? t : "dark";
+	const t = document.documentElement.dataset.theme || "light";
+	return THEMES.some((x) => x.id === t) ? t : "light";
 }
 
 export function ThemeToggle() {

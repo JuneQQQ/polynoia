@@ -148,7 +148,7 @@ function unescapeJSONBody(s: string): string {
  * it's available, else from the still-streaming raw `input_preview` JSON (the
  * content field is often unterminated while the model is mid-write). Best-effort:
  * this drives a live preview; the final `diff` card is authoritative. */
-function extractWriteFields(payload: ToolCallPayload): {
+export function extractWriteFields(payload: ToolCallPayload): {
 	path: string;
 	content: string;
 } {

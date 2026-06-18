@@ -1011,9 +1011,27 @@ export function ChatPane({ convId, members, title }: Props) {
 			activeAgents.filter((a) => {
 				if (activeBurstAgents.has(a.id)) return false;
 				if (activeDiscussionAgents.has(a.id)) return false;
-				return !messages.some((m) => messageIsFreshForAgent(m, a.id, a.ts));
+				// A regenerate/resend pre-creates an EMPTY reused agent message and
+				// stamps created_at=now, which made messageIsFreshForAgent true and
+				// SUPPRESSED the typing placeholder while no content was rendering yet
+				// (the "进行中" indicator vanished on regenerate). Only count the agent
+				// as "already replying" — and thus hide the placeholder — once its
+				// message has actually started rendering (live stream OR real content),
+				// not merely because an empty row exists.
+				return !messages.some(
+					(m) =>
+						messageIsFreshForAgent(m, a.id, a.ts) &&
+						(streamingMessageIdsForRender.has(m.id) ||
+							isRenderableMessagePayload(m.payload, false)),
+				);
 			}),
-		[activeAgents, activeBurstAgents, activeDiscussionAgents, messages],
+		[
+			activeAgents,
+			activeBurstAgents,
+			activeDiscussionAgents,
+			messages,
+			streamingMessageIdsForRender,
+		],
 	);
 
 	const claimedSet = useMemo(() => {

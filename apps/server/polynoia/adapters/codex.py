@@ -1028,10 +1028,21 @@ def _v2_item_to_toolcall(item: dict[str, Any]) -> ToolCallPayload | None:
             if result
             else (err.get("message") if err else None)
         )
+        # input_preview = the args JSON so the running write card streams content
+        # (frontend WriteStreamCard reads input_preview). codex delivers arguments
+        # ATOMICALLY (no per-token arg deltas in the app-server protocol), so this
+        # can't animate line-by-line like claude — but on item/started the running
+        # card now shows the file body instead of a blank "准备写入…" before the
+        # diff card lands. HEAD-capped (first ~2k) to keep the frontend's
+        # head-anchored ``"content":"`` parser working and avoid pushing multi-KB.
+        _args = item.get("arguments") or {}
+        _arg_str = _args if isinstance(_args, str) else json.dumps(_args, ensure_ascii=False)
+        _preview = _arg_str if len(_arg_str) <= 2000 else (_arg_str[:2000] + "…")
         return ToolCallPayload(
             tool_call_id=item_id,
             name=f"{item.get('server', 'mcp')}::{item.get('tool', '')}",
             input=item.get("arguments") or {},
+            input_preview=_preview,
             state=_codex_v2_status_to_state(status),
             is_error=status == "failed",
             output=result.get("content") or err.get("message"),
