@@ -30,10 +30,17 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 		[conv.members, agents],
 	);
 
-	// Local draft keyed by agent_id. Initialize from server snapshot.
-	const [draft, setDraft] = useState<Record<string, string>>(() => ({
-		...(conv.member_roles ?? {}),
-	}));
+	// Default each member's duty to their contact's 专长简介 (tagline) when this
+	// conversation hasn't saved a duty for them yet — an editable, clearable
+	// default. Frontend-draft only; the backend member_role_for is untouched.
+	const seeded = useMemo<Record<string, string>>(() => {
+		const base: Record<string, string> = { ...(conv.member_roles ?? {}) };
+		for (const a of memberAgents) {
+			if (!(a.id in base) && a.tagline) base[a.id] = a.tagline;
+		}
+		return base;
+	}, [conv.member_roles, memberAgents]);
+	const [draft, setDraft] = useState<Record<string, string>>(seeded);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
@@ -44,13 +51,12 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 	}, [onClose]);
 
 	const dirty = useMemo(() => {
-		const before = conv.member_roles ?? {};
-		const rk = new Set([...Object.keys(before), ...Object.keys(draft)]);
+		const rk = new Set([...Object.keys(seeded), ...Object.keys(draft)]);
 		for (const k of rk) {
-			if ((before[k] ?? "") !== (draft[k] ?? "").trim()) return true;
+			if ((seeded[k] ?? "") !== (draft[k] ?? "").trim()) return true;
 		}
 		return false;
-	}, [draft, conv.member_roles]);
+	}, [draft, seeded]);
 
 	const save = async () => {
 		if (!dirty) return;
@@ -135,10 +141,11 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 										onChange={(e) =>
 											setDraft((d) => ({ ...d, [a.id]: e.target.value }))
 										}
-										placeholder={t("roleDescHint2", lang)}
+										placeholder={a.tagline || t("roleDescHint2", lang)}
 										className="flex-1 min-w-0 text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)] transition-colors"
 									/>
 									<RolePresetPicker
+										label={t("useAsResponsibility", lang)}
 										onPick={(p) =>
 											setDraft((d) => ({ ...d, [a.id]: p.description }))
 										}
