@@ -30,17 +30,9 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 		[conv.members, agents],
 	);
 
-	// Default each member's duty to their contact's 专长简介 (tagline) when this
-	// conversation hasn't saved a duty for them yet — an editable, clearable
-	// default. Frontend-draft only; the backend member_role_for is untouched.
-	const seeded = useMemo<Record<string, string>>(() => {
-		const base: Record<string, string> = { ...(conv.member_roles ?? {}) };
-		for (const a of memberAgents) {
-			if (!(a.id in base) && a.tagline) base[a.id] = a.tagline;
-		}
-		return base;
-	}, [conv.member_roles, memberAgents]);
-	const [draft, setDraft] = useState<Record<string, string>>(seeded);
+	const [draft, setDraft] = useState<Record<string, string>>(() => ({
+		...(conv.member_roles ?? {}),
+	}));
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
@@ -51,12 +43,13 @@ export function ConvRolesModal({ conv, onClose, onSaved }: Props) {
 	}, [onClose]);
 
 	const dirty = useMemo(() => {
-		const rk = new Set([...Object.keys(seeded), ...Object.keys(draft)]);
+		const before = conv.member_roles ?? {};
+		const rk = new Set([...Object.keys(before), ...Object.keys(draft)]);
 		for (const k of rk) {
-			if ((seeded[k] ?? "") !== (draft[k] ?? "").trim()) return true;
+			if ((before[k] ?? "") !== (draft[k] ?? "").trim()) return true;
 		}
 		return false;
-	}, [draft, seeded]);
+	}, [draft, conv.member_roles]);
 
 	const save = async () => {
 		if (!dirty) return;
