@@ -411,6 +411,10 @@ function GroupTab({
 				if (orchestratorId === id) setOrchestratorId(null);
 			} else {
 				next.add(id);
+				// Default the new member's duty to their 专长简介 (editable/clearable).
+				const a = agents.find((m) => m.id === id);
+				if (a?.tagline)
+					setRoles((r) => (id in r ? r : { ...r, [id]: a.tagline as string }));
 			}
 			return next;
 		});
@@ -532,7 +536,10 @@ function GroupTab({
 											type="text"
 											value={roles[id] ?? ""}
 											onChange={(e) => setRole(id, e.target.value)}
-											placeholder={t("roleDescHint", lang)}
+											placeholder={
+												agents.find((m) => m.id === id)?.tagline ||
+												t("roleDescHint", lang)
+											}
 											className="flex-1 text-[11.5px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 										/>
 										<button
