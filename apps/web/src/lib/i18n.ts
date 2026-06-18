@@ -717,17 +717,11 @@ const STR = {
 	},
 	noMatchingPresets: { zh: "没有匹配的专长", en: "No matching specialties" },
 	searchRolePreset: { zh: "搜索专长…", en: "Search specialties…" },
-	pickFromRoleLibrary: {
-		zh: "从专长库选择(可选)",
-		en: "Pick from specialty library (optional)",
-	},
-	selectedRolePreset: { zh: "已选:{name}", en: "Selected: {name}" },
-	contactTagline: { zh: "专长简介", en: "Specialty (one-liner)" },
+	contactTagline: { zh: "一句话简介", en: "One-liner" },
 	contactTaglineHint: {
-		zh: "一句话概括 Ta 的专长(进群时作为默认本轮职责)",
-		en: "One line on their specialty (used as the default duty in groups)",
+		zh: "一句话介绍 Ta(显示在联系人列表)",
+		en: "One line about them (shown in the contact list)",
 	},
-	applyToPersona: { zh: "应用到人设", en: "Apply to persona" },
 	useAsResponsibility: { zh: "用作本轮职责", en: "Use as duty" },
 	noContactsHint2: {
 		zh: "还没有联系人 — 从「专长库」雇佣,或「新建联系人」。",
