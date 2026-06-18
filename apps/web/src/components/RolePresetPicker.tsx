@@ -1,7 +1,8 @@
 /** RolePresetPicker — inline agency-agents role picker: a trigger button + an
  * anchored dropdown (search + first-run sync gate). The SELECTION side-effect is
- * the caller's — pass onPick(preset). Used by ConvRolesModal (fill member role
- * text = description) and NewContactModal (prefill persona/name/color).
+ * the caller's — pass onPick(preset). Used by ConvRolesModal (in-chat) and
+ * NewConvModal's GroupTab (group creation) to fill a member's 本轮职责 =
+ * preset.description. (Contacts are persona-only; no picker there.)
  *
  * Presets load once and are shared across instances via a module-level cache —
  * ConvRolesModal renders one picker PER member, so per-instance fetches would
