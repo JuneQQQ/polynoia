@@ -67,6 +67,7 @@ type Props = {
 		adapter_id?: string;
 		name?: string;
 		system_prompt?: string;
+		tagline?: string;
 		color?: string;
 	} | null;
 };
@@ -112,6 +113,7 @@ export function NewContactModal({
 	const [systemPrompt, setSystemPrompt] = useState(
 		editing?.system_prompt ?? pf?.system_prompt ?? "",
 	);
+	const [tagline, setTagline] = useState(editing?.tagline ?? pf?.tagline ?? "");
 	const [color, setColor] = useState(
 		editing?.color ?? pf?.color ?? COLOR_OPTIONS[0],
 	);
@@ -213,6 +215,7 @@ export function NewContactModal({
 			setName(f.name);
 			setSystemPrompt(f.systemPrompt);
 			setColor(f.color);
+			setTagline(f.tagline);
 		} catch (e) {
 			setErr(String(e));
 		} finally {
@@ -319,6 +322,7 @@ export function NewContactModal({
 					name: name.trim(),
 					model: finalModel,
 					system_prompt: systemPrompt.trim(),
+					tagline: tagline.trim(),
 					color,
 					max_context_tokens: parsedMaxCtx,
 					skills: cleanSkills(),
@@ -329,6 +333,7 @@ export function NewContactModal({
 					name: name.trim(),
 					model: finalModel,
 					system_prompt: systemPrompt.trim() || undefined,
+					tagline: tagline.trim() || undefined,
 					color,
 					max_context_tokens: parsedMaxCtx ?? undefined,
 					skills: cleanSkills(),
@@ -419,6 +424,7 @@ export function NewContactModal({
 										<RolePresetPicker
 											onPick={onPickRolePreset}
 											align="left"
+											label={t("applyToPersona", lang)}
 										/>
 										{selectedPreset && (
 											<span className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--color-fg-2)]">
@@ -559,6 +565,16 @@ export function NewContactModal({
 										{t("contactNameConflict", lang)}
 									</div>
 								)}
+							</Field>
+
+							<Field label={t("contactTagline", lang)}>
+								<input
+									type="text"
+									value={tagline}
+									onChange={(e) => setTagline(e.target.value)}
+									placeholder={t("contactTaglineHint", lang)}
+									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+								/>
 							</Field>
 
 							<Field label={t("systemPrompt", lang)}>
