@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	type RolePresetRow,
-	filterRolePresets,
-	rolePresetToContactFields,
-} from "./rolePresets";
+import { type RolePresetRow, filterRolePresets } from "./rolePresets";
 
 const rows: RolePresetRow[] = [
 	{
@@ -40,16 +36,5 @@ describe("filterRolePresets", () => {
 	});
 	it("returns [] when nothing matches", () => {
 		expect(filterRolePresets(rows, "zzz")).toEqual([]);
-	});
-});
-
-describe("rolePresetToContactFields", () => {
-	it("takes name + color from the row, system_prompt from the body, tagline from the description (hire parity)", () => {
-		expect(rolePresetToContactFields(rows[0], "FULL ROLE BODY")).toEqual({
-			name: "Backend Architect",
-			systemPrompt: "FULL ROLE BODY",
-			color: "#3D7FD1",
-			tagline: "Scalable APIs and services",
-		});
 	});
 });
