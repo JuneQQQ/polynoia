@@ -92,6 +92,40 @@ jobs:
           pnpm --filter @polynoia/web build
           node -e "if(!require('fs').existsSync('apps/web/dist/index.html')){console.error('FATAL: apps/web/dist/index.html is missing after the web build. Bundling now would ship a desktop app that opens to \"asset not found: index.html\" (regression of #21). Aborting.');process.exit(1)}console.log('OK: apps/web/dist/index.html present — frontend will embed into the bundle.')"
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+
+      # The packaged app launches its embedded Python backend with a uv it ships
+      # INSIDE the bundle. tauri.conf.json declares `resources/bin` as a required
+      # (non-glob) bundle resource, but it is gitignored and was only staged by
+      # the manual build-desktop.ps1 — CI never staged it. Without this step the
+      # cargo build aborts with `ResourcePathNotFound` on the missing
+      # resources/bin BEFORE bundling (so the job fails on every matrix leg and
+      # never even reaches the #21 guard above), and a bundle shipped without uv
+      # can't start its backend on a clean machine. Stage the uv we just
+      # installed under the per-OS name main.rs:uv_program() looks for
+      # (resources/bin/uv on unix, resources/bin/uv.exe on Windows). Runs BEFORE
+      # tauri-action; prepare-desktop-server.mjs only clears resources/server, so
+      # this staged binary survives the beforeBuildCommand.
+      - name: Stage bundled uv into resources/bin (lets the build find the required resource + the app launch its backend)
+        shell: bash
+        run: |
+          bin_dir="apps/desktop/src-tauri/resources/bin"
+          mkdir -p "$bin_dir"
+          uv_src="$(command -v uv || command -v uv.exe || true)"
+          if [ -z "$uv_src" ]; then
+            echo "FATAL: uv not on PATH after setup-uv; cannot stage the bundled backend launcher." >&2
+            exit 1
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "$uv_src" "$bin_dir/uv.exe"
+          else
+            cp "$uv_src" "$bin_dir/uv"
+            chmod +x "$bin_dir/uv"
+          fi
+          echo "Staged uv from $uv_src:"
+          ls -l "$bin_dir"
+
       - name: Build and publish desktop bundle
         uses: tauri-apps/tauri-action@v0
         env:
