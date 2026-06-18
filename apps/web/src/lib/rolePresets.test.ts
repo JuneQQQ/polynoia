@@ -44,11 +44,12 @@ describe("filterRolePresets", () => {
 });
 
 describe("rolePresetToContactFields", () => {
-	it("takes name+color from the row and system_prompt from the full body (hire parity)", () => {
+	it("takes name + color from the row, system_prompt from the body, tagline from the description (hire parity)", () => {
 		expect(rolePresetToContactFields(rows[0], "FULL ROLE BODY")).toEqual({
 			name: "Backend Architect",
 			systemPrompt: "FULL ROLE BODY",
 			color: "#3D7FD1",
+			tagline: "Scalable APIs and services",
 		});
 	});
 });

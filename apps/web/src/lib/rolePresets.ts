@@ -28,11 +28,16 @@ export function filterRolePresets(
 
 /** Map a preset + its full markdown body onto the contact fields the create form
  * prefills — parity with the backend hire mapping minus governance (no
- * tool_role / tagline). system_prompt is the FULL body, like RolePresetLibrary's
- * hire. */
+ * tool_role). system_prompt is the FULL body, like RolePresetLibrary's hire.
+ * tagline is sourced from preset.description. */
 export function rolePresetToContactFields(
 	preset: RolePresetRow,
 	body: string,
-): { name: string; systemPrompt: string; color: string } {
-	return { name: preset.name, systemPrompt: body, color: preset.color };
+): { name: string; systemPrompt: string; color: string; tagline: string } {
+	return {
+		name: preset.name,
+		systemPrompt: body,
+		color: preset.color,
+		tagline: preset.description,
+	};
 }
