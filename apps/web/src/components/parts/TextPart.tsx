@@ -79,6 +79,18 @@ function useMentionSplitter() {
 	}, [agents]);
 }
 
+// Defensive strip of leaked tool-call protocol tags (a lone </parameter>,
+// dangling <invoke>, antml:-namespaced variants) an LLM occasionally emits as
+// visible text. The backend strips these on persist, but the LIVE stream can
+// briefly show them before the turn-end clean — strip at render so the user
+// never sees raw protocol. Scoped to protocol tag NAMES, so real <…> in prose /
+// code (e.g. `a < b`, HTML in a code fence) is untouched.
+const LEAKED_TOOL_TAG_RE =
+	/<\/?(?:antml:)?(?:parameter|invoke|function_calls|tool_call|tool_result|tool_response|tool_use)\b[^>]*>/gi;
+function stripLeakedToolTags(s: string): string {
+	return s.includes("<") ? s.replace(LEAKED_TOOL_TAG_RE, "") : s;
+}
+
 /** Split string children on recognized @member names → emphasized Mention chips. */
 function MentionAware({ children }: { children: React.ReactNode }) {
 	const { re, byName } = useMentionSplitter();
@@ -529,7 +541,7 @@ export const TextPart = memo(function TextPart({
 		<div className="text-[13px] text-[var(--color-fg)]">
 			{payload.body.map((block, i) =>
 				typeof block.c === "string" ? (
-					<StringBlock key={i} text={block.c} isStreaming={isStreaming} />
+					<StringBlock key={i} text={stripLeakedToolTags(block.c)} isStreaming={isStreaming} />
 				) : (
 					// Structured inline (mention-aware), no markdown pass
 					<p key={i} className="my-1 leading-relaxed">

@@ -46,8 +46,8 @@ from polynoia.api.routes import (
     _build_conflict_fix_prompt,
     _build_mention_resolver,
     _coerce_tool_state,
-    _conv_agent_locks,
     _conv_agent_discussion,
+    _conv_agent_locks,
     _conv_agent_tasks,
     _conv_agent_turn,
     _conv_bursts,
@@ -61,8 +61,6 @@ from polynoia.api.routes import (
     _error_text_from_chunk,
     _extract_ask_form_blocks,
     _extract_tasks_blocks,
-    _recover_leaked_dispatch,
-    _recover_raw_tool_protocol,
     _gather_turn_images,
     _is_bare_ack_bounce,
     _live_clear_agent,
@@ -75,10 +73,13 @@ from polynoia.api.routes import (
     _pending_dispatches,
     _persist_and_emit_error,
     _phase_from_chunk,
+    _recover_leaked_dispatch,
+    _recover_raw_tool_protocol,
     _register_conv_outbox,
     _single_direct_mention_target,
     _spawn_dispatcher,
     _spawn_turn,
+    _strip_orphan_tool_tags,
     _tap_text_into,
     _unregister_conv_outbox,
     _with_orchestrator_mention_routing_hint,
@@ -138,6 +139,37 @@ def _rewrite_outgoing_chunk(
     ):
         payload["data"]["discussion_id"] = discussion_id
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def _turn_called_tool(tool_parts: dict[str, dict], tool_name: str) -> bool:
+    """True when this completed turn contains a tool-call with this final name."""
+    for part in tool_parts.values():
+        if not isinstance(part, dict) or part.get("kind") != "tool-call":
+            continue
+        name = str(part.get("name") or "").rsplit("__", 1)[-1]
+        if name == tool_name:
+            return True
+    return False
+
+
+def _should_skip_mention_chain(
+    *,
+    suppress_dispatch: bool,
+    burst_task_id: str | None,
+    turn_presented: bool,
+    turn_dispatched: bool,
+    turn_discussed: bool,
+    burst_started: bool,
+) -> bool:
+    """Treat post-turn @mentions as prose after terminal/orchestration actions."""
+    return (
+        suppress_dispatch
+        or burst_task_id is not None
+        or turn_presented
+        or turn_dispatched
+        or turn_discussed
+        or burst_started
+    )
 
 
 @ws_router.websocket("/ws/conv/{conv_id}")
@@ -1259,7 +1291,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 if _trace_flushed:
                     return
                 _trace_flushed = True
-                partial = "".join(response_buffer).strip()
+                partial = _strip_orphan_tool_tags("".join(response_buffer).strip())
                 if not tool_parts and not partial:
                     return
                 with suppress(Exception):
@@ -1794,6 +1826,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # renders in the thread. Only for a real orchestrator turn (not a
             # suppressed summary, not a burst worker).
             full_text, _leaked_dispatch = _recover_leaked_dispatch(full_text)
+            # Sweep any leftover orphan protocol tags (a lone </parameter>, dangling
+            # <invoke>, antml:-namespaced variants) the structured recoveries above
+            # don't catch — observed: opus leaking a trailing </parameter> after an
+            # ask_user call, which rendered as visible text.
+            full_text = _strip_orphan_tool_tags(full_text)
             if (
                 _leaked_dispatch is not None
                 and not suppress_dispatch
@@ -2423,7 +2460,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # Now that `mentioned` holds RESOLVED agent_ids (template OR
             # custom), accept any agent that has an adapter routing.
             #
-            # Three cases skip chaining entirely:
+            # These cases skip chaining entirely:
             #   · suppress_dispatch — terminal summary turn; a wrap-up that
             #     @mentions someone must not re-trigger them.
             #   · burst_task_id — this is a dispatched burst WORKER. Workers
@@ -2439,16 +2476,22 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             #     off an ack relay AFTER the files card already landed (observed
             #     live). Genuine next-phase work goes through `dispatch`, never a
             #     bare @mention, so a present turn never needs to chain.
-            _turn_presented = any(
-                isinstance(p, dict)
-                and p.get("kind") == "tool-call"
-                and (p.get("name") or "").rsplit("__", 1)[-1] == "present"
-                for p in tool_parts.values()
+            #   · dispatch/discuss — the orchestration tool already owns the next
+            #     steps. Any teammate names in the same explanatory text are prose;
+            #     auto-promoting them into a free-form discussion creates a spurious
+            #     `讨论结论` card after ordinary delivery workflows.
+            _turn_presented = _turn_called_tool(tool_parts, "present")
+            _turn_dispatched = _turn_called_tool(tool_parts, "dispatch")
+            _turn_discussed = _turn_called_tool(tool_parts, "discuss") or bool(
+                _disc_batches
             )
-            _skip_chain = (
-                suppress_dispatch
-                or burst_task_id is not None
-                or _turn_presented
+            _skip_chain = _should_skip_mention_chain(
+                suppress_dispatch=suppress_dispatch,
+                burst_task_id=burst_task_id,
+                turn_presented=_turn_presented,
+                turn_dispatched=_turn_dispatched,
+                turn_discussed=_turn_discussed,
+                burst_started=_burst_started,
             )
             _raw_targets = [] if _skip_chain else mentioned
             # Inside an explicit discussion, @existing-participant is a

@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import json
 
-from polynoia.api.ws_conv import _rewrite_outgoing_chunk
+from polynoia.api.ws_conv import (
+    _rewrite_outgoing_chunk,
+    _should_skip_mention_chain,
+    _turn_called_tool,
+)
 
 
 def _frame(obj: dict) -> str:
@@ -80,3 +84,54 @@ def test_both_ids_applied_together():
     )
     assert out["message_id"] == "M1"
     assert out["discussion_id"] == "D1"
+
+
+def test_turn_called_tool_matches_mcp_suffix():
+    assert _turn_called_tool(
+        {"tc-1": {"kind": "tool-call", "name": "mcp__polynoia__dispatch"}},
+        "dispatch",
+    )
+
+
+def test_skip_mention_chain_after_dispatch_tool_call():
+    assert _should_skip_mention_chain(
+        suppress_dispatch=False,
+        burst_task_id=None,
+        turn_presented=False,
+        turn_dispatched=True,
+        turn_discussed=False,
+        burst_started=False,
+    )
+
+
+def test_skip_mention_chain_after_successful_burst_drain():
+    assert _should_skip_mention_chain(
+        suppress_dispatch=False,
+        burst_task_id=None,
+        turn_presented=False,
+        turn_dispatched=False,
+        turn_discussed=False,
+        burst_started=True,
+    )
+
+
+def test_skip_mention_chain_after_discuss_tool_call():
+    assert _should_skip_mention_chain(
+        suppress_dispatch=False,
+        burst_task_id=None,
+        turn_presented=False,
+        turn_dispatched=False,
+        turn_discussed=True,
+        burst_started=False,
+    )
+
+
+def test_plain_agent_reply_can_chain_mentions():
+    assert not _should_skip_mention_chain(
+        suppress_dispatch=False,
+        burst_task_id=None,
+        turn_presented=False,
+        turn_dispatched=False,
+        turn_discussed=False,
+        burst_started=False,
+    )

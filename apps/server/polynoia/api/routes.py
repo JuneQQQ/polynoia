@@ -3530,6 +3530,34 @@ def _recover_leaked_dispatch(text: str) -> tuple[str, dict | None]:
     return cleaned, dispatch
 
 
+# Orphan/stray tool-call protocol tags the structured recovery passes above don't
+# catch — a LONE closing </parameter> (no opener → _LEAKED_PARAM_RE's complete
+# block won't match), a dangling <parameter …> with no close, or the antml:-
+# namespaced variants Claude sometimes emits. Observed: opus leaking a trailing
+# `</parameter>` after an ask_user / dispatch call, which then rendered as visible
+# text. These tags are never legitimate prose, so strip any leftover wholesale.
+_ORPHAN_TOOL_TAG_RE = re.compile(
+    r"</?(?:antml:)?(?:parameter|invoke|function_calls|tool_call|tool_result|tool_response|tool_use)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _strip_orphan_tool_tags(text: str) -> str:
+    """Remove leftover tool-call protocol tags (orphan ``</parameter>``, dangling
+    ``<invoke>``, ``antml:``-namespaced variants) so no raw protocol fragment ever
+    renders as visible text. No-op when none are present. Run AFTER the structured
+    recoveries (``_recover_raw_tool_protocol`` / ``_recover_leaked_dispatch``),
+    which extract well-formed blocks into cards; this only sweeps the stragglers."""
+    if "<" not in text:
+        return text
+    cleaned = _ORPHAN_TOOL_TAG_RE.sub("", text)
+    if cleaned == text:
+        return text
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
 def _extract_tasks_blocks(
     text: str,
     *,
