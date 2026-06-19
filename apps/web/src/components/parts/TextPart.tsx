@@ -87,8 +87,15 @@ function useMentionSplitter() {
 // code (e.g. `a < b`, HTML in a code fence) is untouched.
 const LEAKED_TOOL_TAG_RE =
 	/<\/?(?:antml:)?(?:parameter|invoke|function_calls|tool_call|tool_result|tool_response|tool_use)\b[^>]*>/gi;
+// HTML <br> the model emits for a line break: react-markdown renders raw HTML as
+// LITERAL text, so a bare `<br>` showed up in the thread (observed: an orchestrator
+// reply ending `…我就开干。<br>`). Convert to a GFM HARD break — two trailing
+// spaces + newline — since the render path uses remark-gfm WITHOUT remark-breaks,
+// so a bare "\n" would only be a soft break (a space), not a visible line break.
+const BR_TAG_RE = /<br\s*\/?>/gi;
 function stripLeakedToolTags(s: string): string {
-	return s.includes("<") ? s.replace(LEAKED_TOOL_TAG_RE, "") : s;
+	if (!s.includes("<")) return s;
+	return s.replace(LEAKED_TOOL_TAG_RE, "").replace(BR_TAG_RE, "  \n");
 }
 
 /** Split string children on recognized @member names → emphasized Mention chips. */
