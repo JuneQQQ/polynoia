@@ -3092,10 +3092,32 @@ async def _tap_text_into(
     reasoning_parts: set[str] = set()  # part_ids whose deltas are thinking
     ephemeral_edit_parts: dict[str, dict] = {}
     _anon = 0  # fallback counter for parts with no part_id
+    # Opt-in part-ordering trace (permanent; off by default). Enable with
+    # POLYNOIA_LOG_PART_ORDER=1 to log each part's START vs COMPLETE sequence.
+    # Parts are persisted/ordered at COMPLETION, so a part that STARTS early but
+    # COMPLETES late lands after a concurrently-streamed text part — the "text
+    # rendered above an earlier tool block" mis-order. A START#/DONE# mismatch in
+    # the trace pinpoints it. log.debug is silent at the app's INFO level, so
+    # raise this logger to DEBUG while the flag is on (not DEBUG globally).
+    _dbg_order = os.environ.get("POLYNOIA_LOG_PART_ORDER") == "1"
+    if _dbg_order and log.getEffectiveLevel() > logging.DEBUG:
+        log.setLevel(logging.DEBUG)
+    _seq_start = 0
+    _seq_done = 0
     async for ev in events:
         t = ev.type
         if t == "part.started":
-            if getattr(getattr(ev, "part", None), "kind", None) == "reasoning":
+            _k = getattr(getattr(ev, "part", None), "kind", None)
+            if _dbg_order:
+                _seq_start += 1
+                log.debug(
+                    "[part-order] START #%d kind=%s part_id=%s msg_id=%s",
+                    _seq_start,
+                    _k,
+                    getattr(ev, "part_id", None),
+                    getattr(ev, "message_id", None),
+                )
+            if _k == "reasoning":
                 pid = getattr(ev, "part_id", None)
                 if pid is not None:
                     reasoning_parts.add(pid)
@@ -3111,6 +3133,15 @@ async def _tap_text_into(
         elif t == "part.completed":
             part = getattr(ev, "part", None)
             kind = getattr(part, "kind", None)
+            if _dbg_order:
+                _seq_done += 1
+                log.debug(
+                    "[part-order] DONE  #%d kind=%s part_id=%s msg_id=%s",
+                    _seq_done,
+                    kind,
+                    getattr(ev, "part_id", None),
+                    getattr(ev, "message_id", None),
+                )
             if kind == "text" and not buffer:
                 # No prior deltas — capture text from the final body
                 body = getattr(part, "body", []) or []

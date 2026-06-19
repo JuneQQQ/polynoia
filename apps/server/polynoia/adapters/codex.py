@@ -100,14 +100,36 @@ from polynoia.adapters.base import (
     TurnStartedEvent,
 )
 from polynoia.credentials import sync_codex_home
-from polynoia.domain.messages import TextBlock as PNTextBlock
-from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
+from polynoia.domain.messages import (
+    ReasoningPayload,
+    TextPayload,
+    ToolCallPayload,
+)
+from polynoia.domain.messages import (
+    TextBlock as PNTextBlock,
+)
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
 
 log = logging.getLogger(__name__)
 
 ToolCallState = Literal["pending", "running", "completed", "error"]
+
+
+def _codex_events_enabled() -> bool:
+    """Permanent, opt-in Codex event tracing. OFF by default; set
+    ``POLYNOIA_LOG_CODEX_EVENTS=1`` to trace the raw event stream (every
+    app-server method / exec JSONL item + tool type/status/args) via
+    ``log.debug`` — for debugging "lost streaming" and tool-card issues.
+    Mirrors the claude adapter's ``POLYNOIA_LOG_CLAUDE_EVENTS``.
+
+    The app configures logging at INFO (main.py), so ``log.debug`` is silent by
+    default. When the flag is on we raise THIS module's logger to DEBUG so the
+    trace actually surfaces — without turning on DEBUG globally."""
+    enabled = os.environ.get("POLYNOIA_LOG_CODEX_EVENTS") == "1"
+    if enabled and log.getEffectiveLevel() > logging.DEBUG:
+        log.setLevel(logging.DEBUG)
+    return enabled
 
 
 def _friendly_codex_exception(e: Exception) -> str:
@@ -1077,6 +1099,12 @@ async def _translate_appserver_turn(
     reasoning_start: dict[str, float] = {}
     usage: dict[str, Any] = {}
     terminal = False
+    # Opt-in event trace (permanent; off by default). Enable with
+    # POLYNOIA_LOG_CODEX_EVENTS=1 to log every app-server method + tool-item
+    # type/status/args as the turn streams — the way to debug "lost streaming"
+    # (e.g. a write card that never appears, or atomic-vs-streamed tool args).
+    # Mirrors the claude adapter's POLYNOIA_LOG_CLAUDE_EVENTS.
+    _debug = _codex_events_enabled()
 
     def _keys(item_id: str) -> tuple[str, str]:
         if item_id not in keys:
@@ -1088,6 +1116,8 @@ async def _translate_appserver_turn(
             break
         method = note.get("method")
         params = note.get("params") or {}
+        if _debug:
+            log.debug("codex app-server method=%s", method)
 
         if method == "turn/started":
             tid = (params.get("turn") or {}).get("id")
@@ -1142,6 +1172,21 @@ async def _translate_appserver_turn(
             itype = item.get("type")
             item_id = item.get("id") or _new_id()
             mid, pid = _keys(item_id)
+            if _debug:
+                # Log EVERY item (not just the 3 tool types) so the trace reveals
+                # exactly which itype codex uses to write a file and whether it
+                # streams (item/started with args) or pops in (only item/completed).
+                _a = item.get("arguments")
+                log.debug(
+                    "codex item %s itype=%s status=%s server=%s tool=%s has_args=%s args_len=%s",
+                    method,
+                    itype,
+                    item.get("status"),
+                    item.get("server"),
+                    item.get("tool"),
+                    _a is not None,
+                    len(str(_a)) if _a else 0,
+                )
 
             if itype == "userMessage":
                 continue  # our own echoed input — not shown
@@ -1392,9 +1437,7 @@ async def _translate_codex_stream(
                         part=ReasoningPayload(body=[PNTextBlock(c=cur)], seconds=secs),
                     )
                 continue
-            elif inner == "command_execution":
-                continue
-            elif inner == "file_change":
+            elif inner in {"command_execution", "file_change"}:
                 continue
             elif inner == "mcp_tool_call":
                 yield PartCompletedEvent(
