@@ -39,6 +39,25 @@ describe("extractWriteFields — streaming write preview cap", () => {
 		expect(got.content).toBe("");
 	});
 
+	it("sliding HEAD+…+TAIL window (the streaming fix) → path + RECENT content both parse", () => {
+		// big multi-KB write — mirror the server window (claude_code.py)
+		const body = "<!DOCTYPE html>\n" + "LINE\n".repeat(2000);
+		const buf = JSON.stringify({ path: "index.html", content: body });
+		const head = buf.slice(0, 300).replace(/\\+$/, "");
+		let tail = buf.slice(-3600);
+		if (tail[0] === '"' || tail[0] === "\\") tail = tail.slice(1);
+		const windowed = head + "…" + tail;
+
+		const got = extractWriteFields({
+			input_preview: windowed,
+			state: "running",
+		} as never);
+		expect(got.path).toBe("index.html"); // head anchor survives → path parses
+		expect(got.content.length).toBeGreaterThan(100);
+		expect(got.content).toContain("…"); // middle elided
+		expect(got.content.includes("LINE")).toBe(true); // RECENT content shown → live streaming, not frozen
+	});
+
 	it("prefers the fully-parsed `input` (codex path) when present", () => {
 		const got = extractWriteFields({
 			input: { path: "x.txt", content: "hello" },

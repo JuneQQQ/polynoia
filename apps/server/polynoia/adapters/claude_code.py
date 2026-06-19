@@ -546,18 +546,27 @@ async def _translate_claude_stream(
                                 # Stream the raw args into the EXPANDABLE body
                                 # (input_preview), not the one-line summary, so
                                 # the user can open the fold and watch them build.
-                                # Send only the HEAD (first ~2k chars) so a multi-KB
-                                # dispatch doesn't re-push the whole growing buffer
-                                # every tick (O(N²) → O(N)); the full input lands
-                                # on completion anyway.
-                                # MUST be the head, not the tail: the frontend's
-                                # extractWriteFields (ToolCallPart.tsx) is HEAD-anchored
-                                # — it matches the literal ``"content":"`` which sits
-                                # near the START of the args JSON. A tail cap drops that
-                                # anchor → content can't be parsed → the write card
-                                # freezes forever at "准备写入…". Keep the head so the
-                                # anchor survives the whole stream.
-                                preview = buf if len(buf) <= 2000 else (buf[:2000] + "…")
+                                # WINDOW the preview so the live write card keeps
+                                # STREAMING (WriteStreamCard auto-scrolls to the
+                                # newest content) while staying parseable AND bounded:
+                                #  · HEAD keeps the ``{"path":...,"content":"`` anchor —
+                                #    the frontend's extractWriteFields is HEAD-anchored
+                                #    (matches the literal ``"content":"`` near the START);
+                                #    drop it and content won't parse → the card freezes
+                                #    at "准备写入…".
+                                #  · TAIL keeps the lines being written RIGHT NOW so the
+                                #    card shows live progress instead of a frozen prefix.
+                                # Re-pushing a fixed-size window each tick is O(N), not
+                                # O(N²); the full input lands on completion anyway.
+                                if len(buf) <= 4000:
+                                    preview = buf
+                                else:
+                                    head = buf[:300].rstrip("\\")
+                                    tail = buf[-3600:]
+                                    # don't start the tail on a dangling escape half
+                                    if tail[:1] in ('"', "\\"):
+                                        tail = tail[1:]
+                                    preview = head + "…" + tail
                                 updated = prev.model_copy(update={
                                     "input_preview": preview,
                                     "summary": "生成参数中…",
