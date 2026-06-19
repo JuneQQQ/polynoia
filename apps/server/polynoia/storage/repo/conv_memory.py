@@ -1,7 +1,9 @@
 """Storage repo — conv_memory entity functions (split from the former monolithic repo.py)."""
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.domain.entities import new_ulid
@@ -27,6 +29,28 @@ async def add_conv_memory(
     ))
     await session.flush()
     return mid
+
+
+async def delete_conv_memory_from(
+    session: AsyncSession, *, conv_id: str, from_created_at: datetime
+) -> int:
+    """Delete a conv's shared-memory entries recorded AT or AFTER ``from_created_at``.
+
+    Used by 「从此处重来」/ rewind: the curated decision/artifact/contract memory
+    an agent recorded during the rewound turns (ADR-014) is injected back into
+    context by ``list_conv_memory`` on the next turn — so without trimming it the
+    agent still "remembers" work that was rolled back (the「重发携带不该有的记忆」
+    bug). Boundary is the rewind target message's ``created_at``; memory entries
+    share the same clock, so ``>=`` removes exactly the rewound turns' memory and
+    keeps everything earlier. Caller commits. Returns the number deleted.
+    """
+    res = await session.execute(
+        delete(ConvMemoryRow).where(
+            ConvMemoryRow.conv_id == conv_id,
+            ConvMemoryRow.created_at >= from_created_at,
+        )
+    )
+    return int(res.rowcount or 0)
 
 
 async def list_conv_memory(

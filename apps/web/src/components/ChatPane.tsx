@@ -1329,14 +1329,22 @@ export function ChatPane({ convId, members, title }: Props) {
 		// (irreversible). Gate it behind an explicit red rollback warning.
 		if (!window.confirm(t("rewindResendWarn", lang))) return;
 		setRegeneratingTurnId(turn.first.id);
-		clearAgentTurnForRegenerate(turn.first, turn.ids);
 		try {
 			// rewind = delete from turn.first onward + restore workspace main; the
 			// server broadcasts data-conv-rewound so the local timeline truncates too.
+			// MUST succeed before we resend: if it fails (e.g. the target was already
+			// rewound away → 404), the rollback did NOT happen, so re-running here
+			// would carry the old context/files forward (the「回滚失败却照样重发 →
+			// 上下文还在」bug). Abort with a visible error instead of silently
+			// proceeding, and don't touch local state until the rollback lands.
 			await api.rewindConv(convId, turn.first.id);
 		} catch (e) {
 			console.warn("rewind (regenerate) failed", e);
+			setRegeneratingTurnId(null);
+			window.alert(t("rewindFailed", lang));
+			return;
 		}
+		clearAgentTurnForRegenerate(turn.first, turn.ids);
 		wsRef.current?.sendUserMessage(text, members, undefined, undefined, {
 			regenerate: true,
 			regenerateMsgId: turn.first.id,
@@ -1392,6 +1400,21 @@ export function ChatPane({ convId, members, title }: Props) {
 		// G: resend is a true FORK — only warn/rollback when there's a later reply
 		// to delete (else it's just a re-run of the last message).
 		if (first && !window.confirm(t("rewindResendWarn", lang))) return;
+		// Roll back FIRST, before any optimistic local mutation. If the rewind
+		// fails (target already gone → 404), the rollback did NOT happen, so we must
+		// NOT resend — that would re-run with the old context/files intact (the
+		//「回滚失败却照样重发 → 上下文还在」bug). Abort with a visible error and leave
+		// the UI untouched. (rewind starts at the first REPLY, so the edited user
+		// message itself survives and is updated below.)
+		if (first) {
+			try {
+				await api.rewindConv(convId, first.id);
+			} catch (e) {
+				console.warn("rewind (resend) failed", e);
+				window.alert(t("rewindFailed", lang));
+				return;
+			}
+		}
 		useStore.setState((s) => {
 			const cs = s.convs.get(convId);
 			if (!cs) return {};
@@ -1427,15 +1450,6 @@ export function ChatPane({ convId, members, title }: Props) {
 			return { convs };
 		});
 		await api.updateMessage(convId, msgId, text.trim());
-		if (first) {
-			try {
-				// rewind = delete from the first reply onward + restore workspace
-				// main; broadcasts data-conv-rewound for the local truncate.
-				await api.rewindConv(convId, first.id);
-			} catch (e) {
-				console.warn("rewind (resend) failed", e);
-			}
-		}
 		wsRef.current?.sendUserMessage(text.trim(), members, undefined, undefined, {
 			regenerate: true,
 			regenerateMsgId: first?.id,

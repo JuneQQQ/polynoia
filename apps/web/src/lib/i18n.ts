@@ -240,6 +240,10 @@ const STR = {
 		zh: "⚠️ 回滚警告\n\n重新发送会删除此处之后的所有消息,并把工作区文件回滚到这之前的状态 —— 不可恢复。\n\n确定继续?",
 		en: "⚠️ Rollback warning\n\nResending deletes every message after this point and rolls the workspace files back to before it — this cannot be undone.\n\nContinue?",
 	},
+	rewindFailed: {
+		zh: "回滚失败,已取消重发。目标消息可能已不存在(刷新后重试)。未做任何回滚,以免带着旧上下文重跑。",
+		en: "Rollback failed — resend cancelled. The target message may no longer exist (refresh and retry). Nothing was rolled back, to avoid re-running with stale context.",
+	},
 	replying: { zh: "正在回复…", en: "Replying…" },
 	quoteAction: { zh: "引用", en: "Quote" },
 	copiedAgent: { zh: "已复制", en: "Copied" },

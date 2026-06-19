@@ -27,6 +27,7 @@ from polynoia.storage.repo.conflicts import (
 )
 from polynoia.storage.repo.conv_memory import (
     add_conv_memory,
+    delete_conv_memory_from,
     list_agent_memory,
     list_conv_memory,
     list_workspace_memory,
@@ -113,6 +114,7 @@ __all__ = [
     "abandon_pending_edits_for_adapter",
     "active_access_grant",
     "add_conv_memory",
+    "delete_conv_memory_from",
     "add_onboarded_adapter",
     "add_pin",
     "append_message",

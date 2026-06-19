@@ -2753,10 +2753,22 @@ async def rewind_conversation(conv_id: str, body: dict):
         if target is None or target.conv_id != conv_id:
             raise HTTPException(404, "message not in this conversation")
         target_code_sha = target.code_sha
+        target_created_at = target.created_at
         workspace_id = conv.workspace_id if conv is not None else None
 
     restored: str | None = None
     undo_sha: str | None = None
+    # ALWAYS reset this conv's cached adapter sessions. Each agent subprocess
+    # holds the full prior conversation in its OWN SDK/session memory, so a
+    # post-rewind turn would still "remember" the deleted turns even though the
+    # DB history was trimmed — the「重发携带不该有的记忆 / 上下文还在」bug. This was
+    # previously gated behind `workspace_id and target_code_sha`, so a rewind on
+    # a conv without a stamped checkpoint (e.g. seeded convs, or DMs) never
+    # reset the session and the agent kept its memory. Closing forces the next
+    # turn to rebuild context from the now-trimmed MessageRow history. (The
+    # workspace branch below additionally close_all()s for cross-conv git
+    # consistency after the shared `main` is reset.)
+    await get_pool().close_sessions_for_conv(conv_id)
     # Workspace conv with a stamped checkpoint → restore main first. If this
     # fails we abort BEFORE touching messages (no half-rewind: either both or
     # neither). Non-workspace convs (DMs) just drop messages.
@@ -2777,6 +2789,16 @@ async def rewind_conversation(conv_id: str, body: dict):
             conv_id=conv_id,
             from_msg_id=from_msg_id,
         )
+        # Also trim the curated shared-memory (ADR-014) recorded during the
+        # rewound turns: list_conv_memory injects it back into the next turn's
+        # context, so without this the agent still "remembers" decisions/
+        # artifacts from the rolled-back work (the「重发携带不该有的记忆」bug).
+        # Boundary = the target message's created_at (same clock as memory rows).
+        mem_deleted = 0
+        if target_created_at is not None:
+            mem_deleted = await storage_repo.delete_conv_memory_from(
+                session, conv_id=conv_id, from_created_at=target_created_at,
+            )
         await session.commit()
 
     # Tell every open tab: drop messages from from_msg_id forward. Other open
@@ -2794,6 +2816,7 @@ async def rewind_conversation(conv_id: str, body: dict):
     return {
         "ok": True,
         "deleted": deleted,
+        "memory_deleted": mem_deleted,
         "restored": restored,
         "undo_sha": undo_sha,
     }
