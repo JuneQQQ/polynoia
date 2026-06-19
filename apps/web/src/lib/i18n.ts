@@ -236,6 +236,10 @@ const STR = {
 	leftProject: { zh: "已退出项目", en: "Left project" },
 	jumpToOriginal: { zh: "跳转到原消息", en: "Jump to original" },
 	resendEdit: { zh: "重新发送", en: "Resend" },
+	rewindResendWarn: {
+		zh: "⚠️ 回滚警告\n\n重新发送会删除此处之后的所有消息,并把工作区文件回滚到这之前的状态 —— 不可恢复。\n\n确定继续?",
+		en: "⚠️ Rollback warning\n\nResending deletes every message after this point and rolls the workspace files back to before it — this cannot be undone.\n\nContinue?",
+	},
 	replying: { zh: "正在回复…", en: "Replying…" },
 	quoteAction: { zh: "引用", en: "Quote" },
 	copiedAgent: { zh: "已复制", en: "Copied" },

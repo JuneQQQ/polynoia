@@ -153,14 +153,17 @@ export function extractWriteFields(payload: ToolCallPayload): {
 	content: string;
 } {
 	const inp = payload.input as Record<string, unknown> | undefined;
-	if (inp && typeof inp.content === "string") {
+	const raw =
+		typeof payload.input_preview === "string" ? payload.input_preview : "";
+	// Codex app-server delivers parsed MCP arguments atomically; if we prefer
+	// `input.content` while still running, a large write pops in as one block.
+	// During running state, preview is the display contract for progressive write UI.
+	if (!(payload.state === "running" && raw) && inp && typeof inp.content === "string") {
 		return {
 			path: typeof inp.path === "string" ? inp.path : "",
 			content: inp.content,
 		};
 	}
-	const raw =
-		typeof payload.input_preview === "string" ? payload.input_preview : "";
 	const pathM = raw.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"/);
 	const path = pathM ? unescapeJSONBody(pathM[1]) : "";
 	const cTerm = raw.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]/);
@@ -181,12 +184,43 @@ export function extractWriteFields(payload: ToolCallPayload): {
 function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
 	const lang = useStore((s) => s.lang);
 	const { path, content } = extractWriteFields(payload);
+	const [visibleContent, setVisibleContent] = useState("");
 	const [open, setOpen] = useState(true);
 	const bodyRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (payload.state !== "running") {
+			setVisibleContent(content);
+			return;
+		}
+		if (!content) {
+			setVisibleContent("");
+			return;
+		}
+		let cancelled = false;
+		const tick = () => {
+			if (cancelled) return;
+			setVisibleContent((prev) => {
+				if (prev === content) return prev;
+				const base = content.startsWith(prev)
+					? prev.length
+					: Math.min(prev.length, content.length);
+				const step = Math.max(12, Math.ceil(content.length / 90));
+				return content.slice(0, Math.min(content.length, base + step));
+			});
+		};
+		tick();
+		const timer = window.setInterval(tick, 22);
+		return () => {
+			cancelled = true;
+			window.clearInterval(timer);
+		};
+	}, [content, payload.state]);
+
 	useEffect(() => {
 		const el = bodyRef.current;
-		if (el && open) el.scrollTop = el.scrollHeight;
-	}, [content, open]);
+		if (el && open && visibleContent.length >= 0) el.scrollTop = el.scrollHeight;
+	}, [visibleContent, open]);
 	// Same chrome as the read / terminal cards: chevron + icon + name + summary +
 	// status pill. Expanded while the model streams the file content; once the
 	// write completes this card unmounts and the collapsed `diff` card takes over.
@@ -234,7 +268,7 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
 					ref={bodyRef}
 					className="anim-write-breath font-mono text-[11px] leading-[1.55] p-2.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all text-[var(--color-fg-2)] border-t border-[var(--color-line)]"
 				>
-					{content || (
+					{visibleContent || (
 						<span className="text-[var(--color-fg-4)] italic">
 							{t("preparingWrite", lang)}
 						</span>

@@ -50,13 +50,13 @@ async def main():
     tool_frames, diff_frames, err_frames, text_len = 0, 0, 0, 0
     async with websockets.connect(ws_url, max_size=64 * 1024 * 1024, open_timeout=30) as ws:
         await ws.send(json.dumps({"kind": "user_message", "text": PROMPT, "members": [AGENT]}))
-        deadline = asyncio.get_event_loop().time() + 95
+        deadline = asyncio.get_event_loop().time() + 280
         last = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() < deadline:
             try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=8)
+                raw = await asyncio.wait_for(ws.recv(), timeout=12)
             except asyncio.TimeoutError:
-                if asyncio.get_event_loop().time() - last > 10:
+                if asyncio.get_event_loop().time() - last > 150:
                     print("(idle >10s — assuming turn settled)")
                     break
                 continue

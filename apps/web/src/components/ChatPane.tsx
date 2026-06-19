@@ -1324,15 +1324,18 @@ export function ChatPane({ convId, members, title }: Props) {
 		if (regeneratingTurnId) return;
 		const text = textFromMessage(turn.user);
 		if (!text) return;
+		// G: regenerate is now a true FORK — rolling back this turn deletes every
+		// later message AND restores the workspace to before this turn's writes
+		// (irreversible). Gate it behind an explicit red rollback warning.
+		if (!window.confirm(t("rewindResendWarn", lang))) return;
 		setRegeneratingTurnId(turn.first.id);
 		clearAgentTurnForRegenerate(turn.first, turn.ids);
-		const results = await Promise.allSettled(
-			turn.ids.map((id) => api.deleteMessage(convId, id, { silent: true })),
-		);
-		for (const r of results) {
-			if (r.status === "rejected") {
-				console.warn("failed to delete old regenerated turn message", r.reason);
-			}
+		try {
+			// rewind = delete from turn.first onward + restore workspace main; the
+			// server broadcasts data-conv-rewound so the local timeline truncates too.
+			await api.rewindConv(convId, turn.first.id);
+		} catch (e) {
+			console.warn("rewind (regenerate) failed", e);
 		}
 		wsRef.current?.sendUserMessage(text, members, undefined, undefined, {
 			regenerate: true,
@@ -1386,6 +1389,9 @@ export function ChatPane({ convId, members, title }: Props) {
 			first ??= m;
 			ids.push(m.id);
 		}
+		// G: resend is a true FORK — only warn/rollback when there's a later reply
+		// to delete (else it's just a re-run of the last message).
+		if (first && !window.confirm(t("rewindResendWarn", lang))) return;
 		useStore.setState((s) => {
 			const cs = s.convs.get(convId);
 			if (!cs) return {};
@@ -1421,10 +1427,14 @@ export function ChatPane({ convId, members, title }: Props) {
 			return { convs };
 		});
 		await api.updateMessage(convId, msgId, text.trim());
-		if (ids.length) {
-			await Promise.allSettled(
-				ids.map((id) => api.deleteMessage(convId, id, { silent: true })),
-			);
+		if (first) {
+			try {
+				// rewind = delete from the first reply onward + restore workspace
+				// main; broadcasts data-conv-rewound for the local truncate.
+				await api.rewindConv(convId, first.id);
+			} catch (e) {
+				console.warn("rewind (resend) failed", e);
+			}
 		}
 		wsRef.current?.sendUserMessage(text.trim(), members, undefined, undefined, {
 			regenerate: true,
