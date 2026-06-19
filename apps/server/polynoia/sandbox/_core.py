@@ -238,6 +238,43 @@ def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
     return lock
 
 
+def _stage_uploads_into_worktree(ws_root: Path, worktree_dir: Path) -> None:
+    """Mirror ``<ws_root>/uploads/`` into ``<worktree>/uploads/`` so an agent
+    whose cwd is the worktree can read the user's uploaded files.
+
+    The user's uploads land at the workspace root (api._conv_upload_dir), but
+    agents run in a worktree deep under ``.polynoia/worktrees/`` — a sibling of
+    ``uploads/`` — so ``find .`` / ``cat uploads/x.csv`` from the worktree never
+    reach them (the「模型拿不到上传文件」bug).
+
+    Uses a REAL ``uploads/`` dir holding per-file SYMLINKS, NOT a single dir
+    symlink: ``find .`` does not descend into a symlinked directory, so a dir
+    symlink would leave the agent's own ``find . -name '*.csv'`` empty. A real
+    dir of file symlinks is both traversable by ``find .`` AND reads through to
+    the live file. The dir is git-excluded (repo-local ``info/exclude``) so it is
+    never committed and never merges into ``main``. Best-effort; never raises."""
+    with contextlib.suppress(Exception):
+        src = ws_root / "uploads"
+        files = [f for f in src.iterdir() if f.is_file()] if src.is_dir() else []
+        if not files:
+            return
+        dst = worktree_dir / "uploads"
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            link = dst / f.name
+            if not link.exists() and not link.is_symlink():
+                with contextlib.suppress(Exception):
+                    link.symlink_to(f)
+        exclude = ws_root / ".git" / "info" / "exclude"
+        if exclude.parent.is_dir():
+            cur = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+            if "uploads/" not in cur.splitlines():
+                exclude.write_text(
+                    (cur.rstrip("\n") + "\n" if cur else "") + "uploads/\n",
+                    encoding="utf-8",
+                )
+
+
 class Sandbox:
     """A per-conversation sandbox directory.
 
@@ -468,6 +505,12 @@ class Sandbox:
                         f"git worktree add failed: {stderr.decode()[:200]} / {e2.decode()[:200]}"
                     )
 
+        # Make the user's uploaded files reachable from the agent's cwd (see
+        # _stage_uploads_into_worktree). Uploads land at <ws_root>/uploads/ but the
+        # agent runs in THIS worktree — without this, `find .` / `cat uploads/x.csv`
+        # never reach them (the「模型拿不到上传文件」bug).
+        _stage_uploads_into_worktree(ws_root, worktree_dir)
+
         sandbox = cls(
             root=worktree_dir,
             conv_id=conv_id,
@@ -511,6 +554,10 @@ class Sandbox:
         worktree_dir = ws_root / ".polynoia" / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
         if not worktree_dir.exists() or not (ws_root / ".git").exists():
             return False
+        # Re-sync the user's uploads on EVERY turn (this runs for pooled adapter
+        # sessions too, which skip create_workspace_sandbox), so files uploaded
+        # mid-conversation also become reachable from the agent's cwd.
+        _stage_uploads_into_worktree(ws_root, worktree_dir)
         sandbox = cls(
             root=worktree_dir,
             conv_id=conv_id,

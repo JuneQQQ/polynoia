@@ -112,6 +112,15 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 		openPreviewFile(wsFile.path);
 	};
 
+	// User-uploaded attachments (`/api/files/raw?...`) aren't workspace
+	// deliverables, so they have no `wsFile` → the card used to render disabled /
+	// un-clickable. The file IS served at its raw URL, so open it for viewing
+	// (browser renders images / csv / text / pdf inline). Keeps the card clickable
+	// per「上传文件也应该能预览」.
+	const onViewRaw = () => {
+		window.open(assetUrl(payload.src), "_blank", "noopener,noreferrer");
+	};
+
 	const onDownload = () => {
 		if (wsFile) {
 			api.downloadWorkspaceFile(wsFile.wsId, wsFile.path);
@@ -139,10 +148,9 @@ export function FilePart({ payload }: { payload: FilePayload }) {
 		>
 			<button
 				type="button"
-				onClick={wsFile ? onPreview : undefined}
-				disabled={!wsFile}
-				className={`flex items-center gap-2.5 min-w-0 flex-1 text-left ${wsFile ? "cursor-pointer" : "cursor-default"}`}
-				title={wsFile ? t("clickToPreview", lang) : payload.name}
+				onClick={wsFile ? onPreview : onViewRaw}
+				className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
+				title={t("clickToPreview", lang)}
 			>
 				<div
 					className="w-9 h-9 rounded-lg grid place-items-center flex-shrink-0 relative"

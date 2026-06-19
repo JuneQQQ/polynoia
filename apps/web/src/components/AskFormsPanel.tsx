@@ -103,31 +103,38 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 					{collapsed ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
 				</span>
 			</button>
-			{!collapsed && (
-				// One question per step keeps this short; the cap + overflow is just a
-				// safety net for an unusually long single question / the dimmed queue.
-				<div className="mt-2 space-y-2 max-h-[46vh] overflow-y-auto pr-1">
-					<AskCard af={active} agents={agents} onAnswered={onAnswered} active />
-					{queued.length > 0 && (
-						<>
-							<div className="flex items-center gap-2 mt-3 text-[9.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)]">
-								<span className="h-px flex-1 bg-[var(--color-line)]" />
-								<span>Queued · {queued.length}</span>
-								<span className="h-px flex-1 bg-[var(--color-line)]" />
-							</div>
-							{queued.map((af) => (
-								<AskCard
-									key={af.id}
-									af={af}
-									agents={agents}
-									onAnswered={onAnswered}
-									active={false}
-								/>
-							))}
-						</>
-					)}
-				</div>
-			)}
+			{/* Collapse HIDES the cards via CSS but keeps them MOUNTED — unmounting
+			    (the old `{!collapsed && …}`) discarded AskCard's local answer state
+			    (answers / otherText / step), so anything already filled in was wiped
+			    on collapse/re-expand. `hidden` preserves it. One question per step
+			    keeps this short; the cap + overflow is a safety net. */}
+			<div
+				className={
+					collapsed
+						? "hidden"
+						: "mt-2 space-y-2 max-h-[46vh] overflow-y-auto pr-1"
+				}
+			>
+				<AskCard af={active} agents={agents} onAnswered={onAnswered} active />
+				{queued.length > 0 && (
+					<>
+						<div className="flex items-center gap-2 mt-3 text-[9.5px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)]">
+							<span className="h-px flex-1 bg-[var(--color-line)]" />
+							<span>Queued · {queued.length}</span>
+							<span className="h-px flex-1 bg-[var(--color-line)]" />
+						</div>
+						{queued.map((af) => (
+							<AskCard
+								key={af.id}
+								af={af}
+								agents={agents}
+								onAnswered={onAnswered}
+								active={false}
+							/>
+						))}
+					</>
+				)}
+			</div>
 		</div>
 	);
 }

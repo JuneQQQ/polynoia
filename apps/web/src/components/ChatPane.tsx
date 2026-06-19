@@ -54,48 +54,59 @@ function AgentExecutionPlaceholder({
 	label,
 	mobile,
 	lang,
+	showAvatar = true,
 }: {
 	agent?: { id: string; name: string; initials: string; color: string };
 	agentId: string;
 	label: string;
 	mobile: boolean;
 	lang: Lang;
+	// When this placeholder continues the SAME agent's run (its message block is
+	// already above), suppress the avatar + name header so it groups under one
+	// avatar instead of showing a duplicate "执行中" header block.
+	showAvatar?: boolean;
 }) {
 	return (
 		<div
 			data-agent-placeholder={agentId}
 			className={`anim-fade-up group/msg flex transition-colors duration-200 hover:bg-[var(--color-surface-2)]/25 ${
 				mobile ? "px-2 gap-2" : "px-6 gap-3"
-			} pt-3 pb-1.5`}
+			} ${showAvatar ? "pt-3" : "pt-0.5"} pb-1.5`}
 			aria-live="polite"
 		>
 			<div className={`${mobile ? "w-7" : "w-8"} flex-shrink-0`}>
-				<button
-					type="button"
-					onClick={() => agent && useStore.getState().openAgentDetail(agent.id)}
-					className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-all duration-200 group-hover/msg:scale-[1.04]`}
-					style={{ background: agent?.color ?? "var(--color-fg-3)" }}
-					title={`查看 ${agent?.name ?? "Agent"} 详情`}
-				>
-					{agent?.initials ?? "?"}
-				</button>
-			</div>
-			<div className="flex-1 min-w-0">
-				<div className="flex items-baseline gap-2 mb-1">
+				{showAvatar && (
 					<button
 						type="button"
 						onClick={() =>
 							agent && useStore.getState().openAgentDetail(agent.id)
 						}
-						className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
-						title={t("viewDetailsBrief", lang)}
+						className={`${mobile ? "w-7 h-7 text-[10.5px]" : "w-8 h-8 text-[11px]"} rounded-full grid place-items-center text-white font-medium shadow-sm ring-1 ring-[var(--color-line)] transition-all duration-200 group-hover/msg:scale-[1.04]`}
+						style={{ background: agent?.color ?? "var(--color-fg-3)" }}
+						title={`查看 ${agent?.name ?? "Agent"} 详情`}
 					>
-						{agent?.name ?? "Agent"}
+						{agent?.initials ?? "?"}
 					</button>
-					<span className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-fg-4)]">
-						{t("executing", lang)}
-					</span>
-				</div>
+				)}
+			</div>
+			<div className="flex-1 min-w-0">
+				{showAvatar && (
+					<div className="flex items-baseline gap-2 mb-1">
+						<button
+							type="button"
+							onClick={() =>
+								agent && useStore.getState().openAgentDetail(agent.id)
+							}
+							className="font-display text-[14px] font-medium text-[var(--color-fg)] tracking-wide hover:text-[var(--color-accent)] hover:underline decoration-1 underline-offset-2 transition"
+							title={t("viewDetailsBrief", lang)}
+						>
+							{agent?.name ?? "Agent"}
+						</button>
+						<span className="text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--color-fg-4)]">
+							{t("executing", lang)}
+						</span>
+					</div>
+				)}
 				<TypingPart payload={{ kind: "typing", note: label }} />
 			</div>
 		</div>
@@ -1054,6 +1065,7 @@ export function ChatPane({ convId, members, title }: Props) {
 		firstOfRun,
 		reasoningGroupIds,
 		reasoningSkip,
+		lastRunSender,
 	} = useMemo(() => {
 		const byId =
 			useStore.getState().convs.get(convId)?.msgById ??
@@ -1126,6 +1138,10 @@ export function ChatPane({ convId, members, title }: Props) {
 			firstOfRun,
 			reasoningGroupIds: reasoningGroups,
 			reasoningSkip,
+			// Sender of the LAST avatar-bearing element in the stream. The live
+			// pending placeholders render AFTER this loop, so they need it to
+			// continue the same agent's run (suppress a duplicate avatar block).
+			lastRunSender: prevRunSender,
 		};
 	}, [
 		burstSig,
@@ -1783,23 +1799,34 @@ export function ChatPane({ convId, members, title }: Props) {
 										/>
 									);
 								})}
-								{pendingAgentPlaceholders.map((a) => {
-									const agent = agents.find((x) => x.id === a.id);
-									const label =
-										a.status === "starting"
-											? t("startingConversation", lang)
-											: phaseLabel(a.phase, a.tool, lang);
-									return (
-										<AgentExecutionPlaceholder
-											key={`pending-${a.id}`}
-											agent={agent}
-											agentId={a.id}
-											label={label}
-											mobile={mobile}
-											lang={lang}
-										/>
-									);
-								})}
+								{(() => {
+									// Continue the message stream's avatar run: a placeholder
+									// for the SAME agent as the element directly above it (the
+									// last rendered message, or the previous placeholder) drops
+									// its avatar + name header so the agent shows ONE avatar
+									// block, not a duplicate "执行中" header.
+									let prevSender = lastRunSender;
+									return pendingAgentPlaceholders.map((a) => {
+										const agent = agents.find((x) => x.id === a.id);
+										const label =
+											a.status === "starting"
+												? t("startingConversation", lang)
+												: phaseLabel(a.phase, a.tool, lang);
+										const showAvatar = a.id !== prevSender;
+										prevSender = a.id;
+										return (
+											<AgentExecutionPlaceholder
+												key={`pending-${a.id}`}
+												agent={agent}
+												agentId={a.id}
+												label={label}
+												mobile={mobile}
+												lang={lang}
+												showAvatar={showAvatar}
+											/>
+										);
+									});
+								})()}
 							</div>
 							{quoteMenu && (
 								<div
