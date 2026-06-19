@@ -1045,6 +1045,31 @@ export function ChatPane({ convId, members, title }: Props) {
 		],
 	);
 
+	// Legacy <ask-form> answers: the AskFormPart card already shows the user's
+	// answer inline (its `followingYou` readback), so rendering that same `you`
+	// message ALSO as a normal bubble duplicated it (「答案填进工具块,不要再单独
+	// 渲染一个用户回答」). Skip the bubble — the card is the canonical surface.
+	// Blocking ask_user stamps onto the card (no separate `you` message), so only
+	// the legacy text path is affected. Matches AskFormPart: the FIRST `you` after
+	// the card is the answer.
+	const askAnswerSkip = useMemo(() => {
+		const out = new Set<string>();
+		for (let i = 0; i < orderedMessages.length; i++) {
+			const p = orderedMessages[i].payload as { kind?: string; answer?: unknown };
+			if (!p || p.kind !== "ask-form" || p.answer != null) continue;
+			// Only the IMMEDIATE next non-system message — the legacy answer is
+			// appendUserMessage'd right after the card. Don't reach past an agent
+			// message to skip an unrelated later user bubble.
+			for (let j = i + 1; j < orderedMessages.length; j++) {
+				const n = orderedMessages[j];
+				if (n.sender_id === "system") continue;
+				if (n.sender_id === "you") out.add(n.id);
+				break;
+			}
+		}
+		return out;
+	}, [orderedMessages]);
+
 	const claimedSet = useMemo(() => {
 		const out = new Set<string>(burstClaimedSet);
 		for (const id of discussionClaimedSet) out.add(id);
@@ -1110,8 +1135,13 @@ export function ChatPane({ convId, members, title }: Props) {
 		const firstOfRun = new Set<string>();
 		let prevRunSender: string | null = null;
 		for (const m of orderedMessages) {
-			if (claimedSet.has(m.id) || skip.has(m.id) || reasoningSkip.has(m.id))
-				continue; // lane / tool-folded / merged-reasoning member
+			if (
+				claimedSet.has(m.id) ||
+				askAnswerSkip.has(m.id) ||
+				skip.has(m.id) ||
+				reasoningSkip.has(m.id)
+			)
+				continue; // lane / ask-answer / tool-folded / merged-reasoning member
 			// A fold-group HEAD (tool fold OR merged-reasoning) renders as a group
 			// regardless of whether its first member's payload is individually
 			// renderable — e.g. a run that starts with an empty `reasoning` (len 0)
@@ -1148,6 +1178,7 @@ export function ChatPane({ convId, members, title }: Props) {
 		renderSig,
 		convId,
 		claimedSet,
+		askAnswerSkip,
 		burstByAnchorId,
 		discussionByAnchorId,
 		streamingMessageIdsForRender,
@@ -1730,6 +1761,7 @@ export function ChatPane({ convId, members, title }: Props) {
             memoized burstByAnchorId/claimedSet above (delta-invariant). */}
 								{orderedMessages.map((m) => {
 									if (claimedSet.has(m.id)) return null; // rendered in a lane
+									if (askAnswerSkip.has(m.id)) return null; // shown in the ask-form card
 									if (groupedSkip.has(m.id)) return null; // folded into a ToolCallGroup
 									if (reasoningSkip.has(m.id)) return null; // merged into MergedReasoning
 									const group = groupFirstIds.get(m.id);
