@@ -54,6 +54,7 @@ import {
 	api,
 } from "../../lib/api";
 import { type Lang, saveLang, t as tr } from "../../lib/i18n";
+import { parseServerTime } from "../../lib/time";
 import {
 	flushServerConfig,
 	getServerOverride,
@@ -2665,9 +2666,10 @@ function ActionRow({
 }
 
 function fmtTime(iso: string | null): string {
-	if (!iso) return "";
-	const d = new Date(iso);
-	if (Number.isNaN(d.getTime())) return "";
+	// Conversation timestamps lack a tz marker (naive UTC) — parseServerTime
+	// reads them as UTC so the time isn't 8h off (the「时区不对应」bug).
+	const d = parseServerTime(iso);
+	if (!d) return "";
 	const now = new Date();
 	if (d.toDateString() === now.toDateString())
 		return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

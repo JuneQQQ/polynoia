@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { type ConversationSummary, api } from "../lib/api";
 import { t } from "../lib/i18n";
+import { parseServerTime } from "../lib/time";
 import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
 import { BrandIcon } from "./BrandIcon";
@@ -40,9 +41,11 @@ const ADAPTER_LABEL: Record<string, string> = {
 
 /** Compact list-row time: today → HH:mm; this year → M/D; older → YYYY/M/D. */
 function fmtConvTime(iso: string | null): string | null {
-	if (!iso) return null;
-	const d = new Date(iso);
-	if (Number.isNaN(d.getTime())) return null;
+	// Conversation timestamps arrive WITHOUT a tz marker (naive UTC from
+	// Pydantic) — parseServerTime treats them as UTC so the sidebar time isn't
+	// 8h off in +08:00 (the「时区不对应」bug). See lib/time.ts.
+	const d = parseServerTime(iso);
+	if (!d) return null;
 	const now = new Date();
 	const sameDay = d.toDateString() === now.toDateString();
 	if (sameDay) {

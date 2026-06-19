@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from ulid import ULID as _ULID
 
 ULID = str  # 形如 "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -172,6 +172,18 @@ class Conversation(BaseModel):
     # Auto:   orchestrator merges agent branches into main automatically
     #         after all sub-tasks finish.
     merge_mode: Literal["auto", "manual"] = "auto"
+
+    @field_serializer("created_at", "updated_at", "last_message_at", when_used="json")
+    def _ser_utc(self, v: datetime | None) -> str | None:
+        # created_at/updated_at/last_message_at are naive UTC (datetime.utcnow()).
+        # Pydantic serializes a naive datetime WITHOUT a tz marker, so the client's
+        # `new Date(...)` reads it as LOCAL and the sidebar time shows 8h off in
+        # +08:00 (the「消息时间和时区不对应」bug). Emit an explicit trailing "Z" so
+        # it's unambiguously UTC. (Message rows already do this in their dict
+        # serializer; this aligns the Conversation contract.)
+        if v is None:
+            return None
+        return v.isoformat() + "Z" if v.tzinfo is None else v.isoformat()
 
 
 # ── Pin(长期上下文) ──────────────────────────────────────────
