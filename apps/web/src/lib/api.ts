@@ -255,7 +255,7 @@ export type ConversationSummary = {
 	running_agents?: Array<{
 		agent_id: string;
 		status: "starting" | "streaming" | "idle" | "aborted" | "error";
-		phase?: "thinking" | "executing" | "replying";
+		phase?: "thinking" | "generating" | "executing" | "replying";
 		tool?: string;
 		message?: string;
 	}>;

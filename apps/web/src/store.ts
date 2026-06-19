@@ -99,7 +99,7 @@ export type AgentStatusValue =
 	| "aborted"
 	| "error";
 /** Fine-grained phase WITHIN "streaming" (what the agent is doing right now). */
-export type AgentPhase = "thinking" | "executing" | "replying";
+export type AgentPhase = "thinking" | "generating" | "executing" | "replying";
 
 export type AgentStatus = {
 	status: AgentStatusValue;
@@ -170,6 +170,10 @@ export function phaseLabel(
 ): string {
 	const en = lang === "en";
 	if (phase === "thinking") return en ? "Thinking" : "正在思考";
+	// "generating": reasoning is done, model is producing output. For codex this
+	// is a long silent gap (atomic tool-arg generation) — keep the pill active so
+	// it doesn't read as frozen.
+	if (phase === "generating") return en ? "Generating…" : "正在生成内容…";
 	if (phase === "executing") {
 		const name = toolDisplayName(tool, lang);
 		if (en) return name ? `Running ${name}` : "Running";

@@ -3055,6 +3055,12 @@ def _phase_from_chunk(chunk: str) -> tuple[str, dict] | None:
     Matches the `type` field at the START of the `data: {...}` frame (it's always
     the first key) so an agent streaming literal `"type":"…"` text in a delta
     can't mis-trigger the pill."""
+    if chunk.startswith('data: {"type":"reasoning-end'):
+        # Reasoning is done; the model is now GENERATING its next output. For
+        # codex this is a long SILENT gap — it produces the whole tool-call args
+        # atomically (no per-token stream), so no chunks flow until the tool/text
+        # starts. Show an active "生成中" pill so the gap doesn't read as frozen.
+        return ("generating", {})
     if chunk.startswith('data: {"type":"reasoning-'):
         return ("thinking", {})
     if chunk.startswith('data: {"type":"text-'):
