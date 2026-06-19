@@ -201,221 +201,223 @@
    as [data-theme="dark"]. Kept intentional & coherent (anti-slop).
    ─────────────────────────────────────────────────────────────────  */
 
-/* Nord — the canonical Polar Night + Snow Storm + Frost palette (nordtheme.com).
-   Cool, calm, high-craft; clear 3-step depth so the UI has body, not a flat wash. */
-[data-theme="nord"] {
-	--color-bg: #2e3440;
-	--color-surface: #3b4252;
-	--color-surface-2: #353c4a;
-	--color-surface-3: #313845;
-	--color-sidebar: #272c38;
-	--color-sidebar-2: #21252f;
-	--color-sidebar-line: rgba(216, 222, 233, 0.1);
-	--color-sidebar-hover: rgba(216, 222, 233, 0.07);
-	--color-sidebar-active: rgba(136, 192, 208, 0.16);
-	--color-sidebar-fg: #e5e9f0;
-	--color-sidebar-muted: #7e889c;
-	--color-line: #434c5e;
-	--color-line-2: #4c566a;
-	--color-line-strong: #5b667d;
-	--color-line-hair: rgba(216, 222, 233, 0.12);
-	--color-fg: #eceff4;
-	--color-fg-2: #d8dee9;
-	--color-fg-3: #97a0b3;
-	--color-fg-4: #6b7488;
-	--color-accent: #88c0d0;
-	--color-accent-soft: rgba(136, 192, 208, 0.18);
-	--color-accent-dim: #6ba6b8;
-	--color-code-bg: rgba(136, 192, 208, 0.14);
-	--color-code-fg: #8fbcbb;
-	--color-code-block-bg: #2b303b;
-	--color-code-header-bg: rgba(59, 66, 82, 0.82);
-	--color-green: #a3be8c;
-	--color-green-soft: rgba(163, 190, 140, 0.18);
-	--color-amber: #ebcb8b;
-	--color-amber-soft: rgba(235, 203, 139, 0.18);
-	--color-red: #bf616a;
-	--color-red-soft: rgba(191, 97, 106, 0.2);
-	--color-blue: #81a1c1;
-	--color-blue-soft: rgba(129, 161, 193, 0.18);
-	--color-purple: #b48ead;
-	--color-purple-soft: rgba(180, 142, 173, 0.18);
-	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.42), 0 3px 10px rgba(0, 0, 0, 0.3);
-	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.55), 0 8px 22px -8px
-		rgba(0, 0, 0, 0.4);
-	--ring-inset: inset 0 1px 0 rgba(236, 239, 244, 0.05);
+/* Ink archive — dark neutral workbench with blue document light and copper heat. */
+[data-theme="ink-blue"] {
+	--color-bg: #101418;
+	--color-surface: #171c22;
+	--color-surface-2: #1d232b;
+	--color-surface-3: #14191f;
+	--color-sidebar: #0b0f12;
+	--color-sidebar-2: #080b0e;
+	--color-sidebar-line: rgba(232, 239, 238, 0.08);
+	--color-sidebar-hover: rgba(232, 239, 238, 0.06);
+	--color-sidebar-active: rgba(95, 159, 206, 0.16);
+	--color-sidebar-fg: #e8efee;
+	--color-sidebar-muted: #82908f;
+	--color-line: #28313a;
+	--color-line-2: #323d47;
+	--color-line-strong: #46525f;
+	--color-line-hair: rgba(232, 239, 238, 0.1);
+	--color-fg: #edf2ee;
+	--color-fg-2: #bdc9c6;
+	--color-fg-3: #83918c;
+	--color-fg-4: #5f6a66;
+	--color-accent: #5f9fce;
+	--color-accent-soft: rgba(95, 159, 206, 0.16);
+	--color-accent-dim: #4c83ac;
+	--color-code-bg: rgba(95, 159, 206, 0.13);
+	--color-code-fg: #8bc1e6;
+	--color-code-block-bg: #12181e;
+	--color-code-header-bg: rgba(23, 28, 34, 0.84);
+	--color-green: #70b888;
+	--color-green-soft: rgba(112, 184, 136, 0.15);
+	--color-amber: #d7a85a;
+	--color-amber-soft: rgba(215, 168, 90, 0.15);
+	--color-red: #d66a61;
+	--color-red-soft: rgba(214, 106, 97, 0.16);
+	--color-blue: #5f9fce;
+	--color-blue-soft: rgba(95, 159, 206, 0.16);
+	--color-purple: #a48bd7;
+	--color-purple-soft: rgba(164, 139, 215, 0.15);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.38);
+	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.48), 0 3px 10px rgba(0, 0, 0, 0.34);
+	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.6), 0 8px 22px -8px
+		rgba(0, 0, 0, 0.44);
+	--ring-inset: inset 0 1px 0 rgba(232, 239, 238, 0.05);
 	--shadow-card: var(--shadow-sm), var(--ring-inset);
-	--color-focus: rgba(136, 192, 208, 0.55);
-	--glow-accent: 0 0 0 1px rgba(136, 192, 208, 0.35), 0 6px 26px -8px
-		rgba(136, 192, 208, 0.45);
-	--ring-input-focus: 0 0 0 3px rgba(136, 192, 208, 0.18), var(--shadow-sm);
-	--mesh-1: rgba(136, 192, 208, 0.05);
-	--mesh-2: rgba(94, 129, 172, 0.045);
-	--mesh-3: rgba(180, 142, 173, 0.03);
-	--grain-opacity: 0.03;
-	--grain-blend: soft-light;
-}
-
-/* Everforest (dark, medium) — warm sand text on a soft green-grey base. Genuinely
-   GREEN-identified (not near-black), gentle on the eyes. github.com/sainnhe/everforest */
-[data-theme="forest"] {
-	--color-bg: #2d353b;
-	--color-surface: #343f44;
-	--color-surface-2: #2f383e;
-	--color-surface-3: #2b3338;
-	--color-sidebar: #232a2e;
-	--color-sidebar-2: #1e2327;
-	--color-sidebar-line: rgba(211, 198, 170, 0.1);
-	--color-sidebar-hover: rgba(211, 198, 170, 0.06);
-	--color-sidebar-active: rgba(167, 192, 128, 0.16);
-	--color-sidebar-fg: #d3c6aa;
-	--color-sidebar-muted: #859289;
-	--color-line: #3d484d;
-	--color-line-2: #475258;
-	--color-line-strong: #56635f;
-	--color-line-hair: rgba(211, 198, 170, 0.1);
-	--color-fg: #d3c6aa;
-	--color-fg-2: #beb59a;
-	--color-fg-3: #93a194;
-	--color-fg-4: #6a7a6f;
-	--color-accent: #a7c080;
-	--color-accent-soft: rgba(167, 192, 128, 0.18);
-	--color-accent-dim: #8aa06a;
-	--color-code-bg: rgba(167, 192, 128, 0.14);
-	--color-code-fg: #83c092;
-	--color-code-block-bg: #2b3338;
-	--color-code-header-bg: rgba(52, 63, 68, 0.82);
-	--color-green: #a7c080;
-	--color-green-soft: rgba(167, 192, 128, 0.18);
-	--color-amber: #dbbc7f;
-	--color-amber-soft: rgba(219, 188, 127, 0.18);
-	--color-red: #e67e80;
-	--color-red-soft: rgba(230, 126, 128, 0.18);
-	--color-blue: #7fbbb3;
-	--color-blue-soft: rgba(127, 187, 179, 0.18);
-	--color-purple: #d699b6;
-	--color-purple-soft: rgba(214, 153, 182, 0.18);
-	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
-	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.28);
-	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.52), 0 8px 22px -8px
-		rgba(0, 0, 0, 0.38);
-	--ring-inset: inset 0 1px 0 rgba(211, 198, 170, 0.05);
-	--shadow-card: var(--shadow-sm), var(--ring-inset);
-	--color-focus: rgba(167, 192, 128, 0.55);
-	--glow-accent: 0 0 0 1px rgba(167, 192, 128, 0.35), 0 6px 26px -8px
-		rgba(167, 192, 128, 0.4);
-	--ring-input-focus: 0 0 0 3px rgba(167, 192, 128, 0.18), var(--shadow-sm);
-	--mesh-1: rgba(167, 192, 128, 0.05);
-	--mesh-2: rgba(127, 187, 179, 0.04);
-	--mesh-3: rgba(214, 153, 182, 0.03);
-	--grain-opacity: 0.03;
-	--grain-blend: soft-light;
-}
-
-/* Tokyo Night — deep indigo night + vivid violet/blue accents. A genuinely
-   distinct cool-indigo (not near-black). github.com/enkia/tokyo-night */
-[data-theme="dusk"] {
-	--color-bg: #1a1b26;
-	--color-surface: #24283b;
-	--color-surface-2: #1f2233;
-	--color-surface-3: #1b1e2e;
-	--color-sidebar: #16161e;
-	--color-sidebar-2: #121219;
-	--color-sidebar-line: rgba(192, 202, 245, 0.09);
-	--color-sidebar-hover: rgba(192, 202, 245, 0.06);
-	--color-sidebar-active: rgba(122, 162, 247, 0.18);
-	--color-sidebar-fg: #c0caf5;
-	--color-sidebar-muted: #767c9d;
-	--color-line: #2a2e42;
-	--color-line-2: #343a54;
-	--color-line-strong: #45496a;
-	--color-line-hair: rgba(192, 202, 245, 0.1);
-	--color-fg: #c0caf5;
-	--color-fg-2: #a9b1d6;
-	--color-fg-3: #787c99;
-	--color-fg-4: #565a78;
-	--color-accent: #bb9af7;
-	--color-accent-soft: rgba(187, 154, 247, 0.18);
-	--color-accent-dim: #9d7cd8;
-	--color-code-bg: rgba(187, 154, 247, 0.14);
-	--color-code-fg: #7dcfff;
-	--color-code-block-bg: #1b1e2e;
-	--color-code-header-bg: rgba(36, 40, 59, 0.82);
-	--color-green: #9ece6a;
-	--color-green-soft: rgba(158, 206, 106, 0.16);
-	--color-amber: #e0af68;
-	--color-amber-soft: rgba(224, 175, 104, 0.16);
-	--color-red: #f7768e;
-	--color-red-soft: rgba(247, 118, 142, 0.18);
-	--color-blue: #7aa2f7;
-	--color-blue-soft: rgba(122, 162, 247, 0.16);
-	--color-purple: #bb9af7;
-	--color-purple-soft: rgba(187, 154, 247, 0.18);
-	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
-	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.55), 0 3px 10px rgba(0, 0, 0, 0.4);
-	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.66), 0 8px 22px -8px
-		rgba(0, 0, 0, 0.48);
-	--ring-inset: inset 0 1px 0 rgba(192, 202, 245, 0.05);
-	--shadow-card: var(--shadow-sm), var(--ring-inset);
-	--color-focus: rgba(187, 154, 247, 0.55);
-	--glow-accent: 0 0 0 1px rgba(187, 154, 247, 0.35), 0 6px 26px -8px
-		rgba(187, 154, 247, 0.45);
-	--ring-input-focus: 0 0 0 3px rgba(187, 154, 247, 0.18), var(--shadow-sm);
-	--mesh-1: rgba(187, 154, 247, 0.06);
-	--mesh-2: rgba(122, 162, 247, 0.05);
-	--mesh-3: rgba(125, 207, 255, 0.03);
+	--color-focus: rgba(95, 159, 206, 0.55);
+	--glow-accent: 0 0 0 1px rgba(95, 159, 206, 0.35), 0 6px 26px -8px
+		rgba(95, 159, 206, 0.45);
+	--ring-input-focus: 0 0 0 3px rgba(95, 159, 206, 0.18), var(--shadow-sm);
+	--mesh-1: rgba(95, 159, 206, 0.055);
+	--mesh-2: rgba(217, 154, 95, 0.04);
+	--mesh-3: rgba(112, 184, 136, 0.03);
 	--grain-opacity: 0.04;
 	--grain-blend: soft-light;
 }
 
-/* Mono — minimal high-contrast ink on warm paper (light family). Overrides
-   only what differs from :root; neutral graphite accent, near-zero ambiance. */
-[data-theme="mono"] {
-	--color-bg: #fafafa;
-	--color-surface: #ffffff;
-	--color-surface-2: #f5f5f5;
-	--color-surface-3: #eeeeee;
-	--color-sidebar: #f0f0f0;
-	--color-sidebar-2: #e8e8e8;
-	--color-sidebar-line: rgba(20, 20, 20, 0.1);
-	--color-sidebar-hover: rgba(20, 20, 20, 0.05);
-	--color-sidebar-active: rgba(20, 20, 20, 0.09);
-	--color-sidebar-fg: #1a1a1a;
-	--color-sidebar-muted: #767676;
-	--color-line: #e6e6e6;
-	--color-line-2: #d8d8d8;
-	--color-line-strong: #bcbcbc;
-	--color-line-hair: rgba(20, 20, 20, 0.08);
-	--color-fg: #141414;
-	--color-fg-2: #3d3d3d;
-	--color-fg-3: #6e6e6e;
-	--color-fg-4: #969696;
-	--color-accent: #2d2d2d;
-	--color-accent-soft: #e8e8e8;
-	--color-accent-dim: #000000;
-	--color-code-bg: rgba(20, 20, 20, 0.06);
-	--color-code-fg: #1a1a1a;
-	--color-code-block-bg: #fbfbfb;
-	--color-code-header-bg: rgba(245, 245, 245, 0.86);
-	--color-green: #2f7d4f;
-	--color-green-soft: #dcefe2;
-	--color-amber: #8a6d00;
-	--color-amber-soft: #f2eccf;
-	--color-red: #b3382b;
-	--color-red-soft: #f2d6d2;
-	--color-blue: #2f5fa8;
-	--color-blue-soft: #d9e2f0;
-	--color-purple: #5a3fb0;
-	--color-purple-soft: #ddd6f0;
-	--color-focus: rgba(20, 20, 20, 0.5);
-	--glow-accent: 0 0 0 1px rgba(20, 20, 20, 0.25), 0 6px 22px -8px
-		rgba(20, 20, 20, 0.3);
-	--ring-input-focus: 0 0 0 3px rgba(20, 20, 20, 0.12), var(--shadow-sm);
-	--mesh-1: rgba(20, 20, 20, 0.015);
-	--mesh-2: rgba(20, 20, 20, 0.01);
-	--mesh-3: rgba(20, 20, 20, 0.008);
-	--grain-opacity: 0.02;
+/* Sage paper — low-glare light paper, green-grey furniture, blue-green controls. */
+[data-theme="sage-paper"] {
+	--color-bg: #f3f5ef;
+	--color-surface: #fffefa;
+	--color-surface-2: #edf2e8;
+	--color-surface-3: #e4eadf;
+	--color-sidebar: #e3ebdc;
+	--color-sidebar-2: #d8e3d0;
+	--color-sidebar-line: rgba(32, 41, 35, 0.1);
+	--color-sidebar-hover: rgba(32, 41, 35, 0.05);
+	--color-sidebar-active: rgba(79, 143, 130, 0.13);
+	--color-sidebar-fg: #202923;
+	--color-sidebar-muted: #74806f;
+	--color-line: #dfe6d8;
+	--color-line-2: #d1dac9;
+	--color-line-strong: #b8c4ae;
+	--color-line-hair: rgba(32, 41, 35, 0.08);
+	--color-fg: #202923;
+	--color-fg-2: #485247;
+	--color-fg-3: #737e6e;
+	--color-fg-4: #98a190;
+	--color-accent: #4f8f82;
+	--color-accent-soft: #dcebe6;
+	--color-accent-dim: #3c7469;
+	--color-code-bg: rgba(79, 143, 130, 0.1);
+	--color-code-fg: #2f665d;
+	--color-code-block-bg: #fbfcf8;
+	--color-code-header-bg: rgba(237, 242, 232, 0.86);
+	--color-green: #4f8b5e;
+	--color-green-soft: #dceade;
+	--color-amber: #a27822;
+	--color-amber-soft: #f0e4c8;
+	--color-red: #b85b4f;
+	--color-red-soft: #efd8d2;
+	--color-blue: #4f7896;
+	--color-blue-soft: #d9e5eb;
+	--color-purple: #7764a6;
+	--color-purple-soft: #e1dced;
+	--shadow-sm: 0 1px 2px rgba(50, 70, 45, 0.05);
+	--shadow-md: 0 12px 32px rgba(50, 70, 45, 0.1), 0 2px 6px rgba(50, 70, 45, 0.05);
+	--shadow-lg: 0 24px 60px -12px rgba(50, 70, 45, 0.18), 0 6px 16px -6px
+		rgba(50, 70, 45, 0.1);
+	--ring-inset: inset 0 1px 0 rgba(255, 255, 255, 0.62);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(79, 143, 130, 0.5);
+	--glow-accent: 0 0 0 1px rgba(79, 143, 130, 0.28), 0 6px 22px -8px
+		rgba(79, 143, 130, 0.34);
+	--ring-input-focus: 0 0 0 3px rgba(79, 143, 130, 0.14), var(--shadow-sm);
+	--mesh-1: rgba(79, 143, 130, 0.04);
+	--mesh-2: rgba(194, 121, 79, 0.035);
+	--mesh-3: rgba(90, 120, 150, 0.025);
+	--grain-opacity: 0.032;
+	--grain-blend: multiply;
+}
+
+/* Slate copper — graphite rooms with warm copper focus and teal status color. */
+[data-theme="slate-copper"] {
+	--color-bg: #151615;
+	--color-surface: #1e201f;
+	--color-surface-2: #242827;
+	--color-surface-3: #191b1a;
+	--color-sidebar: #101211;
+	--color-sidebar-2: #0c0e0d;
+	--color-sidebar-line: rgba(240, 238, 231, 0.08);
+	--color-sidebar-hover: rgba(240, 238, 231, 0.05);
+	--color-sidebar-active: rgba(209, 132, 74, 0.16);
+	--color-sidebar-fg: #f0eee7;
+	--color-sidebar-muted: #8a8c83;
+	--color-line: #2e3230;
+	--color-line-2: #3a3f3c;
+	--color-line-strong: #505751;
+	--color-line-hair: rgba(240, 238, 231, 0.09);
+	--color-fg: #f0eee7;
+	--color-fg-2: #c6c3b8;
+	--color-fg-3: #8d9086;
+	--color-fg-4: #676a63;
+	--color-accent: #d1844a;
+	--color-accent-soft: rgba(209, 132, 74, 0.16);
+	--color-accent-dim: #ae6a39;
+	--color-code-bg: rgba(209, 132, 74, 0.14);
+	--color-code-fg: #dda16f;
+	--color-code-block-bg: #171a19;
+	--color-code-header-bg: rgba(30, 32, 31, 0.84);
+	--color-green: #78aa70;
+	--color-green-soft: rgba(120, 170, 112, 0.15);
+	--color-amber: #d5a554;
+	--color-amber-soft: rgba(213, 165, 84, 0.15);
+	--color-red: #cf6f63;
+	--color-red-soft: rgba(207, 111, 99, 0.16);
+	--color-blue: #6da7a2;
+	--color-blue-soft: rgba(109, 167, 162, 0.15);
+	--color-purple: #a58bc4;
+	--color-purple-soft: rgba(165, 139, 196, 0.14);
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-md: 0 16px 40px rgba(0, 0, 0, 0.48), 0 3px 10px rgba(0, 0, 0, 0.34);
+	--shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.62), 0 8px 22px -8px
+		rgba(0, 0, 0, 0.44);
+	--ring-inset: inset 0 1px 0 rgba(240, 238, 231, 0.055);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(209, 132, 74, 0.55);
+	--glow-accent: 0 0 0 1px rgba(209, 132, 74, 0.35), 0 6px 26px -8px
+		rgba(209, 132, 74, 0.44);
+	--ring-input-focus: 0 0 0 3px rgba(209, 132, 74, 0.17), var(--shadow-sm);
+	--mesh-1: rgba(209, 132, 74, 0.06);
+	--mesh-2: rgba(109, 167, 162, 0.04);
+	--mesh-3: rgba(120, 170, 112, 0.025);
+	--grain-opacity: 0.045;
+	--grain-blend: soft-light;
+}
+
+/* Mist stone — quiet light grey, steel controls, terracotta and green semantics. */
+[data-theme="mist-stone"] {
+	--color-bg: #f4f3ef;
+	--color-surface: #fffefa;
+	--color-surface-2: #ecebe5;
+	--color-surface-3: #e3e2dc;
+	--color-sidebar: #e7e7e2;
+	--color-sidebar-2: #dcdcd5;
+	--color-sidebar-line: rgba(34, 36, 38, 0.1);
+	--color-sidebar-hover: rgba(34, 36, 38, 0.05);
+	--color-sidebar-active: rgba(100, 125, 143, 0.13);
+	--color-sidebar-fg: #222426;
+	--color-sidebar-muted: #73777a;
+	--color-line: #dedbd2;
+	--color-line-2: #d1cdc2;
+	--color-line-strong: #bbb5a9;
+	--color-line-hair: rgba(34, 36, 38, 0.08);
+	--color-fg: #222426;
+	--color-fg-2: #4b4e4f;
+	--color-fg-3: #73777a;
+	--color-fg-4: #9a9b96;
+	--color-accent: #647d8f;
+	--color-accent-soft: #dfe7eb;
+	--color-accent-dim: #4b6373;
+	--color-code-bg: rgba(100, 125, 143, 0.1);
+	--color-code-fg: #42596a;
+	--color-code-block-bg: #fbfbf8;
+	--color-code-header-bg: rgba(236, 235, 229, 0.86);
+	--color-green: #6f9776;
+	--color-green-soft: #dce8dc;
+	--color-amber: #a47a24;
+	--color-amber-soft: #efe5cc;
+	--color-red: #bd6a62;
+	--color-red-soft: #efd9d5;
+	--color-blue: #647d8f;
+	--color-blue-soft: #dfe7eb;
+	--color-purple: #7b6aa8;
+	--color-purple-soft: #e1ddeb;
+	--shadow-sm: 0 1px 2px rgba(50, 48, 42, 0.045);
+	--shadow-md: 0 12px 32px rgba(50, 48, 42, 0.09), 0 2px 6px rgba(50, 48, 42, 0.05);
+	--shadow-lg: 0 24px 60px -12px rgba(50, 48, 42, 0.17), 0 6px 16px -6px
+		rgba(50, 48, 42, 0.1);
+	--ring-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+	--shadow-card: var(--shadow-sm), var(--ring-inset);
+	--color-focus: rgba(100, 125, 143, 0.5);
+	--glow-accent: 0 0 0 1px rgba(100, 125, 143, 0.28), 0 6px 22px -8px
+		rgba(100, 125, 143, 0.34);
+	--ring-input-focus: 0 0 0 3px rgba(100, 125, 143, 0.14), var(--shadow-sm);
+	--mesh-1: rgba(100, 125, 143, 0.035);
+	--mesh-2: rgba(182, 122, 79, 0.03);
+	--mesh-3: rgba(111, 151, 118, 0.025);
+	--grain-opacity: 0.028;
 	--grain-blend: multiply;
 }
 
