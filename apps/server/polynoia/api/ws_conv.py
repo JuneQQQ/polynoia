@@ -1277,6 +1277,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # or you @'d a sub-agent whose mention didn't resolve → fell back to
             # the orchestrator) must STILL drain, else its writes never reach main.
             _burst_started = False
+            # Set at turn-end if the reply leaked tool-call markup (a failed tool
+            # call); inited here so the stuck-orchestrator guard never NameErrors on
+            # an early-return path that skips the turn-end strip.
+            _had_orphan_leak = False
             # Failure paths (exception / abort) re-raise or `return` BEFORE the
             # clean-path persist further down — so without this they'd drop the
             # work trace (tool calls + partial reply) the agent already produced,
@@ -1830,7 +1834,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # <invoke>, antml:-namespaced variants) the structured recoveries above
             # don't catch — observed: opus leaking a trailing </parameter> after an
             # ask_user call, which rendered as visible text.
+            _pre_orphan = full_text
             full_text = _strip_orphan_tool_tags(full_text)
+            # The model wrote leaked tool-call markup (orphan tags) into its text —
+            # a sign it ATTEMPTED a tool call that didn't parse as a native one.
+            _had_orphan_leak = full_text != _pre_orphan
             if (
                 _leaked_dispatch is not None
                 and not suppress_dispatch
@@ -2485,6 +2493,35 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             _turn_discussed = _turn_called_tool(tool_parts, "discuss") or bool(
                 _disc_batches
             )
+            # Stuck-orchestrator guard: the model emitted leaked tool-call markup
+            # (orphan tags we stripped) yet completed NO real action — no dispatch,
+            # no ask_user registered, no present/discuss, no burst. It "promised" a
+            # form/dispatch and silently took none, leaving the conv dead (observed:
+            # orchestrator wrote 「我用表单问你」 then a stray </parameter>, no form
+            # ever appeared). Surface a RETRYABLE error so the user isn't stuck on a
+            # silent dead turn (a fresh re-trigger reliably succeeds). Additive — does
+            # NOT touch the dispatch/mention-chain flow below.
+            if (
+                _had_orphan_leak
+                and is_dispatcher
+                and not (
+                    _turn_dispatched
+                    or _turn_presented
+                    or _turn_discussed
+                    or _burst_started
+                )
+                and not _conv_has_open_ask(conv_id)
+            ):
+                with suppress(Exception):
+                    await _persist_and_emit_error(
+                        emit, conv_id=conv_id, sender_id=agent_id,
+                        message=(
+                            "协调者的工具调用格式出错(把工具协议写进了正文),"
+                            "这一轮没能生成表单 / 派活,没有生效。再发一条消息让它重试即可。"
+                        ),
+                        reason="malformed_tool_call",
+                        retryable=True,
+                    )
             _skip_chain = _should_skip_mention_chain(
                 suppress_dispatch=suppress_dispatch,
                 burst_task_id=burst_task_id,
