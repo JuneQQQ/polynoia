@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
-from mcp.types import Tool
+from mcp.types import Tool, ToolAnnotations
 
 from polynoia.sandbox import Sandbox
 
@@ -259,12 +259,26 @@ class _ToolBase:
     #                a backstop, so the tool's graceful path wins.
     human_wait: ClassVar[bool] = False
     self_timeout: ClassVar[bool] = False
+    #  is_concurrent_safe — this tool has NO side effects that conflict with
+    #  another tool running at the same time (read-only / idempotent). The model
+    #  may run several of these in parallel; a non-safe tool acts as a barrier.
+    #  Surfaced to runtimes two ways from this ONE flag:
+    #   1. MCP `annotations.readOnlyHint` (below) → the claude_agent_sdk already
+    #      runs read-only MCP tools CONCURRENTLY and serializes the rest, so claude
+    #      gets isConcurrentSafe batching for free (keeps the Pro/CLI login — no
+    #      manual loop / API key needed).
+    #   2. The per-session concurrency gate in mcp/server.py (readers-writer lock)
+    #      → for adapters that DO fire concurrent tool-call RPCs (opencode), unsafe
+    #      tools become exclusive barriers so concurrent execution stays correct.
+    #  Default False (assume a tool mutates state unless it declares otherwise).
+    is_concurrent_safe: ClassVar[bool] = False
 
     def spec(self) -> Tool:
         return Tool(
             name=self.name,
             description=self.description,
             inputSchema=self.input_schema,
+            annotations=ToolAnnotations(readOnlyHint=self.is_concurrent_safe),
         )
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -276,6 +290,7 @@ class _ToolBase:
 
 class _ReadTool(_ToolBase):
     name = "read"
+    is_concurrent_safe = True  # read-only; safe to run in parallel
     description = (
         "Read a UTF-8 text file from the sandbox workspace. Returns numbered lines "
         "by default (1-indexed). Use `offset` and `limit` for paging. Errors if "
@@ -1003,6 +1018,7 @@ class _RunBackgroundTool(_ToolBase):
 
 class _WaitTool(_ToolBase):
     name = "wait"
+    is_concurrent_safe = True  # read-only log poll; no mutations
     # Manages its own poll deadline (returns 'running' at `timeout`); the central
     # wrapper must not cap it at the 60s default — give it the big backstop.
     self_timeout = True
@@ -1064,6 +1080,7 @@ class _WaitTool(_ToolBase):
 
 class _GrepTool(_ToolBase):
     name = "grep"
+    is_concurrent_safe = True  # read-only filesystem scan
     description = "Recursive grep within sandbox using ripgrep semantics. Returns matches with file:line."
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -1104,6 +1121,7 @@ class _GrepTool(_ToolBase):
 
 class _GlobTool(_ToolBase):
     name = "glob"
+    is_concurrent_safe = True  # read-only filesystem scan
     description = "Find files by glob pattern inside the sandbox."
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
@@ -1511,6 +1529,7 @@ class _RememberTool(_ToolBase):
 
 class _RecallTool(_ToolBase):
     name = "recall"
+    is_concurrent_safe = True  # idempotent GET of shared memory
     description = (
         "Read the conversation's SHARED MEMORY right now — the contracts, "
         "decisions, and artifacts your teammates have recorded (ADR-014). Use it "

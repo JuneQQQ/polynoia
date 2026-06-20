@@ -242,3 +242,21 @@ def test_direct_builder_can_present_but_group_member_cannot():
     assert "write" in group_member
     assert "bash" in group_member
     assert "dispatch" not in group_member
+
+
+def test_is_concurrent_safe_surfaces_as_readonly_hint() -> None:
+    """Each tool's is_concurrent_safe must surface as MCP annotations.readOnlyHint.
+    The claude_agent_sdk runs read-only MCP tools CONCURRENTLY and serializes the
+    rest, so this one flag gives claude isConcurrentSafe batching (keeps Pro login).
+    Read-only/idempotent tools are safe; anything that mutates state is a barrier.
+    """
+    SAFE = {"read", "grep", "glob", "recall", "wait"}
+    for name, tool in TOOL_REGISTRY.items():
+        hint = tool.spec().annotations.readOnlyHint
+        assert hint == tool.is_concurrent_safe, f"{name}: spec hint != flag"
+        assert hint is (name in SAFE), (
+            f"{name}: is_concurrent_safe={hint}, expected {name in SAFE}"
+        )
+    # The mutating tools must NOT be marked safe (they'd run concurrently + clobber).
+    for unsafe in ("write", "edit", "bash", "dispatch", "ask_user", "remember"):
+        assert TOOL_REGISTRY[unsafe].is_concurrent_safe is False
