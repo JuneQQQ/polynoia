@@ -116,3 +116,35 @@ async def test_open_ask_forms_rehydrates_unanswered_form(fresh_db) -> None:
 
     res = await get_open_ask_forms(conv_id)
     assert [f["id"] for f in res["ask_forms"]] == [ask_id]
+
+
+@pytest.mark.asyncio
+async def test_open_ask_ids_and_orphan_conv_asks(fresh_db) -> None:
+    """open_ask_ids lists a conv's UNanswered asks; orphan_conv_asks drops the
+    new ones (so a later answer is treated as orphaned → fresh re-trigger), while
+    keeping pre-existing asks and never touching other convs / answered asks.
+    """
+    from polynoia.api.routes import _ask_conv, open_ask_ids, orphan_conv_asks
+
+    _pending_asks.clear()
+    _ask_conv.clear()
+    conv, other = "conv-A", "conv-B"
+    _pending_asks["a1"], _ask_conv["a1"] = None, conv        # open, this conv
+    _pending_asks["a2"], _ask_conv["a2"] = "answered", conv  # answered → not open
+    _pending_asks["a3"], _ask_conv["a3"] = None, other       # open, other conv
+
+    assert open_ask_ids(conv) == {"a1"}  # only unanswered + this conv
+
+    # A new ask appears during a turn (a4); a1 was already open at turn start.
+    _pending_asks["a4"], _ask_conv["a4"] = None, conv
+    dropped = orphan_conv_asks(conv, keep={"a1"})
+    assert dropped == ["a4"]                       # only the new one
+    assert "a4" not in _pending_asks and "a4" not in _ask_conv
+    assert "a1" in _pending_asks                   # kept (pre-existing)
+    assert "a2" in _pending_asks and "a3" in _pending_asks  # answered / other conv untouched
+
+    # An orphaned ask id is exactly what answer_ask treats as orphaned.
+    assert "a4" not in _pending_asks  # → answer_ask(...) would return orphaned=True
+
+    _pending_asks.clear()
+    _ask_conv.clear()

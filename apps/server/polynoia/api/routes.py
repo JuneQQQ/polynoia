@@ -165,6 +165,38 @@ def _conv_has_open_ask(conv_id: str) -> bool:
     return RUNTIME.conv_has_open_ask(conv_id)
 
 
+def open_ask_ids(conv_id: str) -> set[str]:
+    """The ask_ids of this conv's still-UNanswered blocking asks (value is None).
+
+    `_ask_conv` maps ask_id → conv_id; an ask is open while `_pending_asks[id]`
+    is still None (no answer delivered). Lets the turn driver tell when an agent
+    raised a NEW blocking ask during its turn.
+    """
+    return {
+        aid for aid, cid in list(_ask_conv.items())
+        if cid == conv_id and _pending_asks.get(aid) is None
+    }
+
+
+def orphan_conv_asks(conv_id: str, *, keep: set[str]) -> list[str]:
+    """Drop this conv's open asks (except ``keep``) from the in-memory registries
+    so a later answer is treated as ORPHANED — the client then re-triggers a fresh
+    turn (see answer_ask). Used when an agent ENDS its turn while a blocking ask it
+    raised is still open: opencode fires ``ask_user`` but runs it in PARALLEL with
+    work tools and never awaits it, so the turn finishes without the answer. We
+    can't make opencode block in-place (claude does, in-process), so we convert its
+    ask into the suspend-and-restart path instead. Returns the orphaned ids.
+    """
+    dropped: list[str] = []
+    for aid in open_ask_ids(conv_id):
+        if aid in keep:
+            continue
+        _pending_asks.pop(aid, None)
+        _ask_conv.pop(aid, None)
+        dropped.append(aid)
+    return dropped
+
+
 # Conversation-scoped execution state — lives at MODULE level (per conv_id), NOT
 # per WS connection. This is what makes execution backend-driven + refresh-safe:
 # a browser refresh/disconnect tears down that connection's send_queue but the

@@ -85,6 +85,8 @@ from polynoia.api.routes import (
     _with_orchestrator_mention_routing_hint,
     _workspace_head_for_conv,
     log,
+    open_ask_ids,
+    orphan_conv_asks,
 )
 from polynoia.domain.messages import ConflictFile, ConflictPayload
 from polynoia.sandbox import Sandbox, workspace_merge_lock, workspace_root_for
@@ -1281,6 +1283,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # call); inited here so the stuck-orchestrator guard never NameErrors on
             # an early-return path that skips the turn-end strip.
             _had_orphan_leak = False
+            # Blocking-ask snapshot: which asks were ALREADY open before this turn
+            # ran. A blocking `ask_user` raised DURING this turn that appears here
+            # later means a NEW one. claude blocks in-process at ask_user (its stream
+            # pauses, the turn doesn't end until answered), so claude never trips the
+            # checks below. opencode fires ask_user in PARALLEL with work tools and
+            # doesn't await it — it keeps streaming + ends the turn with the ask still
+            # open. We catch that to (a) stop the runaway mid-stream and (b) orphan
+            # the ask at turn-end so the user's answer re-triggers a fresh turn.
+            _asks_at_start = open_ask_ids(conv_id)
+            # Set when we break the loop because the agent kept going past a blocking
+            # ask it just raised (so turn-end knows to orphan + skip the dead-turn guard).
+            _broke_on_open_ask = False
             # Failure paths (exception / abort) re-raise or `return` BEFORE the
             # clean-path persist further down — so without this they'd drop the
             # work trace (tool calls + partial reply) the agent already produced,
@@ -1522,6 +1536,23 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             if not emitted_any:
                                 await _clear_retry_notice()
                             emitted_any = True
+                            # A NEW blocking ask appeared mid-stream on a NON-dispatcher,
+                            # non-burst turn (a DM / direct agent): the agent (opencode)
+                            # fired ask_user but kept streaming work tools instead of
+                            # awaiting it. Stop the runaway — break to turn-end, which
+                            # orphans the ask so the user's answer re-triggers a fresh
+                            # turn. claude never reaches here (it pauses IN ask_user,
+                            # emitting no chunks while the ask is open); dispatcher /
+                            # burst turns are excluded so a worker's ask can't cut the
+                            # orchestrator's stream.
+                            if (
+                                not is_dispatcher
+                                and burst_task_id is None
+                                and _conv_has_open_ask(conv_id)
+                                and (open_ask_ids(conv_id) - _asks_at_start)
+                            ):
+                                _broke_on_open_ask = True
+                                break
                             # A terminal error chunk (from a TurnFailedEvent —
                             # 401/429/upstream) means this turn FAILED even though
                             # the stream ends "normally". Flag it so we don't mark
@@ -2493,6 +2524,24 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             _turn_discussed = _turn_called_tool(tool_parts, "discuss") or bool(
                 _disc_batches
             )
+            # Abandoned-blocking-ask recovery: this turn ENDED while a blocking
+            # ask_user it raised is STILL open (opencode fires the ask but runs it in
+            # parallel with work tools and never awaits it, so the turn finishes
+            # without the answer — claude can't reach here, it blocks IN ask_user
+            # until answered). Orphan that ask so the user's reply is treated as
+            # ORPHANED → the client re-triggers a fresh turn WITH the answer (the
+            # suspend-and-restart path), instead of the agent having barreled ahead
+            # on assumptions. Scoped to non-dispatcher, non-burst turns so a worker's
+            # mid-burst ask never orphans the orchestrator's. `keep=_asks_at_start`
+            # leaves any pre-existing ask untouched — only THIS turn's new one drops.
+            if not is_dispatcher and burst_task_id is None:
+                _orphaned_asks = orphan_conv_asks(conv_id, keep=_asks_at_start)
+                if _orphaned_asks:
+                    log.info(
+                        "abandoned blocking ask(s) orphaned for fresh re-trigger: "
+                        "conv=%s agent=%s ids=%s broke_mid_stream=%s",
+                        conv_id, agent_id, _orphaned_asks, _broke_on_open_ask,
+                    )
             # Stuck-orchestrator guard: the model emitted leaked tool-call markup
             # (orphan tags we stripped) yet completed NO real action — no dispatch,
             # no ask_user registered, no present/discuss, no burst. It "promised" a
