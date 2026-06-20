@@ -9,6 +9,7 @@ group_member, or generalist.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from collections import deque
@@ -178,6 +179,50 @@ def _wrap_result(result: Any) -> list[TextContent] | CallToolResult:
     return [block]
 
 
+# Spill any tool result whose serialized form exceeds this to a file (most tools
+# already self-cap — read pages at 50KB, bash tails 4KB, grep caps 200 — so this
+# is the catch-all for an unexpectedly huge result that would otherwise blow the
+# model's context window AND the UI card).
+_MAX_RESULT_BYTES = 50_000
+_RESULT_PREVIEW_CHARS = 1500
+
+
+def _maybe_spill_large_result(result: Any, ctx: ToolContext, name: str) -> Any:
+    """Oversized SUCCESS results are written to a workspace file and replaced by a
+    compact pointer (+ a head preview); the agent then reads the parts it needs
+    via ``read(path, offset, limit)``. Errors/timeouts stay inline (small + must be
+    seen). Spill failures fall back to the original result rather than dropping it.
+    """
+    if not isinstance(result, dict) or result.get("kind") == "error" or result.get("timed_out"):
+        return result
+    text = json.dumps(result, ensure_ascii=False)
+    nbytes = len(text.encode("utf-8"))
+    if nbytes <= _MAX_RESULT_BYTES:
+        return result
+    try:
+        out_dir = ctx.sandbox.root / ".polynoia" / "tool-results"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+        fname = f"{name}-{digest}.json"
+        (out_dir / fname).write_text(text, encoding="utf-8")
+        rel = f".polynoia/tool-results/{fname}"
+    except Exception:
+        # Couldn't spill — returning the big result is still better than nothing.
+        return result
+    return {
+        "kind": "result_spilled",
+        "tool": name,
+        "bytes": nbytes,
+        "file": rel,
+        "preview": text[:_RESULT_PREVIEW_CHARS],
+        "hint": (
+            f"结果过长(约 {nbytes // 1000} KB),已完整写入 `{rel}`。"
+            f'用 read("{rel}", offset, limit) 分段读,或用 grep 直接定位你要的内容;'
+            "上面的 preview 是开头一段。"
+        ),
+    }
+
+
 class _ConcurrencyGate:
     """FIFO-fair readers-writer lock that batches concurrent tool calls by
     ``is_concurrent_safe``.
@@ -311,6 +356,7 @@ async def run_server(
                 "tool": name, "error": str(exc), "type": type(exc).__name__,
             })
             return _error_result({"error": str(exc), "type": type(exc).__name__})
+        result = _maybe_spill_large_result(result, ctx, name)
         ctx.append_audit("tool.end", _result_summary(name, result))
         return _wrap_result(result)
 

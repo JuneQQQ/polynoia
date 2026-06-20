@@ -260,3 +260,30 @@ def test_is_concurrent_safe_surfaces_as_readonly_hint() -> None:
     # The mutating tools must NOT be marked safe (they'd run concurrently + clobber).
     for unsafe in ("write", "edit", "bash", "dispatch", "ask_user", "remember"):
         assert TOOL_REGISTRY[unsafe].is_concurrent_safe is False
+
+
+@pytest.mark.asyncio
+async def test_large_result_spills_to_file(ctx) -> None:
+    """An oversized SUCCESS result is written to a workspace file + replaced by a
+    compact pointer; small results and errors are returned inline unchanged."""
+    import json as _json
+
+    from polynoia.mcp.server import _MAX_RESULT_BYTES, _maybe_spill_large_result
+
+    big = {"kind": "file", "content": "x" * (_MAX_RESULT_BYTES + 2000)}
+    out = _maybe_spill_large_result(big, ctx, "read")
+    assert out["kind"] == "result_spilled"
+    assert out["bytes"] > _MAX_RESULT_BYTES
+    assert out["file"].startswith(".polynoia/tool-results/")
+    assert 0 < len(out["preview"]) <= 1500
+    assert "read(" in out["hint"]
+    # the spilled file holds the FULL result, readable back
+    spilled = ctx.sandbox.root / out["file"]
+    assert spilled.exists()
+    assert _json.loads(spilled.read_text())["content"] == big["content"]
+    # small result → unchanged (same object)
+    small = {"kind": "file", "content": "hi"}
+    assert _maybe_spill_large_result(small, ctx, "read") is small
+    # error / timeout → never spilled (must stay inline + visible)
+    err = {"kind": "error", "error": "y" * (_MAX_RESULT_BYTES + 2000)}
+    assert _maybe_spill_large_result(err, ctx, "read") is err
