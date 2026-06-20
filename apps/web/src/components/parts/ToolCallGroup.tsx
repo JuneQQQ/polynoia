@@ -21,6 +21,7 @@ import { t } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
 import { isActiveToolMember } from "../../lib/toolActivity";
 import {
+	cleanToolName,
 	selectIsMessageStreaming,
 	toolDisplayName,
 	useStore,
@@ -51,7 +52,7 @@ function reasoningHasText(body?: ReasoningBody): boolean {
 // Read-only / idempotent tools the platform runs CONCURRENTLY (mirrors the
 // backend is_concurrent_safe / MCP readOnlyHint set). A run of ≥2 consecutive
 // such tool-calls is a parallel batch — rendered distinctly below.
-const CONCURRENT_SAFE_TOOLS = new Set([
+export const CONCURRENT_SAFE_TOOLS = new Set([
 	"read",
 	"grep",
 	"glob",
@@ -112,8 +113,12 @@ export function ToolCallGroup({
 				const p = cs?.msgById.get(id)?.payload as
 					| { kind?: string; name?: string }
 					| undefined;
+				// cleanToolName strips the per-adapter prefix (mcp__polynoia__ /
+				// polynoia:: / polynoia_) so the safe-set match works across claude,
+				// codex AND opencode — the bare `p.name` is prefixed and never matched.
 				return (
-					p?.kind === "tool-call" && CONCURRENT_SAFE_TOOLS.has(p?.name ?? "")
+					p?.kind === "tool-call" &&
+					CONCURRENT_SAFE_TOOLS.has(cleanToolName(p?.name ?? ""))
 				);
 			});
 		}),
