@@ -15,6 +15,7 @@ import { Check, Copy } from "lucide-react";
 import { Children, memo, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import type { InlineSegment, TextPayload } from "../../lib/types";
 import { useStore } from "../../store";
@@ -296,10 +297,10 @@ function InlineMarkdown({ text }: { text: string }) {
 	if (!text) return null;
 	return (
 		<ReactMarkdown
-			remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+			remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkCjkFriendly]}
 			components={INLINE_MARKDOWN_COMPONENTS as any}
 		>
-			{fixCjkMarkdown(stripRawToolProtocol(text))}
+			{stripRawToolProtocol(text)}
 		</ReactMarkdown>
 	);
 }
@@ -322,41 +323,13 @@ function InlineMarkdown({ text }: { text: string }) {
  *   its render is stable. Only the tail (current in-flight paragraph)
  *   stays raw / pre-wrap.
  */
-/**
- * Pre-process for CommonMark CJK gotcha:
- *   `**第三人（最后面）**看了看` → `**` after `）` then `看` doesn't satisfy
- *   the right-flanking delimiter run rules,so bold never closes,asterisks
- *   leak as literals.
- *
- * Inject a U+200B zero-width space between CJK boundary char and the
- * closing `**`/`__` so the delimiter is properly recognized.
- *
- * Cheap pre-process beats pulling in `remark-cjk-friendly` (which conflicts
- * with this repo's workspace lockfile).
- */
-// CLOSING-side normalization ONLY: a CJK ideograph or fullwidth char (including a
-// fullwidth `）`) sitting immediately before a closing `**`/`__`. Insert a U+200B
-// so the delimiter satisfies CommonMark's right-flanking rule and the bold closes
-// — otherwise `**说明（重要）**结论` leaks literal asterisks.
-//
-// We deliberately do NOT touch the OPENING side (`**` followed by CJK): the old
-// opening-side ZWSP made `**顾屿 ✓**` render literally (the user's bug), so it stays
-// removed. This regex only matches a char *before* `**`, so it can never insert a
-// ZWSP *after* an opening `**` → structurally cannot reintroduce that bug. Both
-// directions are pinned in TextPart.cjkMarkdown.test.tsx against the real
-// react-markdown + remark-gfm render path.
-// KNOWN LIMITATION (TextPart.unicode.test.tsx pins 2 red cases): inserting a U+200B
-// before a closing `**`/`__` only fixes flanking when a CJK/fullwidth char precedes
-// it (`重要**` / fullwidth `）**` — the latter works because `）` is itself CJK-class,
-// not because of the ZWSP). When an ASCII half-width `)` precedes the close
-// (`**说明(重要)**结论`), the ZWSP can't change micromark's right-flanking and the `**`
-// still leak as literals. A real fix needs `remark-cjk-friendly`, deliberately NOT
-// pulled in (it conflicts with this repo's workspace lockfile). So those cases stay
-// red as documentation rather than shipping a no-op preprocess for them.
-const CJK_CLOSE_RE = /([一-鿿　-〿＀-￯])(\*\*|__)/g;
-export function fixCjkMarkdown(s: string): string {
-	return s.replace(CJK_CLOSE_RE, "$1​$2");
-}
+// CJK emphasis flanking is handled by the `remark-cjk-friendly` plugin (wired
+// into every `remarkPlugins` array above), NOT by string preprocessing. It fixes
+// CommonMark's flanking rules so `**「重点」**`, `**说明（重要）**结论` AND the
+// half-width `**说明(重要)**结论` all render <strong> with no leaked asterisks —
+// including the opening-side `**「…` case a regex ZWSP could never reach. The old
+// hand-rolled `fixCjkMarkdown` ZWSP hack (which only patched the closing side and
+// once regressed `**顾屿 ✓**`) is gone.
 
 const RAW_TOOL_MARKER_RE = /<(?:tool_call|tool_result|tool_response)>/g;
 const RAW_TOOL_CLOSE_RE = /<\/(?:tool_call|tool_result|tool_response)>/g;
@@ -476,13 +449,13 @@ const StringBlock = memo(function StringBlock({
 	if (!isStreaming) {
 		return (
 			<ReactMarkdown
-				remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+				remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkCjkFriendly]}
 				rehypePlugins={[
 					[rehypeHighlight, { detect: true, ignoreMissing: true }],
 				]}
 				components={MARKDOWN_COMPONENTS as any}
 			>
-				{fixCjkMarkdown(displayText)}
+				{displayText}
 			</ReactMarkdown>
 		);
 	}
@@ -499,13 +472,16 @@ const StringBlock = memo(function StringBlock({
 		() =>
 			prefix ? (
 				<ReactMarkdown
-					remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+					remarkPlugins={[
+						[remarkGfm, { singleTilde: false }],
+						remarkCjkFriendly,
+					]}
 					rehypePlugins={[
 						[rehypeHighlight, { detect: true, ignoreMissing: true }],
 					]}
 					components={MARKDOWN_COMPONENTS as any}
 				>
-					{fixCjkMarkdown(prefix)}
+					{prefix}
 				</ReactMarkdown>
 			) : null,
 		[split],
@@ -528,11 +504,11 @@ const StringBlock = memo(function StringBlock({
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
 	return (
 		<ReactMarkdown
-			remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+			remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkCjkFriendly]}
 			rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
 			components={MARKDOWN_COMPONENTS as any}
 		>
-			{fixCjkMarkdown(stripRawToolProtocol(text))}
+			{stripRawToolProtocol(text)}
 		</ReactMarkdown>
 	);
 });
@@ -548,7 +524,11 @@ export const TextPart = memo(function TextPart({
 		<div className="text-[13px] text-[var(--color-fg)]">
 			{payload.body.map((block, i) =>
 				typeof block.c === "string" ? (
-					<StringBlock key={i} text={stripLeakedToolTags(block.c)} isStreaming={isStreaming} />
+					<StringBlock
+						key={i}
+						text={stripLeakedToolTags(block.c)}
+						isStreaming={isStreaming}
+					/>
 				) : (
 					// Structured inline (mention-aware), no markdown pass
 					<p key={i} className="my-1 leading-relaxed">

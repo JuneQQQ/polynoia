@@ -1,55 +1,47 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
+import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import { describe, expect, it } from "vitest";
-import { TextPart, fixCjkMarkdown, stripRawToolProtocol } from "./TextPart";
+import { TextPart, stripRawToolProtocol } from "./TextPart";
 
-// Renders through the SAME pipeline TextPart uses (react-markdown + remark-gfm),
-// jsdom-free via renderToStaticMarkup. We assert on <strong> presence so the test
-// pins the actual CommonMark delimiter behavior, not the regex in isolation.
+// Renders through the SAME remark pipeline TextPart uses (remark-gfm +
+// remark-cjk-friendly), jsdom-free via renderToStaticMarkup. We assert on
+// <strong> presence so the test pins the actual CommonMark + CJK-flanking
+// behavior, not a regex in isolation.
 const render = (s: string) =>
 	renderToStaticMarkup(
-		<ReactMarkdown remarkPlugins={[remarkGfm]}>{s}</ReactMarkdown>,
+		<ReactMarkdown remarkPlugins={[remarkGfm, remarkCjkFriendly]}>
+			{s}
+		</ReactMarkdown>,
 	);
 const bold = (s: string) => render(s).includes("<strong>");
+const noLiteralStars = (s: string) => !render(s).includes("**");
 
-describe("fixCjkMarkdown — closing-side CJK bold gotcha", () => {
-	// A fullwidth `）` (Unicode punctuation) immediately before a closing `**`,
-	// followed by a CJK char, fails CommonMark's right-flanking rule → the bold
-	// never closes and the asterisks leak. This is the regression that re-appeared
-	// when fixCjkMarkdown was neutered to a no-op.
-	const closingCases = [
-		"**说明（重要）**这是结论。",
+describe("remark-cjk-friendly — CJK bold flanking", () => {
+	// Every one of these was BROKEN under bare remark-gfm: CommonMark's flanking
+	// rules reject `**` adjacent to a CJK char or CJK punctuation, so the emphasis
+	// never opens/closes and the asterisks leak as literals. The plugin fixes the
+	// flanking classification for CJK so all of them render <strong>. The old
+	// hand-rolled ZWSP preprocess (`fixCjkMarkdown`) could only ever patch the
+	// closing side and missed the opening-side `**「…` and half-width `)**` cases.
+	const cases = [
+		"就是一张**「这个月几号该还多少」的明白账**,让你心里有数", // opening **「 (the live-found bug)
+		"**说明（重要）**这是结论。", // closing fullwidth ）**
+		"**说明(重要)**结论", // closing HALF-WIDTH )** before CJK (was a documented red gap)
 		"**第三人（最后面）**看了看",
+		"这是**重点**内容", // plain CJK-adjacent (always worked — must keep working)
+		"**纯中文加粗**",
+		"**顾屿 ✓**", // emoji/space inside bold (historical regression — must stay bold)
 	];
-
-	it.each(closingCases)(
-		"raw input %s is BROKEN (no <strong>) — proves the fix is necessary",
-		(input) => {
-			expect(bold(input)).toBe(false);
-		},
-	);
-
-	it.each(closingCases)("fixCjkMarkdown(%s) renders <strong>", (input) => {
-		expect(bold(fixCjkMarkdown(input))).toBe(true);
+	it.each(cases)("renders <strong> with no leaked asterisks: %s", (input) => {
+		expect(bold(input)).toBe(true);
+		expect(noLiteralStars(input)).toBe(true);
 	});
 
-	// The closing-side regex must NOT reintroduce the user's original bug, where
-	// the OLD opening-side ZWSP made `**顾屿 ✓**` render literally.
-	it("does NOT regress the opening-side bug: **顾屿 ✓** stays bold", () => {
-		expect(bold(fixCjkMarkdown("**顾屿 ✓**"))).toBe(true);
-	});
-
-	// Plain CJK-adjacent bold (no awkward punctuation) must keep working.
-	it.each(["这是**重点**内容", "**纯中文加粗**", "**bold** then 中文"])(
-		"keeps ordinary bold working: %s",
-		(input) => {
-			expect(bold(fixCjkMarkdown(input))).toBe(true);
-		},
-	);
-
-	it("leaves text with no CJK-before-** untouched", () => {
-		expect(fixCjkMarkdown("**hello** world")).toBe("**hello** world");
+	it("leaves non-CJK text rendering normally", () => {
+		expect(bold("**hello** world")).toBe(true);
+		expect(noLiteralStars("plain text, no emphasis")).toBe(true);
 	});
 });
 

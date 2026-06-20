@@ -21,7 +21,7 @@ vi.mock("../../store", () => ({
 	useStore: (sel: any) => sel({ agents, openAgentDetail }),
 }));
 
-import { TextPart, fixCjkMarkdown } from "./TextPart";
+import { TextPart } from "./TextPart";
 
 const ORCH_ULID = "01HZ0000000000000000000001"; // canonical 26-char ULID
 
@@ -51,27 +51,15 @@ describe("CJK bold-flanking across punctuation", () => {
 	);
 
 	// HALF-WIDTH parentheses, exactly as the task names them
-	// (`**说明(重要)**结论`, `**第三人(最后面)**看了看`). The char immediately before
-	// the closing `**` is an ASCII `)`, which is OUTSIDE CJK_CLOSE_RE's
-	// [一-鿿　-〿＀-￯] class, so NO ZWSP is injected. Because the char AFTER `**`
-	// is a CJK ideograph (结 / 看), CommonMark's right-flanking rule still fails
-	// and the bold never closes → the `**` leak as literals.
-	//
-	// This is a real, latent rendering defect: half-width-paren CJK bold is a
-	// natural thing for an agent to emit, and it renders as garbled `**说明(重要)**`
-	// in the chat bubble. The two assertions below are the ones the product
-	// should satisfy; they currently FAIL and document the gap. DO NOT relax —
-	// keeping them red is the point (the fix would be to extend CJK_CLOSE_RE to
-	// also fire when the *following* char is CJK, regardless of the preceding
-	// char's width).
+	// (`**说明(重要)**结论`, `**第三人(最后面)**看了看`). The char before the closing
+	// `**` is an ASCII `)` and the char after is a CJK ideograph (结 / 看), so
+	// CommonMark's bare flanking rules let the bold leak as literals. This used to
+	// be a documented RED gap (the old ZWSP regex couldn't reach it). The
+	// `remark-cjk-friendly` plugin now classifies CJK flanking correctly, so these
+	// render <strong> with no leaked asterisks — green, as the product requires.
 	it.each(["**说明(重要)**结论", "**第三人(最后面)**看了看"])(
-		"half-width-paren bold renders <strong>, no literal ** (EXPOSES BUG): %s",
+		"half-width-paren CJK bold renders <strong>, no literal **: %s",
 		(input) => {
-			// fixCjkMarkdown leaves the half-width case completely untouched (no
-			// ZWSP injected) — pin that first so the failure points at the regex,
-			// not at react-markdown. This sub-assertion PASSES and localizes the bug.
-			expect(fixCjkMarkdown(input)).toBe(input);
-			// These two are the product-correct expectations; they currently FAIL.
 			expect(isBold(input)).toBe(true);
 			expect(hasLiteralAsterisks(input)).toBe(false);
 		},
@@ -90,14 +78,12 @@ describe("emoji/space-inside-bold regression (顾屿 ✓)", () => {
 		expect(html).not.toContain("**");
 	});
 
-	// The opening-side fix must NOT have been reintroduced: fixCjkMarkdown only
-	// ever touches a char *before* `**`, so it can never insert a ZWSP right
-	// after an opening `**`. Verify the transformed string keeps `**顾屿` intact.
-	it("fixCjkMarkdown never injects a ZWSP after the OPENING ** (顾屿)", () => {
-		const fixed = fixCjkMarkdown("**顾屿 ✓**");
-		expect(fixed.startsWith("**顾屿")).toBe(true);
-		// U+200B must not sit between the opening ** and 顾.
-		expect(fixed).not.toContain("**​");
+	// Opening-side `**「…` (the live-found bug): `**` followed by CJK punctuation
+	// used to fail left-flanking and leak literal asterisks. The plugin fixes it.
+	it("opening-side **「…」** renders <strong>, no literal asterisks", () => {
+		const html = renderString("一张**「明白账」的形态**,你定");
+		expect(html).toContain("<strong");
+		expect(html).not.toContain("**");
 	});
 });
 

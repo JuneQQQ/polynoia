@@ -19,11 +19,11 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import { t } from "../../lib/i18n";
 import { assetUrl } from "../../lib/runtime-config";
 import { useStore } from "../../store";
-import { fixCjkMarkdown } from "../parts/TextPart";
 
 /** Resolve a markdown image `src` to something the browser can load.
  *
@@ -208,11 +208,7 @@ export function MarkdownDoc({
 	const name = path ? (path.split("/").pop() ?? path) : undefined;
 	const imgDocPath = imgBasePath ?? path;
 	const scrollRef = useRef<HTMLDivElement>(null);
-	const fixedContent = useMemo(() => fixCjkMarkdown(content), [content]);
-	const headingIds = useMemo(
-		() => buildHeadingIdMap(fixedContent),
-		[fixedContent],
-	);
+	const headingIds = useMemo(() => buildHeadingIdMap(content), [content]);
 	const scrollToHash = (
 		href: string,
 		event?: MouseEvent<HTMLAnchorElement>,
@@ -376,14 +372,17 @@ export function MarkdownDoc({
 				<div className="pn-md-doc mx-auto max-w-[760px] px-5 py-7 sm:px-8">
 					<MdBoundary content={content}>
 						<ReactMarkdown
-							remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+							remarkPlugins={[
+								[remarkGfm, { singleTilde: false }],
+								remarkCjkFriendly,
+							]}
 							rehypePlugins={[
 								[rehypeHighlight, { detect: true, ignoreMissing: true }],
 							]}
 							// biome-ignore lint/suspicious/noExplicitAny: rmd component map
 							components={components as any}
 						>
-							{fixedContent}
+							{content}
 						</ReactMarkdown>
 					</MdBoundary>
 				</div>
