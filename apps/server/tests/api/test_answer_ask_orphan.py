@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from polynoia.api.conversations_routes import get_open_ask_forms
 from polynoia.api.routes import _pending_asks, answer_ask
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.bootstrap import bootstrap_db
@@ -90,3 +91,28 @@ async def test_live_ask_persists_user_bubble_no_stamp(fresh_db) -> None:
     senders = [r["sender_id"] for r in rows]
     assert senders == ["agent-a", "you"]
     assert "answer" not in card.payload
+
+
+@pytest.mark.asyncio
+async def test_open_ask_forms_excludes_answered_blocking_form(fresh_db) -> None:
+    """A blocking ask whose card is stamped (answer/answered) must NOT re-hydrate
+    as open on refresh. Regression: the orphaned-recovery path stamps the card
+    but writes NO `you` message, so the `i > last_user_idx` heuristic alone left
+    it "open" and the panel resurrected, asking the user to answer again.
+    """
+    conv_id = "conv-rehydrate"
+    ask_id = await _seed_ask_form(conv_id)  # no _pending_asks entry → orphaned
+    await answer_ask(conv_id, ask_id, {"answer": "Excel 表格"})
+
+    res = await get_open_ask_forms(conv_id)
+    assert res["ask_forms"] == []  # answered → not re-hydrated
+
+
+@pytest.mark.asyncio
+async def test_open_ask_forms_rehydrates_unanswered_form(fresh_db) -> None:
+    """An UNanswered blocking ask DOES re-hydrate so a refresh re-shows the panel."""
+    conv_id = "conv-open"
+    ask_id = await _seed_ask_form(conv_id)
+
+    res = await get_open_ask_forms(conv_id)
+    assert [f["id"] for f in res["ask_forms"]] == [ask_id]

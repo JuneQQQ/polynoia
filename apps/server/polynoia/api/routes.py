@@ -1168,7 +1168,10 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
                 # produce the exact duplicate user bubble #8 removed.
                 _row = await _db.get(MessageRow, ask_id)
                 if _row and isinstance(_row.payload, dict) and _row.payload.get("kind") == "ask-form":
-                    _row.payload = {**_row.payload, "answer": answer}
+                    # Set BOTH: `answer` for the card's 「已回复」readback, `answered`
+                    # for the open-form re-hydration check (GET /ask-forms) so a
+                    # refresh doesn't resurrect the panel and ask again.
+                    _row.payload = {**_row.payload, "answer": answer, "answered": True}
             else:
                 # Live turn will resume and consume the answer; persist a `you` text
                 # message so the answer survives a refresh (the resumed tool call does

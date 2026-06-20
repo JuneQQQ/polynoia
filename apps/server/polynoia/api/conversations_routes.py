@@ -293,11 +293,16 @@ async def get_open_ask_forms(conv_id: str):
         payload = m.get("payload") or {}
         # Open = ask-form after the last user reply AND not already answered.
         # Blocking ask_user no longer writes a `you` message (the answer is
-        # stamped onto the card payload), so `answered` is the signal there.
+        # stamped onto the card payload), so the stamp is the signal there:
+        # treat EITHER `answered` (flag) OR `answer` (the stamped text) as closed.
+        # Without the `answer` check, an answered blocking ask whose `you` reply
+        # isn't present (orphaned-restart recovery stamps the card, no `you` msg)
+        # would re-hydrate the panel on refresh and ask the user to answer again.
         if (
             payload.get("kind") == "ask-form"
             and i > last_user_idx
             and not payload.get("answered")
+            and not payload.get("answer")
         ):
             open_forms.append({
                 "id": m.get("id"),
