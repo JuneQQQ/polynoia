@@ -15,7 +15,7 @@
  * for the whole run, not one per element.
  */
 import { Loader2, Wrench } from "lucide-react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { t } from "../../lib/i18n";
 import { isMobile } from "../../lib/platform";
@@ -47,6 +47,17 @@ function reasoningHasText(body?: ReasoningBody): boolean {
 	}
 	return false;
 }
+
+// Read-only / idempotent tools the platform runs CONCURRENTLY (mirrors the
+// backend is_concurrent_safe / MCP readOnlyHint set). A run of ≥2 consecutive
+// such tool-calls is a parallel batch — rendered distinctly below.
+const CONCURRENT_SAFE_TOOLS = new Set([
+	"read",
+	"grep",
+	"glob",
+	"recall",
+	"wait",
+]);
 
 export function ToolCallGroup({
 	convId,
@@ -92,6 +103,44 @@ export function ToolCallGroup({
 			});
 		}),
 	);
+	// Per visible id: is it a concurrent-safe (read-only) tool-call? A run of ≥2
+	// consecutive ones executed in parallel — grouped into a 「并行」 batch below.
+	const safeFlags = useStore(
+		useShallow((s) => {
+			const cs = s.convs.get(convId);
+			return visibleMsgIds.map((id) => {
+				const p = cs?.msgById.get(id)?.payload as
+					| { kind?: string; name?: string }
+					| undefined;
+				return (
+					p?.kind === "tool-call" && CONCURRENT_SAFE_TOOLS.has(p?.name ?? "")
+				);
+			});
+		}),
+	);
+	// Segment the run: consecutive concurrent-safe tool-calls (≥2) form a parallel
+	// batch; everything else stays sequential. `start` = global index so the
+	// avatar-suppressing isGrouped flag stays correct (one avatar per whole fold).
+	const segments = useMemo(() => {
+		const segs: { ids: string[]; start: number; parallel: boolean }[] = [];
+		let i = 0;
+		while (i < visibleMsgIds.length) {
+			if (safeFlags[i]) {
+				let j = i;
+				while (j < visibleMsgIds.length && safeFlags[j]) j++;
+				segs.push({
+					ids: visibleMsgIds.slice(i, j),
+					start: i,
+					parallel: j - i >= 2,
+				});
+				i = j;
+			} else {
+				segs.push({ ids: [visibleMsgIds[i]], start: i, parallel: false });
+				i++;
+			}
+		}
+		return segs;
+	}, [visibleMsgIds, safeFlags]);
 	// Collapsed summary + the sender's avatar (all members share one sender).
 	// Return only PRIMITIVES from the selector — a fresh array/object would defeat
 	// useShallow and re-render this group on every store delta.
@@ -182,17 +231,41 @@ export function ToolCallGroup({
 			</button>
 			{expanded && (
 				<div className="mt-1 border-l-2 border-[var(--color-line)] pl-1">
-					{/* Natural stream order — reasoning and tool calls interleaved as
-					    they actually happened. No reordering. */}
-					{visibleMsgIds.map((id, i) => (
-						<MessageView
-							key={id}
-							convId={convId}
-							msgId={id}
-							isGrouped={i > 0}
-							compact
-						/>
-					))}
+					{/* Natural stream order. A run of ≥2 consecutive concurrent-safe
+					    tool-calls (read/grep/glob/recall/wait) ran in PARALLEL — wrap
+					    it in a distinct dashed-accent block so the user sees the batch;
+					    everything else stays sequential. */}
+					{segments.map((seg) =>
+						seg.parallel ? (
+							<div
+								key={`par-${seg.start}`}
+								className="my-1 rounded-md border border-dashed border-[var(--color-accent)]/40 bg-[var(--color-accent-soft)]/10"
+							>
+								<div className="px-2 pt-1 text-[9.5px] font-mono uppercase tracking-[0.16em] text-[var(--color-accent)]">
+									⫶ {seg.ids.length} {t("parallelBatch", lang)}
+								</div>
+								{seg.ids.map((id, k) => (
+									<MessageView
+										key={id}
+										convId={convId}
+										msgId={id}
+										isGrouped={seg.start + k > 0}
+										compact
+									/>
+								))}
+							</div>
+						) : (
+							seg.ids.map((id, k) => (
+								<MessageView
+									key={id}
+									convId={convId}
+									msgId={id}
+									isGrouped={seg.start + k > 0}
+									compact
+								/>
+							))
+						),
+					)}
 				</div>
 			)}
 		</>

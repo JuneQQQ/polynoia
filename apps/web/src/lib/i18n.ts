@@ -382,8 +382,14 @@ const STR = {
 	color: { zh: "颜色", en: "Color" },
 	saveChanges: { zh: "保存修改", en: "Save changes" },
 	createContact: { zh: "创建联系人", en: "Create contact" },
-	contactCreated: { zh: "联系人「{name}」已创建 ✓", en: 'Contact "{name}" created ✓' },
-	contactSaved: { zh: "联系人「{name}」已更新 ✓", en: 'Contact "{name}" updated ✓' },
+	contactCreated: {
+		zh: "联系人「{name}」已创建 ✓",
+		en: 'Contact "{name}" created ✓',
+	},
+	contactSaved: {
+		zh: "联系人「{name}」已更新 ✓",
+		en: 'Contact "{name}" updated ✓',
+	},
 	projectNameHint: { zh: "如:Webhook Router", en: "e.g., Webhook Router" },
 	projectDescHint: {
 		zh: "一句话说明项目目标",
@@ -702,7 +708,10 @@ const STR = {
 		zh: "同步 agency-agents 角色库",
 		en: "Sync agency-agents catalog",
 	},
-	roleCatalogEmpty: { zh: "角色库为空,先同步", en: "Catalog empty — sync first" },
+	roleCatalogEmpty: {
+		zh: "角色库为空,先同步",
+		en: "Catalog empty — sync first",
+	},
 	noMatchingPresets: { zh: "没有匹配的角色", en: "No matching roles" },
 	searchRolePreset: { zh: "搜索角色…", en: "Search roles…" },
 	noContactsHint2: {
@@ -972,6 +981,7 @@ const STR = {
 	tool: { zh: "工具", en: "tool" },
 	withThinking: { zh: "含思考", en: "with thinking" },
 	toolSteps: { zh: "步工具调用", en: "tool steps" },
+	parallelBatch: { zh: "并行", en: "parallel" },
 	executing3: { zh: "正在执行", en: "Executing" },
 	collapse2: { zh: "收起 ▾", en: "Collapse" },
 	expand: { zh: "展开 ▸", en: "Expand" },
