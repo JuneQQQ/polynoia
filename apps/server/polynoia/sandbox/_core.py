@@ -211,14 +211,28 @@ _LOCAL_DEPS_GITIGNORE = (
 _GIT_TIMEOUT = 60.0
 
 
+# When macOS's active developer dir is a FULL Xcode whose license hasn't been
+# accepted, EVERY git call dies with "You have not agreed to the Xcode license
+# agreements" — which silently breaks `git worktree add` for every agent sandbox
+# (observed after a user installed Xcode: all agent turns failed). The Command
+# Line Tools git needs no such license, so pin the sandbox's git at CLT when it's
+# present. The path only exists on macOS-with-CLT, so this is a safe no-op
+# elsewhere (and harmless when Xcode IS licensed — CLT git is equivalent).
+_CLT_DEVELOPER_DIR = "/Library/Developer/CommandLineTools"
+_HAS_CLT_GIT = Path(_CLT_DEVELOPER_DIR, "usr", "bin", "git").exists()
+
+
 def _git_env() -> dict[str, str]:
-    return {
+    env = {
         **os.environ,
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_EDITOR": "true",
         "GIT_PAGER": "cat",
     }
+    if _HAS_CLT_GIT:
+        env["DEVELOPER_DIR"] = _CLT_DEVELOPER_DIR
+    return env
 
 
 # ── Per-workspace merge serialization ────────────────────────────────
