@@ -1149,17 +1149,40 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
     the suspended `ask_user` tool resumes the CURRENT turn with this answer.
     """
     answer = (body.get("answer") or "").strip() or "(用户未填写)"
+    # ORPHANED ask: registered before a backend restart, so its in-memory entry was
+    # cleared and NO live `ask_user` poll loop is left to consume this answer and
+    # resume the suspended turn — the conv would sit silently dead after answering
+    # (observed: user answered a blocking form post-restart, card stayed unanswered,
+    # nothing progressed). `register_ask` seeds `_pending_asks[ask_id]=None`, so an
+    # id ABSENT here was registered in a prior process → orphaned.
+    orphaned = ask_id not in _pending_asks
     _pending_asks[ask_id] = answer
     with suppress(Exception):
         async with SessionLocal() as _db:
-            await storage_repo.append_message(
-                _db,
-                conv_id=conv_id,
-                sender_id="you",
-                payload={"kind": "text", "body": [{"c": answer}]},
-            )
+            if orphaned:
+                # No live turn will resume to render this answer. Stamp it onto the
+                # persisted ask-form card so the card itself reads 「已回复」, and DO
+                # NOT persist a separate `you` text message here — the client
+                # re-triggers the orchestrator via ws.sendUserMessage, which is what
+                # persists the canonical `you` message. Persisting one here too would
+                # produce the exact duplicate user bubble #8 removed.
+                _row = await _db.get(MessageRow, ask_id)
+                if _row and isinstance(_row.payload, dict) and _row.payload.get("kind") == "ask-form":
+                    _row.payload = {**_row.payload, "answer": answer}
+            else:
+                # Live turn will resume and consume the answer; persist a `you` text
+                # message so the answer survives a refresh (the resumed tool call does
+                # not itself persist one). #8's askAnswerSkip hides its visible bubble.
+                await storage_repo.append_message(
+                    _db,
+                    conv_id=conv_id,
+                    sender_id="you",
+                    payload={"kind": "text", "body": [{"c": answer}]},
+                )
             await _db.commit()
-    return {"ok": True}
+    # When orphaned there is no turn to resume — the client re-triggers the
+    # orchestrator with this answer (a fresh turn) so the conv isn't a dead end.
+    return {"ok": True, "orphaned": orphaned}
 
 
 @router.post("/api/conversations/{conv_id}/report")

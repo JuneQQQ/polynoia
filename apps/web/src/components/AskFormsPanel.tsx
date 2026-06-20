@@ -65,6 +65,17 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 	if (list.length === 0) return null;
 	const [active, ...queued] = list;
 
+	const reTriggerAsNewTurn = (af: AskFormEntry, answerText: string) => {
+		// Send the answer as a fresh user turn so the asking agent picks it up.
+		// In a group, @-address the asker so the conv routes back; in a 1:1 there's
+		// no one else — no @.
+		const ansId = appendUserMessage(convId, answerText);
+		const asker = agents.find((a) => a.id === af.agent_id);
+		const isDM = members.length <= 2;
+		const tagged = asker && !isDM ? `@${asker.name} ${answerText}` : answerText;
+		ws?.sendUserMessage(tagged, members, undefined, ansId);
+	};
+
 	const onAnswered = (af: AskFormEntry, answerText: string) => {
 		if (af.blocking_tool) {
 			// ⑥ Blocking `ask_user`: resolve the SUSPENDED agent turn — it RESUMES
@@ -72,18 +83,23 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 			// agent's own output (pre-ask … [your answer] … post-ask), breaking the
 			// reply's continuity. The answer shows INSIDE the ask-form card instead
 			// (the server stamps it onto that card's payload + re-broadcasts).
-			api.answerAsk(convId, af.id, answerText).catch(() => {});
+			//
+			// ORPHANED case: if the backend restarted after the form was raised, the
+			// suspended turn is gone — `answerAsk` returns `{orphaned:true}` and nothing
+			// would ever resume. Re-trigger a fresh orchestrator turn so the conv isn't
+			// a dead end (the server already stamped the answer onto the card, so the
+			// re-trigger's `you` bubble is the canonical one — #8 hides its duplicate).
+			api
+				.answerAsk(convId, af.id, answerText)
+				.then((res) => {
+					if (res?.orphaned) reTriggerAsNewTurn(af, answerText);
+				})
+				.catch(() => {});
 		} else {
 			// Legacy <ask-form> text path: this is a NEW user turn (the agent already
 			// finished), so a `you` bubble is correct. Send via WS so the asking
-			// agent's NEXT turn sees it. In a group, @-address the asker so the conv
-			// routes back; in a 1:1 (单聊, ≤2 members) there's no one else — no @.
-			const ansId = appendUserMessage(convId, answerText);
-			const asker = agents.find((a) => a.id === af.agent_id);
-			const isDM = members.length <= 2;
-			const tagged =
-				asker && !isDM ? `@${asker.name} ${answerText}` : answerText;
-			ws?.sendUserMessage(tagged, members, undefined, ansId);
+			// agent's NEXT turn sees it.
+			reTriggerAsNewTurn(af, answerText);
 		}
 		// Drop the card from the answer panel.
 		dequeue(convId, af.id);

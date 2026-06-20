@@ -443,7 +443,7 @@ export const api = {
 	/** Resolve a blocking `ask_user` tool call (⑥) — the suspended agent turn
 	 * continues with this answer. Only used for blocking_tool ask-forms. */
 	answerAsk: (convId: string, askId: string, answer: string) =>
-		postJSON<{ ok: boolean }>(
+		postJSON<{ ok: boolean; orphaned?: boolean }>(
 			`/api/conversations/${convId}/ask/${askId}/answer`,
 			{ answer },
 		),
