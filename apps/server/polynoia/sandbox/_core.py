@@ -777,7 +777,30 @@ class Sandbox:
         Idempotent: existing-repo adopt is gated by ``.polynoia/manifest.json``.
         """
         is_custom = workspace_id in _WORKSPACE_ROOTS
-        if (ws_root / ".git").exists():
+        git_dir = ws_root / ".git"
+        git_present = git_dir.exists()
+        if git_present and not is_custom:
+            # Validate the AUTO workspace repo is actually USABLE, not just that a
+            # ``.git`` path exists. A ``git init`` interrupted partway (e.g. killed
+            # by the Xcode-license gate, which makes every git invocation fail)
+            # leaves a half-built ``.git`` directory: it exists, so the old
+            # ``.exists()`` check declared the workspace ready and skipped
+            # bootstrap — but it has no base commit, so every later
+            # ``git worktree add`` died with "fatal: not a git repository" and the
+            # workspace stayed permanently poisoned (no self-heal). HEAD must
+            # resolve to a real base commit for worktrees to branch from it; if it
+            # doesn't, nuke the broken ``.git`` and re-bootstrap from scratch.
+            scratch = cls(root=ws_root, conv_id=f"_gitcheck_{workspace_id}")
+            rc, _out, _err = await scratch._run(["git", "rev-parse", "--verify", "-q", "HEAD"])
+            if rc != 0:
+                log.warning(
+                    "workspace %s has an unusable .git (rev-parse HEAD rc=%s); re-initializing",
+                    workspace_id,
+                    rc,
+                )
+                shutil.rmtree(git_dir, ignore_errors=True)
+                git_present = False
+        if git_present:
             if is_custom and not (ws_root / ".polynoia" / "manifest.json").exists():
                 await cls._adopt_existing_workspace(ws_root, workspace_id)
             return
