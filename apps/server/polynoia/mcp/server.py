@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections import deque
 from contextlib import suppress as _suppress
 from typing import Any
 
@@ -177,6 +178,69 @@ def _wrap_result(result: Any) -> list[TextContent] | CallToolResult:
     return [block]
 
 
+class _ConcurrencyGate:
+    """FIFO-fair readers-writer lock that batches concurrent tool calls by
+    ``is_concurrent_safe``.
+
+    A READER (concurrent-safe tool: read/grep/glob/recall/wait) shares with other
+    readers; a WRITER (state-mutating tool: write/edit/bash/dispatch/…) is
+    EXCLUSIVE and acts as a BARRIER. FIFO ordering means a writer blocks readers
+    that arrive AFTER it — so a stream of tool-call RPCs ``a(safe) b(safe) c(unsafe)
+    d(safe) e(safe)`` executes as ``[a‖b] → [c] → [d‖e]``: exactly the requested
+    batching. Adapters that fire only ONE tool call at a time (claude_agent_sdk,
+    which also self-parallelizes read-only tools via readOnlyHint) see no
+    contention; this gate makes the adapters that DO fire concurrent RPCs
+    (opencode) correct instead of a free-for-all (two writes can't clobber, a read
+    can't race a pending write). One gate per (conv, agent) session.
+    """
+
+    def __init__(self) -> None:
+        self._state = asyncio.Lock()
+        self._readers = 0
+        self._writer = False
+        self._waiters: deque[tuple[bool, asyncio.Event]] = deque()
+
+    def _grantable(self, writer: bool) -> bool:
+        if writer:
+            return self._readers == 0 and not self._writer
+        return not self._writer
+
+    def _take(self, writer: bool) -> None:
+        if writer:
+            self._writer = True
+        else:
+            self._readers += 1
+
+    async def acquire(self, *, writer: bool) -> None:
+        async with self._state:
+            # Fast path only when nobody is queued — else a grantable reader must
+            # still wait behind an already-queued writer (FIFO fairness = barrier).
+            if not self._waiters and self._grantable(writer):
+                self._take(writer)
+                return
+            ev = asyncio.Event()
+            self._waiters.append((writer, ev))
+        await ev.wait()
+
+    async def release(self, *, writer: bool) -> None:
+        async with self._state:
+            if writer:
+                self._writer = False
+            else:
+                self._readers -= 1
+            # Serve the FIFO head: consecutive readers all batch; a writer at the
+            # head runs alone and stops further grants until it releases.
+            while self._waiters:
+                w, ev = self._waiters[0]
+                if not self._grantable(w):
+                    break
+                self._waiters.popleft()
+                self._take(w)
+                ev.set()
+                if w:
+                    break
+
+
 async def run_server(
     *, conv_id: str, agent_id: str, turn_agent_id: str | None = None
 ) -> None:
@@ -200,6 +264,10 @@ async def run_server(
     _raw_tools = os.environ.get("POLYNOIA_AGENT_TOOLS", "").strip()
     allow = {t.strip() for t in _raw_tools.split(",") if t.strip()} or None
     role_tools = tools_for_role(role, allow)
+    # One concurrency gate per (conv, agent) session: batches this agent's
+    # concurrent tool-call RPCs by is_concurrent_safe (readers parallel, an
+    # unsafe writer is an exclusive barrier). No-op for one-at-a-time adapters.
+    gate = _ConcurrencyGate()
 
     @app.list_tools()
     async def _list() -> list[Tool]:
@@ -224,8 +292,20 @@ async def run_server(
         ctx.append_audit("tool.start", {
             "tool": name, "role": role, "args_preview": _arg_preview(arguments),
         })
+        # human_wait tools (ask_user / project-access) block on the USER, not on
+        # compute — they must NOT hold the concurrency gate or they'd freeze every
+        # other tool in the conv until the user answers. Run them ungated, exactly
+        # as _execute_bounded exempts them from the timeout.
+        _gated = not getattr(impl, "human_wait", False)
+        _writer = not getattr(impl, "is_concurrent_safe", False)
         try:
-            result = await _execute_bounded(impl, ctx, arguments, name)
+            if _gated:
+                await gate.acquire(writer=_writer)
+            try:
+                result = await _execute_bounded(impl, ctx, arguments, name)
+            finally:
+                if _gated:
+                    await gate.release(writer=_writer)
         except Exception as exc:
             ctx.append_audit("tool.error", {
                 "tool": name, "error": str(exc), "type": type(exc).__name__,
