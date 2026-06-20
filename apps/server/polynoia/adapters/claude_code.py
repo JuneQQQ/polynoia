@@ -281,12 +281,22 @@ class ClaudeCodeAdapter:
         # the user persona EXTENDS the default. If no user persona is set,
         # pass system_prompt=None — SDK defaults stay clean.
         sys_prompt_param: str | dict[str, Any] | None
+        # ORCHESTRATOR gets OUR prompt as the BASE — not Claude Code's coding-agent
+        # preset. The preset is trained to "narrate a plan / make todos / write code
+        # directly", which fights the orchestrator's actual job (call dispatch /
+        # ask_user / discuss / present). That mismatch produced narrate-then-stop
+        # dead-ends (the model wrote "下面去调 ask_user" then ended with 0 tool calls
+        # — observed ~15% of group turns). Tool-call MECHANICS are handled by the
+        # SDK/API, not the preset, so dropping it doesn't hurt tool use; it just lets
+        # the dispatcher protocol lead. WORKERS / DMs keep the coding preset (they DO
+        # write code). Detected by the orchestrator-protocol marker in the prompt.
+        _is_orchestrator = bool(system_prompt and "你是本群聊的协调器" in system_prompt)
         if system_prompt and system_prompt.strip():
-            sys_prompt_param = {
-                "type": "preset",
-                "preset": "claude_code",
-                "append": system_prompt,
-            }
+            sys_prompt_param = (
+                system_prompt
+                if _is_orchestrator
+                else {"type": "preset", "preset": "claude_code", "append": system_prompt}
+            )
         else:
             sys_prompt_param = None
         # Capture claude CLI stderr so it can be surfaced in error messages.
