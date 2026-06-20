@@ -70,6 +70,10 @@ def test_protocol_layer_content() -> None:
     assert "dispatch 的 `contract`" in c
     assert "自动写入共享记忆" in c
     assert "remember(kind=contract)" in c
+    # Saying "I'll ask you" WITHOUT calling ask_user is a dead-end (case 5) —
+    # the protocol must hard-enforce ask_user follow-through, like it does dispatch.
+    assert "ask_user" in c
+    assert "说了要问" in c and "真的调用 `ask_user`" in c
     assert "阿码" in c and "阿写" in c
     # The user-assigned role is surfaced + labelled as the user's assignment;
     # a teammate with no configured role is shown as 未指定.
