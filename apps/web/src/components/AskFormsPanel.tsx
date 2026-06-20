@@ -86,19 +86,28 @@ export function AskFormsPanel({ convId, members, ws }: Props) {
 			//
 			// ORPHANED case: if the backend restarted after the form was raised, the
 			// suspended turn is gone — `answerAsk` returns `{orphaned:true}` and nothing
-			// would ever resume. Re-trigger a fresh orchestrator turn so the conv isn't
-			// a dead end (the server already stamped the answer onto the card, so the
-			// re-trigger's `you` bubble is the canonical one — #8 hides its duplicate).
+			// would resume. answer_ask has already STAMPED the answer onto the card, so
+			// re-run the turn SILENTLY: `regenerate:true` makes the backend dispatch the
+			// turn with persist_user=false → NO separate `you` bubble. This mirrors the
+			// live blocking case exactly (the card is the only surface for the answer);
+			// the orchestrator reads the stamped answer from the card and continues.
+			// (A normal sendUserMessage here would persist the answer as a `you` bubble
+			// — the exact duplicate #8 forbids, which it isn't positioned to hide once
+			// the card is already stamped + the agent's narration sits between them.)
 			api
 				.answerAsk(convId, af.id, answerText)
 				.then((res) => {
-					if (res?.orphaned) reTriggerAsNewTurn(af, answerText);
+					if (res?.orphaned)
+						ws?.sendUserMessage(answerText, members, undefined, undefined, {
+							regenerate: true,
+						});
 				})
 				.catch(() => {});
 		} else {
 			// Legacy <ask-form> text path: this is a NEW user turn (the agent already
 			// finished), so a `you` bubble is correct. Send via WS so the asking
-			// agent's NEXT turn sees it.
+			// agent's NEXT turn sees it. #8's askAnswerSkip hides its bubble (the
+			// card's `followingYou` readback is the canonical surface).
 			reTriggerAsNewTurn(af, answerText);
 		}
 		// Drop the card from the answer panel.
