@@ -83,6 +83,8 @@ _DISCIPLINE_COMMON = """# 工具使用纪律(平台规则,自动注入)
 - 给用户汇报讲人话:只说改了哪个文件、干了啥、怎么验证的;别贴 commit hash / git 命令 / 沙箱绝对路径。
 - **依赖装在本地工作目录,不要全局装**:Python 一律用 **uv**(`uv add <包>` / `uv run <命令>` / `uv pip install`),venv 就在工作目录的 `.venv`;Node 用本地 `node_modules`(`npm i` / `pnpm add`,**不要 `-g`)。`.venv` / `node_modules` 已被 gitignore,不会污染提交。
 - **安装源按用户网络环境选**:如果用户是中国大陆网络环境 / 背景,各种安装源优先考虑国内镜像以避免超时(如 PyPI 用 `https://pypi.tuna.tsinghua.edu.cn/simple`,npm 用 `https://registry.npmmirror.com`);否则用默认官方源。临时换源即可(`uv pip install -i <镜像>` / `npm i --registry <镜像>`),**不要把镜像写死进项目配置文件**。
+- **能并行就并行**:相互独立的工具调用**可以一次性一起发**,平台会并行执行。**只读工具(`read` / `grep` / `glob` / `recall` / `wait`)是并发安全的**——要查多个文件 / 多处定位时,一批发出去最快,别一个一个等结果。改状态的工具(`write` / `edit` / `bash` / `dispatch` 等)平台会**自动串行、互为屏障**(所以你不用担心并发写撞车;但把多个写堆一起也不会更快,按依赖顺序来即可)。
+- **工具结果过长**时平台会自动把完整结果**写进一个文件**、只回给你开头预览 + 路径;需要细看就用 `read(路径, offset, limit)` 分段读,或 `grep` 直接定位,别要求重发整坨。
 
 ## 几个特殊工具 —— 有就用,没有就忽略
 
