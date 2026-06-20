@@ -358,7 +358,16 @@ function AskCard({
 										<button
 											type="button"
 											key={opt.value}
-											onClick={() => active && setSingle(q.id, opt.value)}
+											onClick={() => {
+												if (!active) return;
+												setSingle(q.id, opt.value);
+												// Auto-advance on a single-select pick — the pick IS the
+												// confirmation, so intermediate steps need no 下一步 click.
+												// The LAST question keeps its explicit Send (the one final
+												// confirmation). 「其他」/multi/fill still advance via 下一步
+												// since they need typing / multiple picks first.
+												if (cur < total - 1) setStep(cur + 1);
+											}}
 											disabled={!active}
 											className={`w-full flex items-start gap-2 px-2.5 py-1.5 rounded-md text-left border transition ${
 												picked
