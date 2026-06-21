@@ -1,0 +1,12 @@
+import { chromium } from "@playwright/test";
+const TITLE = process.argv[2]; const OUT = process.argv[3];
+const b = await chromium.launch();
+const p = await (await b.newContext({viewport:{width:1440,height:900},locale:"zh-CN"})).newPage();
+await p.goto("http://localhost:7788/",{waitUntil:"domcontentloaded"}); await p.waitForTimeout(2500);
+const s=p.locator('input[type="search"]').first(); await s.click(); await s.fill(TITLE); await p.waitForTimeout(1300);
+await p.locator("button",{hasText:TITLE}).first().click({timeout:10000}); await p.waitForTimeout(2200);
+const head = await p.evaluate(()=>document.body.innerText.slice(0,40));
+const leak = await p.evaluate(()=>/<\/?(?:antml:)?(?:parameter|invoke|tool_call|tool_response)\b|<br>|<div>|<span>|\*\*「/.test(document.body.innerText));
+await p.screenshot({path:OUT,fullPage:true});
+console.log("head:",JSON.stringify(head),"| visible_leak/literal:",leak,"| saved",OUT);
+await b.close();

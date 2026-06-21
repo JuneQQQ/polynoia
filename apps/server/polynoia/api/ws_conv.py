@@ -2305,7 +2305,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     # point at the live blackboard. The orchestrator reads these
                     # back to verify the burst instead of trusting silence.
                     worker_text += (
-                        "\n\n# 收尾(必须)\n"
+                        "\n\n# 动手(别空转)\n"
+                        "说了要写 / 要改就**在同一轮立刻调用真实 `write` / `edit` / `bash` 工具**做出来;"
+                        "别反复说\"我去落盘 / 我现在写 / 接下来写\"却一个工具都不发——本轮只说不做 = 交付失败、产物为空。\n"
+                        "# 收尾(必须)\n"
                         "完成后调用 `report` 工具自评交付:status(ok/partial/failed)、"
                         "deliverables(产物文件名+一句话)、contract_ok(是否符合上面的契约)。"
                         "这是你向 Orchestrator 的正式交付确认——没有它,你的产物按\"未验证\"对待。\n"

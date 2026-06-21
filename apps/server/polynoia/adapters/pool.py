@@ -19,12 +19,31 @@ via ``close_sessions_for_agent(agent_id)``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import os
+import time
 from typing import cast
 
 from polynoia.adapters.base import Adapter, AdapterSession
 from polynoia.adapters.claude_code import ClaudeCodeAdapter
 from polynoia.adapters.codex import CodexAdapter
 from polynoia.adapters.opencode import OpenCodeAdapter
+
+logger = logging.getLogger("polynoia.adapters.pool")
+
+# Idle sessions are evicted after this many seconds of no `get_session` access.
+# Without this, a cached session (and its child subprocess — notably the
+# long-lived `opencode acp` process) lingers forever once its conversation goes
+# quiet, accumulating one zombie subprocess per conv (observed: 13 leaked
+# `opencode acp` children, oldest >1h, during a test sweep). The TTL preserves
+# cross-turn pooling for an ACTIVE conversation (each turn refreshes last-use)
+# while reaping sessions whose conv has stopped sending. MUST stay comfortably
+# above the max single-turn duration (≈360s) so the reaper never closes a
+# session mid-turn — last-use is stamped at turn START, so a TTL of 600s leaves
+# a ≥240s safety margin after the longest turn ends.
+_SESSION_IDLE_TTL = float(os.environ.get("POLYNOIA_SESSION_IDLE_TTL", "600"))
+_REAP_INTERVAL = 120.0
 
 
 # Adapter id → base Adapter instance. Each base adapter is stateless;
@@ -72,9 +91,53 @@ class AdapterPool:
     def __init__(self):
         # (agent_id, conv_id) → AdapterSession
         self._sessions: dict[tuple[str, str], AdapterSession] = {}
+        # (agent_id, conv_id) → monotonic timestamp of last get_session access.
+        # Drives idle eviction; refreshed on every cache hit so an active conv's
+        # session is never reaped while turns keep flowing.
+        self._last_used: dict[tuple[str, str], float] = {}
         self._lock = asyncio.Lock()
+        self._reaper_task: asyncio.Task | None = None
 
     # ─────────── sessions ───────────
+
+    def _ensure_reaper(self) -> None:
+        """Lazily start the idle-eviction loop (needs a running event loop, so
+        we start it on first get_session rather than in __init__)."""
+        if self._reaper_task is not None and not self._reaper_task.done():
+            return
+        with contextlib.suppress(RuntimeError):
+            self._reaper_task = asyncio.create_task(self._reap_loop())
+
+    async def _reap_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_REAP_INTERVAL)
+            with contextlib.suppress(Exception):
+                await self.reap_idle(_SESSION_IDLE_TTL)
+
+    async def reap_idle(self, ttl: float = _SESSION_IDLE_TTL) -> int:
+        """Close + drop sessions untouched for more than ``ttl`` seconds.
+
+        Safe against live turns: last-use is stamped at turn start and ttl is
+        kept above the max turn duration, so an in-flight turn keeps its session
+        fresh. Returns the number of sessions reaped."""
+        now = time.monotonic()
+        async with self._lock:
+            stale = [
+                k for k, sess in self._sessions.items()
+                if now - self._last_used.get(k, now) > ttl
+            ]
+            popped = []
+            for k in stale:
+                s = self._sessions.pop(k, None)
+                self._last_used.pop(k, None)
+                if s is not None:
+                    popped.append((k, s))
+        for k, s in popped:
+            with contextlib.suppress(Exception):
+                await s.close()
+        if popped:
+            logger.info("reaped %d idle adapter session(s): %s", len(popped), [k for k, _ in popped])
+        return len(popped)
 
     async def get_session(self, agent_id: str, conv_id: str) -> AdapterSession | None:
         """Get-or-create a session for (agent, conv).
@@ -91,9 +154,11 @@ class AdapterPool:
         Sandbox-per-conv:multiple agents in the same conv share one cwd.
         """
         key = (agent_id, conv_id)
+        self._ensure_reaper()
         async with self._lock:
             sess = self._sessions.get(key)
             if sess is not None:
+                self._last_used[key] = time.monotonic()  # refresh: keep active conv warm
                 return sess
 
             # Lazy DB lookup — avoid top-level import cycle.
@@ -220,11 +285,13 @@ class AdapterPool:
                 skills=[s.name for s in (agent.skills or []) if s.name],
             )
             self._sessions[key] = new_sess
+            self._last_used[key] = time.monotonic()
             return new_sess
 
     async def close_session(self, agent_id: str, conv_id: str) -> None:
         async with self._lock:
             sess = self._sessions.pop((agent_id, conv_id), None)
+            self._last_used.pop((agent_id, conv_id), None)
         if sess is not None:
             await sess.close()
 
@@ -239,6 +306,7 @@ class AdapterPool:
             to_close = [(k, v) for k, v in self._sessions.items() if k[0] == agent_id]
             for k, _ in to_close:
                 self._sessions.pop(k, None)
+                self._last_used.pop(k, None)
         for _, s in to_close:
             try:
                 await s.close()
@@ -255,6 +323,7 @@ class AdapterPool:
             to_close = [(k, v) for k, v in self._sessions.items() if k[1] == conv_id]
             for k, _ in to_close:
                 self._sessions.pop(k, None)
+                self._last_used.pop(k, None)
         for _, s in to_close:
             try:
                 await s.close()
@@ -265,6 +334,7 @@ class AdapterPool:
         async with self._lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
+            self._last_used.clear()
         for s in sessions:
             try:
                 await s.close()
