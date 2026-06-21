@@ -205,3 +205,55 @@ async def test_interrupt_then_send_recovers_via_close(
     # And it works fine — no leftover state from the cancelled one.
     events2 = [ev async for ev in sess2.send(task_id="task2", text="hi again")]
     assert len(events2) == 2
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_closes_stale_session(
+    db_with_agent: str, fake_adapter_pool: _FakeAdapter
+) -> None:
+    """Idle-eviction (the opencode-subprocess-leak fix): a session untouched
+    for longer than the TTL is closed + dropped, so its child subprocess can't
+    linger forever. Next get_session respawns a fresh one."""
+    import time
+
+    pool = AdapterPool()
+    conv_id = "conv_reap_001"
+    agent_id = db_with_agent
+
+    sess1 = await pool.get_session(agent_id, conv_id)
+    assert sess1 is not None
+    key = (agent_id, conv_id)
+    # Backdate last-use well beyond the TTL → simulate a conv gone quiet.
+    pool._last_used[key] = time.monotonic() - 10_000
+
+    reaped = await pool.reap_idle(ttl=600)
+    assert reaped == 1
+    assert sess1.closed is True  # type: ignore[attr-defined]
+    assert key not in pool._sessions
+    assert key not in pool._last_used
+
+    # Next access respawns — pooling still works after eviction.
+    sess2 = await pool.get_session(agent_id, conv_id)
+    assert sess2 is not sess1
+    assert fake_adapter_pool.start_session_count == 2
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_spares_active_session(
+    db_with_agent: str, fake_adapter_pool: _FakeAdapter
+) -> None:
+    """A recently-used session (active conversation) must NEVER be reaped —
+    last-use is refreshed on every get_session, so cross-turn pooling holds."""
+    pool = AdapterPool()
+    conv_id = "conv_reap_002"
+    agent_id = db_with_agent
+
+    sess1 = await pool.get_session(agent_id, conv_id)
+    assert sess1 is not None
+    # Fresh last_used (just set by get_session) → not stale.
+    reaped = await pool.reap_idle(ttl=600)
+    assert reaped == 0
+    assert sess1.closed is False  # type: ignore[attr-defined]
+    assert (agent_id, conv_id) in pool._sessions
+    # Cache hit still returns the SAME session.
+    assert await pool.get_session(agent_id, conv_id) is sess1
