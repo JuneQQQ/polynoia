@@ -23,6 +23,7 @@ import { api } from "../lib/api";
 import { t } from "../lib/i18n";
 import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
+import { RolePresetPicker } from "./RolePresetPicker";
 
 type Props = {
 	/** 关联项目;null = 独立对话(无项目,workspace_id 留空)。 */
@@ -532,8 +533,15 @@ function GroupTab({
 											type="text"
 											value={roles[id] ?? ""}
 											onChange={(e) => setRole(id, e.target.value)}
-											placeholder={t("roleDescHint", lang)}
+											placeholder={
+												agents.find((m) => m.id === id)?.tagline ||
+												t("roleDescHint", lang)
+											}
 											className="flex-1 text-[11.5px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+										/>
+										<RolePresetPicker
+											label={t("useAsResponsibility", lang)}
+											onPick={(p) => setRole(id, p.description)}
 										/>
 										<button
 											type="button"

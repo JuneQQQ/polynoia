@@ -5,12 +5,10 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	FolderPlus,
-	Hash,
 	MoreHorizontal,
 	PanelLeftClose,
 	PanelLeftOpen,
 	Pencil,
-	Pin,
 	Plug,
 	Plus,
 	Search,
@@ -25,12 +23,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { type ConversationSummary, api } from "../lib/api";
 import { t } from "../lib/i18n";
-import { parseServerTime } from "../lib/time";
 import type { Agent, Workspace } from "../lib/types";
 import { useStore } from "../store";
 import { BrandIcon } from "./BrandIcon";
 import { NewContactModal } from "./NewContactModal";
-import { ConvListSkeleton } from "./Skeleton";
 
 /** Adapter id → human label for display in contact rows. */
 const ADAPTER_LABEL: Record<string, string> = {
@@ -39,29 +35,12 @@ const ADAPTER_LABEL: Record<string, string> = {
 	opencoder: "OpenCode",
 };
 
-/** Compact list-row time: today → HH:mm; this year → M/D; older → YYYY/M/D. */
-function fmtConvTime(iso: string | null): string | null {
-	// Conversation timestamps arrive WITHOUT a tz marker (naive UTC from
-	// Pydantic) — parseServerTime treats them as UTC so the sidebar time isn't
-	// 8h off in +08:00 (the「时区不对应」bug). See lib/time.ts.
-	const d = parseServerTime(iso);
-	if (!d) return null;
-	const now = new Date();
-	const sameDay = d.toDateString() === now.toDateString();
-	if (sameDay) {
-		return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-	}
-	const md = `${d.getMonth() + 1}/${d.getDate()}`;
-	return d.getFullYear() === now.getFullYear()
-		? md
-		: `${d.getFullYear()}/${md}`;
-}
 import { isMobile as _isMobile } from "../lib/platform";
-import { ConvActionsMenu } from "./ConvActionsMenu";
 import { ConvRolesModal } from "./ConvRolesModal";
 import { NewConvModal } from "./NewConvModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { OnboardingModal } from "./OnboardingModal";
+import { SidebarConvGroups } from "./sidebar/SidebarConvGroups";
 
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -89,6 +68,11 @@ export function Sidebar({
 	// IA: project-less "新建对话" — Layer-1 全局入口,workspace=null,允许直接发起
 	// 单聊/群聊而无需先建项目;之后可「挂工作区」或「升级为项目」。
 	const [newConvGlobalOpen, setNewConvGlobalOpen] = useState(false);
+	// Layer-1 workspace group "+": create a conversation pre-bound to a specific
+	// workspace (non-null → renders a workspace-scoped NewConvModal).
+	const [newConvWorkspace, setNewConvWorkspace] = useState<Workspace | null>(
+		null,
+	);
 	// Project create/edit is desktop/web-only (mobile is a lightweight IM subset).
 	const mobile = _isMobile();
 	// "+ 新建项目" modal — 全局 sidebar 模式才显示。编辑既有项目时复用同一个
@@ -372,13 +356,6 @@ export function Sidebar({
 			}
 		};
 	}, [refreshAllConvs]);
-	// O(1) agent lookup for the row map (vs agents.find per row per render).
-	const agentById = useMemo(() => {
-		const m = new Map<string, Agent>();
-		for (const a of agents) m.set(a.id, a);
-		return m;
-	}, [agents]);
-
 	// Heartbeat for adapter-backed contacts — every 30s probe the underlying
 	// CLI to refresh online/offline status (CLI uninstalled / credential
 	// expired). Custom agents and `you`/`orchestrator` aren't probed.
@@ -1096,199 +1073,20 @@ export function Sidebar({
 							</div>
 						);
 					})()}
-				{/* 整体拉平:单条会话流。联系人/项目不再独立成区 —— 发起对话时从全局
-            花名册选成员、可选绑定现有项目;项目文件在右侧「产物面板」查看。 */}
-				<div>
-					{(() => {
-						const k = q.trim().toLowerCase();
-						const rows = k
-							? allConvs.filter((c) => c.title.toLowerCase().includes(k))
-							: allConvs;
-						if (!convsLoaded && !k && rows.length === 0) {
-							return <ConvListSkeleton rows={8} />;
-						}
-						if (rows.length === 0) {
-							return (
-								<button
-									type="button"
-									onClick={() => setNewConvGlobalOpen(true)}
-									className="group w-full mt-1 flex items-center justify-center gap-1.5 px-2 py-3 rounded-sm border border-dashed border-[var(--color-sidebar-line)] hover:border-[var(--color-accent)]/70 text-[12px] text-[var(--color-sidebar-muted)] hover:text-[var(--color-accent)] hover:bg-[var(--color-sidebar-hover)] transition-all duration-200"
-								>
-									<Plus
-										size={12}
-										className="transition-transform duration-300 group-hover:rotate-90"
-									/>
-									<span>{k ? "没有匹配的会话" : "发起第一个对话"}</span>
-								</button>
-							);
-						}
-						const lastPinnedIdx = rows.reduce(
-							(acc, c, i) => (c.pinned ? i : acc),
-							-1,
-						);
-						return rows.map((c, idx) => {
-							const active = activeConvId === c.id;
-							const repId = c.group
-								? c.orchestrator_member_id || c.members.find((m) => m !== "you")
-								: c.members.find((m) => m !== "you");
-							const rep = repId ? agentById.get(repId) : undefined;
-							// 淡化项目:列表里不再写出工作区名字,只在末尾留一个工作区色小点(hover 看名字)。
-							const ws = c.workspace_id
-								? (workspaces.find((w) => w.id === c.workspace_id) ?? null)
-								: null;
-							const agentCount = c.members.filter((m) => m !== "you").length;
-							// Group rows show a STACK of member avatars (orchestrator first,
-							// then others, up to 3) instead of a single icon.
-							const memberAgs = c.group
-								? [
-										repId,
-										...c.members.filter((m) => m !== "you" && m !== repId),
-									]
-										.flatMap((id) => {
-											const a = id ? agentById.get(id) : undefined;
-											return a ? [a] : [];
-										})
-										.slice(0, 3)
-								: [];
-							const sub = c.direct
-								? t("directMessageType", lang)
-								: t("groupChatCountLabel", lang).replace(
-										"{count}",
-										String(agentCount),
-									);
-							const time = fmtConvTime(c.last_message_at);
-							const hasDraft =
-								!!c.draft_text?.trim() ||
-								(c.draft_attachments?.length ?? 0) > 0;
-							const running = (c.running_agents?.length ?? 0) > 0;
-							return (
-								// content-visibility:auto → the browser skips layout/paint for
-								// rows scrolled off-screen (huge win on long conv lists, e.g. the
-								// 500-case test set). contain-intrinsic-size reserves ~row height
-								// so the scrollbar stays stable. `auto` remembers the real size
-								// once a row has rendered.
-								<div
-									key={c.id}
-									style={{
-										contentVisibility: "auto",
-										containIntrinsicSize: "auto 60px",
-									}}
-								>
-									<div
-										className={`group relative flex items-center rounded-sm transition-all duration-200 focus-within:bg-[var(--color-sidebar-hover)] ${
-											active
-												? "bg-[var(--color-sidebar-active)]"
-												: "hover:bg-[var(--color-sidebar-hover)] hover:translate-x-[2px]"
-										}`}
-									>
-										{active && (
-											<span
-												aria-hidden
-												className="absolute left-0 top-2 bottom-2 w-[2px]"
-												style={{ background: "var(--color-accent)" }}
-											/>
-										)}
-										<button
-											type="button"
-											onClick={() => onSelectConv(c.id, c.members, c.title)}
-											className="flex-1 min-w-0 flex items-center gap-3 pl-4 pr-1 py-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--color-accent)] rounded-sm"
-										>
-											<div className="relative flex-shrink-0">
-												{c.group && memberAgs.length >= 2 ? (
-													<div className="flex h-8 items-center -space-x-2">
-														{memberAgs.map((a, i) => (
-															<div
-																key={a.id}
-																className="w-[19px] h-[19px] rounded-full grid place-items-center text-white text-[8.5px] font-medium ring-2 ring-[var(--color-sidebar)]"
-																style={{
-																	background: a.color,
-																	zIndex: memberAgs.length - i,
-																}}
-															>
-																{a.initials}
-															</div>
-														))}
-													</div>
-												) : rep ? (
-													<div
-														className={`grid place-items-center text-white text-[11px] font-medium w-8 h-8 ${
-															c.direct ? "rounded-full" : "rounded-lg"
-														}`}
-														style={{ background: rep.color }}
-													>
-														{rep.initials}
-													</div>
-												) : (
-													<div className="w-8 h-8 grid place-items-center rounded-lg bg-[var(--color-sidebar-hover)] text-[var(--color-sidebar-muted)]">
-														<Hash size={15} />
-													</div>
-												)}
-												{/* Live: at least one agent currently working in this conv. */}
-												{running && (
-													<span
-														title={t("agentWorking", lang)}
-														className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-green-500 dot-online ring-2 ring-[var(--color-sidebar)]"
-													/>
-												)}
-											</div>
-											<div className="flex-1 min-w-0">
-												<div className="flex items-center gap-1.5 min-w-0">
-													<span className="flex-1 text-[13.5px] truncate text-[var(--color-sidebar-fg)] leading-snug">
-														{c.title}
-													</span>
-													{c.pinned && (
-														<Pin
-															size={11}
-															className="flex-shrink-0 text-[var(--color-accent)] rotate-45"
-															aria-label={t("pinnedLabel", lang)}
-														/>
-													)}
-													{time && (
-														<span className="flex-shrink-0 text-[10px] font-mono text-[var(--color-sidebar-muted)]">
-															{time}
-														</span>
-													)}
-												</div>
-												<div className="text-[11px] text-[var(--color-sidebar-muted)] mt-0.5 leading-tight font-mono flex items-center gap-1.5 min-w-0">
-													{hasDraft && (
-														<span className="flex-shrink-0 text-[var(--color-accent)]">
-															{t("draftBadge", lang)}
-														</span>
-													)}
-													<span className="truncate">{sub}</span>
-													{ws && (
-														<span
-															title={t("workspaceTooltip", lang)
-																.replace("{ws.name}", ws.name)
-																.replace("{name}", ws.name)}
-															className="flex-shrink-0 w-1.5 h-1.5 rounded-[1px]"
-															style={{ background: ws.color }}
-														/>
-													)}
-												</div>
-											</div>
-											{c.unread > 0 && (
-												<span className="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-[var(--color-accent)] text-white text-[10px] font-medium grid place-items-center">
-													{c.unread > 99 ? "99+" : c.unread}
-												</span>
-											)}
-										</button>
-										<div className="flex-shrink-0 pr-2 pl-0.5">
-											<ConvActionsMenu conv={c} onChanged={refreshAllConvs} />
-										</div>
-									</div>
-									{/* Divider between the pinned block and the rest. */}
-									{idx === lastPinnedIdx && idx < rows.length - 1 && (
-										<div
-											aria-hidden
-											className="mx-4 my-1 h-px bg-[var(--color-sidebar-line)]"
-										/>
-									)}
-								</div>
-							);
-						});
-					})()}
-				</div>
+				{/* Workspace-grouped conversation tree — each workspace is a collapsible
+            group; no-workspace conversations collect under a trailing 直接消息
+            group. Replaces the old flat list. */}
+				<SidebarConvGroups
+					allConvs={allConvs}
+					convsLoaded={convsLoaded}
+					query={q}
+					activeConvId={activeConvId}
+					onSelectConv={onSelectConv}
+					onOpenWorkspaceDetail={(wsId) => setActiveWorkspace(wsId)}
+					onNewConvInWorkspace={(ws) => setNewConvWorkspace(ws)}
+					onNewConvGlobal={() => setNewConvGlobalOpen(true)}
+					refreshAllConvs={refreshAllConvs}
+				/>
 			</div>
 			<Footer
 				onOpenAdapters={() => setOnboardingOpen(true)}
@@ -1358,6 +1156,19 @@ export function Sidebar({
 						// Standalone conv (no workspace) — surfaces in Inbox/search; resync
 						// the list views, then jump to it.
 						window.dispatchEvent(new CustomEvent("polynoia:resync-lists"));
+						onSelectConv(id, members, title);
+					}}
+				/>
+			)}
+			{newConvWorkspace && (
+				<NewConvModal
+					workspace={newConvWorkspace}
+					onClose={() => setNewConvWorkspace(null)}
+					onOpenConv={(id, members, title) => {
+						// Conv pre-bound to the workspace group's "+". Resync the lists, then
+						// jump in. The group it lands in auto-expands (SidebarConvGroups).
+						window.dispatchEvent(new CustomEvent("polynoia:resync-lists"));
+						setNewConvWorkspace(null);
 						onSelectConv(id, members, title);
 					}}
 				/>
