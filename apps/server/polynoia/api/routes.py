@@ -2743,6 +2743,26 @@ def _conv_has_running_agent(conv_id: str) -> bool:
     return any(not t.done() for t in tasks.values())
 
 
+async def _workspace_has_running_agent(
+    workspace_id: str, *, exclude_conv: str | None = None
+) -> bool:
+    """True if ANY conversation sharing ``workspace_id`` has a live agent.
+
+    `_conv_has_running_agent` only sees the one conv it's asked about — but
+    restore / rewind reset the workspace-wide shared ``main`` (and `close_all()`
+    every conv's pooled session + `git merge --abort` any in-flight merge). A
+    conv-scoped guard therefore lets a rewind in conv A silently wipe / abort
+    work that conv B is actively running on the SAME workspace. Widen the guard
+    to the whole workspace so such a destructive reset is refused while any
+    sibling conv is busy. ``exclude_conv`` skips the conv being rewound itself
+    (it carries its own conv-scoped check)."""
+    async with SessionLocal() as session:
+        convs = await storage_repo.list_conversations(
+            session, workspace_id=workspace_id
+        )
+    return any(c.id != exclude_conv and _conv_has_running_agent(c.id) for c in convs)
+
+
 @router.get("/api/workspaces/{ws_id}/restore-preview")
 async def restore_preview(ws_id: str, sha: str, conv_id: str | None = None):
     """「回到这个对话」dry-run: what reverting workspace main to ``sha`` would undo
@@ -2771,6 +2791,15 @@ async def restore_workspace(ws_id: str, body: dict):
             raise HTTPException(404, f"unknown workspace: {ws_id}")
     if conv_id and _conv_has_running_agent(conv_id):
         raise HTTPException(409, "an agent is still running — finish or cancel it first")
+    # restore hard-resets the workspace-wide shared `main`; a conv-scoped guard
+    # would let it wipe / abort work a sibling conv is running on the same
+    # workspace. Refuse while ANY sharing conv is busy.
+    if await _workspace_has_running_agent(ws_id, exclude_conv=conv_id):
+        raise HTTPException(
+            409,
+            "another conversation sharing this workspace has a running agent — "
+            "finish or cancel it first",
+        )
     await get_pool().close_all()
     sb = Sandbox.open_workspace_if_exists(ws_id)
     if sb is None:
@@ -2813,6 +2842,23 @@ async def rewind_conversation(conv_id: str, body: dict):
         target_code_sha = target.code_sha
         target_created_at = target.created_at
         workspace_id = conv.workspace_id if conv is not None else None
+
+    # The code-reset path below hard-resets the workspace-wide shared `main`
+    # (and close_all()s every conv's session). The conv-scoped guard above only
+    # protects THIS conv — widen it so a rewind here can't silently wipe / abort
+    # work a sibling conv is actively running on the same workspace. Only the
+    # destructive code path needs this; a chat-only rewind (no checkpoint) never
+    # touches `main`, so siblings are unaffected.
+    if (
+        workspace_id
+        and target_code_sha
+        and await _workspace_has_running_agent(workspace_id, exclude_conv=conv_id)
+    ):
+        raise HTTPException(
+            409,
+            "another conversation sharing this workspace has a running agent — "
+            "finish or cancel it first",
+        )
 
     restored: str | None = None
     undo_sha: str | None = None
