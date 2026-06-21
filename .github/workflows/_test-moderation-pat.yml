@@ -1,0 +1,49 @@
+name: _test moderation PAT
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test MODERATION_PAT auth + delete capability
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.MODERATION_PAT }}
+          script: |
+            // 1. auth check
+            let login;
+            try {
+              const v = await github.graphql(`query { viewer { login } }`);
+              login = v.viewer.login;
+              core.info(`AUTH_OK login=${login}`);
+            } catch (e) {
+              core.setFailed(`AUTH_FAILED: ${e.message}`);
+              return;
+            }
+            const { owner, repo } = context.repo;
+            // 2. create a throwaway issue with the PAT
+            let created;
+            try {
+              created = await github.rest.issues.create({
+                owner, repo,
+                title: "[_pat-test] delete capability check",
+                body: "temporary — created by the PAT test workflow; should be deleted in the same run",
+              });
+              core.info(`CREATE_OK #${created.data.number} node=${created.data.node_id}`);
+            } catch (e) {
+              core.setFailed(`CREATE_FAILED: ${e.message}`);
+              return;
+            }
+            // 3. hard-delete it with the PAT
+            try {
+              await github.graphql(
+                `mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { repository { id } } }`,
+                { id: created.data.node_id },
+              );
+              core.info(`DELETE_OK #${created.data.number}`);
+              core.notice(`MODERATION_PAT works: auth as ${login}, created + hard-deleted #${created.data.number}.`);
+            } catch (e) {
+              core.setFailed(`DELETE_FAILED (#${created.data.number} left open — token lacks delete rights): ${e.message}`);
+            }
