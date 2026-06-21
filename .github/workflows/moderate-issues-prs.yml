@@ -1,0 +1,100 @@
+name: Moderate issues and pull requests
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+  pull_request_target:
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  moderate:
+    name: Close and lock abusive reports
+    runs-on: ubuntu-latest
+    steps:
+      - name: Moderate issue or pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const item = context.payload.issue || context.payload.pull_request;
+            if (!item) return;
+
+            const association = item.author_association || "";
+            const trusted = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+            if (trusted.has(association)) {
+              core.info(`Trusted author association: ${association}; skipping.`);
+              return;
+            }
+
+            const title = item.title || "";
+            const body = item.body || "";
+            const text = `${title}\n${body}`.toLowerCase();
+
+            const hardBlock = [
+              /清违规人气/,
+              /违规流量.*清/,
+              /项目.*(关闭|关停|下架)/,
+              /(举报|检举).*(github|平台|官方)/i,
+              /github.*(清|删|关).*(star|人气|项目|入口)/i,
+              /shut\s*down\s+(the\s+)?project/i,
+              /reported?\s+to\s+github/i,
+            ];
+
+            const signals = [
+              /假星/,
+              /刷星/,
+              /买星/,
+              /空壳号/,
+              /空号/,
+              /stargazer\s+质量/i,
+              /star\s*数据.*异常/i,
+              /fake\s+stars?/i,
+              /bought\s+stars?/i,
+              /star\s+fraud/i,
+            ];
+
+            const hardHit = hardBlock.some((re) => re.test(text));
+            const signalCount = signals.filter((re) => re.test(text)).length;
+            if (!hardHit && signalCount < 2) {
+              core.info(`No moderation match. signalCount=${signalCount}`);
+              return;
+            }
+
+            const issue_number = item.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const kind = context.payload.issue ? "issue" : "pull request";
+
+            const comment = [
+              "This conversation was automatically closed and locked because it matches this repository's moderation policy for abusive, spam-like, or campaign-style reports.",
+              "",
+              "If this was a legitimate bug report or contribution, please contact the maintainers with a clear reproduction or patch.",
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: comment,
+            });
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number,
+              state: "closed",
+              state_reason: "not_planned",
+            });
+
+            await github.rest.issues.lock({
+              owner,
+              repo,
+              issue_number,
+              lock_reason: "spam",
+            });
+
+            core.info(`Closed and locked ${kind} #${issue_number}. hardHit=${hardHit} signalCount=${signalCount}`);
