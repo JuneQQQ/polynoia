@@ -13,12 +13,18 @@ permissions:
 
 jobs:
   moderate:
-    name: Close and lock abusive reports
+    name: Delete or lock abusive reports
     runs-on: ubuntu-latest
     steps:
       - name: Moderate issue or pull request
         uses: actions/github-script@v7
         with:
+          # Hard-DELETE of an issue requires the GraphQL deleteIssue mutation run
+          # by a repo ADMIN — the default GITHUB_TOKEN (github-actions[bot]) is not
+          # allowed to delete. Provide an admin Personal Access Token as the repo
+          # secret MODERATION_PAT (classic PAT with `repo` scope, owned by an
+          # admin) to enable deletion. Without it, we fall back to close+lock.
+          github-token: ${{ secrets.MODERATION_PAT || github.token }}
           script: |
             const item = context.payload.issue || context.payload.pull_request;
             if (!item) return;
@@ -36,9 +42,11 @@ jobs:
 
             const hardBlock = [
               /清违规人气/,
+              /违规人气.*清/,
               /违规流量.*清/,
               /项目.*(关闭|关停|下架)/,
               /(举报|检举).*(github|平台|官方)/i,
+              /(github|平台|官方).*(举报|检举)/i,
               /github.*(清|删|关).*(star|人气|项目|入口)/i,
               /shut\s*down\s+(the\s+)?project/i,
               /reported?\s+to\s+github/i,
@@ -48,10 +56,13 @@ jobs:
               /假星/,
               /刷星/,
               /买星/,
+              /买的.*星/,
               /空壳号/,
               /空号/,
               /stargazer\s+质量/i,
               /star\s*数据.*异常/i,
+              /可疑.*star/i,
+              /star.*可疑/i,
               /fake\s+stars?/i,
               /bought\s+stars?/i,
               /star\s+fraud/i,
@@ -67,34 +78,34 @@ jobs:
             const issue_number = item.number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const kind = context.payload.issue ? "issue" : "pull request";
+            const isIssue = !!context.payload.issue;
+            const kind = isIssue ? "issue" : "pull request";
 
+            // Issues: try a HARD DELETE (GraphQL, needs an admin PAT). PRs can't
+            // be deleted — they always fall through to close + lock.
+            if (isIssue) {
+              try {
+                await github.graphql(
+                  `mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { repository { id } } }`,
+                  { id: item.node_id },
+                );
+                core.info(`Deleted issue #${issue_number}. hardHit=${hardHit} signalCount=${signalCount}`);
+                return;
+              } catch (e) {
+                core.warning(
+                  `deleteIssue failed (set secrets.MODERATION_PAT to an admin PAT to enable hard delete): ${e.message}. Falling back to close + lock.`,
+                );
+              }
+            }
+
+            // Fallback (delete unavailable) and all PRs: comment + close + lock.
             const comment = [
               "This conversation was automatically closed and locked because it matches this repository's moderation policy for abusive, spam-like, or campaign-style reports.",
               "",
               "If this was a legitimate bug report or contribution, please contact the maintainers with a clear reproduction or patch.",
             ].join("\n");
 
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number,
-              body: comment,
-            });
-
-            await github.rest.issues.update({
-              owner,
-              repo,
-              issue_number,
-              state: "closed",
-              state_reason: "not_planned",
-            });
-
-            await github.rest.issues.lock({
-              owner,
-              repo,
-              issue_number,
-              lock_reason: "spam",
-            });
-
+            await github.rest.issues.createComment({ owner, repo, issue_number, body: comment });
+            await github.rest.issues.update({ owner, repo, issue_number, state: "closed", state_reason: "not_planned" });
+            await github.rest.issues.lock({ owner, repo, issue_number, lock_reason: "spam" });
             core.info(`Closed and locked ${kind} #${issue_number}. hardHit=${hardHit} signalCount=${signalCount}`);
