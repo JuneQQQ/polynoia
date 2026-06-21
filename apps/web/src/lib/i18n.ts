@@ -164,6 +164,12 @@ const STR = {
 	draftBadge: { zh: "[草稿]", en: "[Draft]" },
 	workspaceTooltip: { zh: "工作区:{ws.name}", en: "Workspace: {name}" },
 	directMessageType: { zh: "单聊", en: "Direct message" },
+	directMessages: { zh: "直接消息", en: "Direct messages" },
+	newConvInWorkspace: {
+		zh: "在此工作区新建会话",
+		en: "New conversation here",
+	},
+	openWorkspace: { zh: "打开工作区", en: "Open workspace" },
 	deleteConvConfirmMsg: {
 		zh: "删除会话「{title}」?\\n该操作不可撤销。",
 		en: 'Delete conversation "{title}"?\\nThis cannot be undone.',
