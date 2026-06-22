@@ -18,13 +18,15 @@ jobs:
     steps:
       - name: Moderate issue or pull request
         uses: actions/github-script@v7
+        env:
+          # PAT used ONLY for the hard-delete GraphQL call (deletion needs an
+          # admin token; the default GITHUB_TOKEN can't delete). Everything else
+          # (comment / close / lock) uses the default GITHUB_TOKEN below, so an
+          # absent/invalid PAT degrades gracefully to close+lock instead of
+          # breaking the whole run.
+          MOD_PAT: ${{ secrets.MODERATION_PAT }}
         with:
-          # Hard-DELETE of an issue requires the GraphQL deleteIssue mutation run
-          # by a repo ADMIN — the default GITHUB_TOKEN (github-actions[bot]) is not
-          # allowed to delete. Provide an admin Personal Access Token as the repo
-          # secret MODERATION_PAT (classic PAT with `repo` scope, owned by an
-          # admin) to enable deletion. Without it, we fall back to close+lock.
-          github-token: ${{ secrets.MODERATION_PAT || github.token }}
+          github-token: ${{ github.token }}
           script: |
             const item = context.payload.issue || context.payload.pull_request;
             if (!item) return;
@@ -54,15 +56,18 @@ jobs:
 
             const signals = [
               /假星/,
+              /虚假\s*star/i,
               /刷星/,
               /买星/,
-              /买的.*星/,
+              /购买.*star/i,
+              /买.*虚假/,
               /空壳号/,
               /空号/,
+              /僵尸(号|粉|账号)/,
               /stargazer\s+质量/i,
               /star\s*数据.*异常/i,
-              /可疑.*star/i,
-              /star.*可疑/i,
+              /(可疑|疑似).*star/i,
+              /star.*(可疑|疑似|异常)/i,
               /fake\s+stars?/i,
               /bought\s+stars?/i,
               /star\s+fraud/i,
@@ -81,24 +86,36 @@ jobs:
             const isIssue = !!context.payload.issue;
             const kind = isIssue ? "issue" : "pull request";
 
-            // Issues: try a HARD DELETE (GraphQL, needs an admin PAT). PRs can't
+            // Issues: try a HARD DELETE with the admin PAT (GraphQL). PRs can't
             // be deleted — they always fall through to close + lock.
-            if (isIssue) {
+            if (isIssue && process.env.MOD_PAT) {
               try {
-                await github.graphql(
-                  `mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { repository { id } } }`,
-                  { id: item.node_id },
-                );
-                core.info(`Deleted issue #${issue_number}. hardHit=${hardHit} signalCount=${signalCount}`);
-                return;
+                const r = await fetch("https://api.github.com/graphql", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `bearer ${process.env.MOD_PAT}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    query: `mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { repository { id } } }`,
+                    variables: { id: item.node_id },
+                  }),
+                });
+                const j = await r.json();
+                if (r.ok && j && !j.errors) {
+                  core.info(`Deleted issue #${issue_number}. hardHit=${hardHit} signalCount=${signalCount}`);
+                  return;
+                }
+                core.warning(`deleteIssue via PAT failed (${r.status}): ${JSON.stringify(j && j.errors)}. Falling back to close + lock.`);
               } catch (e) {
-                core.warning(
-                  `deleteIssue failed (set secrets.MODERATION_PAT to an admin PAT to enable hard delete): ${e.message}. Falling back to close + lock.`,
-                );
+                core.warning(`deleteIssue error: ${e.message}. Falling back to close + lock.`);
               }
+            } else if (isIssue) {
+              core.info("No MODERATION_PAT secret set — using close + lock (set an admin PAT to enable hard delete).");
             }
 
-            // Fallback (delete unavailable) and all PRs: comment + close + lock.
+            // Fallback (delete unavailable) and all PRs: comment + close + lock,
+            // via the default GITHUB_TOKEN (always valid).
             const comment = [
               "This conversation was automatically closed and locked because it matches this repository's moderation policy for abusive, spam-like, or campaign-style reports.",
               "",

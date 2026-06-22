@@ -1,0 +1,63 @@
+name: _test moderate e2e
+
+# TEMPORARY live end-to-end test of the moderation delete path. Gated to issues
+# whose title starts with [E2E-MOD-TEST] so it can NEVER touch a real issue, and
+# (unlike the real workflow) it does NOT skip trusted authors — so the repo owner
+# can trigger it. Remove after verifying.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  e2e:
+    if: startsWith(github.event.issue.title, '[E2E-MOD-TEST]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          MOD_PAT: ${{ secrets.MODERATION_PAT }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const item = context.payload.issue;
+            const text = `${item.title || ""}\n${item.body || ""}`.toLowerCase();
+
+            const hardBlock = [
+              /清违规人气/, /违规人气.*清/, /违规流量.*清/, /项目.*(关闭|关停|下架)/,
+              /(举报|检举).*(github|平台|官方)/i, /(github|平台|官方).*(举报|检举)/i,
+              /github.*(清|删|关).*(star|人气|项目|入口)/i,
+              /shut\s*down\s+(the\s+)?project/i, /reported?\s+to\s+github/i,
+            ];
+            const signals = [
+              /假星/, /虚假\s*star/i, /刷星/, /买星/, /购买.*star/i, /买.*虚假/,
+              /空壳号/, /空号/, /僵尸(号|粉|账号)/, /stargazer\s+质量/i,
+              /star\s*数据.*异常/i, /(可疑|疑似).*star/i, /star.*(可疑|疑似|异常)/i,
+              /fake\s+stars?/i, /bought\s+stars?/i, /star\s+fraud/i,
+            ];
+            const hardHit = hardBlock.some((re) => re.test(text));
+            const signalCount = signals.filter((re) => re.test(text)).length;
+            if (!hardHit && signalCount < 2) {
+              core.setFailed(`E2E: expected a MATCH but none. signalCount=${signalCount}`);
+              return;
+            }
+            core.info(`E2E matched: hardHit=${hardHit} signalCount=${signalCount}`);
+
+            const r = await fetch("https://api.github.com/graphql", {
+              method: "POST",
+              headers: { Authorization: `bearer ${process.env.MOD_PAT}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                query: `mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { repository { id } } }`,
+                variables: { id: item.node_id },
+              }),
+            });
+            const j = await r.json();
+            if (r.ok && j && !j.errors) {
+              core.notice(`E2E DELETE_OK #${item.number}`);
+            } else {
+              core.setFailed(`E2E DELETE_FAILED (${r.status}): ${JSON.stringify(j && j.errors)}`);
+            }
