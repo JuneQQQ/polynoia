@@ -166,7 +166,7 @@ export function NewConvModal({ workspace, onClose, onOpenConv }: Props) {
 									type="text"
 									value={newWsName}
 									onChange={(e) => setNewWsName(e.target.value)}
-									placeholder={t("workspaceName", lang)}
+									placeholder={t("workspacePlaceholder", lang)}
 									className="w-full text-[12.5px] px-2.5 py-1.5 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
 								/>
 								<input

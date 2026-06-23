@@ -71,7 +71,7 @@ const STR = {
 	convPin: { zh: "置顶", en: "Pin" },
 	convUnpin: { zh: "取消置顶", en: "Unpin" },
 	convRename: { zh: "重命名", en: "Rename" },
-	convMembersRoles: { zh: "成员与职责", en: "Members & duties" },
+	convMembersRoles: { zh: "成员与角色", en: "Members & roles" },
 	convArchive: { zh: "归档", en: "Archive" },
 	convDelete: { zh: "删除会话", en: "Delete conversation" },
 	convActionsLabel: { zh: "会话操作", en: "Conversation actions" },
@@ -273,6 +273,11 @@ const STR = {
 	},
 	createNewWorkspace: { zh: "+ 新建工作区…", en: "+ Create new workspace…" },
 	workspaceName: { zh: "工作区名", en: "Workspace name" },
+	workspacePlaceholder: { zh: "工作区", en: "Workspace" },
+	renameWorkspace: { zh: "点击重命名工作区", en: "Click to rename workspace" },
+	viewFlat: { zh: "平铺", en: "Flat" },
+	viewGrouped: { zh: "分组", en: "Grouped" },
+	switchView: { zh: "切换视图", en: "Switch view" },
 	existingProjectPath: {
 		zh: "已有项目的绝对路径(可选,留空 = 自动沙箱)",
 		en: "Absolute path to existing project (optional, leave empty = auto-managed sandbox)",
@@ -295,12 +300,12 @@ const STR = {
 		en: "Select members (selected: {count} · minimum 2 to create)",
 	},
 	memberRolesOrchestrator: {
-		zh: "本轮职责 · 协调器(必选)",
-		en: "Responsibilities · Orchestrator (required)",
+		zh: "角色 · 协调器(必选)",
+		en: "Role · Orchestrator (required)",
 	},
 	roleDescHint: {
-		zh: "本轮职责,如:后端实现 / 前端样式 / 评审",
-		en: "Duty in this chat, e.g., backend / frontend / review",
+		zh: "角色,如:后端实现 / 前端样式 / 评审",
+		en: "Role in this chat, e.g., backend / frontend / review",
 	},
 	isOrchestrator: {
 		zh: "ta 是本群协调器 —— 点一下取消",
@@ -420,10 +425,10 @@ const STR = {
 		en: 'No available agents. Add contacts from the "New" page first.',
 	},
 	createProject: { zh: "创建项目", en: "Create project" },
-	memberRoles: { zh: "成员职责", en: "Member duties" },
+	memberRoles: { zh: "成员角色", en: "Member roles" },
 	memberRolesHint: {
-		zh: "指定每位成员在本对话里的职责(文字会作为系统事件注入时间线,下一轮所有 agent 都看得到)。工具能力由项目统一治理,不在这里单独设。",
-		en: "Specify each member's duty in this conversation (the text is injected as a system event in the timeline, visible to all agents next turn). Tool capabilities are managed at the project level.",
+		zh: "指定每位成员在本对话里的角色(文字会作为系统事件注入时间线,下一轮所有 agent 都看得到)。工具能力由项目统一治理,不在这里单独设。",
+		en: "Specify each member's role in this conversation (the text is injected as a system event in the timeline, visible to all agents next turn). Tool capabilities are managed at the project level.",
 	},
 	noOtherMembers: {
 		zh: "本对话没有其他成员。",
@@ -552,7 +557,7 @@ const STR = {
 		zh: "还没有在本对话发言过",
 		en: "No messages in this conversation yet",
 	},
-	editGroupRole: { zh: "编辑群内职责", en: "Edit group role" },
+	editGroupRole: { zh: "编辑群内角色", en: "Edit group role" },
 	removeFromGroup: { zh: "移除群聊", en: "Remove from group" },
 	allConversationsWithAgent: {
 		zh: "与 ta 的所有对话",
@@ -717,6 +722,10 @@ const STR = {
 		zh: "同步 agency-agents 专长库",
 		en: "Sync agency-agents specialty library",
 	},
+	syncRoleCatalogFailed: {
+		zh: "同步失败,请重试",
+		en: "Sync failed — please retry",
+	},
 	roleCatalogEmpty: {
 		zh: "专长库为空,先同步",
 		en: "Specialty library empty — sync first",
@@ -728,7 +737,7 @@ const STR = {
 		zh: "一句话介绍 Ta(显示在联系人列表)",
 		en: "One line about them (shown in the contact list)",
 	},
-	useAsResponsibility: { zh: "用作本轮职责", en: "Use as duty" },
+	useAsResponsibility: { zh: "角色", en: "Role" },
 	noContactsHint2: {
 		zh: "还没有联系人 — 从「专长库」雇佣,或「新建联系人」。",
 		en: 'No contacts yet — hire from "Specialty library" or "New contact".',

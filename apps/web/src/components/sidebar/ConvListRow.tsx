@@ -37,11 +37,16 @@ export function ConvListRow({
 	active,
 	onSelect,
 	onActionsChanged,
+	showWorkspaceLabel = false,
 }: {
 	conv: ConversationSummary;
 	active: boolean;
 	onSelect: () => void;
 	onActionsChanged: () => void;
+	/** Flat 未读/最近 views: show the source workspace as a named chip (the rows
+	 * aren't under a group header there). Default false = grouped view, where the
+	 * tiny color dot is enough. */
+	showWorkspaceLabel?: boolean;
 }) {
 	const agents = useStore((s) => s.agents);
 	const workspaces = useStore((s) => s.workspaces);
@@ -147,13 +152,28 @@ export function ConvListRow({
 						)}
 					</div>
 					<div className="text-[11px] text-[var(--color-sidebar-muted)] mt-0.5 leading-tight font-mono flex items-center gap-1.5 min-w-0">
+						{showWorkspaceLabel && (
+							<span
+								className="flex-shrink-0 max-w-[96px] truncate px-1.5 py-px rounded-[4px]"
+								style={
+									ws
+										? { background: `${ws.color}22`, color: ws.color }
+										: {
+												background: "var(--color-sidebar-active)",
+												color: "var(--color-sidebar-muted)",
+											}
+								}
+							>
+								{ws ? ws.name : t("directMessages", lang)}
+							</span>
+						)}
 						{hasDraft && (
 							<span className="flex-shrink-0 text-[var(--color-accent)]">
 								{t("draftBadge", lang)}
 							</span>
 						)}
 						<span className="truncate">{sub}</span>
-						{ws && (
+						{!showWorkspaceLabel && ws && (
 							<span
 								title={t("workspaceTooltip", lang)
 									.replace("{ws.name}", ws.name)
