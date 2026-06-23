@@ -16,6 +16,7 @@ import { useStore } from "../../store";
 export function WorkspaceGroupHeader({
 	workspace,
 	count,
+	unread = 0,
 	open,
 	onToggle,
 	onOpenDetail,
@@ -23,6 +24,9 @@ export function WorkspaceGroupHeader({
 }: {
 	workspace: Workspace;
 	count: number;
+	/** Rollup of unread across this workspace's conversations. Stays visible even
+	 * when the group is collapsed, so new activity inside it isn't hidden. */
+	unread?: number;
 	open: boolean;
 	onToggle: () => void;
 	onOpenDetail: () => void;
@@ -54,6 +58,11 @@ export function WorkspaceGroupHeader({
 				{count > 0 && (
 					<span className="font-mono text-[11px] text-[var(--color-sidebar-muted)] opacity-70 flex-shrink-0">
 						{count}
+					</span>
+				)}
+				{unread > 0 && (
+					<span className="ml-1 flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-[var(--color-accent)] text-white text-[10px] font-medium grid place-items-center">
+						{unread > 99 ? "99+" : unread}
 					</span>
 				)}
 			</button>

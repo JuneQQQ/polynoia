@@ -7,7 +7,13 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationSummary } from "../../lib/api";
 import type { Workspace } from "../../lib/types";
-import { DM_GROUP_ID, groupConversations } from "./groupConversations";
+import {
+	DM_GROUP_ID,
+	flatConversations,
+	groupConversations,
+	groupUnread,
+	totalUnread,
+} from "./groupConversations";
 
 let _seq = 0;
 function mkConv(p: Partial<ConversationSummary> = {}): ConversationSummary {
@@ -23,7 +29,7 @@ function mkConv(p: Partial<ConversationSummary> = {}): ConversationSummary {
 		orchestrator_member_id: null,
 		pinned: p.pinned ?? false,
 		archived: false,
-		unread: 0,
+		unread: p.unread ?? 0,
 		draft_text: "",
 		draft_attachments: [],
 		member_roles: {},
@@ -151,5 +157,79 @@ describe("groupConversations", () => {
 		const before = input.map((c) => c.id);
 		groupConversations(input, [ws], "");
 		expect(input.map((c) => c.id)).toEqual(before);
+	});
+});
+
+describe("unread rollups + flat views", () => {
+	it("totalUnread sums unread across all conversations", () => {
+		expect(
+			totalUnread([
+				mkConv({ unread: 3 } as Partial<ConversationSummary>),
+				mkConv({ unread: 0 } as Partial<ConversationSummary>),
+				mkConv({ unread: 2 } as Partial<ConversationSummary>),
+			]),
+		).toBe(5);
+	});
+
+	it("groupUnread sums unread within a workspace group", () => {
+		const ws = mkWs("w1", "Alpha");
+		const groups = groupConversations(
+			[
+				mkConv({ workspace_id: "w1", unread: 4 } as Partial<ConversationSummary>),
+				mkConv({ workspace_id: "w1", unread: 1 } as Partial<ConversationSummary>),
+			],
+			[ws],
+			"",
+		);
+		const g = groups.find((x) => x.kind === "workspace");
+		expect(g && groupUnread(g)).toBe(5);
+	});
+
+	it("flatConversations sorts pinned-then-recency and tags each row's workspace", () => {
+		const ws = mkWs("w1", "Alpha");
+		const a = mkConv({
+			id: "a",
+			workspace_id: "w1",
+			last_message_at: "2026-06-01T00:00:00",
+		});
+		const b = mkConv({
+			id: "b",
+			workspace_id: "w1",
+			last_message_at: "2026-06-09T00:00:00",
+		});
+		const dm = mkConv({
+			id: "dm",
+			workspace_id: null,
+			last_message_at: "2026-06-05T00:00:00",
+		});
+		const flat = flatConversations([a, b, dm], [ws]);
+		expect(flat.map((f) => f.conv.id)).toEqual(["b", "dm", "a"]);
+		// each item carries its source workspace (null = 直接消息)
+		expect(flat.find((f) => f.conv.id === "b")?.workspace?.id).toBe("w1");
+		expect(flat.find((f) => f.conv.id === "dm")?.workspace).toBeNull();
+	});
+
+	it("flatConversations onlyUnread keeps just unread>0", () => {
+		const flat = flatConversations(
+			[
+				mkConv({ id: "u", unread: 2 } as Partial<ConversationSummary>),
+				mkConv({ id: "read", unread: 0 } as Partial<ConversationSummary>),
+			],
+			[],
+			{ onlyUnread: true },
+		);
+		expect(flat.map((f) => f.conv.id)).toEqual(["u"]);
+	});
+
+	it("flatConversations respects the search query", () => {
+		const flat = flatConversations(
+			[
+				mkConv({ id: "hit", title: "deploy script" }),
+				mkConv({ id: "miss", title: "random chat" }),
+			],
+			[],
+			{ query: "deploy" },
+		);
+		expect(flat.map((f) => f.conv.id)).toEqual(["hit"]);
 	});
 });

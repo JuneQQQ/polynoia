@@ -103,3 +103,45 @@ export function groupConversations(
 	}
 	return out;
 }
+
+/** Sum of unread across a group's conversations — the header rollup badge, so a
+ * collapsed workspace still signals "has new activity". */
+export function groupUnread(g: ConvGroup): number {
+	return g.convs.reduce((n, c) => n + (c.unread || 0), 0);
+}
+
+/** Sum of unread across ALL conversations — the 未读 pill count. */
+export function totalUnread(allConvs: ConversationSummary[]): number {
+	return allConvs.reduce((n, c) => n + (c.unread || 0), 0);
+}
+
+export type FlatConvItem = {
+	conv: ConversationSummary;
+	/** Source workspace (null = 直接消息) — shown as a chip in the flat views so
+	 * the user still knows where a row lives without the group header. */
+	workspace: Workspace | null;
+};
+
+/** Flat, pinned-then-recency-sorted list for the 未读 / 最近 views — the escape
+ * hatch from grouping: structure traded for a single "what's newest" stream. */
+export function flatConversations(
+	allConvs: ConversationSummary[],
+	workspaces: Workspace[],
+	opts: { onlyUnread?: boolean; query?: string } = {},
+): FlatConvItem[] {
+	const q = (opts.query ?? "").trim().toLowerCase();
+	const wsById = new Map(workspaces.map((w) => [w.id, w] as const));
+	return allConvs
+		.filter(
+			(c) =>
+				(!q || c.title.toLowerCase().includes(q)) &&
+				(!opts.onlyUnread || c.unread > 0),
+		)
+		.slice()
+		.sort(byPinnedThenRecency)
+		.map((c) => ({
+			conv: c,
+			workspace:
+				(c.workspace_id ? wsById.get(c.workspace_id) : undefined) ?? null,
+		}));
+}

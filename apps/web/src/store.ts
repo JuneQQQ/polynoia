@@ -417,6 +417,10 @@ type Store = {
 
 	// Preview actions
 	openPreview: (tab: PreviewTab, data?: Partial<PreviewState["data"]>) => void;
+	/** Open the right rail on a WORKSPACE's files directly — no conversation
+	 * required (a workspace owns its files independent of any single conv).
+	 * Used by the sidebar workspace-group folder button. */
+	openWorkspaceFiles: (workspaceId: string) => void;
 	closePreview: () => void;
 	setPreviewTab: (tab: PreviewTab) => void;
 	/** Open a file in the right-rail preview (sets previewFile + opens the pane).
@@ -636,6 +640,18 @@ export const useStore = create<Store>((set, get) => ({
 				open: true,
 				tab: "code",
 				data: { ...s.preview.data, ...(data ?? {}) },
+			},
+		})),
+	openWorkspaceFiles: (workspaceId) =>
+		set((s) => ({
+			// Mutual-exclude with RightDrawer (same right-edge slot as openPreview).
+			rightDrawer: { kind: null },
+			preview: {
+				...s.preview,
+				open: true,
+				tab: "code",
+				previewFile: null, // fresh workspace → show the file tree, not a stale file
+				data: { ...s.preview.data, workspaceId },
 			},
 		})),
 	closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),

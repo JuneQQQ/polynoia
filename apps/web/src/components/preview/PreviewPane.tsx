@@ -80,6 +80,26 @@ export function PreviewPane() {
 		wsName ?? convTitle ?? privateOwnerName ?? t("current", lang);
 	const workspaceTitle = `${workspaceOwnerName}${t("workspaceOfOwner", lang)}`;
 
+	// Inline rename of the workspace right from its files panel (a workspace owns
+	// its name + files; you shouldn't need to dig into a settings modal to rename).
+	const [editingName, setEditingName] = useState(false);
+	const [nameDraft, setNameDraft] = useState("");
+	const startRename = () => {
+		setNameDraft(wsName ?? "");
+		setEditingName(true);
+	};
+	const saveRename = async () => {
+		const v = nameDraft.trim();
+		setEditingName(false);
+		if (!workspaceId || !v || v === wsName) return;
+		try {
+			await api.updateWorkspace(workspaceId, { name: v });
+			useStore.setState({ workspaces: await api.workspaces() });
+		} catch {
+			// rename failed → keep the old name (the list refresh would revert it)
+		}
+	};
+
 	// Resize handle — left edge, 360–900px, persisted.
 	const [width, setWidth] = useState(() => {
 		const saved = Number.parseInt(
@@ -197,13 +217,40 @@ export function PreviewPane() {
 				)}
 				<div className="flex-1 min-w-0">
 					<div className="text-[12px] font-semibold truncate text-[var(--color-fg)]">
-						{reviewing
-							? t("codeReviewPendingChanges", lang)
-							: servicesView
-								? t("runningServices", lang)
-								: previewFile
-									? (previewFile.split("/").pop() ?? previewFile)
-									: workspaceTitle}
+						{reviewing ? (
+							t("codeReviewPendingChanges", lang)
+						) : servicesView ? (
+							t("runningServices", lang)
+						) : previewFile ? (
+							(previewFile.split("/").pop() ?? previewFile)
+						) : workspaceId ? (
+							editingName ? (
+								<input
+									// biome-ignore lint/a11y/noAutofocus: rename starts on explicit click
+									autoFocus
+									value={nameDraft}
+									placeholder={t("workspacePlaceholder", lang)}
+									onChange={(e) => setNameDraft(e.target.value)}
+									onBlur={saveRename}
+									onKeyDown={(e) => {
+										if (e.key === "Enter") void saveRename();
+										else if (e.key === "Escape") setEditingName(false);
+									}}
+									className="w-full bg-transparent border-b border-[var(--color-accent)] outline-none text-[12px] font-semibold text-[var(--color-fg)]"
+								/>
+							) : (
+								<button
+									type="button"
+									onClick={startRename}
+									title={t("renameWorkspace", lang)}
+									className="block w-full truncate text-left hover:underline decoration-dotted underline-offset-2"
+								>
+									{workspaceTitle}
+								</button>
+							)
+						) : (
+							workspaceTitle
+						)}
 					</div>
 					<div className="text-[10px] font-mono text-[var(--color-fg-3)] truncate">
 						{servicesView

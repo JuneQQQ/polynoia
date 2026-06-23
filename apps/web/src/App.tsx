@@ -42,6 +42,10 @@ export function App() {
 	const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 	const workspaces = useStore((s) => s.workspaces);
 	const previewOpen = useStore((s) => s.preview.open);
+	// A workspace's files are owned by the workspace, not any single conversation,
+	// so the preview rail may open on a workspace directly (folder button) with no
+	// active conv. PreviewPane's conv-only bits degrade gracefully (null/false).
+	const previewWsId = useStore((s) => s.preview.data?.workspaceId ?? null);
 	const toggleSidebar = useStore((s) => s.toggleSidebar);
 	const openMembersList = useStore((s) => s.openMembersList);
 	const resetCenterTabs = useStore((s) => s.resetCenterTabs);
@@ -675,7 +679,9 @@ export function App() {
 				}}
 			/>
 			{renderMain()}
-			{previewOpen && view === "chat" && activeConv && <PreviewPane />}
+			{previewOpen && view === "chat" && (activeConv || previewWsId) && (
+				<PreviewPane />
+			)}
 			{/* Right-side info drawer (agent detail / members list). Globally
           mounted so it can be opened from anywhere — sidebar, chat header,
           message bubble, roles modal. */}

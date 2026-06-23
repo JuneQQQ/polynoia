@@ -80,7 +80,7 @@ afterEach(() => {
 });
 
 describe("SidebarConvGroups", () => {
-	it("renders a workspace group header + its conversations + the 直接消息 group", () => {
+	it("defaults to the 平铺 (flat) view: every conversation in one stream, each tagged with its source workspace chip", () => {
 		const html = renderToStaticMarkup(
 			<SidebarConvGroups
 				{...baseProps}
@@ -91,14 +91,19 @@ describe("SidebarConvGroups", () => {
 				]}
 			/>,
 		);
-		expect(html).toContain("测试共享区的工作区"); // workspace group header
+		// all conversations show (flat, no group nesting)
 		expect(html).toContain("会话A");
 		expect(html).toContain("会话B");
-		expect(html).toContain("直接消息"); // DM group header
 		expect(html).toContain("私聊林知夏");
+		// each row carries a source chip: the workspace name, or 直接消息 for DMs
+		expect(html).toContain("测试共享区的工作区"); // workspace chip
+		expect(html).toContain("直接消息"); // DM source chip
+		// the view switch is collapsed → shows the current mode (平铺); 分组 is
+		// revealed only on click (not in the static markup).
+		expect(html).toContain("平铺");
 	});
 
-	it("falls back to a flat list (no group headers) when there are no workspaces", () => {
+	it("renders even when there are no workspaces (all DMs in the flat stream)", () => {
 		mockWorkspaces.length = 0; // simulate zero workspaces
 		const html = renderToStaticMarkup(
 			<SidebarConvGroups
@@ -107,6 +112,5 @@ describe("SidebarConvGroups", () => {
 			/>,
 		);
 		expect(html).toContain("随便聊聊");
-		expect(html).not.toContain("直接消息"); // no group chrome in the flat fallback
 	});
 });

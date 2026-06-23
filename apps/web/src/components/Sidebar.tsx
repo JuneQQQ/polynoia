@@ -61,6 +61,7 @@ export function Sidebar({
 	const setSearchOverlayOpen = useStore((s) => s.setSearchOverlayOpen);
 	const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 	const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
+	const openWorkspaceFiles = useStore((s) => s.openWorkspaceFiles);
 	const lang = useStore((s) => s.lang);
 
 	// "+ 新建对话" modal — workspace 内才显示
@@ -1082,7 +1083,13 @@ export function Sidebar({
 					query={q}
 					activeConvId={activeConvId}
 					onSelectConv={onSelectConv}
-					onOpenWorkspaceDetail={(wsId) => setActiveWorkspace(wsId)}
+					onOpenWorkspaceDetail={(wsId) => {
+						// Inspect the workspace: open its files panel on the right (the
+						// workspace owns its files independent of any conversation), WITHOUT
+						// switching the sidebar into the "only this workspace's convs" mode.
+						setView("chat");
+						openWorkspaceFiles(wsId);
+					}}
 					onNewConvInWorkspace={(ws) => setNewConvWorkspace(ws)}
 					onNewConvGlobal={() => setNewConvGlobalOpen(true)}
 					refreshAllConvs={refreshAllConvs}
