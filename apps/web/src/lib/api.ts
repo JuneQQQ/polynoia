@@ -259,6 +259,15 @@ export type ConversationSummary = {
 		tool?: string;
 		message?: string;
 	}>;
+	/** Newest message preview for the sidebar subtitle (微信/Slack-style).
+	 * Derived server-side, route-injected like running_agents. `text` is the
+	 * flattened body for text/reasoning messages and "" for the other card
+	 * kinds — for those the client localizes a label from `last_message_kind`.
+	 * sender_id is "you" or an agent id; kind is the payload discriminator.
+	 * All absent/null when the conversation has no messages yet. */
+	last_message_text?: string;
+	last_message_sender_id?: string | null;
+	last_message_kind?: string | null;
 };
 
 export type DraftAttachment = {

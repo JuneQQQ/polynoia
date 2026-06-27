@@ -731,6 +731,11 @@ async def list_conversations(
             unread_only=unread_only,
             q=q,
         )
+        # Newest-message preview per conv (微信/Slack-style sidebar subtitle),
+        # in ONE batched query so the list stays O(1) regardless of conv count.
+        previews = await storage_repo.latest_message_previews(
+            session, [r.id for r in rows]
+        )
         out = []
         for r in rows:
             item = r.model_dump(mode="json")
@@ -740,6 +745,10 @@ async def list_conversations(
                 if status.get("status") in ("starting", "streaming"):
                     live_agents.append(status)
             item["running_agents"] = live_agents
+            pv = previews.get(r.id)
+            item["last_message_text"] = pv["text"] if pv else ""
+            item["last_message_sender_id"] = pv["sender_id"] if pv else None
+            item["last_message_kind"] = pv["kind"] if pv else None
             out.append(item)
         return out
 

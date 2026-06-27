@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.domain.entities import new_ulid
@@ -62,6 +62,107 @@ async def append_message(
         )
     await session.flush()
     return mid
+
+
+# ── Sidebar last-message preview ─────────────────────────────────────
+#
+# The conversation-list endpoint shows a 微信/Slack-style preview of each
+# conv's newest message under the title. We derive a one-line string from the
+# payload here (server-side) so the row stays cheap: only text/reasoning carry
+# real body text; every other card kind returns "" and the frontend localizes a
+# label from ``kind`` (keeps Chinese out of the backend).
+
+_PREVIEW_MAX_CHARS = 140
+
+
+def _inline_to_text(c: Any) -> str:
+    """Flatten a TextBlock.c (str | InlineContent) into plain text."""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts: list[str] = []
+        for seg in c:
+            if not isinstance(seg, dict):
+                continue
+            if seg.get("type") == "text":
+                parts.append(str(seg.get("text", "")))
+            elif seg.get("type") == "mention":
+                parts.append("@" + str(seg.get("m", "")))
+        return "".join(parts)
+    return ""
+
+
+def _preview_from_payload(payload: Any) -> tuple[str, str]:
+    """One-line sidebar preview for a message payload → ``(text, kind)``.
+
+    text/reasoning → flattened, whitespace-collapsed, truncated body. Every
+    other of the 12 card kinds → ``("", kind)`` so the client can render a
+    localized "[card]"-style label instead.
+    """
+    if not isinstance(payload, dict):
+        return "", ""
+    kind = str(payload.get("kind") or "")
+    if kind in ("text", "reasoning"):
+        body = payload.get("body") or []
+        chunks = [
+            _inline_to_text(blk.get("c")) for blk in body if isinstance(blk, dict)
+        ]
+        text = " ".join(s.strip() for s in chunks if s and s.strip())
+        text = " ".join(text.split())  # collapse runs of whitespace/newlines
+        if len(text) > _PREVIEW_MAX_CHARS:
+            text = text[:_PREVIEW_MAX_CHARS].rstrip() + "…"
+        return text, kind
+    return "", kind
+
+
+async def latest_messages_for_convs(
+    session: AsyncSession, conv_ids: list[str]
+) -> dict[str, MessageRow]:
+    """Newest message per conversation, in ONE query (no N+1 over the list).
+
+    Ties on ``created_at`` are broken by ``id`` desc (ULIDs are monotonic),
+    matching ``list_messages``' newest-first ordering. Convs with no messages
+    are simply absent from the result.
+    """
+    if not conv_ids:
+        return {}
+    newest = (
+        select(
+            MessageRow.conv_id.label("cid"),
+            func.max(MessageRow.created_at).label("mts"),
+        )
+        .where(MessageRow.conv_id.in_(conv_ids))
+        .group_by(MessageRow.conv_id)
+        .subquery()
+    )
+    stmt = (
+        select(MessageRow)
+        .join(
+            newest,
+            (MessageRow.conv_id == newest.c.cid)
+            & (MessageRow.created_at == newest.c.mts),
+        )
+        .order_by(MessageRow.conv_id, MessageRow.id.desc())
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    out: dict[str, MessageRow] = {}
+    for row in rows:
+        out.setdefault(row.conv_id, row)  # id-desc → first seen is newest on ties
+    return out
+
+
+async def latest_message_previews(
+    session: AsyncSession, conv_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Sidebar preview of each conv's newest message:
+    ``{conv_id: {"text", "sender_id", "kind"}}``. One query; empty convs absent.
+    """
+    rows = await latest_messages_for_convs(session, conv_ids)
+    out: dict[str, dict[str, Any]] = {}
+    for cid, row in rows.items():
+        text, kind = _preview_from_payload(row.payload)
+        out[cid] = {"text": text, "sender_id": row.sender_id, "kind": kind}
+    return out
 
 
 async def delete_messages_from(

@@ -59,7 +59,6 @@ export function ConvListRow({
 	const ws = c.workspace_id
 		? (workspaces.find((w) => w.id === c.workspace_id) ?? null)
 		: null;
-	const agentCount = c.members.filter((m) => m !== "you").length;
 	// Group rows show a STACK of member avatars (orchestrator first, then others,
 	// up to 3) instead of a single icon.
 	const memberAgs = c.group
@@ -70,13 +69,28 @@ export function ConvListRow({
 				})
 				.slice(0, 3)
 		: [];
-	const sub = c.direct
-		? t("directMessageType", lang)
-		: t("groupChatCountLabel", lang).replace("{count}", String(agentCount));
 	const time = fmtConvTime(c.last_message_at);
 	const hasDraft =
 		!!c.draft_text?.trim() || (c.draft_attachments?.length ?? 0) > 0;
 	const running = (c.running_agents?.length ?? 0) > 0;
+	// The agent working right now (for the live preview line) — else the conv's
+	// representative agent.
+	const runner =
+		(c.running_agents ?? [])
+			.map((r) => agents.find((a) => a.id === r.agent_id))
+			.find(Boolean) ?? rep;
+	// Newest-message preview (微信/Slack-style subtitle). Non-text cards carry no
+	// body, so the backend sends text="" + a kind we localize to "[卡片消息]".
+	const hasLastMsg = !!c.last_message_kind;
+	const lastSenderId = c.last_message_sender_id;
+	const lastSenderName =
+		lastSenderId === "you"
+			? t("youLabel", lang)
+			: lastSenderId
+				? (agents.find((a) => a.id === lastSenderId)?.name ?? null)
+				: null;
+	const lastMsgText =
+		c.last_message_text?.trim() || (hasLastMsg ? t("lastMsgCard", lang) : "");
 
 	return (
 		<div
@@ -151,29 +165,34 @@ export function ConvListRow({
 							</span>
 						)}
 					</div>
-					<div className="text-[11px] text-[var(--color-sidebar-muted)] mt-0.5 leading-tight font-mono flex items-center gap-1.5 min-w-0">
-						{showWorkspaceLabel && (
-							<span
-								className="flex-shrink-0 max-w-[96px] truncate px-1.5 py-px rounded-[4px]"
-								style={
-									ws
-										? { background: `${ws.color}22`, color: ws.color }
-										: {
-												background: "var(--color-sidebar-active)",
-												color: "var(--color-sidebar-muted)",
-											}
-								}
-							>
-								{ws ? ws.name : t("directMessages", lang)}
+					<div className="text-[11px] text-[var(--color-sidebar-muted)] mt-0.5 leading-tight flex items-center gap-1.5 min-w-0">
+						{/* Second line shows CONTENT / STATE, not redundant metadata — the chat
+						    type is already obvious from the avatar (one icon vs a stack).
+						    Priority: live agents → unsent draft → newest message → workspace
+						    only when named apart. */}
+						{running ? (
+							<span className="min-w-0 truncate text-[var(--color-accent)]">
+								{runner ? `${runner.name} · ` : ""}
+								{t("agentWorking", lang)}
 							</span>
-						)}
-						{hasDraft && (
-							<span className="flex-shrink-0 text-[var(--color-accent)]">
-								{t("draftBadge", lang)}
+						) : hasDraft ? (
+							<span className="min-w-0 truncate">
+								<span className="text-[var(--color-accent)]">
+									{t("draftBadge", lang)}
+								</span>
+								{c.draft_text?.trim() ? ` ${c.draft_text.trim()}` : ""}
 							</span>
-						)}
-						<span className="truncate">{sub}</span>
-						{!showWorkspaceLabel && ws && (
+						) : hasLastMsg ? (
+							<span className="min-w-0 truncate">
+								{c.group && lastSenderName ? `${lastSenderName}: ` : ""}
+								{lastMsgText}
+							</span>
+						) : showWorkspaceLabel && ws && ws.name !== c.title ? (
+							<span className="min-w-0 truncate" style={{ color: ws.color }}>
+								{ws.name}
+							</span>
+						) : null}
+						{showWorkspaceLabel && ws && (
 							<span
 								title={t("workspaceTooltip", lang)
 									.replace("{ws.name}", ws.name)

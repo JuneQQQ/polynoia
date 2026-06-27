@@ -161,7 +161,10 @@ const STR = {
 	},
 	agentWorking: { zh: "Agent 正在工作", en: "Agent is working" },
 	pinnedLabel: { zh: "已置顶", en: "Pinned" },
-	draftBadge: { zh: "[草稿]", en: "[Draft]" },
+	draftBadge: { zh: "草稿", en: "Draft" },
+	// Sidebar last-message preview fallback for non-text card messages
+	// (diff/tasks/sql/…), which carry no plain body to show.
+	lastMsgCard: { zh: "[卡片消息]", en: "[card]" },
 	workspaceTooltip: { zh: "工作区:{ws.name}", en: "Workspace: {name}" },
 	directMessageType: { zh: "单聊", en: "Direct message" },
 	directMessages: { zh: "直接消息", en: "Direct messages" },
@@ -963,6 +966,7 @@ const STR = {
 	cannotStart: { zh: "无法启动", en: "Cannot start" },
 	aborted: { zh: "已中断", en: "Aborted" },
 	depthLimitReached: { zh: "已达上限", en: "Limit reached" },
+	queued: { zh: "排队中", en: "Queued" },
 	retryableHint: { zh: "· 可重试(再发一次)", en: "· Retryable (send again)" },
 	fileLabel: { zh: "文件 {payload.name}", en: "File {name}" },
 	clickToPreview: { zh: "点击打开预览", en: "Click to preview" },
