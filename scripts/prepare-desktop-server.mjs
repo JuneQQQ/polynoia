@@ -14,14 +14,32 @@
 // Self-locates the repo root from its own path, so it works regardless of the
 // caller's cwd.
 
+import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, rm } from "node:fs/promises";
+import { chmod, cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const SRC = join(repoRoot, "apps", "server");
 const DST = join(repoRoot, "apps", "desktop", "src-tauri", "resources", "server");
+const BIN = join(repoRoot, "apps", "desktop", "src-tauri", "resources", "bin");
+
+// Resolve the `uv` runtime so it can be bundled into resources/bin. main.rs
+// resolves uv from the resource dir first, then falls back to a system `uv`.
+function resolveUv() {
+  const name = process.platform === "win32" ? "uv.exe" : "uv";
+  const candidates = [];
+  try {
+    const cmd = process.platform === "win32" ? `where ${name}` : `command -v ${name}`;
+    const out = execSync(cmd, { encoding: "utf8" }).trim().split(/\r?\n/)[0];
+    if (out) candidates.push(out);
+  } catch {
+    /* not on PATH */
+  }
+  if (process.env.HOME) candidates.push(join(process.env.HOME, ".local", "bin", name));
+  return candidates.find((p) => p && existsSync(p)) ?? null;
+}
 
 // Names excluded anywhere in the tree — build/runtime artifacts that must not
 // ship (the user's env is built fresh on their machine).
@@ -52,6 +70,24 @@ async function main() {
       throw new Error(`required backend file missing: ${from}`);
     }
     await cp(from, join(DST, entry), { recursive: true, filter: keep });
+  }
+
+  // Bundle the `uv` runtime so the app is self-contained (resources/bin is
+  // declared in tauri.conf.json; an empty/missing path fails `tauri build`).
+  await rm(BIN, { recursive: true, force: true });
+  await mkdir(BIN, { recursive: true });
+  const uvName = process.platform === "win32" ? "uv.exe" : "uv";
+  const uvPath = resolveUv();
+  if (uvPath) {
+    const dest = join(BIN, uvName);
+    await cp(uvPath, dest);
+    await chmod(dest, 0o755);
+    console.log(`Bundled uv runtime: ${uvPath} -> ${dest}`);
+  } else {
+    // Keep the dir non-empty so Tauri's resource path resolves; the app then
+    // relies on a system `uv` found on PATH at runtime.
+    await writeFile(join(BIN, ".gitkeep"), "");
+    console.warn("uv not found; bundling resources/bin without it (relies on system uv)");
   }
 
   console.log(`Prepared desktop backend resource: ${DST}`);
