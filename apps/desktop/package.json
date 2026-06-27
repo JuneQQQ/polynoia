@@ -1,6 +1,6 @@
 {
   "name": "@polynoia/desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Polynoia desktop (Tauri 2) — thin native shell wrapping the @polynoia/web build.",
   "private": true,
   "type": "module",
