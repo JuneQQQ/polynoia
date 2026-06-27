@@ -24,6 +24,7 @@ const PRESENTATION: Record<
 	unavailable: { label: "cannotStart", Icon: ShieldAlert, tone: "hard" },
 	aborted: { label: "aborted", Icon: Ban, tone: "soft" },
 	depth_limit: { label: "depthLimitReached", Icon: ShieldAlert, tone: "soft" },
+	queued: { label: "queued", Icon: Clock, tone: "soft" },
 };
 
 export function ErrorPart({ payload }: { payload: ErrorPayload }) {

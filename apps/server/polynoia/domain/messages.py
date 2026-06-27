@@ -360,7 +360,8 @@ class ErrorPayload(BaseModel):
     # Why it failed — drives the icon/tone in the UI ("aborted" is neutral, the
     # rest read as a hard error).
     reason: Literal[
-        "turn_failed", "exception", "timeout", "aborted", "unavailable", "depth_limit"
+        "turn_failed", "exception", "timeout", "aborted", "unavailable", "depth_limit",
+        "queued",
     ] = "exception"
     # Whether re-sending could plausibly succeed (transient upstream / timeout).
     retryable: bool = False

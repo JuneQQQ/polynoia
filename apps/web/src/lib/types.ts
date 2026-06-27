@@ -280,7 +280,8 @@ export type ErrorPayload = {
 		| "timeout"
 		| "aborted"
 		| "unavailable"
-		| "depth_limit";
+		| "depth_limit"
+		| "queued";
 	retryable?: boolean;
 };
 

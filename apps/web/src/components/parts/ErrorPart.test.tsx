@@ -33,8 +33,8 @@ describe("ErrorPart", () => {
 		}
 	});
 
-	it("aborted/depth_limit are neutral, not red", () => {
-		for (const reason of ["aborted", "depth_limit"] as const) {
+	it("aborted/depth_limit/queued are neutral, not red", () => {
+		for (const reason of ["aborted", "depth_limit", "queued"] as const) {
 			const html = renderToStaticMarkup(
 				<ErrorPart payload={make({ reason })} />,
 			);
@@ -43,6 +43,9 @@ describe("ErrorPart", () => {
 		expect(
 			renderToStaticMarkup(<ErrorPart payload={make({ reason: "aborted" })} />),
 		).toContain("已中断");
+		expect(
+			renderToStaticMarkup(<ErrorPart payload={make({ reason: "queued" })} />),
+		).toContain("排队中");
 	});
 
 	it("shows a retry hint only when retryable", () => {
