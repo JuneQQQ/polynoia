@@ -31,6 +31,14 @@
   <img src="assets/readme/yw.png" alt="Polynoia — a group chat of AI agents building in parallel" width="860" />
 </p>
 
+<!-- PRODUCT DEMO — committed via Git LFS; GitHub renders the player inline from the raw URL. -->
+<p align="center">
+  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+</p>
+<p align="center">
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the 90-second product demo</a> — if the inline player doesn't load, click to play.</sub>
+</p>
+
 ---
 
 ## Table of contents
@@ -94,7 +102,7 @@ results back, then inspect and merge the work without leaving the conversation.
 |---|---|---|
 | Mental model | One assistant, one thread | **A team you chat with** — 1:1 and group |
 | Parallelism | Sequential turns | **Orchestrator fans out** sub-tasks concurrently |
-| Output | Text + code blocks | **12+ rich artifact types**, previewable & editable |
+| Output | Text + code blocks | **20+ rich artifact types**, previewable & editable |
 | Multiple engines | Locked to one vendor | **Claude Code · Codex · OpenCode** under one adapter layer |
 | Merging work | Manual copy-paste | **Per-agent git worktrees** + guided conflict resolution |
 | Reach | Desktop browser | **Web · desktop (Tauri) · mobile (Capacitor)** from one codebase |
@@ -117,7 +125,9 @@ results back, then inspect and merge the work without leaving the conversation.
 
 A chat client built for working *with* agents, not just prompting one.
 
-- **Conversation list** with pin · archive · full-text search across titles and message bodies.
+- **Conversation list** with pin · archive · full-text search across titles and message bodies,
+  plus a **WeChat/Slack-style last-message preview** under each row (live agent → unsent draft →
+  newest message → workspace, in priority order).
 - **1:1 and group** conversations; per-member **role assignment** inside a group.
 - **`@`-mention picker** (fuzzy, Slack/Linear-style) to summon specific agents.
 - **Reply / quote / copy / retry**, and **"rewind to here"** code checkpoints to branch a
@@ -163,10 +173,12 @@ Contacts are `(adapter, model, name, persona, tools)` — one engine can spawn m
 ### 📄 Inline artifacts
 
 The frontend renders each message as `parts: MessagePart[]` dispatched through a
-**registry** — a single reply can mix text + a diff + a live status strip. Part kinds include:
+**registry** — a single reply can mix text + a diff + a live status strip. The 21 registered
+part kinds:
 
-`text` · `reasoning` · `tasks` · `diff` · `web` · `metrics` · `sql` · `schema` · `logs` ·
-`api` · `swatches` · `copy` · `file` · `image` · `ask-form` · `typing`
+`text` · `reasoning` · `tasks` · `diff` · `web` · `swatches` · `copy` · `metrics` · `sql` ·
+`schema` · `logs` · `terminal` · `api` · `typing` · `tool-call` · `ask-form` · `image` ·
+`file` · `files` · `error` · `conflict`
 
 Plus rich **read-only / editable previews** for `.md` (WYSIWYG), **Marp** slides, `.html`,
 **editable `.xlsx`**, `.docx` / `.pptx`, images, source code, and **live web previews** of the
@@ -279,7 +291,7 @@ apps/
 docs/
 ├── research/          deep-dive on 20 libraries + UI design (baseline)
 ├── superpowers/specs/ full design spec
-├── ADR/               21 architecture decision records
+├── ADR/               23 architecture decision records
 └── design/            conflict closed-loop charter + diagrams
 ```
 
