@@ -45,12 +45,12 @@
 
 - [What is Polynoia?](#what-is-polynoia)
 - [Why it's different](#why-its-different)
-- [Screenshots](#screenshots)
 - [Feature tour](#feature-tour)
   - [IM core](#-im-core)
   - [The Orchestrator](#-the-orchestrator-multi-agent-teamwork)
   - [Unified adapter layer](#-unified-adapter-layer)
-  - [Custom agents](#-custom-agents)
+  - [Contacts & specialty library](#-contacts--specialty-library)
+  - [Agent quality panel](#-agent-quality-panel)
   - [Inline artifacts](#-inline-artifacts)
   - [Workspace IDE](#-workspace-ide)
   - [Conflict closed-loop](#-conflict-closed-loop)
@@ -105,6 +105,8 @@ results back, then inspect and merge the work without leaving the conversation.
 | Output | Text + code blocks | **20+ rich artifact types**, previewable & editable |
 | Multiple engines | Locked to one vendor | **Claude Code · Codex · OpenCode** under one adapter layer |
 | Merging work | Manual copy-paste | **Per-agent git worktrees** + guided conflict resolution |
+| Roster | Pick a model | **Hire from a 232-role specialty library** or describe one in a sentence |
+| Quality | Trust the vendor | **Per-agent quality panel** — composite score + benchmark matrix |
 | Reach | Desktop browser | **Web · desktop (Tauri) · mobile (Capacitor)** from one codebase |
 
 ---
@@ -114,8 +116,10 @@ results back, then inspect and merge the work without leaving the conversation.
 | Group chat & orchestration | Inline artifact preview |
 |---|---|
 | <img src="assets/readme/群聊与编排.png" alt="Parallel agent work lanes" width="420"/> | <img src="assets/readme/预览.png" alt="Inline document / slide / diff preview" width="420"/> |
-| **Workspace IDE** | **Conflict resolution** |
-| <img src="assets/readme/diff.png" alt="File tree + editor + terminal" width="420"/> | <img src="assets/readme/chongtu.png" alt="Guided merge-conflict resolution" width="420"/> |
+| **Workspace IDE** | **Contacts** |
+| <img src="assets/readme/diff.png" alt="File tree + editor + terminal" width="420"/> | <img src="assets/readme/联系人.png" alt="Dedicated contacts page" width="420"/> |
+| **Agent quality panel** | **Specialty library — hire a role** |
+| <img src="assets/readme/质量面板.jpg" alt="Per-agent composite scores + benchmark matrix" width="420"/> | <img src="assets/readme/角色库.jpg" alt="Hire from 232 role presets" width="420"/> |
 
 ---
 
@@ -133,6 +137,9 @@ A chat client built for working *with* agents, not just prompting one.
 - **Reply / quote / copy / retry**, and **"rewind to here"** code checkpoints to branch a
   conversation from any earlier message.
 - **⌘K command palette** for instant search and navigation.
+- **Conversation-first IA** — a dedicated **Inbox** ("needs me": unread + pinned), **Contacts**,
+  **Quality** and **Archive** views one click from the sidebar header, while the sidebar itself
+  stays a clean conversation stream.
 
 ### 🧠 The Orchestrator (multi-agent teamwork)
 
@@ -160,15 +167,33 @@ Per-adapter **network proxy**, **credential auto-reuse** (uses your existing CLI
 extra API keys), and a clean split between *adapters* (the engine) and *contacts* (a
 configured persona on top of an engine).
 
-### 🤖 Custom agents
+### 🤖 Contacts & specialty library
 
-Contacts are `(adapter, model, name, persona, tools)` — one engine can spawn many roles.
+A **contact** is `(adapter, model, name, persona, tools)` — one engine can spawn many roles.
+Contacts live on a **dedicated page** (the sidebar stays a pure conversation stream); each row
+is quiet by design — avatar · name · tagline · adapter.
 
+- **Specialty library (角色库)** — shallow-clone **232 role definitions** from the MIT-licensed
+  [`agency-agents`](https://github.com/msitarzewski/agency-agents) catalog (engineering · design ·
+  product · testing · security …) and **"hire" any of them as a contact in one click**. You only
+  supply what the catalog can't know — adapter + model.
+- **Conversational creation** — describe what you want ("a designer who writes React but can't run
+  shell commands") and Polynoia drafts the contact for you to review.
 - **Role presets** + **granular tool toggles** (`read_file` / `edit_file` / `run_shell` /
-  `network` / `call_agent` …).
+  `network` / `call_agent` …) and **per-contact skills** you install from a GitHub URL or local path.
 - **Derived capability tags** so a group reads at a glance.
-- **Conversational creation** — describe what you want ("a designer who writes React but can't
-  run shell commands") and Polynoia drafts the agent for you to review.
+
+### 📊 Agent quality panel
+
+Polynoia's thesis: **the platform harness — not just the model — determines an agent's delivered
+quality.** The quality panel makes that *measurable per contact*, so you can confidently run weak
+or free models and watch the harness lift them.
+
+- **Composite score (0–100)** per contact, weighted **benchmark 45% · tool reliability 25% ·
+  process reliability 20% · activity 10%** (neutral 0.6 where there's no evidence yet).
+- **Component bars** — turns, tool ok-rate, process ok-rate, benchmark average — at a glance.
+- **Benchmark matrix** — case × model executions with scores, so a weak model's progress *under the
+  harness* is visible over time. Backed by an event-log pipeline (`GET /api/quality`).
 
 ### 📄 Inline artifacts
 
