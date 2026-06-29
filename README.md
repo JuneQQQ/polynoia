@@ -45,7 +45,6 @@
 
 - [What is Polynoia?](#what-is-polynoia)
 - [Why it's different](#why-its-different)
-- [Screenshots](#screenshots)
 - [Feature tour](#feature-tour)
   - [IM core](#-im-core)
   - [The Orchestrator](#-the-orchestrator-multi-agent-teamwork)
@@ -117,10 +116,10 @@ results back, then inspect and merge the work without leaving the conversation.
 | Group chat & orchestration | Inline artifact preview |
 |---|---|
 | <img src="assets/readme/群聊与编排.png" alt="Parallel agent work lanes" width="420"/> | <img src="assets/readme/预览.png" alt="Inline document / slide / diff preview" width="420"/> |
-| **Workspace IDE** | **Conflict resolution** |
-| <img src="assets/readme/diff.png" alt="File tree + editor + terminal" width="420"/> | <img src="assets/readme/chongtu.png" alt="Guided merge-conflict resolution" width="420"/> |
+| **Workspace IDE** | **Contacts** |
+| <img src="assets/readme/diff.png" alt="File tree + editor + terminal" width="420"/> | <img src="assets/readme/联系人.png" alt="Dedicated contacts page" width="420"/> |
 | **Agent quality panel** | **Specialty library — hire a role** |
-| <img src="assets/readme/quality.png" alt="Per-agent composite scores + benchmark matrix" width="420"/> | <img src="assets/readme/specialty.png" alt="Hire from 232 role presets" width="420"/> |
+| <img src="assets/readme/质量面板.jpg" alt="Per-agent composite scores + benchmark matrix" width="420"/> | <img src="assets/readme/角色库.jpg" alt="Hire from 232 role presets" width="420"/> |
 
 ---
 
@@ -174,7 +173,7 @@ A **contact** is `(adapter, model, name, persona, tools)` — one engine can spa
 Contacts live on a **dedicated page** (the sidebar stays a pure conversation stream); each row
 is quiet by design — avatar · name · tagline · adapter.
 
-- **Specialty library (专长库)** — shallow-clone **232 role definitions** from the MIT-licensed
+- **Specialty library (角色库)** — shallow-clone **232 role definitions** from the MIT-licensed
   [`agency-agents`](https://github.com/msitarzewski/agency-agents) catalog (engineering · design ·
   product · testing · security …) and **"hire" any of them as a contact in one click**. You only
   supply what the catalog can't know — adapter + model.

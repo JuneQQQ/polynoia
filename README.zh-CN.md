@@ -44,12 +44,11 @@
 
 - [Polynoia 是什么?](#polynoia-是什么)
 - [和传统工具有何不同](#和传统工具有何不同)
-- [截图](#截图)
 - [功能详览](#功能详览)
   - [IM 核心](#-im-核心)
   - [编排者(多 Agent 协作)](#-编排者多-agent-协作)
   - [统一适配器层](#-统一适配器层)
-  - [联系人与专长库](#-联系人与专长库)
+  - [联系人与角色库](#-联系人与角色库)
   - [Agent 质量面板](#-agent-质量面板)
   - [内联产物](#-内联产物)
   - [工作区 IDE](#-工作区-ide)
@@ -110,10 +109,10 @@ Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离
 | 群聊与编排 | 内联产物预览 |
 |---|---|
 | <img src="assets/readme/群聊与编排.png" alt="并行 Agent 工作泳道" width="420"/> | <img src="assets/readme/预览.png" alt="内联文档 / 幻灯片 / diff 预览" width="420"/> |
-| **工作区 IDE** | **冲突解决** |
-| <img src="assets/readme/diff.png" alt="文件树 + 编辑器 + 终端" width="420"/> | <img src="assets/readme/chongtu.png" alt="引导式合并冲突解决" width="420"/> |
-| **Agent 质量面板** | **专长库 —— 雇佣角色** |
-| <img src="assets/readme/quality.png" alt="按 Agent 的综合分 + 基准矩阵" width="420"/> | <img src="assets/readme/specialty.png" alt="从 232 个角色预设雇佣" width="420"/> |
+| **工作区 IDE** | **联系人** |
+| <img src="assets/readme/diff.png" alt="文件树 + 编辑器 + 终端" width="420"/> | <img src="assets/readme/联系人.png" alt="引导式合并冲突解决" width="420"/> |
+| **Agent 质量面板** | **角色库 —— 雇佣角色** |
+| <img src="assets/readme/质量面板.jpg" alt="按 Agent 的综合分 + 基准矩阵" width="420"/> | <img src="assets/readme/角色库.jpg" alt="从 232 个角色预设雇佣" width="420"/> |
 
 ---
 
@@ -154,12 +153,12 @@ Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离
 支持按适配器配**网络代理**、**凭证自动复用**(直接用你已登录的 CLI,无需额外 API key),
 并清晰区分*适配器*(引擎)与*联系人*(引擎之上配置好的人设)。
 
-### 🤖 联系人与专长库
+### 🤖 联系人与角色库
 
 **联系人** = `(适配器, 模型, 名字, 人设, 工具)` —— 一个引擎能派生多种角色。联系人住在
 **独立页面**里(侧边栏保持纯对话流);每行刻意做得安静 —— 头像 · 名字 · 一句话简介 · 适配器。
 
-- **专长库(Specialty library)** —— 从 MIT 许可的
+- **角色库(Specialty library)** —— 从 MIT 许可的
   [`agency-agents`](https://github.com/msitarzewski/agency-agents) 目录浅克隆 **232 个角色定义**
   (工程 · 设计 · 产品 · 测试 · 安全 …),**一键「雇佣」成联系人**。你只需补上目录不知道的东西
   —— 适配器 + 模型。
