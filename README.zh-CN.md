@@ -30,6 +30,14 @@
   <img src="assets/readme/zw.png" alt="Polynoia —— 一群 AI Agent 在群聊里并行开工" width="860" />
 </p>
 
+<!-- 产品演示视频 —— 经 Git LFS 提交;GitHub 从 raw 链接内联渲染播放器 -->
+<p align="center">
+  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+</p>
+<p align="center">
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示视频</a> —— 如果内联播放器没加载,点这里播放。</sub>
+</p>
+
 ---
 
 ## 目录
@@ -87,7 +95,7 @@ Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离
 |---|---|---|
 | 心智模型 | 一个助手、一条线程 | **一支能群聊的团队** —— 单聊 + 群聊 |
 | 并行 | 顺序轮流 | **编排者并发派发**子任务 |
-| 产出 | 文字 + 代码块 | **12+ 种富产物**,可预览可编辑 |
+| 产出 | 文字 + 代码块 | **20+ 种富产物**,可预览可编辑 |
 | 多引擎 | 锁定单一厂商 | **Claude Code · Codex · OpenCode** 统一适配层 |
 | 合并成果 | 手动复制粘贴 | **每个 Agent 独立 git worktree** + 引导式冲突解决 |
 | 触达 | 桌面浏览器 | **web · 桌面(Tauri) · 移动(Capacitor)** 同一份代码 |
@@ -110,7 +118,8 @@ Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离
 
 一个为「与 Agent 协作」而非「单纯提问」打造的聊天端。
 
-- **会话列表**:置顶 · 归档 · 标题与正文全文搜索。
+- **会话列表**:置顶 · 归档 · 标题与正文全文搜索,每行标题下还有**微信/Slack 式最近消息预览**
+  (按优先级:正在工作的 Agent → 未发送草稿 → 最近一条消息 → 工作区)。
 - **单聊 + 群聊**;群内可给每个成员**指派角色**。
 - **`@` 提及选择器**(模糊匹配,Slack/Linear 风格)召唤指定 Agent。
 - **回复 / 引用 / 复制 / 重试**,以及**「回到这里」代码检查点** —— 从任意历史消息处岔开重来。
@@ -151,10 +160,11 @@ Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离
 ### 📄 内联产物
 
 前端把每条消息渲染成 `parts: MessagePart[]`,经**注册表**分派 —— 一条回复可同时含
-文字 + diff + 实时状态条。支持的 part 类型:
+文字 + diff + 实时状态条。已注册的 21 种 part 类型:
 
-`text` · `reasoning` · `tasks` · `diff` · `web` · `metrics` · `sql` · `schema` · `logs` ·
-`api` · `swatches` · `copy` · `file` · `image` · `ask-form` · `typing`
+`text` · `reasoning` · `tasks` · `diff` · `web` · `swatches` · `copy` · `metrics` · `sql` ·
+`schema` · `logs` · `terminal` · `api` · `typing` · `tool-call` · `ask-form` · `image` ·
+`file` · `files` · `error` · `conflict`
 
 外加对 `.md`(所见即所得)、**Marp** 幻灯片、`.html`、**可编辑 `.xlsx`**、`.docx` / `.pptx`、
 图片、源代码的丰富**只读/可编辑预览**,以及 Agent 刚搭好的应用的**网页实时预览**。
@@ -261,7 +271,7 @@ apps/
 docs/
 ├── research/          已有调研(20 个库 + UI 设计)
 ├── superpowers/specs/ 完整设计 spec
-├── ADR/               21 篇架构决策记录
+├── ADR/               23 篇架构决策记录
 └── design/            冲突闭环 charter + 图示
 ```
 
@@ -277,6 +287,25 @@ docs/
 - **外壳** · Tauri 2(桌面)· Capacitor 6(移动)
 
 ## 仓库结构
+
+```
+polynoia/
+├── apps/            web(Vite+React)· server(FastAPI)· desktop(Tauri)· mobile(Capacitor)
+├── packages/        共享 TS 类型 · 跨平台 core · ui-web · design-tokens
+├── docs/            调研 · spec · ADR · 图示
+├── scripts/         演示 + 场景 seeder
+├── .skills/         自定义 skill(add-adapter / add-card-type / …)
+└── Makefile         make dev / test / lint / types / build
+```
+
+## 文档与决策
+
+- **设计 spec** —— [`docs/superpowers/specs/2026-05-23-polynoia-design.md`](docs/superpowers/specs/2026-05-23-polynoia-design.md)
+- **调研综合**(20 个库)—— [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)
+- **架构决策记录** —— [`docs/ADR/`](docs/ADR/)(为何编排者是一个 Agent、为何选 ACP 而非
+  stdout JSON、为何选 CodeMirror 而非 Monaco、为何选 Capacitor 而非 React Native……)
+
+## 与 AI 协作构建
 
 本项目把 AI 当作一等协作者来开发。规范见 [`CLAUDE.md`](CLAUDE.md)(项目级 AI 协作规范),
 决策记录在 [`docs/ADR/`](docs/ADR/),官方提交用的 AI 协作说明见
