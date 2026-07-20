@@ -688,25 +688,21 @@ async def test_new_message_orders_ack_echo_before_turn_registration(
     conv_id, sessions = ws_env
     agent_id = await _seed_adapter_agent(sessions, conv_id)
     events: list[str] = []
-    original_ack = ws_module._user_message_ack
-
-    def record_ack(message_id: str, *, duplicate: bool) -> str:
-        events.append(f"ack:{message_id}")
-        return original_ack(message_id, duplicate=duplicate)
+    original_broadcast = ws_module._broadcast_to_conv
 
     async def record_echo(requested_conv_id: str, frame: str) -> None:
         assert requested_conv_id == conv_id
         assert '"type":"data-text"' in frame
-        events.append("echo:ordered-id")
+        await original_broadcast(requested_conv_id, frame)
+        events.append("broadcast-complete")
 
     def record_registration(requested_conv_id: str, requested_agent: str, coro):
         assert requested_conv_id == conv_id
         assert requested_agent == agent_id
-        events.append("turn:ordered-id")
+        events.append("turn-registered")
         coro.close()
         return object()
 
-    monkeypatch.setattr(ws_module, "_user_message_ack", record_ack)
     monkeypatch.setattr(ws_module, "_broadcast_to_conv", record_echo)
     monkeypatch.setattr(ws_module, "_spawn_turn", record_registration)
     ws = ScriptedWebSocket()
@@ -717,18 +713,26 @@ async def test_new_message_orders_ack_echo_before_turn_registration(
             msg_id="ordered-id",
             members=["you", agent_id],
         )
-        await _eventually(lambda: len(events) == 3)
+        await _eventually(
+            lambda: len(events) == 2
+            and len(_chunks(ws, "data-user-message-ack")) == 1
+            and len(_chunks(ws, "data-text")) == 1
+        )
         await ws.disconnect()
         await asyncio.wait_for(handler, timeout=2.0)
 
-        assert events == [
-            "ack:ordered-id",
-            "echo:ordered-id",
-            "turn:ordered-id",
-        ]
-        assert [
-            chunk["id"] for chunk in _chunks(ws, "data-user-message-ack")
-        ] == ["ordered-id"]
+        ack_index = next(
+            index
+            for index, frame in enumerate(ws.sent)
+            if '"type":"data-user-message-ack"' in frame
+        )
+        echo_index = next(
+            index
+            for index, frame in enumerate(ws.sent)
+            if '"type":"data-text"' in frame
+        )
+        assert ack_index < echo_index
+        assert events == ["broadcast-complete", "turn-registered"]
     finally:
         if not handler.done():
             await ws.disconnect()
