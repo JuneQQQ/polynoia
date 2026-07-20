@@ -16,6 +16,10 @@ from polynoia.storage.models import (
     PendingEditRow,
 )
 
+
+class MessageIdConflictError(ValueError):
+    pass
+
 # ── Message ──────────────────────────────────────────────────────────
 
 
@@ -62,6 +66,43 @@ async def append_message(
         )
     await session.flush()
     return mid
+
+
+async def append_message_once(
+    session: AsyncSession,
+    *,
+    conv_id: str,
+    sender_id: str,
+    payload: dict[str, Any],
+    msg_id: str | None = None,
+    in_reply_to: str | None = None,
+    code_sha: str | None = None,
+    turn_id: str | None = None,
+) -> tuple[str, bool]:
+    if msg_id:
+        existing = await session.get(MessageRow, msg_id)
+        if existing is not None:
+            actual = (
+                existing.conv_id,
+                existing.sender_id,
+                existing.payload,
+                existing.in_reply_to,
+            )
+            expected = (conv_id, sender_id, payload, in_reply_to)
+            if actual != expected:
+                raise MessageIdConflictError(msg_id)
+            return msg_id, False
+    mid = await append_message(
+        session,
+        conv_id=conv_id,
+        sender_id=sender_id,
+        payload=payload,
+        msg_id=msg_id,
+        in_reply_to=in_reply_to,
+        code_sha=code_sha,
+        turn_id=turn_id,
+    )
+    return mid, True
 
 
 # ── Sidebar last-message preview ─────────────────────────────────────

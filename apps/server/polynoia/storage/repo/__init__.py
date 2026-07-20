@@ -53,7 +53,9 @@ from polynoia.storage.repo.conversations import (
     set_workspace_id,
 )
 from polynoia.storage.repo.messages import (
+    MessageIdConflictError,
     append_message,
+    append_message_once,
     delete_message,
     delete_messages_from,
     latest_message_previews,
@@ -113,6 +115,7 @@ from polynoia.storage.repo.workspaces import (
 )
 
 __all__ = [
+    "MessageIdConflictError",
     "abandon_pending_edits_for_adapter",
     "active_access_grant",
     "add_conv_memory",
@@ -120,6 +123,7 @@ __all__ = [
     "add_onboarded_adapter",
     "add_pin",
     "append_message",
+    "append_message_once",
     "clear_conversation_messages",
     "close_terminal_card_for_run",
     "create_conflict",
