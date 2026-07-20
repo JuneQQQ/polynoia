@@ -79,7 +79,9 @@ async def append_message_once(
     code_sha: str | None = None,
     turn_id: str | None = None,
 ) -> tuple[str, bool]:
-    if msg_id:
+    if msg_id == "":
+        raise ValueError("msg_id must not be empty")
+    if msg_id is not None:
         existing = await session.get(MessageRow, msg_id)
         if existing is not None:
             actual = (

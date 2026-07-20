@@ -30,6 +30,7 @@ async def _create_conversation(db) -> None:
 
 async def test_exact_duplicate_returns_existing_id_without_inserting_again(fresh_db):
     payload = {"kind": "text", "body": [{"t": "p", "c": "hello"}]}
+    replayed_payload = {"kind": "text", "body": [{"t": "p", "c": "hello"}]}
 
     async with SessionLocal() as db:
         await _create_conversation(db)
@@ -44,7 +45,7 @@ async def test_exact_duplicate_returns_existing_id_without_inserting_again(fresh
             db,
             conv_id="conv",
             sender_id="you",
-            payload=payload,
+            payload=replayed_payload,
             msg_id="stable",
         )
 
@@ -81,3 +82,34 @@ async def test_conflicting_duplicate_raises(fresh_db):
                 },
                 msg_id="stable",
             )
+
+        original = await db.get(MessageRow, "stable")
+
+    assert original is not None
+    assert original.payload == payload
+
+
+async def test_empty_message_id_is_rejected_without_inserting(fresh_db):
+    payload = {"kind": "text", "body": [{"t": "p", "c": "hello"}]}
+
+    async with SessionLocal() as db:
+        await _create_conversation(db)
+        error: ValueError | None = None
+        try:
+            await append_message_once(
+                db,
+                conv_id="conv",
+                sender_id="you",
+                payload=payload,
+                msg_id="",
+            )
+        except ValueError as exc:
+            error = exc
+
+        row_count = await db.scalar(
+            select(func.count()).select_from(MessageRow).where(MessageRow.conv_id == "conv")
+        )
+
+    assert row_count == 0
+    assert error is not None
+    assert str(error) == "msg_id must not be empty"
