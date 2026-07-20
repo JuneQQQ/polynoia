@@ -21,10 +21,10 @@ async def fresh_db(monkeypatch, tmp_path):
     yield
 
 
-async def _create_conversation(db) -> None:
+async def _create_conversation(db, conv_id: str = "conv") -> None:
     await storage_repo.create_conversation(
         db,
-        Conversation(id="conv", title="Append once", members=["you"]),
+        Conversation(id=conv_id, title="Append once", members=["you"]),
     )
 
 
@@ -113,3 +113,114 @@ async def test_empty_message_id_is_rejected_without_inserting(fresh_db):
     assert row_count == 0
     assert error is not None
     assert str(error) == "msg_id must not be empty"
+
+
+@pytest.mark.parametrize(
+    ("msg_id", "in_reply_to", "expected_error"),
+    [
+        ("m" * 65, None, "msg_id must be at most 64 characters"),
+        ("stable", "r" * 65, "in_reply_to must be at most 64 characters"),
+    ],
+)
+async def test_overlong_message_reference_is_rejected_without_inserting(
+    fresh_db,
+    msg_id: str,
+    in_reply_to: str | None,
+    expected_error: str,
+) -> None:
+    payload = {"kind": "text", "body": [{"t": "p", "c": "hello"}]}
+
+    async with SessionLocal() as db:
+        await _create_conversation(db)
+        with pytest.raises(ValueError, match=f"^{expected_error}$"):
+            await append_message_once(
+                db,
+                conv_id="conv",
+                sender_id="you",
+                payload=payload,
+                msg_id=msg_id,
+                in_reply_to=in_reply_to,
+            )
+
+        row_count = await db.scalar(
+            select(func.count()).select_from(MessageRow).where(MessageRow.conv_id == "conv")
+        )
+
+    assert row_count == 0
+
+
+@pytest.mark.parametrize(
+    ("msg_id", "in_reply_to", "expected_error"),
+    [
+        ("m" * 65, None, "msg_id must be at most 64 characters"),
+        ("stable", "r" * 65, "in_reply_to must be at most 64 characters"),
+    ],
+)
+async def test_base_append_enforces_message_reference_width(
+    fresh_db,
+    msg_id: str,
+    in_reply_to: str | None,
+    expected_error: str,
+) -> None:
+    payload = {"kind": "text", "body": [{"t": "p", "c": "hello"}]}
+
+    async with SessionLocal() as db:
+        await _create_conversation(db)
+        with pytest.raises(ValueError, match=f"^{expected_error}$"):
+            await storage_repo.append_message(
+                db,
+                conv_id="conv",
+                sender_id="you",
+                payload=payload,
+                msg_id=msg_id,
+                in_reply_to=in_reply_to,
+            )
+
+        row_count = await db.scalar(
+            select(func.count()).select_from(MessageRow).where(MessageRow.conv_id == "conv")
+        )
+
+    assert row_count == 0
+
+
+@pytest.mark.parametrize(
+    ("conv_id", "sender_id", "in_reply_to"),
+    [
+        ("other-conv", "agent-a", None),
+        ("conv", "agent-b", None),
+        ("conv", "agent-a", "other-parent"),
+    ],
+)
+async def test_mutable_upsert_cannot_adopt_an_existing_message_identity(
+    fresh_db,
+    conv_id: str,
+    sender_id: str,
+    in_reply_to: str | None,
+) -> None:
+    original = {"kind": "text", "body": [{"c": "original"}]}
+    async with SessionLocal() as db:
+        await _create_conversation(db)
+        await _create_conversation(db, "other-conv")
+        await storage_repo.append_message(
+            db,
+            conv_id="conv",
+            sender_id="agent-a",
+            payload=original,
+            msg_id="owned-message",
+        )
+        with pytest.raises(MessageIdConflictError):
+            await storage_repo.upsert_message(
+                db,
+                conv_id=conv_id,
+                sender_id=sender_id,
+                payload={"kind": "text", "body": [{"c": "replacement"}]},
+                msg_id="owned-message",
+                in_reply_to=in_reply_to,
+            )
+        row = await db.get(MessageRow, "owned-message")
+
+    assert row is not None
+    assert row.conv_id == "conv"
+    assert row.sender_id == "agent-a"
+    assert row.in_reply_to is None
+    assert row.payload == original

@@ -9,9 +9,9 @@ import json
 import logging
 import mimetypes
 import os
-import socket
-import signal
 import re
+import signal
+import socket
 import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -21,6 +21,8 @@ from typing import NamedTuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from polynoia.adapters.base import AdapterEvent
 from polynoia.adapters.pool import get_pool
@@ -30,7 +32,12 @@ from polynoia.sandbox import Sandbox, workspace_merge_lock, workspace_root_for
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
-from polynoia.storage.models import AgentRow, MessageRow, WorkspaceRow
+from polynoia.storage.models import (
+    MESSAGE_ID_MAX_LENGTH,
+    AgentRow,
+    MessageRow,
+    WorkspaceRow,
+)
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
 log = logging.getLogger("polynoia.routes")
@@ -967,6 +974,85 @@ async def update_conv_message(conv_id: str, msg_id: str, body: dict):
     return {"ok": True}
 
 
+_INTERRUPTED_WRITE_OUTPUT = "⚠️ 连接已中断,该写入可能未完成"
+
+
+@router.patch(
+    "/api/conversations/{conv_id}/messages/{msg_id}/interrupt-stuck-write"
+)
+async def interrupt_stuck_write_message(conv_id: str, msg_id: str):
+    """Retire one orphaned write/edit tool card after reconnect recovery.
+
+    This deliberately is not a general payload upsert. It permits only the
+    monotonic pending/running/run → error transition, validates conversation and
+    tool family, preserves every other payload field, and is idempotent if the
+    same recovery probe is repeated. A concurrently completed card therefore
+    cannot be overwritten with a stale client snapshot.
+    """
+    try:
+        async with RUNTIME.user_message_lock(conv_id):
+            async with SessionLocal() as session:
+                # Normal tool streaming updates do not use the user-ingress
+                # lock. Take the database's writer/row lock *before* reading so
+                # a concurrent successful completion cannot land between this
+                # validation and our recovery update and then be overwritten.
+                bind = session.get_bind()
+                if bind.dialect.name == "sqlite":
+                    await session.execute(text("BEGIN IMMEDIATE"))
+                    row = await session.get(MessageRow, msg_id)
+                else:
+                    row = (
+                        await session.execute(
+                            select(MessageRow)
+                            .where(MessageRow.id == msg_id)
+                            .with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                if row is None or row.conv_id != conv_id:
+                    raise HTTPException(404, "message not in this conversation")
+                payload = row.payload
+                if not isinstance(payload, dict) or payload.get("kind") != "tool-call":
+                    raise HTTPException(400, "message is not a tool-call card")
+                tool_name = str(payload.get("name") or "").lower()
+                if not any(
+                    token in tool_name for token in ("write", "edit", "apply_patch")
+                ):
+                    raise HTTPException(400, "tool-call is not a write/edit operation")
+
+                already_interrupted = (
+                    payload.get("state") == "error"
+                    and payload.get("is_error") is True
+                    and payload.get("output_text") == _INTERRUPTED_WRITE_OUTPUT
+                )
+                if already_interrupted:
+                    return {"ok": True, "updated": False}
+                if payload.get("state") not in {"pending", "running", "run"}:
+                    raise HTTPException(409, "tool-call is already terminal")
+
+                next_payload = {
+                    **payload,
+                    "state": "error",
+                    "is_error": True,
+                    "output_text": _INTERRUPTED_WRITE_OUTPUT,
+                }
+                await storage_repo.update_message_payload(
+                    session, msg_id, next_payload
+                )
+                await session.commit()
+
+            frame = {
+                "type": "data-message-updated",
+                "data": {"id": msg_id, "payload": next_payload},
+            }
+            await _broadcast_to_conv(
+                conv_id,
+                f"data: {json.dumps(frame, ensure_ascii=False)}\n\n",
+            )
+            return {"ok": True, "updated": True}
+    finally:
+        RUNTIME.maybe_prune_conv(conv_id)
+
+
 @router.post("/api/conversations/{conv_id}/dispatch")
 async def record_dispatch(conv_id: str, body: dict):
     """Record a `dispatch` MCP tool call from an orchestrator's in-flight turn.
@@ -1181,11 +1267,74 @@ async def register_ask(conv_id: str, body: dict):
 
 @router.get("/api/conversations/{conv_id}/ask/{ask_id}")
 async def poll_ask(conv_id: str, ask_id: str):
-    """Polled by the `ask_user` tool. Returns {answered, answer}; pops on delivery."""
-    if _pending_asks.get(ask_id) is not None:
-        _ask_conv.pop(ask_id, None)
-        return {"answered": True, "answer": _pending_asks.pop(ask_id)}
-    return {"answered": False, "answer": None}
+    """Poll a blocking answer with a durable, idempotent fallback receipt."""
+    try:
+        # Poll consumption and answer retries must make one atomic ownership
+        # decision. Without this shared lock, poll could pop the live registry
+        # while a concurrent POST interpreted the still-unpolled durable row as
+        # orphaned, starting both the suspended turn and a replacement turn.
+        async with RUNTIME.user_message_lock(conv_id):
+            owner_conv = _ask_conv.get(ask_id)
+            if owner_conv is not None and owner_conv != conv_id:
+                # An ask id is capability-like. Never let a different
+                # conversation consume its answer merely by guessing the id.
+                raise HTTPException(status_code=404, detail="ask not found")
+            if owner_conv == conv_id and _pending_asks.get(ask_id) is not None:
+                answer = _pending_asks.pop(ask_id)
+                _ask_conv.pop(ask_id, None)
+                async with SessionLocal() as db:
+                    answer_row = await db.get(
+                        MessageRow, _ask_answer_message_id(ask_id)
+                    )
+                    if answer_row is not None and isinstance(
+                        answer_row.payload, dict
+                    ):
+                        answer_row.payload = {
+                            **answer_row.payload,
+                            "_ask_answer_polled": True,
+                        }
+                        await db.commit()
+                return {"answered": True, "answer": answer}
+
+            # A tool may lose the first answered HTTP response and retry after
+            # the live maps were consumed (or after process restart). The
+            # deterministic history row is the durable receipt. Mark it consumed
+            # before returning so a concurrent/later answer POST cannot convert
+            # the same handoff into an orphaned fresh turn.
+            async with SessionLocal() as db:
+                row = await db.get(MessageRow, _ask_answer_message_id(ask_id))
+                payload = row.payload if row is not None else None
+                body = payload.get("body") if isinstance(payload, dict) else None
+                first_block = body[0] if isinstance(body, list) and body else None
+                answer = (
+                    first_block.get("c")
+                    if isinstance(first_block, dict)
+                    else None
+                )
+                if (
+                    row is not None
+                    and row.conv_id == conv_id
+                    and row.sender_id == "you"
+                    and row.in_reply_to == ask_id
+                    and isinstance(payload, dict)
+                    and payload.get("kind") == "text"
+                    and isinstance(answer, str)
+                ):
+                    if payload.get("_ask_answer_polled") is not True:
+                        row.payload = {**payload, "_ask_answer_polled": True}
+                        await db.commit()
+                    return {"answered": True, "answer": answer}
+            if owner_conv == conv_id:
+                return {"answered": False, "answer": None}
+            raise HTTPException(status_code=404, detail="ask not found")
+    finally:
+        if _ask_conv.get(ask_id) != conv_id:
+            RUNTIME.maybe_prune_conv(conv_id)
+
+
+def _ask_answer_message_id(ask_id: str) -> str:
+    """Stable, width-safe identity for one live blocking-ask answer row."""
+    return f"ask-answer-{uuid.uuid5(uuid.NAMESPACE_URL, f'polynoia:{ask_id}')}"
 
 
 @router.post("/api/conversations/{conv_id}/ask/{ask_id}/answer")
@@ -1196,44 +1345,156 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
     the ask-form answered for re-hydration. Does NOT broadcast / spawn a turn —
     the suspended `ask_user` tool resumes the CURRENT turn with this answer.
     """
-    answer = (body.get("answer") or "").strip() or "(用户未填写)"
-    # ORPHANED ask: registered before a backend restart, so its in-memory entry was
-    # cleared and NO live `ask_user` poll loop is left to consume this answer and
-    # resume the suspended turn — the conv would sit silently dead after answering
-    # (observed: user answered a blocking form post-restart, card stayed unanswered,
-    # nothing progressed). `register_ask` seeds `_pending_asks[ask_id]=None`, so an
-    # id ABSENT here was registered in a prior process → orphaned.
-    orphaned = ask_id not in _pending_asks
-    _pending_asks[ask_id] = answer
-    with suppress(Exception):
-        async with SessionLocal() as _db:
-            if orphaned:
-                # No live turn will resume to render this answer. Stamp it onto the
-                # persisted ask-form card so the card itself reads 「已回复」, and DO
-                # NOT persist a separate `you` text message here — the client
-                # re-triggers the orchestrator via ws.sendUserMessage, which is what
-                # persists the canonical `you` message. Persisting one here too would
-                # produce the exact duplicate user bubble #8 removed.
-                _row = await _db.get(MessageRow, ask_id)
-                if _row and isinstance(_row.payload, dict) and _row.payload.get("kind") == "ask-form":
-                    # Set BOTH: `answer` for the card's 「已回复」readback, `answered`
-                    # for the open-form re-hydration check (GET /ask-forms) so a
-                    # refresh doesn't resurrect the panel and ask again.
-                    _row.payload = {**_row.payload, "answer": answer, "answered": True}
-            else:
-                # Live turn will resume and consume the answer; persist a `you` text
-                # message so the answer survives a refresh (the resumed tool call does
-                # not itself persist one). #8's askAnswerSkip hides its visible bubble.
-                await storage_repo.append_message(
-                    _db,
-                    conv_id=conv_id,
-                    sender_id="you",
-                    payload={"kind": "text", "body": [{"c": answer}]},
+    raw_answer = body.get("answer")
+    if raw_answer is not None and not isinstance(raw_answer, str):
+        raise HTTPException(status_code=400, detail="answer must be a string")
+    answer = (raw_answer or "").strip() or "(用户未填写)"
+    owner_conv = _ask_conv.get(ask_id)
+    if owner_conv is not None and owner_conv != conv_id:
+        raise HTTPException(status_code=404, detail="ask not found")
+
+    answer_payload = {
+        "kind": "text",
+        "body": [{"c": answer}],
+        # Durable handoff marker. False means the row committed but no live
+        # poll response was produced yet; poll_ask flips it before returning.
+        "_ask_answer_polled": False,
+    }
+    answer_msg_id = _ask_answer_message_id(ask_id)
+    try:
+        # Serialize the durable answer claim with ordinary user-message ingress.
+        # Besides stable ordering, this makes two simultaneous POST retries see
+        # one deterministic answer row instead of appending two bubbles.
+        async with RUNTIME.user_message_lock(conv_id):
+            owner_conv = _ask_conv.get(ask_id)
+            if owner_conv is not None and owner_conv != conv_id:
+                raise HTTPException(status_code=404, detail="ask not found")
+
+            async with SessionLocal() as db:
+                prior_answer = await db.get(MessageRow, answer_msg_id)
+                if prior_answer is not None:
+                    prior_payload = prior_answer.payload
+                    prior_body = (
+                        prior_payload.get("body")
+                        if isinstance(prior_payload, dict)
+                        else None
+                    )
+                    prior_block = (
+                        prior_body[0]
+                        if isinstance(prior_body, list) and prior_body
+                        else None
+                    )
+                    prior_text = (
+                        prior_block.get("c")
+                        if isinstance(prior_block, dict)
+                        else None
+                    )
+                    if prior_answer.conv_id != conv_id:
+                        raise HTTPException(status_code=404, detail="ask not found")
+                    if (
+                        prior_answer.sender_id != "you"
+                        or not isinstance(prior_payload, dict)
+                        or prior_payload.get("kind") != "text"
+                        or prior_text != answer
+                        or prior_answer.in_reply_to != ask_id
+                    ):
+                        raise HTTPException(
+                            status_code=409, detail="ask_answer_conflict"
+                        )
+                    live_owner = (
+                        _ask_conv.get(ask_id) == conv_id
+                        and ask_id in _pending_asks
+                    )
+                    if (
+                        not live_owner
+                        and prior_payload.get("_ask_answer_polled") is not True
+                    ):
+                        # The durable answer committed, but its live poller vanished
+                        # before poll_ask could hand it off (restart/cancellation).
+                        # Convert it to the normal orphan recovery path: stamp the
+                        # card and remove this unconsumed history row so the client's
+                        # receipt-backed fresh-turn message becomes the sole answer.
+                        card = await db.get(MessageRow, ask_id)
+                        if (
+                            card is None
+                            or card.conv_id != conv_id
+                            or not isinstance(card.payload, dict)
+                            or card.payload.get("kind") != "ask-form"
+                        ):
+                            raise HTTPException(status_code=404, detail="ask not found")
+                        card.payload = {
+                            **card.payload,
+                            "answer": answer,
+                            "answered": True,
+                        }
+                        await db.delete(prior_answer)
+                        await db.commit()
+                        return {"ok": True, "orphaned": True}
+                    # A lost HTTP response may be retried before or after poll_ask.
+                    # Live ownership or the durable polled marker proves the
+                    # suspended turn already has (or can still consume) this answer.
+                    if live_owner and _pending_asks.get(ask_id) is None:
+                        _pending_asks[ask_id] = answer
+                    return {"ok": True, "orphaned": False}
+
+                live = (
+                    _ask_conv.get(ask_id) == conv_id
+                    and ask_id in _pending_asks
                 )
-            await _db.commit()
-    # When orphaned there is no turn to resume — the client re-triggers the
-    # orchestrator with this answer (a fresh turn) so the conv isn't a dead end.
-    return {"ok": True, "orphaned": orphaned}
+                if live and _pending_asks[ask_id] is not None:
+                    if _pending_asks[ask_id] != answer:
+                        raise HTTPException(
+                            status_code=409, detail="ask_answer_conflict"
+                        )
+                    return {"ok": True, "orphaned": False}
+
+                if live:
+                    await storage_repo.append_message_once(
+                        db,
+                        conv_id=conv_id,
+                        sender_id="you",
+                        payload=answer_payload,
+                        msg_id=answer_msg_id,
+                        in_reply_to=ask_id,
+                    )
+                    await db.commit()
+                    # Publish to the poller only after its durable history row commits.
+                    _pending_asks[ask_id] = answer
+                    return {"ok": True, "orphaned": False}
+
+                # No live owner exists: accept only a persisted blocking ask card
+                # belonging to this exact conversation. This prevents cross-conv
+                # answer injection and rejects made-up ask ids.
+                card = await db.get(MessageRow, ask_id)
+                if (
+                    card is None
+                    or card.conv_id != conv_id
+                    or not isinstance(card.payload, dict)
+                    or card.payload.get("kind") != "ask-form"
+                ):
+                    raise HTTPException(status_code=404, detail="ask not found")
+                if card.payload.get("answered") or "answer" in card.payload:
+                    if card.payload.get("answer") != answer:
+                        raise HTTPException(
+                            status_code=409, detail="ask_answer_conflict"
+                        )
+                    return {"ok": True, "orphaned": True}
+                card.payload = {
+                    **card.payload,
+                    "answer": answer,
+                    "answered": True,
+                }
+                await db.commit()
+                # Deliberately do not manufacture an in-memory answer: there is no
+                # poller. Repeated POSTs remain orphaned until the browser's stable
+                # ordinary-message handoff receives its durable ACK.
+                return {"ok": True, "orphaned": True}
+    finally:
+        # A live ask deliberately keeps its conv runtime (and this ingress lock)
+        # until poll_ask consumes the answer. Orphans/completed replays have no
+        # owner and can be reclaimed immediately.
+        if _ask_conv.get(ask_id) != conv_id:
+            RUNTIME.maybe_prune_conv(conv_id)
 
 
 @router.post("/api/conversations/{conv_id}/report")
@@ -1699,7 +1960,12 @@ async def create_message(body: dict):
     """
     conv_id = body.get("conv_id")
     payload = body.get("payload")
-    if not conv_id or not isinstance(payload, dict) or "kind" not in payload:
+    if (
+        not isinstance(conv_id, str)
+        or not conv_id.strip()
+        or not isinstance(payload, dict)
+        or "kind" not in payload
+    ):
         raise HTTPException(status_code=400, detail="conv_id + payload(with kind) required")
     # Reject unknown payload kinds: an unknown kind has no PARTS_REGISTRY component
     # on the client → a non-renderable card silently 200-persists. Guard on a
@@ -1710,31 +1976,70 @@ async def create_message(body: dict):
     # `_kind in set` would raise TypeError (unhashable) → 500. Require a str first.
     if _VALID_MSG_KINDS and (not isinstance(_kind, str) or _kind not in _VALID_MSG_KINDS):
         raise HTTPException(status_code=400, detail=f"unknown message kind: {_kind!r}")
-    sender_id = body.get("sender_id") or "you"
-    in_reply_to = body.get("in_reply_to") or None
-    msg_id = (body.get("msg_id") or "").strip() or None
-    async with SessionLocal() as session:
-        if msg_id:
-            # A caller-supplied optimistic id may be replayed (client retry /
-            # double-send) — upsert so the second write is idempotent (updates in
-            # place) instead of colliding on the PK with an IntegrityError.
-            mid = await storage_repo.upsert_message(
-                session,
-                conv_id=conv_id,
-                sender_id=sender_id,
-                payload=payload,
-                msg_id=msg_id,
-                in_reply_to=in_reply_to,
+    raw_sender_id = body.get("sender_id")
+    if raw_sender_id is not None and (
+        not isinstance(raw_sender_id, str) or not raw_sender_id.strip()
+    ):
+        raise HTTPException(status_code=400, detail="sender_id must be a string")
+    sender_id = raw_sender_id or "you"
+    raw_reply_to = body.get("in_reply_to")
+    raw_msg_id = body.get("msg_id")
+    if raw_reply_to is not None and not isinstance(raw_reply_to, str):
+        raise HTTPException(status_code=400, detail="in_reply_to must be a string")
+    if raw_msg_id is not None and not isinstance(raw_msg_id, str):
+        raise HTTPException(status_code=400, detail="msg_id must be a string")
+    in_reply_to = raw_reply_to or None
+    msg_id = (raw_msg_id or "").strip() or None
+    for field, value in (("msg_id", msg_id), ("in_reply_to", in_reply_to)):
+        if value is not None and len(value) > MESSAGE_ID_MAX_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{field} must be at most {MESSAGE_ID_MAX_LENGTH} characters"
+                ),
             )
-        else:
-            mid = await storage_repo.append_message(
-                session,
-                conv_id=conv_id,
-                sender_id=sender_id,
-                payload=payload,
-                in_reply_to=in_reply_to,
-            )
-        await session.commit()
+    async def append_attempt() -> str:
+        async with SessionLocal() as session:
+            if msg_id:
+                mid, _inserted = await storage_repo.append_message_once(
+                    session,
+                    conv_id=conv_id,
+                    sender_id=sender_id,
+                    payload=payload,
+                    msg_id=msg_id,
+                    in_reply_to=in_reply_to,
+                )
+            else:
+                mid = await storage_repo.append_message(
+                    session,
+                    conv_id=conv_id,
+                    sender_id=sender_id,
+                    payload=payload,
+                    in_reply_to=in_reply_to,
+                )
+            await session.commit()
+            return mid
+
+    try:
+        # Share the same ordered append gate as WebSocket ingress. This also
+        # serializes concurrent REST retries for one conversation without
+        # changing the incremental tool-card upsert primitive used elsewhere.
+        async with RUNTIME.user_message_lock(conv_id):
+            try:
+                mid = await append_attempt()
+            except IntegrityError:
+                if msg_id is None:
+                    raise
+                # A different conversation can race us under its own lock because
+                # message ids are globally unique. The failed session is gone;
+                # classify the committed winner from a fresh transaction.
+                mid = await append_attempt()
+    except storage_repo.MessageIdConflictError as exc:
+        raise HTTPException(status_code=409, detail="message_id_conflict") from exc
+    finally:
+        # REST-only conversations otherwise have no WebSocket-finally hook to
+        # reclaim their now-idle ingress lock.
+        RUNTIME.maybe_prune_conv(conv_id)
     return {"ok": True, "id": mid}
 
 
@@ -2921,12 +3226,22 @@ async def rewind_conversation(conv_id: str, body: dict):
             )
         await session.commit()
 
+    # One successful rewind is one distinct destructive operation, even when a
+    # later regenerate reuses the same boundary message id. The response and WS
+    # broadcast share this id so the initiating tab can deduplicate only its own
+    # delayed echo without suppressing a genuinely later rewind at that boundary.
+    rewind_id = f"rewind-{uuid.uuid4().hex}"
+
     # Tell every open tab: drop messages from from_msg_id forward. Other open
     # clients re-render without a refresh. The initiator could already have
     # dropped them client-side; this is the cross-tab safety net.
     payload = {
         "type": "data-conv-rewound",
-        "data": {"conv_id": conv_id, "from_msg_id": from_msg_id},
+        "data": {
+            "conv_id": conv_id,
+            "from_msg_id": from_msg_id,
+            "rewind_id": rewind_id,
+        },
     }
     await _broadcast_to_conv(conv_id, f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
     if restored:
@@ -2935,6 +3250,7 @@ async def rewind_conversation(conv_id: str, body: dict):
 
     return {
         "ok": True,
+        "rewind_id": rewind_id,
         "deleted": deleted,
         "memory_deleted": mem_deleted,
         "restored": restored,
@@ -3222,7 +3538,10 @@ async def _tap_text_into(
     events: AsyncIterator[AdapterEvent],
     buffer: list[str],
     parts: dict[str, dict] | None = None,
-    on_tool_part: Callable[[str, dict | None], Awaitable[None]] | None = None,
+    on_tool_part: Callable[
+        [str, dict | None], Awaitable[bool | None]
+    ]
+    | None = None,
 ) -> AsyncIterator[AdapterEvent]:
     """Pass-through async iterator that side-effects every text bit into
     ``buffer`` so the caller can reassemble the full agent response after the
@@ -3234,7 +3553,8 @@ async def _tap_text_into(
     so the turn-end persist upserts (no dup rows). If ``on_tool_part`` is given,
     tool-call / diff parts are persisted IMMEDIATELY on completion (durable
     mid-stream — the trace survives a refresh even while the turn is still
-    running, the「刷新丢工具调用」fix). Reasoning deltas stream through but stay
+    running, the「刷新丢工具调用」fix). A callback may return ``False`` to reject
+    and suppress a stale transition. Reasoning deltas stream through but stay
     OUT of ``buffer`` (thinking is not the reply) and are NOT persisted
     incrementally (the stream-resume covers them live; they land at turn-end).
     """
@@ -3344,7 +3664,9 @@ async def _tap_text_into(
                                 await on_tool_part(mid, None)
                         yield ev
                         continue
-                    prev = ephemeral_edit_parts.get(mid)
+                    previous_part = parts.get(mid)
+                    previous_ephemeral = ephemeral_edit_parts.get(mid)
+                    prev = previous_ephemeral
                     if prev and dump.get("kind") == "tool-call":
                         next_has_input = bool(dump.get("input"))
                         dump = {
@@ -3367,7 +3689,17 @@ async def _tap_text_into(
                     # the live rowid is kept.
                     if on_tool_part is not None:
                         with suppress(Exception):
-                            await on_tool_part(mid, dump)
+                            should_forward = await on_tool_part(mid, dump)
+                            if should_forward is False:
+                                if previous_part is None:
+                                    parts.pop(mid, None)
+                                else:
+                                    parts[mid] = previous_part
+                                if previous_ephemeral is None:
+                                    ephemeral_edit_parts.pop(mid, None)
+                                else:
+                                    ephemeral_edit_parts[mid] = previous_ephemeral
+                                continue
         yield ev
 
 

@@ -67,6 +67,7 @@ class DataChunk(BaseModel):
     sender_id: str | None = None  # Polynoia ext
     sender_label: str | None = None
     turn_id: str | None = None  # Polynoia ext: per-turn grouping id (ADR-024)
+    in_reply_to: str | None = None  # Polynoia ext: persisted reply target
 
 
 class ToolInputAvailableChunk(BaseModel):
@@ -135,6 +136,7 @@ def encode_polynoia_card(
     sender_id: str | None = None,
     sender_label: str | None = None,
     turn_id: str | None = None,
+    in_reply_to: str | None = None,
 ) -> str:
     """Encode a Polynoia 12-card payload as a UIMessageChunk `data-{kind}`.
 
@@ -152,5 +154,6 @@ def encode_polynoia_card(
         sender_id=sender_id,
         sender_label=sender_label,
         turn_id=turn_id or (payload_data.get("turn_id") if isinstance(payload_data, dict) else None),
+        in_reply_to=in_reply_to,
     )
     return encode_chunk(chunk)

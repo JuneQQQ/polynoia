@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.domain.entities import new_ulid
 from polynoia.storage.models import (
+    MESSAGE_ID_MAX_LENGTH,
     ConflictRow,
     ConversationRow,
     MessageRow,
@@ -19,6 +20,14 @@ from polynoia.storage.models import (
 
 class MessageIdConflictError(ValueError):
     pass
+
+
+def _validate_message_reference(value: str | None, *, field: str) -> None:
+    if value is not None and len(value) > MESSAGE_ID_MAX_LENGTH:
+        raise ValueError(
+            f"{field} must be at most {MESSAGE_ID_MAX_LENGTH} characters"
+        )
+
 
 # ── Message ──────────────────────────────────────────────────────────
 
@@ -42,6 +51,8 @@ async def append_message(
     the payload (every turn part is already ``_stamp_turn``'d), so the indexed
     column auto-populates with no caller churn. Returns the new ID.
     """
+    _validate_message_reference(msg_id, field="msg_id")
+    _validate_message_reference(in_reply_to, field="in_reply_to")
     mid = msg_id or new_ulid()
     if turn_id is None and isinstance(payload, dict):
         tv = payload.get("turn_id")
@@ -81,6 +92,8 @@ async def append_message_once(
 ) -> tuple[str, bool]:
     if msg_id == "":
         raise ValueError("msg_id must not be empty")
+    _validate_message_reference(msg_id, field="msg_id")
+    _validate_message_reference(in_reply_to, field="in_reply_to")
     if msg_id is not None:
         existing = await session.get(MessageRow, msg_id)
         if existing is not None:
@@ -292,15 +305,24 @@ async def upsert_message(
     msg_id: str,
     in_reply_to: str | None = None,
 ) -> str:
-    """Insert a message, or overwrite its payload if a row with ``msg_id``
-    already exists. Lets a tool-call/diff part persist incrementally (the moment
-    it completes, so a mid-stream refresh keeps the trace) AND be re-written at
-    turn-end with its final state — same stable id, no duplicate row. Also makes
-    the optimistic-id write path idempotent: a client retry/double-send of the
-    same pre-allocated id updates in place instead of colliding on the PK. Caller
-    commits."""
+    """Insert a message, or update a mutable part owned by the same identity.
+
+    Tool-call/diff parts persist incrementally and are rewritten at turn-end
+    under one stable id. An existing global id may never be adopted by another
+    conversation, sender, or reply thread; ordinary client replay uses
+    ``append_message_once`` and its stricter exact-payload comparison instead.
+    Caller commits.
+    """
+    _validate_message_reference(msg_id, field="msg_id")
+    _validate_message_reference(in_reply_to, field="in_reply_to")
     row = await session.get(MessageRow, msg_id)
     if row is not None:
+        if (
+            row.conv_id != conv_id
+            or row.sender_id != sender_id
+            or row.in_reply_to != in_reply_to
+        ):
+            raise MessageIdConflictError(msg_id)
         row.payload = payload
         await session.flush()
         return msg_id

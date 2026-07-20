@@ -93,10 +93,144 @@ from polynoia.domain.messages import ConflictFile, ConflictPayload
 from polynoia.sandbox import Sandbox, workspace_merge_lock, workspace_root_for
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
+from polynoia.storage.models import MESSAGE_ID_MAX_LENGTH, MessageRow
 from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
 ws_router = APIRouter()
+
+_WORKSPACE_HEAD_WAIT_SECONDS = 0.25
+_WORKSPACE_HEAD_TASK_LIMIT = 16
+_workspace_head_tasks: dict[str, asyncio.Task[str | None]] = {}
+
+
+async def _write_streamed_tool_part(
+    *,
+    conv_id: str,
+    sender_id: str,
+    msg_id: str,
+    payload: dict | None,
+) -> bool:
+    """Write one transition while the caller owns the conversation lock.
+
+    Returns false for a late nonterminal frame after any terminal tool state.
+    Tool event streams can repeat buffered ``running`` snapshots; allowing one
+    to reopen a recovery error (or a real completion) makes both DB and UI move
+    backwards.
+    """
+    async with SessionLocal() as db:
+        existing = await db.get(MessageRow, msg_id)
+        if (
+            payload is not None
+            and payload.get("kind") == "tool-call"
+            and payload.get("state") in {"pending", "running", "run"}
+            and existing is not None
+            and isinstance(existing.payload, dict)
+            and existing.payload.get("kind") == "tool-call"
+            and existing.payload.get("state")
+            not in {None, "pending", "running", "run"}
+        ):
+            return False
+        if payload is None:
+            await storage_repo.delete_message(db, msg_id)
+        else:
+            await storage_repo.upsert_message(
+                db,
+                conv_id=conv_id,
+                sender_id=sender_id,
+                payload=payload,
+                msg_id=msg_id,
+            )
+        await db.commit()
+    return True
+
+
+async def _persist_streamed_tool_part(
+    *,
+    conv_id: str,
+    sender_id: str,
+    msg_id: str,
+    payload: dict | None,
+) -> bool:
+    """Persist one live tool transition in recovery/broadcast commit order.
+
+    The disconnect-recovery endpoint uses the same conversation transition
+    lock through its post-commit broadcast. Participating here prevents a
+    normal completion from committing while recovery is paused before emitting
+    its stale error frame (which otherwise leaves the open UI behind the DB).
+    """
+    try:
+        async with RUNTIME.user_message_lock(conv_id):
+            return await _write_streamed_tool_part(
+                conv_id=conv_id,
+                sender_id=sender_id,
+                msg_id=msg_id,
+                payload=payload,
+            )
+    finally:
+        _maybe_prune_conv(conv_id)
+
+
+def _track_workspace_head_task(task: asyncio.Task[str | None], conv_id: str) -> None:
+    """Keep a timed-out head lookup owned until its git subprocess settles."""
+    _workspace_head_tasks[conv_id] = task
+
+    def _done(done: asyncio.Task[str | None]) -> None:
+        if _workspace_head_tasks.get(conv_id) is done:
+            _workspace_head_tasks.pop(conv_id, None)
+        if done.cancelled():
+            return
+        error = done.exception()
+        if error is not None:
+            log.warning(
+                "workspace checkpoint lookup failed: conv=%s",
+                conv_id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    task.add_done_callback(_done)
+
+
+async def _bounded_workspace_head_for_conv(conv_id: str) -> str | None:
+    """Return a prompt checkpoint stamp without cancelling a live git child.
+
+    ``_workspace_head_for_conv`` ultimately owns a subprocess with its own safe
+    timeout/kill/reap path. One caller waits up to the ingress budget; concurrent
+    callers fail open immediately. A slow task remains strongly owned and is
+    reused until it settles, so queued messages cannot amplify git subprocesses.
+    """
+    task = _workspace_head_tasks.get(conv_id)
+    if task is None:
+        # Each real lookup can own a git subprocess until its bounded 60-second
+        # kill/reap path finishes. Per-conversation coalescing prevents one hot
+        # conversation from amplifying work; this global admission bound also
+        # prevents many conversations from exhausting processes/file handles.
+        # Check-and-register is atomic with respect to asyncio tasks because no
+        # await occurs between the size check and `_track_workspace_head_task`.
+        if len(_workspace_head_tasks) >= _WORKSPACE_HEAD_TASK_LIMIT:
+            return None
+        task = asyncio.create_task(
+            _workspace_head_for_conv(conv_id),
+            name=f"workspace-head:{conv_id}",
+        )
+        _track_workspace_head_task(task, conv_id)
+    elif not task.done():
+        # One caller owns this lookup's short wait budget. Reuse its ownership,
+        # but never make concurrent/queued frames wait behind the same slow git.
+        return None
+    done, _pending = await asyncio.wait(
+        {task}, timeout=_WORKSPACE_HEAD_WAIT_SECONDS
+    )
+    if not done:
+        log.warning("workspace checkpoint lookup timed out: conv=%s", conv_id)
+        return None
+    if task.cancelled():
+        return None
+    try:
+        return task.result()
+    except Exception:
+        # The done callback owns exception logging/retrieval.
+        return None
 
 
 def _user_message_ack(message_id: str, *, duplicate: bool) -> str:
@@ -1277,22 +1411,60 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # incrementally (durable mid-stream) via _persist_tool_part; the
             # turn-end / abort persist UPSERTS the same ids (no dup rows).
             tool_parts: dict[str, dict] = {}
+            _tool_emit_lock = None
 
-            async def _persist_tool_part(mid: str, payload: dict | None) -> None:
+            def _release_tool_emit_lock() -> None:
+                nonlocal _tool_emit_lock
+                lock = _tool_emit_lock
+                if lock is None:
+                    return
+                _tool_emit_lock = None
+                lock.release()
+                _maybe_prune_conv(conv_id)
+
+            async def _persist_tool_part(
+                mid: str, payload: dict | None
+            ) -> bool | None:
                 """Persist/delete one streamed tool-call/diff part immediately.
 
                 ``payload is None`` means a temporary live card (successful
-                write/edit) has been superseded by its durable diff card.
+                write/edit) has been superseded by its durable diff card. A
+                tool-call transition retains the shared lock until its matching
+                chunk has been emitted; returning false tells the tap to suppress
+                a rejected late nonterminal frame.
                 """
-                async with SessionLocal() as _tdb:
-                    if payload is None:
-                        await storage_repo.delete_message(_tdb, mid)
-                    else:
-                        await storage_repo.upsert_message(
-                            _tdb, conv_id=conv_id, sender_id=agent_id,
-                            payload=_stamp_turn(payload), msg_id=mid,
-                        )
-                    await _tdb.commit()
+                nonlocal _tool_emit_lock
+                stamped = _stamp_turn(payload) if payload is not None else None
+                if stamped is None or stamped.get("kind") != "tool-call":
+                    await _persist_streamed_tool_part(
+                        conv_id=conv_id,
+                        sender_id=agent_id,
+                        msg_id=mid,
+                        payload=stamped,
+                    )
+                    return None
+
+                if _tool_emit_lock is not None:
+                    raise RuntimeError("previous tool transition was not emitted")
+                lock = RUNTIME.user_message_lock(conv_id)
+                await lock.acquire()
+                try:
+                    applied = await _write_streamed_tool_part(
+                        conv_id=conv_id,
+                        sender_id=agent_id,
+                        msg_id=mid,
+                        payload=stamped,
+                    )
+                except BaseException:
+                    lock.release()
+                    _maybe_prune_conv(conv_id)
+                    raise
+                if not applied:
+                    lock.release()
+                    _maybe_prune_conv(conv_id)
+                    return False
+                _tool_emit_lock = lock
+                return True
 
             emitted_any = False
             # An adapter can stream a TERMINAL error (e.g. a 401/429/500 surfaces
@@ -1342,7 +1514,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 if not tool_parts and not partial:
                     return
                 with suppress(Exception):
-                    async with SessionLocal() as _pdb:
+                    async with (
+                        RUNTIME.user_message_lock(conv_id),
+                        SessionLocal() as _pdb,
+                    ):
                         for _mid, _p in tool_parts.items():
                             # Turn died (abort/error) → any still-running tool is
                             # now error, never a frozen 进行中 on reload.
@@ -1479,6 +1654,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         # alive across idle windows.
                         anext_task = None
                         while True:
+                            # A persisted tool transition keeps the shared lock
+                            # until its exact outbound chunk has completed emit.
+                            # Release before waiting for any later model event.
+                            _release_tool_emit_lock()
                             if anext_task is None:
                                 anext_task = asyncio.ensure_future(agen.__anext__())
                             # Cold start (nothing streamed yet) → short window so a
@@ -1652,6 +1831,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             ):
                                 produced = True
                             await emit(chunk)
+                        _release_tool_emit_lock()
                         await emit_agent_status(agent_id, "idle")
                         _live_clear_agent(conv_id, agent_id)
                         # A stream that ended cleanly but produced ZERO chunks is
@@ -1668,8 +1848,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         await _clear_retry_notice()  # real response arrived → drop it
                         break  # success
                     except asyncio.CancelledError:
+                        _release_tool_emit_lock()
                         raise
                     except _RetryableUpstream as _rl_exc:
+                        _release_tool_emit_lock()
                         # Upstream rate-limit / transient overload (429 / quota /
                         # 凭证). The Anthropic Max ROLLING window recovers shortly →
                         # back off + retry the whole turn. No real output streamed
@@ -1709,6 +1891,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         turn_failed = True
                         break
                     except Exception:
+                        _release_tool_emit_lock()
                         # Hung backend (incl. the idle-timeout RuntimeError) with
                         # NOTHING streamed yet → auto-retry up to _TURN_RETRIES with
                         # INCREASING backoff, and SHOW each retry to the user from
@@ -1744,6 +1927,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         await _clear_retry_notice()  # giving up → drop the notice;
                         raise  # the outer handler emits the real (persisted) error
             except asyncio.CancelledError:
+                _release_tool_emit_lock()
                 await _clear_retry_notice()  # aborted mid-retry → drop the notice
                 # Cancel cleanup needs THREE steps — interrupt was wrong on its own:
                 #   1. signal the live CLI subprocess to stop (interrupt)
@@ -1794,6 +1978,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     _pending_dispatches.pop(conv_id, None)
                 raise
             except Exception as exc:
+                _release_tool_emit_lock()
                 await emit_agent_status(agent_id, "error", {"message": str(exc)})
                 _live_clear_agent(conv_id, agent_id)
                 # Same cleanup as the abort path: any pending-edit rows this
@@ -1926,7 +2111,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             # live-only + persisted after the card → wrong order.)
             _persisted_text_msg_id: str | None = None
             if tool_parts or full_text:
-                async with SessionLocal() as _persist_db:
+                async with (
+                    RUNTIME.user_message_lock(conv_id),
+                    SessionLocal() as _persist_db,
+                ):
                     _coerced_frames: list[str] = []
                     for _mid, p in tool_parts.items():
                         # Don't persist EMPTY reasoning rows (some adapters emit a
@@ -2828,10 +3016,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         text: str,
         in_reply_to: str | None,
         msg_id: str | None,
+        code_sha: str | None,
     ) -> tuple[str, bool, dict]:
         """Durably append one ordinary user message without doing any routing."""
         user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
-        code_sha = await _workspace_head_for_conv(conv_id)
 
         async def append_attempt() -> tuple[str, bool]:
             async with SessionLocal() as db:
@@ -3091,6 +3279,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     'data: {"type":"error","error_text":"invalid json"}\n\n'
                 )
                 continue
+            if not isinstance(msg, dict):
+                await emit(
+                    'data: {"type":"error","error_text":"invalid message"}\n\n'
+                )
+                continue
 
             kind = msg.get("kind")
 
@@ -3151,13 +3344,20 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     isinstance(raw_text, str)
                     and isinstance(raw_members, list)
                     and all(isinstance(member, str) for member in raw_members)
-                    and (raw_reply_to is None or isinstance(raw_reply_to, str))
+                    and (
+                        raw_reply_to is None
+                        or (
+                            isinstance(raw_reply_to, str)
+                            and len(raw_reply_to) <= MESSAGE_ID_MAX_LENGTH
+                        )
+                    )
                 )
                 valid_message_id = (
                     not has_client_msg_id
                     or (
                         isinstance(raw_client_msg_id, str)
                         and bool(raw_client_msg_id.strip())
+                        and len(raw_client_msg_id) <= MESSAGE_ID_MAX_LENGTH
                     )
                 )
                 valid_text = isinstance(raw_text, str) and bool(raw_text.strip())
@@ -3198,13 +3398,19 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     continue
 
                 # The critical section ends once routing has registered existing
-                # background turns; it never awaits model output.
+                # background turns; it never awaits model output. Checkpoint lookup
+                # stays inside this ordered ingress section: it has a hard 250 ms
+                # budget and per-conv single-flight, so later frames do not stack
+                # waits, while an earlier frame can never be persisted/routed after
+                # a later frame from another socket.
                 async with RUNTIME.user_message_lock(conv_id):
+                    code_sha = await _bounded_workspace_head_for_conv(conv_id)
                     try:
                         mid, inserted, user_payload = await persist_user_message(
                             text,
                             in_reply_to,
                             client_msg_id,
+                            code_sha,
                         )
                     except storage_repo.MessageIdConflictError:
                         await emit_receipt(
@@ -3228,7 +3434,11 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                 retryable=True,
                             )
                         )
-                        continue
+                        # Do not let later frames on this physical socket cross a
+                        # retryable gap. Returning drains the queued NACK before
+                        # the sender sentinel; the replacement then replays the
+                        # client's ordered outbox from this failed entry.
+                        break
 
                     await emit_receipt(
                         _user_message_ack(mid, duplicate=not inserted)
@@ -3244,6 +3454,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             mid,
                             sender_id="you",
                             sender_label="你",
+                            in_reply_to=in_reply_to,
                         )
                         await _broadcast_to_conv(conv_id, echo)
 

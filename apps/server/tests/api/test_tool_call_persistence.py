@@ -91,3 +91,42 @@ async def test_failed_write_tool_call_keeps_streamed_args() -> None:
     assert final["input_preview"] == '{"path":"b.md","content":"beta'
     assert writes[-1][1] is not None
     assert writes[-1][1]["output_text"] == "user rejected MCP tool call"
+
+
+@pytest.mark.asyncio
+async def test_rejected_tool_transition_is_not_forwarded_or_buffered() -> None:
+    parts: dict[str, dict] = {}
+    calls = 0
+
+    async def on_tool_part(_mid: str, _payload: dict | None) -> bool | None:
+        nonlocal calls
+        calls += 1
+        return calls != 2
+
+    first = ToolCallPayload(
+        tool_call_id="write-stale",
+        name="write",
+        state="running",
+        input_preview="first",
+    )
+    stale = ToolCallPayload(
+        tool_call_id="write-stale",
+        name="write",
+        state="running",
+        input_preview="stale",
+    )
+
+    seen = []
+    async for event in _tap_text_into(
+        _events(
+            _completed("write-stale", first),
+            _completed("write-stale", stale),
+        ),
+        [],
+        parts,
+        on_tool_part=on_tool_part,
+    ):
+        seen.append(event)
+
+    assert seen == [_completed("write-stale", first)]
+    assert parts["tc-write-stale"]["input_preview"] == "first"

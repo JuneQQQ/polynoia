@@ -383,7 +383,7 @@ async def test_conflicting_replay_nacks_without_overwrite_or_reroute(
 
 
 @pytest.mark.asyncio
-async def test_persistence_failure_nacks_and_receive_loop_handles_next_message(
+async def test_retryable_persistence_failure_stops_socket_and_replay_preserves_fifo(
     ws_env, monkeypatch
 ) -> None:
     conv_id, sessions = ws_env
@@ -417,14 +417,9 @@ async def test_persistence_failure_nacks_and_receive_loop_handles_next_message(
         await ws.send_user(text="fails", msg_id="m1")
         await ws.send_user(text="survives", msg_id="m2")
         await _eventually(
-            lambda: any(c.get("id") == "m2" for c in _chunks(ws, "data-text"))
+            lambda: bool(_chunks(ws, "data-user-message-nack"))
         )
-        await ws.disconnect()
         await asyncio.wait_for(handler, timeout=2.0)
-        await asyncio.gather(
-            *list(RUNTIME.dispatchers.get(conv_id, set())),
-            return_exceptions=True,
-        )
 
         assert _chunks(ws, "data-user-message-nack") == [
             {
@@ -433,14 +428,29 @@ async def test_persistence_failure_nacks_and_receive_loop_handles_next_message(
                 "data": {"reason": "persistence_error", "retryable": True},
             }
         ]
-        assert _chunks(ws, "data-user-message-ack") == [
-            {
-                "type": "data-user-message-ack",
-                "id": "m2",
-                "data": {"duplicate": False},
-            }
-        ]
-        assert await _user_ids(sessions, conv_id) == ["m2"]
+        assert _chunks(ws, "data-user-message-ack") == []
+        assert _chunks(ws, "data-text") == []
+        assert await _user_ids(sessions, conv_id) == []
+
+        # The replacement replays the still-pending outbox from its first entry.
+        # m2 must not have crossed the retryable m1 failure on the old handler.
+        replacement = ScriptedWebSocket()
+        replacement_handler = asyncio.create_task(
+            ws_module.ws_conv(replacement, conv_id)
+        )
+        await replacement.send_user(text="fails", msg_id="m1")
+        await replacement.send_user(text="survives", msg_id="m2")
+        await _eventually(
+            lambda: [
+                chunk["id"]
+                for chunk in _chunks(replacement, "data-user-message-ack")
+            ]
+            == ["m1", "m2"]
+        )
+        await replacement.disconnect()
+        await asyncio.wait_for(replacement_handler, timeout=2.0)
+
+        assert await _user_ids(sessions, conv_id) == ["m1", "m2"]
     finally:
         if not handler.done():
             await ws.disconnect()
@@ -935,6 +945,71 @@ async def test_empty_reply_target_normalizes_to_none_for_exact_replay(
             await asyncio.wait_for(handler, timeout=2.0)
 
 
+@pytest.mark.asyncio
+async def test_user_message_echo_carries_reply_target(ws_env, monkeypatch) -> None:
+    conv_id, _sessions = ws_env
+
+    async def no_target_error(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(ws_module, "_persist_and_emit_error", no_target_error)
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.send_user(
+            text="answer",
+            msg_id="reply-echo-id",
+            in_reply_to="ask-parent-id",
+        )
+        await _eventually(lambda: bool(_chunks(ws, "data-user-message-ack")))
+
+        assert _chunks(ws, "data-text") == [
+            {
+                "type": "data-text",
+                "id": "reply-echo-id",
+                "data": {"kind": "text", "body": [{"t": "p", "c": "answer"}]},
+                "sender_id": "you",
+                "sender_label": "你",
+                "in_reply_to": "ask-parent-id",
+            }
+        ]
+    finally:
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_non_object_json_is_rejected_without_killing_socket(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+
+    async def no_target_error(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(ws_module, "_persist_and_emit_error", no_target_error)
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.incoming.put("[]")
+        await ws.send_user(text="still alive", msg_id="after-invalid-json-value")
+        await _eventually(lambda: bool(_chunks(ws, "data-user-message-ack")))
+
+        assert _chunks(ws, "error") == [
+            {
+                "type": "error",
+                "error_text": "invalid message",
+            }
+        ]
+        assert [chunk["id"] for chunk in _chunks(ws, "data-user-message-ack")] == [
+            "after-invalid-json-value"
+        ]
+        assert await _user_ids(sessions, conv_id) == ["after-invalid-json-value"]
+    finally:
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+
 @pytest.mark.parametrize(
     ("text", "msg_id"),
     [("valid", "   "), ("   ", "valid-id")],
@@ -964,6 +1039,215 @@ async def test_blank_text_or_present_message_id_is_terminal_invalid_message(
         if not handler.done():
             await ws.disconnect()
             await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.parametrize("overlong_field", ["msg_id", "in_reply_to"])
+@pytest.mark.asyncio
+async def test_overlong_message_reference_is_terminal_invalid_before_persist(
+    ws_env, overlong_field: str
+) -> None:
+    conv_id, sessions = ws_env
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    msg_id = "m" * 65 if overlong_field == "msg_id" else "valid-id"
+    in_reply_to = "r" * 65 if overlong_field == "in_reply_to" else None
+    try:
+        await ws.send_user(
+            text="too long",
+            msg_id=msg_id,
+            in_reply_to=in_reply_to,
+        )
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+        assert _chunks(ws, "data-user-message-nack") == [
+            {
+                "type": "data-user-message-nack",
+                "id": msg_id,
+                "data": {"reason": "invalid_message", "retryable": False},
+            }
+        ]
+        assert _chunks(ws, "data-user-message-ack") == []
+        assert _chunks(ws, "data-text") == []
+        assert await _user_ids(sessions, conv_id) == []
+    finally:
+        if not handler.done():
+            await ws.disconnect()
+            await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_slow_workspace_head_preserves_cross_socket_append_order(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    first_head_entered = asyncio.Event()
+    release_first_head = asyncio.Event()
+    head_calls = 0
+
+    async def gated_workspace_head(requested_conv_id: str) -> str:
+        nonlocal head_calls
+        assert requested_conv_id == conv_id
+        head_calls += 1
+        if head_calls == 1:
+            first_head_entered.set()
+            await release_first_head.wait()
+            return "1" * 40
+        return "2" * 40
+
+    async def no_target_error(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(ws_module, "_WORKSPACE_HEAD_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(ws_module, "_workspace_head_for_conv", gated_workspace_head)
+    monkeypatch.setattr(ws_module, "_persist_and_emit_error", no_target_error)
+    first_ws = ScriptedWebSocket()
+    second_ws = ScriptedWebSocket()
+    first_handler = asyncio.create_task(ws_module.ws_conv(first_ws, conv_id))
+    second_handler = asyncio.create_task(ws_module.ws_conv(second_ws, conv_id))
+    try:
+        await _eventually(lambda: len(RUNTIME.outboxes.get(conv_id, set())) == 2)
+        await first_ws.send_user(text="slow head", msg_id="first-id")
+        await asyncio.wait_for(first_head_entered.wait(), timeout=1.0)
+
+        await second_ws.send_user(text="fast head", msg_id="second-id")
+        await _eventually(
+            lambda: bool(_chunks(first_ws, "data-user-message-ack"))
+            and bool(_chunks(second_ws, "data-user-message-ack")),
+            timeout=0.5,
+        )
+        assert [
+            chunk["id"] for chunk in _chunks(first_ws, "data-user-message-ack")
+        ] == ["first-id"]
+        assert [
+            chunk["id"] for chunk in _chunks(second_ws, "data-user-message-ack")
+        ] == ["second-id"]
+        assert await _user_ids(sessions, conv_id) == ["first-id", "second-id"]
+
+        async with sessions() as db:
+            first_row = await db.get(MessageRow, "first-id")
+            second_row = await db.get(MessageRow, "second-id")
+        assert first_row is not None
+        assert second_row is not None
+        assert first_row.code_sha is None
+        assert second_row.code_sha is None
+        assert head_calls == 1
+    finally:
+        release_first_head.set()
+        await first_ws.disconnect()
+        await second_ws.disconnect()
+        await asyncio.gather(first_handler, second_handler)
+
+
+@pytest.mark.asyncio
+async def test_workspace_head_budget_keeps_same_socket_abort_responsive(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    head_entered = asyncio.Event()
+    release_head = asyncio.Event()
+    head_finished = asyncio.Event()
+    head_was_cancelled = False
+    head_calls = 0
+
+    async def stalled_workspace_head(requested_conv_id: str) -> str:
+        nonlocal head_calls, head_was_cancelled
+        assert requested_conv_id == conv_id
+        head_calls += 1
+        head_entered.set()
+        try:
+            await release_head.wait()
+            return "a" * 40
+        except asyncio.CancelledError:
+            head_was_cancelled = True
+            raise
+        finally:
+            head_finished.set()
+
+    async def no_target_error(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(ws_module, "_WORKSPACE_HEAD_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(ws_module, "_workspace_head_for_conv", stalled_workspace_head)
+    monkeypatch.setattr(ws_module, "_persist_and_emit_error", no_target_error)
+    abortable = asyncio.create_task(asyncio.Event().wait())
+    RUNTIME.agent_tasks.setdefault(conv_id, {})["abortable"] = abortable
+    RUNTIME.inflight.setdefault(conv_id, set()).add(abortable)
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    coalesced_ids = [f"coalesced-{index}" for index in range(5)]
+    try:
+        await ws.send_user(text="bounded checkpoint", msg_id="bounded-id")
+        await asyncio.wait_for(head_entered.wait(), timeout=1.0)
+        for msg_id in coalesced_ids:
+            await ws.send_user(text="coalesced checkpoint", msg_id=msg_id)
+        await ws.incoming.put(
+            json.dumps({"kind": "abort", "agent_id": "abortable"})
+        )
+
+        await _eventually(abortable.cancelled, timeout=0.75)
+        await _eventually(
+            lambda: [
+                chunk["id"]
+                for chunk in _chunks(ws, "data-user-message-ack")
+            ]
+            == ["bounded-id", *coalesced_ids],
+            timeout=0.75,
+        )
+        async with sessions() as db:
+            first_row = await db.get(MessageRow, "bounded-id")
+            coalesced_rows = [
+                await db.get(MessageRow, msg_id) for msg_id in coalesced_ids
+            ]
+        assert first_row is not None
+        assert all(row is not None for row in coalesced_rows)
+        assert first_row.code_sha is None
+        assert all(row.code_sha is None for row in coalesced_rows if row is not None)
+        assert head_calls == 1
+        assert head_was_cancelled is False
+        assert head_finished.is_set() is False
+
+        release_head.set()
+        await asyncio.wait_for(head_finished.wait(), timeout=1.0)
+        await _eventually(lambda: conv_id not in ws_module._workspace_head_tasks)
+        assert head_was_cancelled is False
+    finally:
+        release_head.set()
+        if not abortable.done():
+            abortable.cancel()
+        await asyncio.gather(abortable, return_exceptions=True)
+        RUNTIME.agent_tasks.get(conv_id, {}).pop("abortable", None)
+        RUNTIME.inflight.get(conv_id, set()).discard(abortable)
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_workspace_head_tasks_have_a_global_admission_cap(monkeypatch) -> None:
+    release_heads = asyncio.Event()
+    started: list[str] = []
+
+    async def stalled_workspace_head(conv_id: str) -> str:
+        started.append(conv_id)
+        await release_heads.wait()
+        return conv_id
+
+    monkeypatch.setattr(ws_module, "_WORKSPACE_HEAD_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(ws_module, "_WORKSPACE_HEAD_TASK_LIMIT", 3)
+    monkeypatch.setattr(ws_module, "_workspace_head_for_conv", stalled_workspace_head)
+    assert ws_module._workspace_head_tasks == {}
+
+    try:
+        results = await asyncio.gather(
+            *(ws_module._bounded_workspace_head_for_conv(f"conv-{i}") for i in range(20))
+        )
+
+        assert results == [None] * 20
+        assert len(started) == 3
+        assert len(ws_module._workspace_head_tasks) == 3
+    finally:
+        release_heads.set()
+        await _eventually(lambda: not ws_module._workspace_head_tasks)
 
 
 def test_spawn_dispatcher_done_callback_retrieves_exception(monkeypatch) -> None:

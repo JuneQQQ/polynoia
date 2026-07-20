@@ -215,12 +215,15 @@ class PinRow(Base):
 # ── Message ──────────────────────────────────────────────────────────
 
 
+MESSAGE_ID_MAX_LENGTH = 64
+
+
 class MessageRow(Base):
     __tablename__ = "messages"
 
     # Server-generated ULIDs are 26 chars; client-preallocated user-message ids
     # currently use ``u-<UUID>`` (38 chars). Keep room for both identities.
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[str] = mapped_column(String(MESSAGE_ID_MAX_LENGTH), primary_key=True)
     conv_id: Mapped[str] = mapped_column(
         String(26),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -235,7 +238,9 @@ class MessageRow(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Reply-to threading: message id being replied to (no FK to keep
     # cascade-delete on the conv simple). Frontend renders a "回复 @X" header.
-    in_reply_to: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    in_reply_to: Mapped[str | None] = mapped_column(
+        String(MESSAGE_ID_MAX_LENGTH), nullable=True
+    )
     # Code checkpoint: the workspace main HEAD sha at the moment this message was
     # created (only stamped for workspace convs). Lets「回到这个对话」restore the
     # code to the state at this point (Cursor-checkpoint style). Null = DM / no
