@@ -4,7 +4,7 @@
 
 **Goal:** Make ordinary WebSocket user-message append FIFO, idempotent, explicitly acknowledged, and replayable after transient disconnects.
 
-**Architecture:** Serialize the bounded persistence/routing ingress per conversation while leaving model turns as background tasks. Add append-once repository semantics and a client-side in-memory outbox that consumes post-commit ACK/NACK control frames.
+**Architecture:** Serialize bounded persistence/routing ingress per conversation while leaving model turns as background tasks. Add append-once repository semantics, bounded checkpoint lookup, a coordinated client-side in-memory outbox that consumes post-commit ACK/NACK control frames, and causal UI hydration that cannot overwrite in-flight delivery state.
 
 **Tech Stack:** Python 3.12, FastAPI WebSockets, SQLAlchemy asyncio/SQLite, pytest, TypeScript, Vitest.
 
@@ -282,7 +282,20 @@ pnpm --filter @polynoia/web build
 git diff --check
 ```
 
-- [ ] **Step 4: Inspect scope, commit, fast-forward local main, and push**
+Observed release gate:
+
+- offline backend suite passes (the credentialed Claude CLI integration is
+  excluded and independently fails on unchanged `main` in this environment);
+- message-delivery frontend regressions, TypeScript, and production build pass;
+- the full web suite is 330/331, with the sole Sidebar `直接消息` assertion
+  reproduced unchanged on `main`;
+- live Uvicorn stress preserves FIFO and uniqueness for 250 rapid appends, 50
+  exact replays, a conflicting replay, and hard-disconnect replay; three final
+  hard-abort repetitions leave zero ASGI errors;
+- independent backend and UI adversarial reviewers report zero Critical and
+  zero Important findings after fixes.
+
+- [x] **Step 4: Inspect scope, commit, fast-forward local main, and push**
 
 ```bash
 git status -sb
