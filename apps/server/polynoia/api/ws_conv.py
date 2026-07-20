@@ -102,6 +102,12 @@ ws_router = APIRouter()
 _WORKSPACE_HEAD_WAIT_SECONDS = 0.25
 _WORKSPACE_HEAD_TASK_LIMIT = 16
 _workspace_head_tasks: dict[str, asyncio.Task[str | None]] = {}
+_STARLETTE_DISCONNECT_RUNTIME_ERRORS = frozenset(
+    {
+        'WebSocket is not connected. Need to call "accept" first.',
+        'Cannot call "receive" once a disconnect message has been received.',
+    }
+)
 
 
 async def _write_streamed_tool_part(
@@ -3492,6 +3498,12 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
     except WebSocketDisconnect:
         pass
+    except RuntimeError as exc:
+        # Starlette can surface an abrupt transport abort as RuntimeError rather
+        # than WebSocketDisconnect. Accept only its exact lifecycle messages;
+        # unrelated RuntimeErrors remain visible instead of being swallowed.
+        if str(exc) not in _STARLETTE_DISCONNECT_RUNTIME_ERRORS:
+            raise
     finally:
         # Backend-driven execution: a disconnect/refresh does NOT cancel agent
         # tasks. They keep running (conv-scoped, module-level) and persist their

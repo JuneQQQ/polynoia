@@ -1010,6 +1010,36 @@ async def test_non_object_json_is_rejected_without_killing_socket(
         await asyncio.wait_for(handler, timeout=2.0)
 
 
+@pytest.mark.asyncio
+async def test_starlette_runtime_disconnect_is_cleaned_up(ws_env) -> None:
+    conv_id, sessions = ws_env
+    ws = ScriptedWebSocket()
+
+    async def abrupt_disconnect() -> str:
+        raise RuntimeError(
+            'WebSocket is not connected. Need to call "accept" first.'
+        )
+
+    ws.receive_text = abrupt_disconnect  # type: ignore[method-assign]
+    await asyncio.wait_for(ws_module.ws_conv(ws, conv_id), timeout=2.0)
+
+    assert ws.accepted is True
+    assert await _user_ids(sessions, conv_id) == []
+
+
+@pytest.mark.asyncio
+async def test_unrelated_receive_runtime_error_is_not_swallowed(ws_env) -> None:
+    conv_id, _sessions = ws_env
+    ws = ScriptedWebSocket()
+
+    async def broken_receive() -> str:
+        raise RuntimeError("unexpected receive bug")
+
+    ws.receive_text = broken_receive  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match=r"^unexpected receive bug$"):
+        await asyncio.wait_for(ws_module.ws_conv(ws, conv_id), timeout=2.0)
+
+
 @pytest.mark.parametrize(
     ("text", "msg_id"),
     [("valid", "   "), ("   ", "valid-id")],
