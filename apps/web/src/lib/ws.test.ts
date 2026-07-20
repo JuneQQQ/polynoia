@@ -17,6 +17,7 @@ class FakeWebSocket {
 	onclose: ((event: CloseEvent) => void) | null = null;
 	onmessage: ((event: MessageEvent<string>) => void) | null = null;
 	onSend?: SocketHook;
+	failSend?: (frame: string) => boolean;
 	failNextSend = false;
 	closeCalls = 0;
 	private openListeners: Array<{ cb: () => void; once: boolean }> = [];
@@ -43,7 +44,7 @@ class FakeWebSocket {
 		if (this.readyState !== FakeWebSocket.OPEN) {
 			throw new Error("WebSocket is not open");
 		}
-		if (this.failNextSend) {
+		if (this.failNextSend || this.failSend?.(frame)) {
 			this.failNextSend = false;
 			throw new Error("synthetic send failure");
 		}
@@ -115,6 +116,14 @@ function userIds(socket: FakeWebSocket): string[] {
 	return parsedFrames(socket)
 		.filter((frame) => frame.kind === "user_message")
 		.map((frame) => String(frame.msg_id ?? ""));
+}
+
+function userWireFrames(socket: FakeWebSocket): string[] {
+	return socket.sent.filter((frame) => {
+		return (
+			(JSON.parse(frame) as Record<string, unknown>).kind === "user_message"
+		);
+	});
 }
 
 function kinds(socket: FakeWebSocket): unknown[] {
@@ -295,6 +304,47 @@ describe("ConvWebSocket delivery outbox", () => {
 		expect(userIds(replacement)).toEqual([]);
 	});
 
+	it("does not skip later entries when send receives a synchronous terminal NACK", async () => {
+		const client = new ConvWebSocket("conv-sync-terminal");
+		const first = client.sendUserMessage(
+			"one",
+			["a"],
+			undefined,
+			"m-sync-terminal",
+		);
+		const second = client.sendUserMessage(
+			"two",
+			["a"],
+			undefined,
+			"m-sync-after",
+		);
+		const connecting = client.connect();
+		const socket = socketAt(0);
+		socket.onSend = (frame, current) => {
+			const parsed = JSON.parse(frame) as Record<string, unknown>;
+			if (parsed.msg_id === "m-sync-terminal") {
+				current.receive(nack("m-sync-terminal", "message_id_conflict", false));
+			} else if (parsed.msg_id === "m-sync-after") {
+				current.receive(ack("m-sync-after"));
+			}
+		};
+
+		socket.open();
+		await connecting;
+		expect(userIds(socket)).toEqual(["m-sync-terminal", "m-sync-after"]);
+		expect(await first).toEqual({
+			id: "m-sync-terminal",
+			ok: false,
+			reason: "message_id_conflict",
+			retryable: false,
+		});
+		expect(await second).toEqual({
+			id: "m-sync-after",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
 	it("keeps malformed and unknown receipts from deleting pending entries", async () => {
 		const client = new ConvWebSocket("conv-1");
 		const chunks = vi.fn();
@@ -303,12 +353,13 @@ describe("ConvWebSocket delivery outbox", () => {
 		const socket = socketAt(0);
 		socket.open();
 		await connecting;
-		const delivery = client.sendUserMessage("one", ["a"], undefined, "m1");
+		const delivery = client.sendUserMessage("one", ["a"], undefined, "17");
 
 		socket.receive(ack("unknown"));
-		socket.receive(receipt("data-user-message-ack", "m1", {}));
+		socket.receive(receipt("data-user-message-ack", 17, { duplicate: false }));
+		socket.receive(receipt("data-user-message-ack", "17", {}));
 		socket.receive(
-			receipt("data-user-message-nack", "m1", {
+			receipt("data-user-message-nack", "17", {
 				reason: "persistence_error",
 				retryable: "yes",
 			}),
@@ -317,9 +368,9 @@ describe("ConvWebSocket delivery outbox", () => {
 
 		expect(chunks).not.toHaveBeenCalled();
 		const replacement = await replaceSocket(client, socket);
-		expect(userIds(replacement)).toEqual(["m1"]);
-		replacement.receive(ack("m1"));
-		expect(await delivery).toEqual({ id: "m1", ok: true, duplicate: false });
+		expect(userIds(replacement)).toEqual(["17"]);
+		replacement.receive(ack("17"));
+		expect(await delivery).toEqual({ id: "17", ok: true, duplicate: false });
 	});
 
 	it("retains retryable NACKs, closes their current socket, and replays", async () => {
@@ -439,28 +490,386 @@ describe("ConvWebSocket delivery outbox", () => {
 		expect(await second).toEqual({ id: "m2", ok: true, duplicate: true });
 	});
 
-	it("keeps partial frame buffers separate for stale physical sockets", async () => {
+	it("keeps interleaved partial frame buffers separate for stale physical sockets", async () => {
 		const client = new ConvWebSocket("conv-1");
+		const errors = vi.fn();
+		client.onError(errors);
 		const connecting = client.connect();
 		const staleSocket = socketAt(0);
 		staleSocket.open();
 		await connecting;
-		const delivery = client.sendUserMessage("one", ["a"], undefined, "m1");
-		const staleAck = ack("m1");
+		const first = client.sendUserMessage("one", ["a"], undefined, "m1");
+		const second = client.sendUserMessage("two", ["a"], undefined, "m2");
+		const staleAck = ack("m1", true);
 		const splitAt = Math.floor(staleAck.length / 2);
 		staleSocket.receive(staleAck.slice(0, splitAt));
 
 		const currentSocket = await replaceSocket(client, staleSocket);
-		expect(userIds(currentSocket)).toEqual(["m1"]);
+		expect(userIds(currentSocket)).toEqual(["m1", "m2"]);
+		const currentAck = ack("m2");
+		const currentSplitAt = Math.floor(currentAck.length / 2);
+		currentSocket.receive(currentAck.slice(0, currentSplitAt));
 		staleSocket.receive(staleAck.slice(splitAt));
-		let result: unknown;
-		void delivery?.then((value) => {
-			result = value;
+		let firstResult: unknown;
+		let secondResult: unknown;
+		void first?.then((value) => {
+			firstResult = value;
+		});
+		void second?.then((value) => {
+			secondResult = value;
 		});
 		await Promise.resolve();
 
-		expect(result).toEqual({ id: "m1", ok: true, duplicate: false });
+		expect(firstResult).toEqual({ id: "m1", ok: true, duplicate: true });
+		expect(secondResult).toBeUndefined();
+		currentSocket.receive(currentAck.slice(currentSplitAt));
+		await Promise.resolve();
+		expect(secondResult).toEqual({ id: "m2", ok: true, duplicate: false });
+		expect(errors).not.toHaveBeenCalled();
 		expect(currentSocket.closeCalls).toBe(0);
+	});
+
+	it("hands a sent but unacknowledged frame to a replacement instance of the same conversation", async () => {
+		const firstClient = new ConvWebSocket("conv-remount-sent");
+		const firstConnecting = firstClient.connect();
+		const firstSocket = socketAt(0);
+		firstSocket.open();
+		await firstConnecting;
+		const delivery = firstClient.sendUserMessage(
+			"one",
+			["a"],
+			"reply-1",
+			"m-remount-sent",
+		);
+		const [exactFrame] = userWireFrames(firstSocket);
+
+		firstClient.close();
+		const secondClient = new ConvWebSocket("conv-remount-sent");
+		const secondConnecting = secondClient.connect();
+		const secondSocket = socketAt(1);
+		secondSocket.open();
+		await secondConnecting;
+
+		expect(userWireFrames(secondSocket)).toEqual([exactFrame]);
+		secondSocket.receive(ack("m-remount-sent", true));
+		expect(await delivery).toEqual({
+			id: "m-remount-sent",
+			ok: true,
+			duplicate: true,
+		});
+	});
+
+	it("hands off offline queued frames only to the same conversation", async () => {
+		const firstClient = new ConvWebSocket("conv-remount-offline");
+		const delivery = firstClient.sendUserMessage(
+			"offline",
+			["a"],
+			undefined,
+			"m-remount-offline",
+		);
+		firstClient.close();
+
+		const otherClient = new ConvWebSocket("conv-other");
+		const otherConnecting = otherClient.connect();
+		const otherSocket = socketAt(0);
+		otherSocket.open();
+		await otherConnecting;
+		expect(userIds(otherSocket)).toEqual([]);
+
+		const secondClient = new ConvWebSocket("conv-remount-offline");
+		const secondConnecting = secondClient.connect();
+		const secondSocket = socketAt(1);
+		secondSocket.open();
+		await secondConnecting;
+		expect(userIds(secondSocket)).toEqual(["m-remount-offline"]);
+		secondSocket.receive(ack("m-remount-offline"));
+		expect(await delivery).toEqual({
+			id: "m-remount-offline",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("does not republish a claimed outbox when the old instance closes twice", async () => {
+		const firstClient = new ConvWebSocket("conv-remount-close-twice");
+		const firstConnecting = firstClient.connect();
+		const firstSocket = socketAt(0);
+		firstSocket.open();
+		await firstConnecting;
+		const delivery = firstClient.sendUserMessage(
+			"one",
+			["a"],
+			undefined,
+			"m-close-twice",
+		);
+		firstClient.close();
+
+		const ownerClient = new ConvWebSocket("conv-remount-close-twice");
+		const ownerConnecting = ownerClient.connect();
+		const ownerSocket = socketAt(1);
+		ownerSocket.open();
+		await ownerConnecting;
+		expect(userIds(ownerSocket)).toEqual(["m-close-twice"]);
+
+		firstClient.close();
+		const unrelatedLiveClient = new ConvWebSocket("conv-remount-close-twice");
+		const unrelatedConnecting = unrelatedLiveClient.connect();
+		const unrelatedSocket = socketAt(2);
+		unrelatedSocket.open();
+		await unrelatedConnecting;
+		expect(userIds(unrelatedSocket)).toEqual([]);
+
+		ownerSocket.receive(ack("m-close-twice"));
+		expect(await delivery).toEqual({
+			id: "m-close-twice",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("closes an intentionally stopped CONNECTING socket before flush or status", async () => {
+		const firstClient = new ConvWebSocket("conv-remount-connecting");
+		const delivery = firstClient.sendUserMessage(
+			"queued",
+			["a"],
+			undefined,
+			"m-remount-connecting",
+		);
+		const firstConnecting = firstClient.connect();
+		const staleSocket = socketAt(0);
+		firstClient.close();
+
+		const secondClient = new ConvWebSocket("conv-remount-connecting");
+		const secondConnecting = secondClient.connect();
+		const currentSocket = socketAt(1);
+		currentSocket.open();
+		await secondConnecting;
+		expect(userIds(currentSocket)).toEqual(["m-remount-connecting"]);
+
+		expect(() => staleSocket.open()).not.toThrow();
+		await firstConnecting;
+		expect(staleSocket.closeCalls).toBe(1);
+		expect(staleSocket.sent).toEqual([]);
+
+		currentSocket.receive(ack("m-remount-connecting"));
+		expect(await delivery).toEqual({
+			id: "m-remount-connecting",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("replays after an intentionally stopped CONNECTING socket opens before its replacement", async () => {
+		const firstClient = new ConvWebSocket("conv-remount-old-opens-first");
+		const delivery = firstClient.sendUserMessage(
+			"queued",
+			["a"],
+			undefined,
+			"m-old-opens-first",
+		);
+		const firstConnecting = firstClient.connect();
+		const staleSocket = socketAt(0);
+		firstClient.close();
+
+		const secondClient = new ConvWebSocket("conv-remount-old-opens-first");
+		const secondConnecting = secondClient.connect();
+		const currentSocket = socketAt(1);
+		expect(() => staleSocket.open()).not.toThrow();
+		await firstConnecting;
+		expect(staleSocket.sent).toEqual([]);
+
+		currentSocket.open();
+		await secondConnecting;
+		expect(userIds(currentSocket)).toEqual(["m-old-opens-first"]);
+		currentSocket.receive(ack("m-old-opens-first"));
+		expect(await delivery).toEqual({
+			id: "m-old-opens-first",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("rejects connect when queued user-frame flush throws and preserves replay", async () => {
+		const client = new ConvWebSocket("conv-open-user-send-failure");
+		const closed = vi.fn();
+		client.onClose(closed);
+		const delivery = client.sendUserMessage(
+			"queued",
+			["a"],
+			undefined,
+			"m-open-user-send-failure",
+		);
+		const connecting = client.connect();
+		const socket = socketAt(0);
+		socket.failSend = (frame) => {
+			return (
+				(JSON.parse(frame) as Record<string, unknown>).kind === "user_message"
+			);
+		};
+
+		expect(() => socket.open()).not.toThrow();
+		await expect(connecting).rejects.toThrow("synthetic send failure");
+		expect(socket.closeCalls).toBe(1);
+		expect(closed).toHaveBeenCalledOnce();
+		expect(userIds(socket)).toEqual([]);
+
+		const reconnecting = client.reconnect();
+		const replacement = socketAt(1);
+		replacement.open();
+		await reconnecting;
+		expect(userIds(replacement)).toEqual(["m-open-user-send-failure"]);
+		replacement.receive(ack("m-open-user-send-failure"));
+		expect(await delivery).toEqual({
+			id: "m-open-user-send-failure",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("settles connect and closes the socket when the open status query throws", async () => {
+		const client = new ConvWebSocket("conv-status-send-failure");
+		const closed = vi.fn();
+		client.onClose(closed);
+		const delivery = client.sendUserMessage(
+			"one",
+			["a"],
+			undefined,
+			"m-status-failure",
+		);
+		const connecting = client.connect();
+		const socket = socketAt(0);
+		socket.failSend = (frame) => {
+			return (
+				(JSON.parse(frame) as Record<string, unknown>).kind ===
+				"agent_status_query"
+			);
+		};
+
+		expect(() => socket.open()).not.toThrow();
+		await expect(connecting).rejects.toThrow("synthetic send failure");
+		expect(socket.closeCalls).toBe(1);
+		expect(closed).toHaveBeenCalledOnce();
+		expect(userIds(socket)).toEqual(["m-status-failure"]);
+
+		const reconnecting = client.reconnect();
+		const replacement = socketAt(1);
+		replacement.open();
+		await reconnecting;
+		expect(userIds(replacement)).toEqual(["m-status-failure"]);
+		replacement.receive(ack("m-status-failure"));
+		expect(await delivery).toEqual({
+			id: "m-status-failure",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("clears reconnect single-flight after a replacement status query throws", async () => {
+		const client = new ConvWebSocket("conv-reconnect-status-failure");
+		const connecting = client.connect();
+		const firstSocket = socketAt(0);
+		firstSocket.open();
+		await connecting;
+		const delivery = client.sendUserMessage(
+			"one",
+			["a"],
+			undefined,
+			"m-reconnect-status-failure",
+		);
+		firstSocket.drop();
+
+		const failedReconnect = client.reconnect();
+		const failedSocket = socketAt(1);
+		failedSocket.failSend = (frame) => {
+			return (
+				(JSON.parse(frame) as Record<string, unknown>).kind ===
+				"agent_status_query"
+			);
+		};
+		expect(() => failedSocket.open()).not.toThrow();
+		await expect(failedReconnect).resolves.toBeUndefined();
+		expect(failedSocket.closeCalls).toBe(1);
+
+		const successfulReconnect = client.reconnect();
+		const currentSocket = socketAt(2);
+		currentSocket.open();
+		await successfulReconnect;
+		expect(userIds(currentSocket)).toEqual(["m-reconnect-status-failure"]);
+		currentSocket.receive(ack("m-reconnect-status-failure"));
+		expect(await delivery).toEqual({
+			id: "m-reconnect-status-failure",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("settles stale ACKs after handoff without applying stale retryable NACKs", async () => {
+		const firstClient = new ConvWebSocket("conv-remount-stale");
+		const firstConnecting = firstClient.connect();
+		const staleSocket = socketAt(0);
+		staleSocket.open();
+		await firstConnecting;
+		const first = firstClient.sendUserMessage(
+			"one",
+			["a"],
+			undefined,
+			"m-stale-1",
+		);
+		const second = firstClient.sendUserMessage(
+			"two",
+			["a"],
+			undefined,
+			"m-stale-2",
+		);
+		const terminal = firstClient.sendUserMessage(
+			"terminal",
+			["a"],
+			undefined,
+			"m-stale-terminal",
+		);
+		firstClient.close();
+
+		const secondClient = new ConvWebSocket("conv-remount-stale");
+		const secondConnecting = secondClient.connect();
+		const currentSocket = socketAt(1);
+		currentSocket.open();
+		await secondConnecting;
+		expect(userIds(currentSocket)).toEqual([
+			"m-stale-1",
+			"m-stale-2",
+			"m-stale-terminal",
+		]);
+
+		staleSocket.receive(ack("m-stale-1", true));
+		expect(await first).toEqual({
+			id: "m-stale-1",
+			ok: true,
+			duplicate: true,
+		});
+		staleSocket.receive(nack("m-stale-2", "persistence_error", true));
+		staleSocket.receive(nack("m-stale-terminal", "message_id_conflict", false));
+		expect(await terminal).toEqual({
+			id: "m-stale-terminal",
+			ok: false,
+			reason: "message_id_conflict",
+			retryable: false,
+		});
+		secondClient.sendUserMessage("three", ["a"], undefined, "m-stale-3");
+
+		expect(currentSocket.closeCalls).toBe(0);
+		expect(userIds(currentSocket)).toEqual([
+			"m-stale-1",
+			"m-stale-2",
+			"m-stale-terminal",
+			"m-stale-3",
+		]);
+		currentSocket.receive(ack("m-stale-2"));
+		currentSocket.receive(ack("m-stale-3"));
+		expect(await second).toEqual({
+			id: "m-stale-2",
+			ok: true,
+			duplicate: false,
+		});
 	});
 
 	it("keeps no-id and regeneration sends outside the outbox", async () => {

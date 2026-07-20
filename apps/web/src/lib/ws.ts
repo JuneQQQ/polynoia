@@ -60,10 +60,18 @@ type PendingSend = {
 	resolve: (result: DeliveryResult) => void;
 };
 
+type PendingOutbox = Map<string, PendingSend>;
+type FlushResult = { ok: true } | { ok: false; error?: unknown };
+
+// ChatPane replaces its ConvWebSocket instance when a conversation unmounts.
+// Keep only closed instances' unsettled outboxes here; the next instance for
+// that conversation claims the same Map (and delivery promises) immediately.
+const dormantOutboxes = new Map<string, PendingOutbox>();
+
 export class ConvWebSocket {
 	private ws: WebSocket | null = null;
 	private readonly frameBuffers = new WeakMap<WebSocket, string>();
-	private readonly pendingSends = new Map<string, PendingSend>();
+	private readonly pendingSends: PendingOutbox;
 	private readonly flushingSockets = new WeakSet<WebSocket>();
 	private activeSend: {
 		id: string;
@@ -74,7 +82,10 @@ export class ConvWebSocket {
 	private onCloseCb?: () => void;
 	private onErrorCb?: (err: string) => void;
 
-	constructor(public readonly convId: string) {}
+	constructor(public readonly convId: string) {
+		this.pendingSends = dormantOutboxes.get(convId) ?? new Map();
+		dormantOutboxes.delete(convId);
+	}
 
 	private _intentionallyClosed = false;
 
@@ -88,15 +99,42 @@ export class ConvWebSocket {
 			this.ws = socket;
 			this.frameBuffers.set(socket, "");
 			socket.onopen = () => {
-				const healthy = this.flushPending(socket);
-				if (healthy) this.queryAgentStatusOn(socket);
+				if (this._intentionallyClosed || this.ws !== socket) {
+					try {
+						socket.close();
+					} catch {
+						/* already closing */
+					}
+					resolve();
+					return;
+				}
+				const flush = this.flushPending(socket);
+				if (!flush.ok) {
+					if ("error" in flush) reject(flush.error);
+					else resolve();
+					return;
+				}
+				try {
+					this.queryAgentStatusOn(socket);
+				} catch (error) {
+					try {
+						socket.close();
+					} catch {
+						/* next network event may still drive reconnect */
+					}
+					reject(error);
+					return;
+				}
 				resolve();
 			};
 			socket.onerror = (e) => {
 				// React 18 Strict Mode double-mount triggers immediate cleanup before
 				// open — that's expected, not a real error. Only surface to caller
 				// if we weren't closed deliberately.
-				if (this._intentionallyClosed) return;
+				if (this._intentionallyClosed) {
+					resolve();
+					return;
+				}
 				this.onErrorCb?.(String(e));
 				reject(e);
 			};
@@ -157,6 +195,7 @@ export class ConvWebSocket {
 		const pending = this.pendingSends.get(chunk.id);
 		if (!pending) return;
 		this.pendingSends.delete(chunk.id);
+		this.pruneDormantOutbox();
 		pending.resolve({
 			id: chunk.id,
 			ok: true,
@@ -180,6 +219,7 @@ export class ConvWebSocket {
 		if (!pending) return;
 		if (!chunk.data.retryable) {
 			this.pendingSends.delete(chunk.id);
+			this.pruneDormantOutbox();
 			pending.resolve({
 				id: chunk.id,
 				ok: false,
@@ -212,23 +252,36 @@ export class ConvWebSocket {
 		}
 	}
 
-	private flushPending(socket: WebSocket): boolean {
-		if (socket.readyState !== WebSocket.OPEN) return false;
-		if (this.flushingSockets.has(socket)) return true;
+	private pruneDormantOutbox() {
+		if (
+			this.pendingSends.size === 0 &&
+			dormantOutboxes.get(this.convId) === this.pendingSends
+		) {
+			dormantOutboxes.delete(this.convId);
+		}
+	}
+
+	private handoffPendingOutbox() {
+		if (this.pendingSends.size > 0) {
+			dormantOutboxes.set(this.convId, this.pendingSends);
+		}
+	}
+
+	private flushPending(socket: WebSocket): FlushResult {
+		if (socket.readyState !== WebSocket.OPEN) return { ok: false };
+		if (this.flushingSockets.has(socket)) return { ok: true };
 		this.flushingSockets.add(socket);
-		let healthy = true;
 		try {
 			for (const [id, pending] of this.pendingSends) {
-				if (socket.readyState !== WebSocket.OPEN) break;
+				if (socket.readyState !== WebSocket.OPEN) return { ok: false };
 				if (pending.sentOn === socket) continue;
 				pending.retryOn = null;
 				this.activeSend = { id, socket, pending };
 				try {
 					socket.send(pending.frame);
-				} catch {
+				} catch (error) {
 					// Keep this entry (and every later FIFO entry) for a replacement
 					// socket. sentOn changes only after a successful send.
-					healthy = false;
 					if (
 						this.ws === socket &&
 						(socket.readyState === WebSocket.OPEN ||
@@ -240,7 +293,7 @@ export class ConvWebSocket {
 							/* next network event may still drive reconnect */
 						}
 					}
-					break;
+					return { ok: false, error };
 				} finally {
 					this.activeSend = null;
 				}
@@ -251,11 +304,13 @@ export class ConvWebSocket {
 					pending.sentOn = socket;
 				}
 			}
+			return socket.readyState === WebSocket.OPEN
+				? { ok: true }
+				: { ok: false };
 		} finally {
 			this.activeSend = null;
 			this.flushingSockets.delete(socket);
 		}
-		return healthy && socket.readyState === WebSocket.OPEN;
 	}
 
 	onChunk(cb: (c: UIMessageChunk) => void) {
@@ -390,17 +445,16 @@ export class ConvWebSocket {
 	}
 
 	close() {
+		if (this._intentionallyClosed) return;
 		this._intentionallyClosed = true;
+		this.handoffPendingOutbox();
 		// Don't call close() while still CONNECTING — browser logs a noisy error.
-		// Wait for OPEN, then close gracefully; or if it's already closing/closed
-		// there's nothing to do.
+		// Its onopen handler will close it before flushing. If it's already
+		// closing/closed there's nothing to do.
 		if (!this.ws) return;
 		const state = this.ws.readyState;
 		if (state === WebSocket.OPEN) {
 			this.ws.close();
-		} else if (state === WebSocket.CONNECTING) {
-			const socket = this.ws;
-			socket.addEventListener("open", () => socket.close(), { once: true });
 		}
 		// CLOSING / CLOSED: noop
 	}
