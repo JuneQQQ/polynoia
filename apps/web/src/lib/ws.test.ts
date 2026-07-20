@@ -64,6 +64,10 @@ class FakeWebSocket {
 		this.onclose?.({ target: this } as unknown as CloseEvent);
 	}
 
+	error() {
+		this.onerror?.({ target: this } as unknown as Event);
+	}
+
 	receive(frame: string) {
 		this.onmessage?.({
 			data: frame,
@@ -75,6 +79,7 @@ class FakeWebSocket {
 const memoryStorage = new Map<string, string>();
 
 beforeEach(() => {
+	ConvWebSocket.resetSharedStateForTests();
 	FakeWebSocket.instances = [];
 	memoryStorage.clear();
 	(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket;
@@ -457,6 +462,45 @@ describe("ConvWebSocket delivery outbox", () => {
 		expect(await second).toEqual({ id: "m2", ok: true, duplicate: false });
 	});
 
+	it("drops ordinary chunks from replaced and intentionally closed sockets while accepting stale receipts", async () => {
+		const client = new ConvWebSocket("conv-stale-chunks");
+		const chunks = vi.fn();
+		client.onChunk(chunks);
+		const connecting = client.connect();
+		const staleSocket = socketAt(0);
+		staleSocket.open();
+		await connecting;
+		const delivery = client.sendUserMessage(
+			"one",
+			["a"],
+			undefined,
+			"m-stale-chunk",
+		);
+
+		const currentSocket = await replaceSocket(client, staleSocket);
+		staleSocket.receive(
+			`data: ${JSON.stringify({ type: "text-delta", id: "stale", delta: "old" })}\n\n`,
+		);
+		staleSocket.receive(ack("m-stale-chunk", true));
+
+		expect(await delivery).toEqual({
+			id: "m-stale-chunk",
+			ok: true,
+			duplicate: true,
+		});
+		expect(chunks).not.toHaveBeenCalled();
+
+		currentSocket.receive(
+			`data: ${JSON.stringify({ type: "text-delta", id: "current", delta: "new" })}\n\n`,
+		);
+		expect(chunks).toHaveBeenCalledOnce();
+		client.close();
+		currentSocket.receive(
+			`data: ${JSON.stringify({ type: "text-delta", id: "closed", delta: "late" })}\n\n`,
+		);
+		expect(chunks).toHaveBeenCalledOnce();
+	});
+
 	it("parses batched and partial SSE receipts while forwarding ordinary chunks", async () => {
 		const client = new ConvWebSocket("conv-1");
 		const chunks = vi.fn();
@@ -488,6 +532,26 @@ describe("ConvWebSocket delivery outbox", () => {
 
 		socket.receive(secondAck.slice(splitAt));
 		expect(await second).toEqual({ id: "m2", ok: true, duplicate: true });
+	});
+
+	it("preserves reply targets on data message chunks", async () => {
+		const client = new ConvWebSocket("conv-reply-target");
+		const chunks = vi.fn();
+		client.onChunk(chunks);
+		const connecting = client.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+
+		const chunk = {
+			type: "data-text",
+			id: "reply-message",
+			data: { body: [{ t: "p", c: "answer" }] },
+			in_reply_to: "ask-card",
+		} as const;
+		socket.receive(`data: ${JSON.stringify(chunk)}\n\n`);
+
+		expect(chunks).toHaveBeenCalledWith(chunk);
 	});
 
 	it("keeps interleaved partial frame buffers separate for stale physical sockets", async () => {
@@ -590,6 +654,526 @@ describe("ConvWebSocket delivery outbox", () => {
 		});
 	});
 
+	it("merges pending frames from multiple same-conversation owners in creation order", async () => {
+		const firstClient = new ConvWebSocket("conv-multi-owner");
+		const secondClient = new ConvWebSocket("conv-multi-owner");
+		const first = firstClient.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-owner-1",
+		);
+		const second = secondClient.sendUserMessage(
+			"second",
+			["a"],
+			undefined,
+			"m-owner-2",
+		);
+
+		secondClient.close();
+		firstClient.close();
+		const replayClient = new ConvWebSocket("conv-multi-owner");
+		const connecting = replayClient.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+
+		expect(userIds(socket)).toEqual(["m-owner-1", "m-owner-2"]);
+		socket.receive(ack("m-owner-1"));
+		socket.receive(ack("m-owner-2"));
+		expect(await Promise.all([first, second])).toEqual([
+			{ id: "m-owner-1", ok: true, duplicate: false },
+			{ id: "m-owner-2", ok: true, duplicate: false },
+		]);
+	});
+
+	it("merges a late handoff into the claimed live outbox without waiting for its owner to close", async () => {
+		const firstOwner = new ConvWebSocket("conv-live-coordinator");
+		const lateOwner = new ConvWebSocket("conv-live-coordinator");
+		const first = firstOwner.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-live-1",
+		);
+		const late = lateOwner.sendUserMessage(
+			"late",
+			["a"],
+			undefined,
+			"m-live-2",
+		);
+		firstOwner.close();
+
+		const liveOwner = new ConvWebSocket("conv-live-coordinator");
+		const connecting = liveOwner.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		expect(userIds(socket)).toEqual(["m-live-1", "m-live-2"]);
+
+		lateOwner.close();
+
+		expect(userIds(socket)).toEqual(["m-live-1", "m-live-2"]);
+		socket.receive(ack("m-live-1"));
+		socket.receive(ack("m-live-2"));
+		expect(await Promise.all([first, late])).toEqual([
+			{ id: "m-live-1", ok: true, duplicate: false },
+			{ id: "m-live-2", ok: true, duplicate: false },
+		]);
+	});
+
+	it("promotes an already-connected candidate when earlier owners hand off", async () => {
+		const firstOwner = new ConvWebSocket("conv-preconstructed-candidate");
+		const secondOwner = new ConvWebSocket("conv-preconstructed-candidate");
+		const candidate = new ConvWebSocket("conv-preconstructed-candidate");
+		const first = firstOwner.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-candidate-1",
+		);
+		const second = secondOwner.sendUserMessage(
+			"second",
+			["a"],
+			undefined,
+			"m-candidate-2",
+		);
+		const connecting = candidate.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		expect(userIds(socket)).toEqual(["m-candidate-1"]);
+
+		firstOwner.close();
+		secondOwner.close();
+
+		expect(userIds(socket)).toEqual(["m-candidate-1", "m-candidate-2"]);
+		socket.receive(ack("m-candidate-1"));
+		socket.receive(ack("m-candidate-2"));
+		expect(await Promise.all([first, second])).toEqual([
+			{ id: "m-candidate-1", ok: true, duplicate: false },
+			{ id: "m-candidate-2", ok: true, duplicate: false },
+		]);
+	});
+
+	it("lets a connected participant take ownership from a newer offline candidate", async () => {
+		const firstOwner = new ConvWebSocket("conv-live-rank-takeover");
+		const connectingCandidate = new ConvWebSocket("conv-live-rank-takeover");
+		new ConvWebSocket("conv-live-rank-takeover");
+		const delivery = firstOwner.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-live-rank",
+		);
+		firstOwner.close();
+
+		const connecting = connectingCandidate.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+
+		expect(userIds(socket)).toEqual(["m-live-rank"]);
+		socket.receive(ack("m-live-rank"));
+		expect(await delivery).toEqual({
+			id: "m-live-rank",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("wakes the live owner when a former owner appends to their shared canonical outbox", async () => {
+		const formerOwner = new ConvWebSocket("conv-former-owner-append");
+		const liveOwner = new ConvWebSocket("conv-former-owner-append");
+		const first = formerOwner.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-former-1",
+		);
+		const connecting = liveOwner.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		expect(userIds(socket)).toEqual(["m-former-1"]);
+
+		const second = formerOwner.sendUserMessage(
+			"second",
+			["a"],
+			undefined,
+			"m-former-2",
+		);
+
+		expect(userIds(socket)).toEqual(["m-former-1", "m-former-2"]);
+		socket.receive(ack("m-former-1"));
+		socket.receive(ack("m-former-2"));
+		expect(await Promise.all([first, second])).toEqual([
+			{ id: "m-former-1", ok: true, duplicate: false },
+			{ id: "m-former-2", ok: true, duplicate: false },
+		]);
+	});
+
+	it("keeps independent participants discoverable after an empty owner closes", async () => {
+		const seedOwner = new ConvWebSocket("conv-empty-owner-release");
+		const seed = seedOwner.sendUserMessage(
+			"seed",
+			["a"],
+			undefined,
+			"m-empty-seed",
+		);
+		seedOwner.close();
+
+		const claimedOwner = new ConvWebSocket("conv-empty-owner-release");
+		const claimedConnecting = claimedOwner.connect();
+		const claimedSocket = socketAt(0);
+		claimedSocket.open();
+		await claimedConnecting;
+		claimedSocket.receive(ack("m-empty-seed"));
+		expect(await seed).toEqual({
+			id: "m-empty-seed",
+			ok: true,
+			duplicate: false,
+		});
+
+		const independentOwner = new ConvWebSocket("conv-empty-owner-release");
+		const pending = independentOwner.sendUserMessage(
+			"late",
+			["a"],
+			undefined,
+			"m-empty-late",
+		);
+		claimedOwner.close();
+		const candidate = new ConvWebSocket("conv-empty-owner-release");
+		const candidateConnecting = candidate.connect();
+		const candidateSocket = socketAt(1);
+		candidateSocket.open();
+		await candidateConnecting;
+
+		independentOwner.close();
+
+		expect(userIds(candidateSocket)).toEqual(["m-empty-late"]);
+		candidateSocket.receive(ack("m-empty-late"));
+		expect(await pending).toEqual({
+			id: "m-empty-late",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("coalesces identical same-id frames from multiple owners without orphaning either promise", async () => {
+		const firstClient = new ConvWebSocket("conv-multi-owner-identical");
+		const secondClient = new ConvWebSocket("conv-multi-owner-identical");
+		const first = firstClient.sendUserMessage(
+			"same",
+			["a"],
+			undefined,
+			"m-shared",
+		);
+		const second = secondClient.sendUserMessage(
+			"same",
+			["a"],
+			undefined,
+			"m-shared",
+		);
+
+		secondClient.close();
+		firstClient.close();
+		const replayClient = new ConvWebSocket("conv-multi-owner-identical");
+		const connecting = replayClient.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		expect(userIds(socket)).toEqual(["m-shared"]);
+
+		socket.receive(ack("m-shared", true));
+		const results: unknown[] = [];
+		void first?.then((result) => results.push(result));
+		void second?.then((result) => results.push(result));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(results).toHaveLength(2);
+		expect(results).toEqual([
+			{ id: "m-shared", ok: true, duplicate: true },
+			{ id: "m-shared", ok: true, duplicate: true },
+		]);
+	});
+
+	it("removes an ACKed entry from every aliased outbox after multi-owner merging", async () => {
+		const firstOwner = new ConvWebSocket("conv-multi-owner-alias");
+		const independentOwner = new ConvWebSocket("conv-multi-owner-alias");
+		const firstConnecting = firstOwner.connect();
+		const staleSocket = socketAt(0);
+		staleSocket.open();
+		await firstConnecting;
+		const first = firstOwner.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-alias-1",
+		);
+		firstOwner.close();
+
+		const claimant = new ConvWebSocket("conv-multi-owner-alias");
+		const second = independentOwner.sendUserMessage(
+			"second",
+			["a"],
+			undefined,
+			"m-alias-2",
+		);
+		independentOwner.close();
+		claimant.close();
+
+		const replayClient = new ConvWebSocket("conv-multi-owner-alias");
+		const replayConnecting = replayClient.connect();
+		const replaySocket = socketAt(1);
+		replaySocket.open();
+		await replayConnecting;
+		expect(userIds(replaySocket)).toEqual(["m-alias-1", "m-alias-2"]);
+
+		staleSocket.receive(ack("m-alias-1", true));
+		expect(await first).toEqual({
+			id: "m-alias-1",
+			ok: true,
+			duplicate: true,
+		});
+		const replacement = await replaceSocket(replayClient, replaySocket);
+		expect(userIds(replacement)).toEqual(["m-alias-2"]);
+		replacement.receive(ack("m-alias-2"));
+		expect(await second).toEqual({
+			id: "m-alias-2",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("resolves multi-owner same-id conflicts by creation order instead of close order", async () => {
+		const firstClient = new ConvWebSocket("conv-multi-owner-conflict");
+		const secondClient = new ConvWebSocket("conv-multi-owner-conflict");
+		const first = firstClient.sendUserMessage(
+			"first",
+			["a"],
+			undefined,
+			"m-conflict",
+		);
+		const second = secondClient.sendUserMessage(
+			"second",
+			["a"],
+			undefined,
+			"m-conflict",
+		);
+
+		firstClient.close();
+		secondClient.close();
+		let secondResult: unknown;
+		void second?.then((result) => {
+			secondResult = result;
+		});
+		await Promise.resolve();
+		expect(secondResult).toEqual({
+			id: "m-conflict",
+			ok: false,
+			reason: "pending_message_id_conflict",
+			retryable: false,
+		});
+
+		const replayClient = new ConvWebSocket("conv-multi-owner-conflict");
+		const connecting = replayClient.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		const [frame] = userWireFrames(socket);
+		expect(JSON.parse(frame ?? "{}")).toMatchObject({
+			msg_id: "m-conflict",
+			text: "first",
+		});
+		socket.receive(ack("m-conflict"));
+		expect(await first).toEqual({
+			id: "m-conflict",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("keeps the uniquely sent frame when an earlier offline same-id frame merges", async () => {
+		const sentOwner = new ConvWebSocket("conv-sent-conflict-winner");
+		const offlineOwner = new ConvWebSocket("conv-sent-conflict-winner");
+		const offline = offlineOwner.sendUserMessage(
+			"offline-earlier",
+			["a"],
+			undefined,
+			"m-sent-winner",
+		);
+		const connecting = sentOwner.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		const sent = sentOwner.sendUserMessage(
+			"sent-later",
+			["a"],
+			undefined,
+			"m-sent-winner",
+		);
+
+		offlineOwner.close();
+		let offlineResult: unknown;
+		void offline?.then((result) => {
+			offlineResult = result;
+		});
+		await Promise.resolve();
+		expect(offlineResult).toEqual({
+			id: "m-sent-winner",
+			ok: false,
+			reason: "pending_message_id_conflict",
+			retryable: false,
+		});
+
+		socket.receive(ack("m-sent-winner"));
+		expect(await sent).toEqual({
+			id: "m-sent-winner",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("marks a frame sent before a synchronous send-hook handoff merges its id", async () => {
+		const sentOwner = new ConvWebSocket("conv-reentrant-sent-winner");
+		const offlineOwner = new ConvWebSocket("conv-reentrant-sent-winner");
+		const offline = offlineOwner.sendUserMessage(
+			"offline-earlier",
+			["a"],
+			undefined,
+			"m-reentrant-winner",
+		);
+		const connecting = sentOwner.connect();
+		const socket = socketAt(0);
+		socket.open();
+		await connecting;
+		socket.onSend = (frame) => {
+			if (
+				(JSON.parse(frame) as Record<string, unknown>).msg_id ===
+				"m-reentrant-winner"
+			) {
+				offlineOwner.close();
+			}
+		};
+
+		const sent = sentOwner.sendUserMessage(
+			"sent-later",
+			["a"],
+			undefined,
+			"m-reentrant-winner",
+		);
+		let offlineResult: unknown;
+		void offline?.then((result) => {
+			offlineResult = result;
+		});
+		await Promise.resolve();
+		expect(offlineResult).toEqual({
+			id: "m-reentrant-winner",
+			ok: false,
+			reason: "pending_message_id_conflict",
+			retryable: false,
+		});
+
+		socket.receive(ack("m-reentrant-winner"));
+		expect(await sent).toEqual({
+			id: "m-reentrant-winner",
+			ok: true,
+			duplicate: false,
+		});
+	});
+
+	it("terminally settles both conflicting frames when both were already sent", async () => {
+		const firstOwner = new ConvWebSocket("conv-both-sent-conflict");
+		const secondOwner = new ConvWebSocket("conv-both-sent-conflict");
+		const firstConnecting = firstOwner.connect();
+		const firstSocket = socketAt(0);
+		firstSocket.open();
+		await firstConnecting;
+		const secondConnecting = secondOwner.connect();
+		const secondSocket = socketAt(1);
+		secondSocket.open();
+		await secondConnecting;
+		const first = firstOwner.sendUserMessage(
+			"first-sent",
+			["a"],
+			undefined,
+			"m-both-sent",
+		);
+		const second = secondOwner.sendUserMessage(
+			"second-sent",
+			["a"],
+			undefined,
+			"m-both-sent",
+		);
+
+		secondOwner.close();
+
+		const terminal = {
+			id: "m-both-sent",
+			ok: false,
+			reason: "pending_message_id_conflict",
+			retryable: false,
+		};
+		let results: unknown;
+		void Promise.all([first, second]).then((value) => {
+			results = value;
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(results).toEqual([terminal, terminal]);
+		firstSocket.receive(ack("m-both-sent"));
+		expect(userIds(firstSocket)).toEqual(["m-both-sent"]);
+		expect(userIds(secondSocket)).toEqual(["m-both-sent"]);
+	});
+
+	it("does not apply a delayed ACK to a different same-id frame merged later", async () => {
+		const firstOwner = new ConvWebSocket("conv-delayed-conflict-ack");
+		const secondOwner = new ConvWebSocket("conv-delayed-conflict-ack");
+		const firstConnecting = firstOwner.connect();
+		const firstSocket = socketAt(0);
+		firstSocket.open();
+		await firstConnecting;
+		const secondConnecting = secondOwner.connect();
+		const secondSocket = socketAt(1);
+		secondSocket.open();
+		await secondConnecting;
+		const first = firstOwner.sendUserMessage(
+			"first-sent",
+			["a"],
+			undefined,
+			"m-delayed-ack",
+		);
+		const second = secondOwner.sendUserMessage(
+			"second-sent",
+			["a"],
+			undefined,
+			"m-delayed-ack",
+		);
+		firstSocket.receive(ack("m-delayed-ack"));
+		expect(await first).toEqual({
+			id: "m-delayed-ack",
+			ok: true,
+			duplicate: false,
+		});
+		secondOwner.close();
+
+		let secondResult: unknown;
+		void second?.then((result) => {
+			secondResult = result;
+		});
+		await Promise.resolve();
+		expect(secondResult).toEqual({
+			id: "m-delayed-ack",
+			ok: false,
+			reason: "pending_message_id_conflict",
+			retryable: false,
+		});
+		firstSocket.receive(ack("m-delayed-ack", true));
+		expect(await second).toEqual(secondResult);
+		expect(secondSocket.closeCalls).toBe(1);
+	});
+
 	it("does not republish a claimed outbox when the old instance closes twice", async () => {
 		const firstClient = new ConvWebSocket("conv-remount-close-twice");
 		const firstConnecting = firstClient.connect();
@@ -646,9 +1230,9 @@ describe("ConvWebSocket delivery outbox", () => {
 		await secondConnecting;
 		expect(userIds(currentSocket)).toEqual(["m-remount-connecting"]);
 
-		expect(() => staleSocket.open()).not.toThrow();
 		await firstConnecting;
 		expect(staleSocket.closeCalls).toBe(1);
+		expect(staleSocket.readyState).toBe(FakeWebSocket.CLOSED);
 		expect(staleSocket.sent).toEqual([]);
 
 		currentSocket.receive(ack("m-remount-connecting"));
@@ -659,7 +1243,114 @@ describe("ConvWebSocket delivery outbox", () => {
 		});
 	});
 
-	it("replays after an intentionally stopped CONNECTING socket opens before its replacement", async () => {
+	it("rejects connect when a socket closes before opening", async () => {
+		const client = new ConvWebSocket("conv-pre-open-close");
+		const connecting = client.connect();
+		const socket = socketAt(0);
+		let outcome = "pending";
+		void connecting.then(
+			() => {
+				outcome = "resolved";
+			},
+			() => {
+				outcome = "rejected";
+			},
+		);
+
+		socket.drop();
+		await Promise.resolve();
+
+		expect(outcome).toBe("rejected");
+	});
+
+	it("rejects connect when a socket errors before opening", async () => {
+		const client = new ConvWebSocket("conv-pre-open-error");
+		const connecting = client.connect();
+		const socket = socketAt(0);
+
+		socket.error();
+
+		await expect(connecting).rejects.toBeTruthy();
+		expect(socket.closeCalls).toBe(1);
+	});
+
+	it("settles connect immediately when intentionally closed before opening", async () => {
+		const client = new ConvWebSocket("conv-pre-open-intentional");
+		const connecting = client.connect();
+		const socket = socketAt(0);
+		let outcome = "pending";
+		void connecting.then(
+			() => {
+				outcome = "resolved";
+			},
+			() => {
+				outcome = "rejected";
+			},
+		);
+
+		client.close();
+		await Promise.resolve();
+
+		expect(outcome).toBe("resolved");
+		expect(socket.closeCalls).toBe(1);
+		expect(socket.sent).toEqual([]);
+	});
+
+	it("aborts a superseded pre-open connect attempt", async () => {
+		const client = new ConvWebSocket("conv-pre-open-superseded");
+		const originalConnect = client.connect();
+		const originalSocket = socketAt(0);
+		let originalOutcome = "pending";
+		void originalConnect.then(
+			() => {
+				originalOutcome = "resolved";
+			},
+			() => {
+				originalOutcome = "rejected";
+			},
+		);
+
+		const reconnecting = client.reconnect();
+		const replacement = socketAt(1);
+		replacement.open();
+		await reconnecting;
+		await Promise.resolve();
+
+		expect(originalOutcome).toBe("rejected");
+		expect(originalSocket.closeCalls).toBe(1);
+	});
+
+	it("times out a silent handshake and allows a later reconnect", async () => {
+		vi.useFakeTimers();
+		try {
+			const client = new ConvWebSocket("conv-handshake-timeout");
+			const connecting = client.connect();
+			const silentSocket = socketAt(0);
+			let outcome = "pending";
+			void connecting.then(
+				() => {
+					outcome = "resolved";
+				},
+				() => {
+					outcome = "rejected";
+				},
+			);
+
+			await vi.advanceTimersByTimeAsync(10_001);
+
+			expect(outcome).toBe("rejected");
+			expect(silentSocket.closeCalls).toBe(1);
+			const reconnecting = client.reconnect();
+			const replacement = socketAt(1);
+			replacement.open();
+			await reconnecting;
+			expect(kinds(replacement)).toEqual(["agent_status_query"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("replays after intentionally aborting a CONNECTING socket", async () => {
 		const firstClient = new ConvWebSocket("conv-remount-old-opens-first");
 		const delivery = firstClient.sendUserMessage(
 			"queued",
@@ -674,8 +1365,8 @@ describe("ConvWebSocket delivery outbox", () => {
 		const secondClient = new ConvWebSocket("conv-remount-old-opens-first");
 		const secondConnecting = secondClient.connect();
 		const currentSocket = socketAt(1);
-		expect(() => staleSocket.open()).not.toThrow();
 		await firstConnecting;
+		expect(staleSocket.closeCalls).toBe(1);
 		expect(staleSocket.sent).toEqual([]);
 
 		currentSocket.open();
@@ -891,5 +1582,25 @@ describe("ConvWebSocket delivery outbox", () => {
 		const replacement = await replaceSocket(client, socket);
 		expect(userIds(replacement)).toEqual([]);
 		expect(kinds(replacement)).toEqual(["agent_status_query"]);
+	});
+
+	it("rejects stable-id sends after the client is closed", () => {
+		const client = new ConvWebSocket("conv-send-after-close");
+		client.close();
+
+		expect(() =>
+			client.sendUserMessage("late", ["a"], undefined, "m-after-close"),
+		).toThrow(/closed/i);
+	});
+
+	it("coalesces simultaneous connect calls into one physical handshake", async () => {
+		const client = new ConvWebSocket("conv-connect-single-flight");
+		const first = client.connect();
+		const second = client.connect();
+		for (const socket of FakeWebSocket.instances) socket.open();
+		await Promise.all([first, second]);
+
+		expect(second).toBe(first);
+		expect(FakeWebSocket.instances).toHaveLength(1);
 	});
 });

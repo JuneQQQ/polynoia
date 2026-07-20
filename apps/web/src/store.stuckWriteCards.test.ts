@@ -3,7 +3,8 @@
  * discriminator is the agent-status timestamp: an agent reported streaming AT or
  * AFTER the reconnect still owns its turn (leave its card alone); a stale/absent
  * status means the turn died → retire the stuck write/edit card. */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "./lib/api";
 import type { Message } from "./lib/types";
 import { useStore } from "./store";
 
@@ -42,6 +43,19 @@ const get = (convId: string, id: string) =>
 describe("markStuckWriteCardsInterrupted", () => {
 	beforeEach(() => {
 		useStore.setState({ convs: new Map() });
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	it("persists the terminal transition through the restricted interrupt endpoint", async () => {
+		const interrupt = vi
+			.spyOn(api, "interruptStuckWrite")
+			.mockResolvedValue({ ok: true, updated: true });
+		seedConv("c", [tc("w", "gone", "running", "apply_patch")], new Map());
+
+		s().markStuckWriteCardsInterrupted("c", RECONNECT_AT);
+		await Promise.resolve();
+
+		expect(interrupt).toHaveBeenCalledWith("c", "w");
 	});
 
 	it("retires a stuck write card whose agent the server forgot (stale status)", () => {

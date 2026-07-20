@@ -52,6 +52,16 @@ function payloadText(payload: Message["payload"]): string {
 		.trim();
 }
 
+export function canMutatePersistedMessage(
+	convId: string,
+	msgId: string,
+): boolean {
+	return !useStore
+		.getState()
+		.convs.get(convId)
+		?.deliveryProtectedMessageIds?.has(msgId);
+}
+
 export function isRenderableMessagePayload(
 	payload: Message["payload"],
 	isStreaming: boolean,
@@ -126,6 +136,10 @@ function MessageViewInner({
 	const isStreaming = useStore((s) =>
 		selectIsMessageStreaming(s, convId, msgId),
 	);
+	const deliveryPending = useStore(
+		(s) =>
+			s.convs.get(convId)?.deliveryProtectedMessageIds?.has(msgId) ?? false,
+	);
 	const agents = useStore((s) => s.agents);
 	const lang = useStore((s) => s.lang);
 	const convScope = useConvScope();
@@ -172,11 +186,12 @@ function MessageViewInner({
 			.join("\n");
 	};
 	const beginEdit = () => {
-		if (!isYou || msg.payload.kind !== "text") return;
+		if (deliveryPending || !isYou || msg.payload.kind !== "text") return;
 		setEditText(textFromPayload(msg.payload));
 		setEditing(true);
 	};
 	const saveEdit = () => {
+		if (!canMutatePersistedMessage(convId, msg.id)) return;
 		const next = editText.trim();
 		if (!next) return;
 		setEditing(false);
@@ -363,6 +378,7 @@ function MessageViewInner({
 								msgId={msg.id}
 								convId={convId}
 								pinned={msg.pinned ?? false}
+								deliveryPending={deliveryPending}
 							/>
 						)}
 					</div>
@@ -378,6 +394,7 @@ function MessageViewInner({
 							msgId={msg.id}
 							convId={convId}
 							pinned={msg.pinned ?? false}
+							deliveryPending={deliveryPending}
 						/>
 					</div>
 				)}
@@ -420,6 +437,7 @@ function MessageViewInner({
 								<button
 									type="button"
 									onClick={saveEdit}
+									disabled={deliveryPending}
 									className="px-2 py-1 rounded-sm text-[12px] bg-[var(--color-accent)] text-white"
 								>
 									{t("resendEdit", lang)}
@@ -579,10 +597,12 @@ function MessageActions({
 	msgId,
 	convId,
 	pinned,
+	deliveryPending,
 }: {
 	msgId: string;
 	convId: string;
 	pinned: boolean;
+	deliveryPending: boolean;
 }) {
 	const lang = useStore((s) => s.lang);
 	const [busy, setBusy] = useState(false);
@@ -614,7 +634,7 @@ function MessageActions({
 	// Optimistic update — flip the store entry's pinned flag immediately so
 	// the icon switches without a refetch.
 	const togglePin = async () => {
-		if (busy) return;
+		if (busy || deliveryPending) return;
 		setBusy(true);
 		const next = !pinned;
 		useStore.setState((s) => {
@@ -652,6 +672,7 @@ function MessageActions({
 	};
 	// Reply — set the global replyingTo state. Composer reads it.
 	const reply = () => {
+		if (deliveryPending) return;
 		const cs = useStore.getState().convs.get(convId);
 		const m = cs?.msgById.get(msgId);
 		if (!m) return;
@@ -689,7 +710,7 @@ function MessageActions({
 	// one in the conv. If this message has a workspace checkpoint, the server
 	// restores that checkpoint first so code and timeline stay aligned.
 	const rewindHere = async () => {
-		if (restoreBusy) return;
+		if (restoreBusy || deliveryPending) return;
 		// Light preview when we have a workspace + checkpoint — surfaces the
 		// "you'll lose N commits" warning. For non-workspace convs (DMs)
 		// it's purely a timeline truncation; skip the preview.
@@ -765,7 +786,7 @@ function MessageActions({
 			}
 			// Local truncation in case the WS broadcast (data-conv-rewound)
 			// arrives later than the response — keeps the UI snappy. Idempotent.
-			useStore.getState().truncateMessagesFrom(convId, msgId);
+			useStore.getState().truncateMessagesFrom(convId, msgId, res.rewind_id);
 			if (res.restored) {
 				useStore.getState().bumpWorkspaceFiles();
 				if (res.undo_sha) {
@@ -808,6 +829,7 @@ function MessageActions({
 			<button
 				type="button"
 				onClick={reply}
+				disabled={deliveryPending}
 				title={t("replyLabel", lang)}
 				className="p-0.5 rounded-sm opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)] transition-opacity duration-200"
 			>
@@ -828,7 +850,7 @@ function MessageActions({
 			<button
 				type="button"
 				onClick={togglePin}
-				disabled={busy}
+				disabled={busy || deliveryPending}
 				title={pinned ? t("convUnpin", lang) : t("pinMessageAction", lang)}
 				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
 					pinned
@@ -841,7 +863,7 @@ function MessageActions({
 			<button
 				type="button"
 				onClick={rewindHere}
-				disabled={restoreBusy}
+				disabled={restoreBusy || deliveryPending}
 				title={
 					workspaceId && codeSha
 						? t("rewindWithWorkspace", lang)

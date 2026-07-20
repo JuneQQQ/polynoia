@@ -41,6 +41,42 @@ export type AskFormEntry = AskFormPayload & {
 	blocking_tool?: boolean;
 };
 
+export type MessageHydrationRequest = {
+	convId: string;
+	requestSeq: number;
+	/** Message identities visible when this REST snapshot request started. */
+	messageIds: ReadonlySet<string>;
+	/** Per-id local/WS mutation clocks visible when the request started. REST
+	 * hydrations do not advance these clocks, so overlapping REST responses are
+	 * still ordered by requestSeq instead of being mistaken for live updates. */
+	messageRevisions: ReadonlyMap<string, number>;
+	/** Pending delivery identities at request start, retained for this response. */
+	protectedMessageIds: ReadonlySet<string>;
+	destructiveRevision: number;
+};
+
+export type ComposerDraft = {
+	convId: string;
+	text: string;
+	/** Failed sends wait until the textarea is empty instead of clobbering edits. */
+	restore?: "replace" | "if-empty";
+	/** Preserve the quoted-message intent when a reply send is rejected. */
+	replyingTo?: {
+		msgId: string;
+		snippet: string;
+		senderLabel: string;
+	};
+};
+
+export type FailedComposerDraft = ComposerDraft & {
+	/** Stable identity across edits and conversation switches. */
+	recoveryId: string;
+	/** A retry owns this draft until its delivery receipt settles. */
+	inFlight: boolean;
+};
+
+let nextFailedComposerDraftId = 0;
+
 type ConvState = {
 	/**
 	 * Ordered list of message IDs (display order). Pair with ``msgById`` for O(1)
@@ -90,6 +126,20 @@ type ConvState = {
 	 * chat tell "messages still loading" apart from "conversation is genuinely
 	 * empty" — the former shows a skeleton, the latter the empty state. */
 	messagesHydrated: boolean;
+	/** Ordinary optimistic rows still owned by an unsettled delivery Promise. */
+	deliveryProtectedMessageIds: Set<string>;
+	/** Invalidates REST snapshots that began before an explicit clear/rewind. */
+	destructiveRevision: number;
+	/** Monotonic request ordering for overlapping newest-page REST snapshots. */
+	nextHydrationRequestSeq: number;
+	lastAppliedHydrationRequestSeq: number;
+	/** Advanced only by local/WS message writes (never by REST hydration). */
+	messageMutationRevisions: Map<string, number>;
+	nextMessageMutationRevision: number;
+	/** Rewind event ids already applied; makes HTTP-response + broadcast replay safe. */
+	appliedRewindBoundaries: Set<string>;
+	/** Unique server rewind operation ids already applied. */
+	appliedRewindOperationIds: Set<string>;
 };
 
 export type AgentStatusValue =
@@ -248,6 +298,9 @@ type Store = {
 	 * `<ask-form>{...}</ask-form>` block. Frontend renders these as a
 	 * floating panel above Composer (same pattern as pending-edits). */
 	askFormsByConv: Map<string, AskFormEntry[]>;
+	/** Session tombstones prevent stale open-asks GET/WS replay from reviving a
+	 * card whose answer was already ACKed locally. Ask ids are immutable. */
+	retiredAskFormIdsByConv: Map<string, Set<string>>;
 
 	// Preview right-rail state
 	preview: PreviewState;
@@ -316,8 +369,22 @@ type Store = {
 	 * retyping. Scoped per-conv (convId) so it doesn't leak across conv
 	 * switches. Composer consumes it once on mount/change and clears it
 	 * (passes ``null``) to avoid re-applying on every re-render. */
-	composerDraft: { convId: string; text: string } | null;
-	setComposerDraft: (value: { convId: string; text: string } | null) => void;
+	composerDraft: ComposerDraft | null;
+	setComposerDraft: (value: ComposerDraft | null) => void;
+	/** Terminal delivery failures are queued per conversation. A single global
+	 * draft slot would let a later NACK silently overwrite an earlier one. */
+	failedComposerDraftsByConv: Map<string, FailedComposerDraft[]>;
+	enqueueFailedComposerDraft: (
+		value: ComposerDraft & { recoveryId?: string },
+	) => FailedComposerDraft;
+	updateFailedComposerDraft: (
+		convId: string,
+		recoveryId: string,
+		patch: Partial<
+			Pick<FailedComposerDraft, "text" | "replyingTo" | "inFlight">
+		>,
+	) => FailedComposerDraft | null;
+	consumeFailedComposerDraft: (convId: string, recoveryId: string) => void;
 	/** Upsert a pending edit (WS chunk handler) — also flips existing entries
 	 * when the server pushes a status change. */
 	upsertPendingEdit: (edit: import("./lib/api").PendingEdit) => void;
@@ -383,6 +450,14 @@ type Store = {
 		},
 		msgId?: string,
 	) => string;
+	/** Capture the causal boundary for one newest-page REST request. */
+	captureMessageHydration: (convId: string) => MessageHydrationRequest;
+	/** Invalidate every REST message page that started before a local clear,
+	 * rewind, regenerate, or edited resend mutation. */
+	invalidateMessageHydrations: (convId: string) => void;
+	markMessagesMutated: (convId: string, msgIds: Iterable<string>) => void;
+	protectMessageDelivery: (convId: string, msgId: string) => void;
+	releaseMessageDelivery: (convId: string, msgId: string) => void;
 	applyChunkToConv: (convId: string, action: ChunkAction) => void;
 	/** Hydrate conv from DB. ``mode='replace'`` clears existing state
 	 * (initial load on conv switch); ``'prepend'`` adds older messages to
@@ -398,15 +473,28 @@ type Store = {
 			code_sha?: string | null;
 			created_at: string;
 		}>,
-		options: { mode: "replace" | "prepend"; hasMore: boolean },
+		options: {
+			mode: "replace" | "prepend";
+			hasMore: boolean;
+			request?: MessageHydrationRequest;
+			/** Authoritative clear, not a REST snapshot merge. */
+			destructive?: boolean;
+		},
 	) => void;
 	setLoadingOlder: (convId: string, loading: boolean) => void;
 	/** Drop a message + every later one in this conv. Used by 「从此处重来」
 	 * (rewind) and by the cross-tab `data-conv-rewound` broadcast. */
-	truncateMessagesFrom: (convId: string, fromMsgId: string) => void;
+	truncateMessagesFrom: (
+		convId: string,
+		fromMsgId: string,
+		rewindId?: string,
+	) => void;
 	/** Remove ONE message by id (e.g. a live-only retry notice the server clears
 	 * via `data-message-removed` once a real response arrives). No-op if absent. */
 	removeMessage: (convId: string, msgId: string) => void;
+	/** Apply a server-authoritative delete, invalidating any older REST page even
+	 * when this tab never loaded the deleted id. */
+	removeMessageAuthoritatively: (convId: string, msgId: string) => void;
 	/** After a reconnect, flip any write/edit tool-call card still stuck in
 	 * pending/running to a terminal「中断」state — UNLESS its agent was reported
 	 * streaming again at/after `since` (i.e. the turn survived the blip, so the
@@ -524,6 +612,7 @@ export type ChunkAction =
 			messageId: string;
 			senderId?: string | null;
 			turnId?: string | null;
+			inReplyTo?: string | null;
 	  };
 
 export const useStore = create<Store>((set, get) => ({
@@ -550,11 +639,14 @@ export const useStore = create<Store>((set, get) => ({
 	convs: new Map(),
 	replyingTo: null,
 	composerDraft: null,
+	failedComposerDraftsByConv: new Map(),
 	pendingEditsByConv: new Map(),
 	pendingAccessByConv: new Map(),
 	conflictsByConv: new Map(),
 	askFormsByConv: new Map(),
+	retiredAskFormIdsByConv: new Map(),
 	enqueueAskForm: (convId, entry) => {
+		if (get().retiredAskFormIdsByConv.get(convId)?.has(entry.id)) return;
 		const m = new Map(get().askFormsByConv);
 		const list = m.get(convId) ?? [];
 		// De-dup on id (server might re-emit during reload)
@@ -565,12 +657,16 @@ export const useStore = create<Store>((set, get) => ({
 	},
 	dequeueAskForm: (convId, askId) => {
 		const m = new Map(get().askFormsByConv);
+		const retiredAskFormIdsByConv = new Map(get().retiredAskFormIdsByConv);
+		const retired = new Set(retiredAskFormIdsByConv.get(convId) ?? []);
+		retired.add(askId);
+		retiredAskFormIdsByConv.set(convId, retired);
 		const list = m.get(convId) ?? [];
 		m.set(
 			convId,
 			list.filter((e) => e.id !== askId),
 		);
-		set({ askFormsByConv: m });
+		set({ askFormsByConv: m, retiredAskFormIdsByConv });
 	},
 	upsertPendingEdit: (edit) => {
 		const m = new Map(get().pendingEditsByConv);
@@ -820,6 +916,51 @@ export const useStore = create<Store>((set, get) => ({
 		}),
 	setReplyingTo: (value) => set({ replyingTo: value }),
 	setComposerDraft: (value) => set({ composerDraft: value }),
+	enqueueFailedComposerDraft: (value) => {
+		const drafts = new Map(get().failedComposerDraftsByConv);
+		const current = drafts.get(value.convId) ?? [];
+		const recoveryId =
+			value.recoveryId ?? `failed-draft-${++nextFailedComposerDraftId}`;
+		const existing = current.find(
+			(candidate) => candidate.recoveryId === recoveryId,
+		);
+		if (existing) return existing;
+		const failedDraft: FailedComposerDraft = {
+			...value,
+			recoveryId,
+			inFlight: false,
+		};
+		drafts.set(value.convId, [...current, failedDraft]);
+		set({ failedComposerDraftsByConv: drafts });
+		return failedDraft;
+	},
+	updateFailedComposerDraft: (convId, recoveryId, patch) => {
+		const current = get().failedComposerDraftsByConv.get(convId);
+		if (!current) return null;
+		const index = current.findIndex(
+			(candidate) => candidate.recoveryId === recoveryId,
+		);
+		if (index < 0) return null;
+		const updated = { ...current[index], ...patch };
+		const next = [...current];
+		next[index] = updated;
+		const drafts = new Map(get().failedComposerDraftsByConv);
+		drafts.set(convId, next);
+		set({ failedComposerDraftsByConv: drafts });
+		return updated;
+	},
+	consumeFailedComposerDraft: (convId, recoveryId) => {
+		const current = get().failedComposerDraftsByConv.get(convId);
+		if (!current) return;
+		const remaining = current.filter(
+			(candidate) => candidate.recoveryId !== recoveryId,
+		);
+		if (remaining.length === current.length) return;
+		const drafts = new Map(get().failedComposerDraftsByConv);
+		if (remaining.length > 0) drafts.set(convId, remaining);
+		else drafts.delete(convId);
+		set({ failedComposerDraftsByConv: drafts });
+	},
 	setView: (v) => set({ view: v }),
 	mergeMode: "auto",
 	mergeModeConvId: null,
@@ -831,9 +972,83 @@ export const useStore = create<Store>((set, get) => ({
 		set({ lang: l });
 	},
 
-	hydrateMessages: (convId, msgs, { mode, hasMore }) => {
+	captureMessageHydration: (convId) => {
 		const convs = new Map(get().convs);
 		const cur = convs.get(convId) ?? _emptyConvState();
+		const requestSeq = (cur.nextHydrationRequestSeq ?? 0) + 1;
+		convs.set(convId, { ...cur, nextHydrationRequestSeq: requestSeq });
+		set({ convs });
+		return {
+			convId,
+			requestSeq,
+			messageIds: new Set(cur.messageOrder),
+			messageRevisions: new Map(cur.messageMutationRevisions ?? []),
+			protectedMessageIds: new Set(
+				cur.deliveryProtectedMessageIds ?? new Set<string>(),
+			),
+			destructiveRevision: cur.destructiveRevision ?? 0,
+		};
+	},
+
+	invalidateMessageHydrations: (convId) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId) ?? _emptyConvState();
+		convs.set(convId, {
+			...cur,
+			destructiveRevision: (cur.destructiveRevision ?? 0) + 1,
+		});
+		set({ convs });
+	},
+
+	markMessagesMutated: (convId, msgIds) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId) ?? _emptyConvState();
+		convs.set(convId, { ...cur, ...messageMutationPatch(cur, msgIds) });
+		set({ convs });
+	},
+
+	protectMessageDelivery: (convId, msgId) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId) ?? _emptyConvState();
+		const protectedIds = new Set(cur.deliveryProtectedMessageIds ?? []);
+		if (protectedIds.has(msgId)) return;
+		protectedIds.add(msgId);
+		convs.set(convId, { ...cur, deliveryProtectedMessageIds: protectedIds });
+		set({ convs });
+	},
+
+	releaseMessageDelivery: (convId, msgId) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId);
+		if (!cur?.deliveryProtectedMessageIds?.has(msgId)) return;
+		const protectedIds = new Set(cur.deliveryProtectedMessageIds);
+		protectedIds.delete(msgId);
+		convs.set(convId, { ...cur, deliveryProtectedMessageIds: protectedIds });
+		set({ convs });
+	},
+
+	hydrateMessages: (
+		convId,
+		msgs,
+		{ mode, hasMore, request, destructive = false },
+	) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId) ?? _emptyConvState();
+		const destructiveRevision = cur.destructiveRevision ?? 0;
+		const lastAppliedRequest = cur.lastAppliedHydrationRequestSeq ?? 0;
+		if (
+			!destructive &&
+			request &&
+			(request.convId !== convId ||
+				request.destructiveRevision !== destructiveRevision ||
+				(mode === "replace" && request.requestSeq < lastAppliedRequest))
+		) {
+			// A clear/rewind or a newer REST response already won. This response is
+			// causally obsolete; applying even part of it could resurrect deleted rows.
+			convs.set(convId, { ...cur, loadingOlder: false });
+			set({ convs });
+			return;
+		}
 		const nextById =
 			mode === "replace" ? new Map<string, Message>() : new Map(cur.msgById);
 		const existingOrder = mode === "replace" ? [] : cur.messageOrder;
@@ -841,8 +1056,19 @@ export const useStore = create<Store>((set, get) => ({
 			mode === "replace"
 				? new Set([...cur.streamingTexts.values()].map((v) => v.messageId))
 				: new Set<string>();
-		const shouldKeepLiveOnly = (msg: Message) => {
+		const shouldKeepCurrent = (msg: Message) => {
 			if (mode !== "replace") return false;
+			if (!destructive && request) {
+				// Current-wins only for identities created during this request or owned
+				// by a delivery that was pending when it began. The next clean request
+				// can remove them normally; this is not prefix-based immortality.
+				if (!request.messageIds.has(msg.id)) return true;
+				const capturedRevision = request.messageRevisions.get(msg.id) ?? 0;
+				const currentRevision = cur.messageMutationRevisions?.get(msg.id) ?? 0;
+				if (currentRevision > capturedRevision) return true;
+				if (request.protectedMessageIds.has(msg.id)) return true;
+				if (cur.deliveryProtectedMessageIds?.has(msg.id)) return true;
+			}
 			if (liveMessageIds.has(msg.id)) return true;
 			if (msg.id.startsWith("retry-") || msg.id.startsWith("queued-"))
 				return true;
@@ -853,15 +1079,21 @@ export const useStore = create<Store>((set, get) => ({
 		const newOrder: string[] = [];
 		for (const m of msgs) {
 			if (nextById.has(m.id)) continue;
-			nextById.set(m.id, {
-				id: m.id,
-				conv_id: m.conv_id,
-				sender_id: m.sender_id,
-				payload: m.payload as Message["payload"],
-				in_reply_to: m.in_reply_to ?? null,
-				code_sha: (m as { code_sha?: string | null }).code_sha ?? null,
-				created_at: m.created_at,
-			});
+			const current = cur.msgById.get(m.id);
+			nextById.set(
+				m.id,
+				current && shouldKeepCurrent(current)
+					? current
+					: {
+							id: m.id,
+							conv_id: m.conv_id,
+							sender_id: m.sender_id,
+							payload: m.payload as Message["payload"],
+							in_reply_to: m.in_reply_to ?? null,
+							code_sha: (m as { code_sha?: string | null }).code_sha ?? null,
+							created_at: m.created_at,
+						},
+			);
 			newOrder.push(m.id);
 		}
 		const liveOrder: string[] = [];
@@ -869,9 +1101,18 @@ export const useStore = create<Store>((set, get) => ({
 			for (const id of cur.messageOrder) {
 				if (nextById.has(id)) continue;
 				const msg = cur.msgById.get(id);
-				if (!msg || !shouldKeepLiveOnly(msg)) continue;
+				if (!msg || !shouldKeepCurrent(msg)) continue;
 				nextById.set(id, msg);
 				liveOrder.push(id);
+			}
+		}
+		const messageMutationRevisions = new Map<string, number>();
+		const appliedRewindBoundaries = new Set(cur.appliedRewindBoundaries ?? []);
+		if (!destructive) {
+			for (const id of nextById.keys()) {
+				const revision = cur.messageMutationRevisions?.get(id);
+				if (revision !== undefined) messageMutationRevisions.set(id, revision);
+				appliedRewindBoundaries.delete(id);
 			}
 		}
 		convs.set(convId, {
@@ -886,6 +1127,18 @@ export const useStore = create<Store>((set, get) => ({
 			hasMoreOlder: hasMore,
 			loadingOlder: false,
 			messagesHydrated: true,
+			deliveryProtectedMessageIds: destructive
+				? new Set()
+				: new Set(cur.deliveryProtectedMessageIds ?? []),
+			destructiveRevision: destructive
+				? destructiveRevision + 1
+				: destructiveRevision,
+			lastAppliedHydrationRequestSeq:
+				mode === "replace" && request
+					? Math.max(lastAppliedRequest, request.requestSeq)
+					: lastAppliedRequest,
+			messageMutationRevisions,
+			appliedRewindBoundaries,
 		});
 		set({ convs });
 	},
@@ -897,20 +1150,57 @@ export const useStore = create<Store>((set, get) => ({
 		set({ convs });
 	},
 
-	truncateMessagesFrom: (convId, fromMsgId) => {
+	truncateMessagesFrom: (convId, fromMsgId, rewindId) => {
 		// Drop the message AND every later one. Used by 「从此处重来」 (rewind):
 		// the initiating tab calls it after the server confirms; other tabs
 		// receive `data-conv-rewound` and call it too. Idempotent — re-applying
 		// with a stale fromMsgId is a no-op.
 		const convs = new Map(get().convs);
-		const cur = convs.get(convId);
-		if (!cur) return;
+		const cur = convs.get(convId) ?? _emptyConvState();
+		const appliedRewindOperationIds = new Set(
+			cur.appliedRewindOperationIds ?? [],
+		);
+		const appliedRewindBoundaries = new Set(cur.appliedRewindBoundaries ?? []);
+		if (rewindId) {
+			if (appliedRewindOperationIds.has(rewindId)) return;
+			appliedRewindOperationIds.add(rewindId);
+		} else {
+			// Compatibility for pre-rewind-id servers. Keep this keyspace separate
+			// so a legacy frame cannot suppress a new operation-id event.
+			if (appliedRewindBoundaries.has(fromMsgId)) return;
+			appliedRewindBoundaries.add(fromMsgId);
+		}
 		const cutIdx = cur.messageOrder.indexOf(fromMsgId);
-		if (cutIdx < 0) return;
+		if (cutIdx < 0) {
+			// The rewind boundary may live in an older page this tab never loaded. In
+			// that case every currently-loaded row is after an unknown cutoff, so the
+			// only safe local projection is empty until the authoritative refetch.
+			convs.set(convId, {
+				...cur,
+				messageOrder: [],
+				msgById: new Map(),
+				streamingTexts: new Map(),
+				deliveryProtectedMessageIds: new Set(),
+				messageMutationRevisions: new Map(),
+				appliedRewindBoundaries,
+				appliedRewindOperationIds,
+				destructiveRevision: (cur.destructiveRevision ?? 0) + 1,
+			});
+			set({ convs });
+			return;
+		}
 		const kept = cur.messageOrder.slice(0, cutIdx);
 		const removed = new Set(cur.messageOrder.slice(cutIdx));
 		const nextById = new Map(cur.msgById);
 		for (const id of removed) nextById.delete(id);
+		const messageMutationRevisions = new Map(
+			cur.messageMutationRevisions ?? [],
+		);
+		for (const id of removed) messageMutationRevisions.delete(id);
+		const deliveryProtectedMessageIds = new Set(
+			cur.deliveryProtectedMessageIds ?? [],
+		);
+		for (const id of removed) deliveryProtectedMessageIds.delete(id);
 		// Drop any streamingTexts whose message went away too — otherwise the
 		// streamingTexts map keeps a ghost partial buffer.
 		const newStreaming = new Map(cur.streamingTexts);
@@ -922,6 +1212,11 @@ export const useStore = create<Store>((set, get) => ({
 			messageOrder: kept,
 			msgById: nextById,
 			streamingTexts: newStreaming,
+			messageMutationRevisions,
+			appliedRewindBoundaries,
+			appliedRewindOperationIds,
+			deliveryProtectedMessageIds,
+			destructiveRevision: (cur.destructiveRevision ?? 0) + 1,
 		});
 		set({ convs });
 	},
@@ -929,18 +1224,21 @@ export const useStore = create<Store>((set, get) => ({
 	removeMessage: (convId, msgId) => {
 		const convs = new Map(get().convs);
 		const cur = convs.get(convId);
-		if (!cur || !cur.msgById.has(msgId)) return;
-		const nextById = new Map(cur.msgById);
-		nextById.delete(msgId);
-		const newStreaming = new Map(cur.streamingTexts);
-		for (const [key, val] of cur.streamingTexts) {
-			if (val.messageId === msgId) newStreaming.delete(key);
-		}
+		if (!cur?.msgById.has(msgId)) return;
 		convs.set(convId, {
 			...cur,
-			messageOrder: cur.messageOrder.filter((id) => id !== msgId),
-			msgById: nextById,
-			streamingTexts: newStreaming,
+			...messageRemovalPatch(cur, msgId),
+		});
+		set({ convs });
+	},
+
+	removeMessageAuthoritatively: (convId, msgId) => {
+		const convs = new Map(get().convs);
+		const cur = convs.get(convId) ?? _emptyConvState();
+		convs.set(convId, {
+			...cur,
+			...(cur.msgById.has(msgId) ? messageRemovalPatch(cur, msgId) : {}),
+			destructiveRevision: (cur.destructiveRevision ?? 0) + 1,
 		});
 		set({ convs });
 	},
@@ -983,22 +1281,14 @@ export const useStore = create<Store>((set, get) => ({
 					output_text: "⚠️ 连接已中断,该写入可能未完成",
 				} as Message["payload"],
 			});
-			api
-				.createMessage({
-					conv_id: convId,
-					sender_id: msg.sender_id,
-					msg_id: mid,
-					payload: {
-						...p,
-						state: "error",
-						is_error: true,
-						output_text: "⚠️ 连接已中断,该写入可能未完成",
-					},
-				})
-				.catch(() => undefined);
+			api.interruptStuckWrite(convId, mid).catch(() => undefined);
 		}
 		if (!patched) return;
-		convs.set(convId, { ...cur, msgById: patched });
+		convs.set(convId, {
+			...cur,
+			msgById: patched,
+			...messageMutationPatch(cur, changedMessageIds(cur.msgById, patched)),
+		});
 		set({ convs });
 	},
 
@@ -1042,6 +1332,7 @@ export const useStore = create<Store>((set, get) => ({
 			...cur,
 			messageOrder: [...cur.messageOrder, id],
 			msgById: nextById,
+			...messageMutationPatch(cur, [id]),
 		});
 		set({ convs });
 		return id;
@@ -1157,6 +1448,10 @@ export const useStore = create<Store>((set, get) => ({
 				...cur,
 				messageOrder: order,
 				msgById: flippedById ?? nextById,
+				...messageMutationPatch(
+					cur,
+					changedMessageIds(cur.msgById, flippedById ?? nextById),
+				),
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,
 			});
@@ -1205,6 +1500,7 @@ export const useStore = create<Store>((set, get) => ({
 				...cur,
 				messageOrder: order,
 				msgById: nextById,
+				...messageMutationPatch(cur, changedMessageIds(cur.msgById, nextById)),
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,
 			});
@@ -1257,6 +1553,7 @@ export const useStore = create<Store>((set, get) => ({
 			convs.set(convId, {
 				...cur,
 				msgById: nextById,
+				...messageMutationPatch(cur, [entry.messageId]),
 				streamingTexts: newStreaming,
 				streamTick: cur.streamTick + 1,
 			});
@@ -1313,7 +1610,15 @@ export const useStore = create<Store>((set, get) => ({
 				convs.set(convId, {
 					...cur,
 					agentStatus: newStatus,
-					...(patchedById ? { msgById: patchedById } : {}),
+					...(patchedById
+						? {
+								msgById: patchedById,
+								...messageMutationPatch(
+									cur,
+									changedMessageIds(cur.msgById, patchedById),
+								),
+							}
+						: {}),
 				});
 				set({ convs });
 				return;
@@ -1357,10 +1662,17 @@ export const useStore = create<Store>((set, get) => ({
 						existing.payload,
 						action.payload,
 					);
-				nextById.set(messageId, { ...existing, payload: mergedPayload });
+				nextById.set(messageId, {
+					...existing,
+					payload: mergedPayload,
+					...(action.inReplyTo !== undefined
+						? { in_reply_to: action.inReplyTo }
+						: {}),
+				});
 				convs.set(convId, {
 					...cur,
 					msgById: nextById,
+					...messageMutationPatch(cur, [messageId]),
 					...(prunedStreaming ? { streamingTexts: prunedStreaming } : {}),
 					streamTick: cur.streamTick + 1,
 				});
@@ -1370,6 +1682,7 @@ export const useStore = create<Store>((set, get) => ({
 					conv_id: convId,
 					sender_id: cardSender,
 					payload: action.payload,
+					in_reply_to: action.inReplyTo ?? null,
 					turn_id: action.turnId ?? null,
 					created_at: new Date().toISOString(),
 				});
@@ -1377,6 +1690,7 @@ export const useStore = create<Store>((set, get) => ({
 					...cur,
 					messageOrder: [...cur.messageOrder, messageId],
 					msgById: nextById,
+					...messageMutationPatch(cur, [messageId]),
 					...(prunedStreaming ? { streamingTexts: prunedStreaming } : {}),
 					streamTick: cur.streamTick + 1,
 				});
@@ -1426,6 +1740,81 @@ function _emptyConvState(): ConvState {
 		hasMoreOlder: true, // assume there's history until proven otherwise
 		loadingOlder: false,
 		messagesHydrated: false,
+		deliveryProtectedMessageIds: new Set(),
+		destructiveRevision: 0,
+		nextHydrationRequestSeq: 0,
+		lastAppliedHydrationRequestSeq: 0,
+		messageMutationRevisions: new Map(),
+		nextMessageMutationRevision: 0,
+		appliedRewindBoundaries: new Set(),
+		appliedRewindOperationIds: new Set(),
+	};
+}
+
+function messageMutationPatch(
+	cur: ConvState,
+	msgIds: Iterable<string>,
+): Pick<
+	ConvState,
+	| "messageMutationRevisions"
+	| "nextMessageMutationRevision"
+	| "appliedRewindBoundaries"
+> {
+	const messageMutationRevisions = new Map(cur.messageMutationRevisions ?? []);
+	const appliedRewindBoundaries = new Set(cur.appliedRewindBoundaries ?? []);
+	let nextMessageMutationRevision = cur.nextMessageMutationRevision ?? 0;
+	for (const id of new Set(msgIds)) {
+		nextMessageMutationRevision += 1;
+		messageMutationRevisions.set(id, nextMessageMutationRevision);
+		appliedRewindBoundaries.delete(id);
+	}
+	return {
+		messageMutationRevisions,
+		nextMessageMutationRevision,
+		appliedRewindBoundaries,
+	};
+}
+
+function changedMessageIds(
+	before: ReadonlyMap<string, Message>,
+	after: ReadonlyMap<string, Message>,
+): string[] {
+	const changed: string[] = [];
+	for (const [id, msg] of after) {
+		if (before.get(id) !== msg) changed.push(id);
+	}
+	return changed;
+}
+
+function messageRemovalPatch(
+	cur: ConvState,
+	msgId: string,
+): Pick<
+	ConvState,
+	| "messageOrder"
+	| "msgById"
+	| "streamingTexts"
+	| "messageMutationRevisions"
+	| "deliveryProtectedMessageIds"
+> {
+	const msgById = new Map(cur.msgById);
+	msgById.delete(msgId);
+	const messageMutationRevisions = new Map(cur.messageMutationRevisions ?? []);
+	messageMutationRevisions.delete(msgId);
+	const deliveryProtectedMessageIds = new Set(
+		cur.deliveryProtectedMessageIds ?? [],
+	);
+	deliveryProtectedMessageIds.delete(msgId);
+	const streamingTexts = new Map(cur.streamingTexts);
+	for (const [key, value] of cur.streamingTexts) {
+		if (value.messageId === msgId) streamingTexts.delete(key);
+	}
+	return {
+		messageOrder: cur.messageOrder.filter((id) => id !== msgId),
+		msgById,
+		streamingTexts,
+		messageMutationRevisions,
+		deliveryProtectedMessageIds,
 	};
 }
 

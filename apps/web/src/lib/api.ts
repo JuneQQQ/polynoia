@@ -396,6 +396,10 @@ export const api = {
 			`/api/conversations/${convId}/messages/${msgId}`,
 			{ text },
 		),
+	interruptStuckWrite: (convId: string, msgId: string) =>
+		patchJSON<{ ok: boolean; updated: boolean }>(
+			`/api/conversations/${convId}/messages/${msgId}/interrupt-stuck-write`,
+		),
 	/** Single-conv summary fetch. Returns the same shape as the list endpoint. */
 	/** Upload an attachment (raw bytes) → returns a server URL to reference in
 	 * the message payload (instead of inlining base64). */
@@ -626,6 +630,7 @@ export const api = {
 	rewindConv: (convId: string, fromMsgId: string) =>
 		postJSON<{
 			ok: boolean;
+			rewind_id: string;
 			deleted: number;
 			restored: string | null;
 			undo_sha: string | null;

@@ -13,10 +13,19 @@ import { type DraftAttachment, api } from "../lib/api";
 import { t } from "../lib/i18n";
 import { isMobile } from "../lib/platform";
 import type { Agent } from "../lib/types";
-import { useStore } from "../store";
+import {
+	type ComposerDraft,
+	type FailedComposerDraft,
+	useStore,
+} from "../store";
 
 type Props = {
-	onSend: (text: string, inReplyTo?: string) => void;
+	onSend: (
+		text: string,
+		inReplyTo?: string,
+		replyingTo?: { msgId: string; snippet: string; senderLabel: string },
+		recoveryDraft?: FailedComposerDraft,
+	) => void;
 	members: string[];
 	/** Active conv id — used to scope the global replyingTo state to THIS
 	 * conv (so switching convs doesn't show a stale reply chip). */
@@ -49,6 +58,91 @@ type Props = {
 
 const MAX_PENDING_ATTACHMENTS = 12;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+export function resolveComposerDraft(
+	currentText: string,
+	draft: Pick<ComposerDraft, "text" | "restore">,
+	hasActiveReply = false,
+): { text: string; consume: boolean } {
+	if (draft.restore === "if-empty" && (currentText || hasActiveReply)) {
+		return { text: currentText, consume: false };
+	}
+	return { text: draft.text, consume: true };
+}
+
+export function selectComposerDraftForConv(
+	convId: string,
+	rewindDraft: ComposerDraft | null,
+	failedDraft: ComposerDraft | null,
+): {
+	source: "rewind" | "failed";
+	draft: ComposerDraft;
+	retainUntilAck: boolean;
+} | null {
+	if (rewindDraft?.convId === convId) {
+		return { source: "rewind", draft: rewindDraft, retainUntilAck: false };
+	}
+	if (failedDraft?.convId === convId) {
+		return { source: "failed", draft: failedDraft, retainUntilAck: true };
+	}
+	return null;
+}
+
+export function firstAvailableFailedComposerDraft(
+	drafts: readonly FailedComposerDraft[] | undefined,
+): FailedComposerDraft | null {
+	const first = drafts?.[0] ?? null;
+	return first?.inFlight ? null : first;
+}
+
+export function hasConflictingComposerReply(
+	currentReply: { msgId: string } | null,
+	recoveryReply: ComposerDraft["replyingTo"],
+): boolean {
+	return currentReply !== null && currentReply.msgId !== recoveryReply?.msgId;
+}
+
+export function shouldClearRecoveredReplyOnRewind(
+	active: Pick<FailedComposerDraft, "replyingTo"> | null,
+	currentReply: { msgId: string } | null,
+): boolean {
+	return (
+		active?.replyingTo !== undefined &&
+		active.replyingTo.msgId === currentReply?.msgId
+	);
+}
+
+export function claimPersistedComposerDraft(
+	loadedConvRef: { current: string | null },
+	convId: string,
+	hasRecovery: boolean,
+	draftText: string | undefined,
+): boolean {
+	if (hasRecovery) {
+		// This recovery is newer than the server/seed snapshot. Mark the snapshot
+		// handled so discarding the recovery cannot resurrect stale text.
+		loadedConvRef.current = convId;
+		return false;
+	}
+	if (draftText === undefined || loadedConvRef.current === convId) return false;
+	loadedConvRef.current = convId;
+	return true;
+}
+
+export function syncRecoveredDraftText(
+	convId: string,
+	active: FailedComposerDraft,
+	text: string,
+): FailedComposerDraft | null {
+	if (active.convId !== convId) return active;
+	if (!text) {
+		useStore.getState().consumeFailedComposerDraft(convId, active.recoveryId);
+		return null;
+	}
+	return useStore
+		.getState()
+		.updateFailedComposerDraft(convId, active.recoveryId, { text });
+}
 
 /**
  * Find an "@<query>" token where the caret sits inside it.
@@ -179,8 +273,20 @@ export function Composer({
 	// user's subsequent edits.
 	const composerDraft = useStore((s) => s.composerDraft);
 	const setComposerDraft = useStore((s) => s.setComposerDraft);
+	const firstFailedComposerDraft = useStore(
+		(s) => s.failedComposerDraftsByConv?.get(convId)?.[0] ?? null,
+	);
+	const failedComposerDraft = firstAvailableFailedComposerDraft(
+		firstFailedComposerDraft ? [firstFailedComposerDraft] : undefined,
+	);
+	const updateFailedComposerDraft = useStore(
+		(s) => s.updateFailedComposerDraft,
+	);
+	const activeFailedDraftRef = useRef<FailedComposerDraft | null>(null);
 	const loadedDraftConv = useRef<string | null>(null);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: convId is the route-change signal; every local/ref draft cache must reset even though it is not read inside the effect.
 	useEffect(() => {
+		activeFailedDraftRef.current = null;
 		loadedDraftConv.current = null;
 		loadedAttachmentDraftConv.current = null;
 		setText("");
@@ -193,9 +299,68 @@ export function Composer({
 		setPendingFileRefs([]);
 	}, [convId]);
 	useEffect(() => {
-		if (!composerDraft || composerDraft.convId !== convId) return;
-		setText(composerDraft.text);
-		setComposerDraft(null);
+		const active = activeFailedDraftRef.current;
+		if (!active || active.convId !== convId) return;
+		const replyingTo =
+			replyingToRaw?.convId === convId
+				? {
+						msgId: replyingToRaw.msgId,
+						snippet: replyingToRaw.snippet,
+						senderLabel: replyingToRaw.senderLabel,
+					}
+				: undefined;
+		if (
+			active.replyingTo?.msgId === replyingTo?.msgId &&
+			active.replyingTo?.snippet === replyingTo?.snippet &&
+			active.replyingTo?.senderLabel === replyingTo?.senderLabel
+		) {
+			return;
+		}
+		const updated = updateFailedComposerDraft(convId, active.recoveryId, {
+			replyingTo,
+		});
+		if (updated) activeFailedDraftRef.current = updated;
+	}, [convId, replyingToRaw, updateFailedComposerDraft]);
+	useEffect(() => {
+		const selected = selectComposerDraftForConv(
+			convId,
+			composerDraft,
+			failedComposerDraft,
+		);
+		if (!selected) return;
+		if (
+			selected.retainUntilAck &&
+			activeFailedDraftRef.current?.recoveryId ===
+				(selected.draft as FailedComposerDraft).recoveryId
+		) {
+			return;
+		}
+		const currentReply =
+			replyingToRaw?.convId === convId ? replyingToRaw : null;
+		const recoveryReply = selected.draft.replyingTo;
+		const hasConflictingReply =
+			selected.retainUntilAck &&
+			hasConflictingComposerReply(currentReply, recoveryReply);
+		const restored = resolveComposerDraft(
+			text,
+			selected.draft,
+			hasConflictingReply,
+		);
+		if (!restored.consume) return;
+		setText(restored.text);
+		if (!selected.retainUntilAck) {
+			const activeRecovery = activeFailedDraftRef.current;
+			activeFailedDraftRef.current = null;
+			if (shouldClearRecoveredReplyOnRewind(activeRecovery, currentReply)) {
+				setReplyingTo(null);
+			}
+			setComposerDraft(null);
+		} else {
+			activeFailedDraftRef.current = selected.draft as FailedComposerDraft;
+			if (selected.draft.replyingTo) {
+				setReplyingTo({ convId, ...selected.draft.replyingTo });
+			}
+		}
 		// Defer focus to next tick so the textarea is rendered + sized.
 		window.setTimeout(() => {
 			const ta = taRef.current;
@@ -204,16 +369,28 @@ export function Composer({
 			const end = ta.value.length;
 			ta.setSelectionRange(end, end);
 		}, 0);
-	}, [composerDraft, convId, setComposerDraft]);
+	}, [
+		composerDraft,
+		convId,
+		failedComposerDraft,
+		replyingToRaw,
+		setComposerDraft,
+		setReplyingTo,
+		text,
+	]);
 	useEffect(() => {
-		if (draftText === undefined) return;
-		if (loadedDraftConv.current !== convId) {
-			loadedDraftConv.current = convId;
-			setText((cur) => (cur ? cur : draftText));
+		if (
+			!claimPersistedComposerDraft(
+				loadedDraftConv,
+				convId,
+				firstFailedComposerDraft !== null,
+				draftText,
+			)
+		) {
 			return;
 		}
-		setText((cur) => (cur ? cur : draftText));
-	}, [convId, draftText]);
+		setText((cur) => (cur ? cur : (draftText ?? "")));
+	}, [convId, draftText, firstFailedComposerDraft]);
 	useEffect(() => {
 		if (convId.startsWith("dm-")) return;
 		const handle = window.setTimeout(() => {
@@ -347,7 +524,20 @@ export function Composer({
 			setPendingFileRefs([]);
 		}
 		if (t) {
-			onSend(t, replyingTo?.msgId);
+			const recoveryDraft = activeFailedDraftRef.current ?? undefined;
+			onSend(
+				t,
+				replyingTo?.msgId,
+				replyingTo
+					? {
+							msgId: replyingTo.msgId,
+							snippet: replyingTo.snippet,
+							senderLabel: replyingTo.senderLabel,
+						}
+					: undefined,
+				recoveryDraft,
+			);
+			activeFailedDraftRef.current = null;
 		}
 		setText("");
 		if (!convId.startsWith("dm-")) api.setConvDraft(convId, "").catch(() => {});
@@ -414,6 +604,12 @@ export function Composer({
 	const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
 		const v = e.target.value;
 		setText(v);
+		const active = activeFailedDraftRef.current;
+		if (active?.convId === convId) {
+			// Clearing is an explicit discard; otherwise mirror every keystroke into
+			// per-conversation memory before a route switch can reset local state.
+			activeFailedDraftRef.current = syncRecoveredDraftText(convId, active, v);
+		}
 		const caret = e.target.selectionStart ?? v.length;
 		setMention(detectMentionContext(v, caret));
 	};
@@ -574,6 +770,7 @@ export function Composer({
 	// Auto-grow the textarea with content (ChatGPT/Claude feel), capped before
 	// it starts eating the mobile viewport.
 	// then it scrolls internally. Presentation behavior only.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: text is the resize signal after controlled textarea content changes.
 	useEffect(() => {
 		const ta = taRef.current;
 		if (!ta) return;

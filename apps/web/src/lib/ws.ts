@@ -40,6 +40,7 @@ export type UIMessageChunk =
 			sender_label?: string | null;
 			turn_id?: string | null;
 			discussion_id?: string | null;
+			in_reply_to?: string | null;
 	  }
 	| { type: "error"; error_text: string };
 
@@ -54,6 +55,10 @@ export type DeliveryResult =
 
 type PendingSend = {
 	frame: string;
+	sequence: number;
+	outboxes: Set<PendingOutbox>;
+	sentAtLeastOnce: boolean;
+	sentSockets: Set<WebSocket>;
 	sentOn: WebSocket | null;
 	retryOn: WebSocket | null;
 	promise: Promise<DeliveryResult>;
@@ -61,17 +66,45 @@ type PendingSend = {
 };
 
 type PendingOutbox = Map<string, PendingSend>;
+type OutboxCoordinator = {
+	outbox: PendingOutbox;
+	owner: ConvWebSocket | null;
+	participants: Map<ConvWebSocket, number>;
+	settledFrames: Map<string, string | null>;
+};
 type FlushResult = { ok: true } | { ok: false; error?: unknown };
+type ConnectAttempt = {
+	socket: WebSocket;
+	abort: (error: unknown) => void;
+	cancel: () => void;
+};
 
-// ChatPane replaces its ConvWebSocket instance when a conversation unmounts.
-// Keep only closed instances' unsettled outboxes here; the next instance for
-// that conversation claims the same Map (and delivery promises) immediately.
-const dormantOutboxes = new Map<string, PendingOutbox>();
+const CONNECT_HANDSHAKE_TIMEOUT_MS = 10_000;
+let nextPendingSequence = 0;
+let nextParticipantGeneration = 0;
+
+function settlePending(
+	id: string,
+	pending: PendingSend,
+	result: DeliveryResult,
+) {
+	for (const outbox of pending.outboxes) {
+		if (outbox.get(id) === pending) outbox.delete(id);
+	}
+	pending.outboxes.clear();
+	pending.sentSockets.clear();
+	pending.resolve(result);
+}
+
+// Keep a claimed outbox registered while its replacement is live. Another
+// same-conversation instance may close later; its pending frames must merge
+// into (and wake) that live owner instead of creating a split dormant outbox.
+const outboxCoordinators = new Map<string, OutboxCoordinator>();
 
 export class ConvWebSocket {
 	private ws: WebSocket | null = null;
 	private readonly frameBuffers = new WeakMap<WebSocket, string>();
-	private readonly pendingSends: PendingOutbox;
+	private pendingSends: PendingOutbox;
 	private readonly flushingSockets = new WeakSet<WebSocket>();
 	private activeSend: {
 		id: string;
@@ -81,70 +114,147 @@ export class ConvWebSocket {
 	private onChunkCb?: (chunk: UIMessageChunk) => void;
 	private onCloseCb?: () => void;
 	private onErrorCb?: (err: string) => void;
+	private connectAttempt: ConnectAttempt | null = null;
+	private connectPromise: Promise<void> | null = null;
+	private readonly outboxCoordinator: OutboxCoordinator;
+	private readonly participantGeneration: number;
 
 	constructor(public readonly convId: string) {
-		this.pendingSends = dormantOutboxes.get(convId) ?? new Map();
-		dormantOutboxes.delete(convId);
+		let coordinator = outboxCoordinators.get(convId);
+		if (!coordinator) {
+			coordinator = {
+				outbox: new Map(),
+				owner: null,
+				participants: new Map(),
+				settledFrames: new Map(),
+			};
+			outboxCoordinators.set(convId, coordinator);
+		}
+		this.outboxCoordinator = coordinator;
+		this.participantGeneration = nextParticipantGeneration++;
+		coordinator.participants.set(this, this.participantGeneration);
+		this.pendingSends = new Map();
+		if (coordinator.owner === null) this.claimCoordinatorOwnership();
+	}
+
+	/** @internal Test isolation for module-level conversation coordinators. */
+	static resetSharedStateForTests() {
+		outboxCoordinators.clear();
+		nextPendingSequence = 0;
+		nextParticipantGeneration = 0;
 	}
 
 	private _intentionallyClosed = false;
 
 	connect(): Promise<void> {
-		return new Promise((resolve, reject) => {
-			// Server origin from runtime-config (local default or a configured remote
-			// server) — see lib/runtime-config.ts.
-			const socket = new WebSocket(
-				`${getServerWsBase()}/ws/conv/${this.convId}`,
-			);
-			this.ws = socket;
-			this.frameBuffers.set(socket, "");
-			socket.onopen = () => {
-				if (this._intentionallyClosed || this.ws !== socket) {
-					try {
-						socket.close();
-					} catch {
-						/* already closing */
-					}
-					resolve();
-					return;
-				}
-				const flush = this.flushPending(socket);
-				if (!flush.ok) {
-					if ("error" in flush) reject(flush.error);
-					else resolve();
-					return;
-				}
-				try {
-					this.queryAgentStatusOn(socket);
-				} catch (error) {
-					try {
-						socket.close();
-					} catch {
-						/* next network event may still drive reconnect */
-					}
-					reject(error);
-					return;
-				}
-				resolve();
-			};
-			socket.onerror = (e) => {
-				// React 18 Strict Mode double-mount triggers immediate cleanup before
-				// open — that's expected, not a real error. Only surface to caller
-				// if we weren't closed deliberately.
-				if (this._intentionallyClosed) {
-					resolve();
-					return;
-				}
-				this.onErrorCb?.(String(e));
-				reject(e);
-			};
-			socket.onclose = () => {
-				if (this._intentionallyClosed) return;
-				this.onCloseCb?.();
-			};
-			socket.onmessage = (e) =>
-				this.handleFrame(typeof e.data === "string" ? e.data : "", socket);
+		if (this.connectPromise) return this.connectPromise;
+		if (this.ws?.readyState === WebSocket.OPEN) return Promise.resolve();
+		let resolve!: () => void;
+		let reject!: (error: unknown) => void;
+		const promise = new Promise<void>((settle, fail) => {
+			resolve = settle;
+			reject = fail;
 		});
+		this.connectPromise = promise;
+
+		// Server origin from runtime-config (local default or a configured remote
+		// server) — see lib/runtime-config.ts.
+		let socket: WebSocket;
+		try {
+			socket = new WebSocket(`${getServerWsBase()}/ws/conv/${this.convId}`);
+		} catch (error) {
+			this.connectPromise = null;
+			reject(error);
+			return promise;
+		}
+		this.ws = socket;
+		this.frameBuffers.set(socket, "");
+		this.rebalanceCoordinatorOwner();
+		let opened = false;
+		let settled = false;
+		const finish = (outcome: { ok: true } | { ok: false; error: unknown }) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(handshakeTimer);
+			if (this.connectAttempt?.socket === socket) {
+				this.connectAttempt = null;
+			}
+			if (this.connectPromise === promise) this.connectPromise = null;
+			if (outcome.ok) resolve();
+			else reject(outcome.error);
+		};
+		const succeed = () => finish({ ok: true });
+		const fail = (error: unknown) => finish({ ok: false, error });
+		this.connectAttempt = { socket, abort: fail, cancel: succeed };
+		const handshakeTimer = setTimeout(() => {
+			const error = new Error("WebSocket handshake timed out");
+			fail(error);
+			try {
+				socket.close();
+			} catch {
+				/* the failed handshake is already settled */
+			}
+		}, CONNECT_HANDSHAKE_TIMEOUT_MS);
+		socket.onopen = () => {
+			opened = true;
+			this.rebalanceCoordinatorOwner();
+			if (this._intentionallyClosed || this.ws !== socket) {
+				try {
+					socket.close();
+				} catch {
+					/* already closing */
+				}
+				succeed();
+				return;
+			}
+			const flush = this.flushPending(socket);
+			if (!flush.ok) {
+				if ("error" in flush) fail(flush.error);
+				else succeed();
+				return;
+			}
+			try {
+				this.queryAgentStatusOn(socket);
+			} catch (error) {
+				try {
+					socket.close();
+				} catch {
+					/* next network event may still drive reconnect */
+				}
+				fail(error);
+				return;
+			}
+			succeed();
+		};
+		socket.onerror = (e) => {
+			// React 18 Strict Mode double-mount triggers immediate cleanup before
+			// open — that's expected, not a real error. Only surface to caller
+			// if we weren't closed deliberately.
+			if (this._intentionallyClosed) {
+				succeed();
+				return;
+			}
+			this.onErrorCb?.(String(e));
+			fail(e);
+			if (!opened) {
+				try {
+					socket.close();
+				} catch {
+					/* the failed handshake is already settled */
+				}
+			}
+		};
+		socket.onclose = () => {
+			if (this._intentionallyClosed) {
+				succeed();
+				return;
+			}
+			if (!opened) fail(new Error("WebSocket closed before opening"));
+			this.onCloseCb?.();
+		};
+		socket.onmessage = (e) =>
+			this.handleFrame(typeof e.data === "string" ? e.data : "", socket);
+		return promise;
 	}
 
 	private handleFrame(frame: string, socket: WebSocket) {
@@ -165,14 +275,16 @@ export class ConvWebSocket {
 				try {
 					const chunk = JSON.parse(payload) as UIMessageChunk;
 					if (chunk.type === "data-user-message-ack") {
-						this.settleAck(chunk);
+						this.settleAck(chunk, socket);
 						continue;
 					}
 					if (chunk.type === "data-user-message-nack") {
 						this.settleOrRetryNack(chunk, socket);
 						continue;
 					}
-					this.onChunkCb?.(chunk);
+					if (this.ws === socket && !this._intentionallyClosed) {
+						this.onChunkCb?.(chunk);
+					}
 				} catch {
 					this.onErrorCb?.(`bad chunk: ${payload}`);
 				}
@@ -184,6 +296,7 @@ export class ConvWebSocket {
 
 	private settleAck(
 		chunk: Extract<UIMessageChunk, { type: `data-${string}` }>,
+		socket: WebSocket,
 	) {
 		if (
 			typeof chunk.id !== "string" ||
@@ -193,14 +306,19 @@ export class ConvWebSocket {
 			return;
 		}
 		const pending = this.pendingSends.get(chunk.id);
-		if (!pending) return;
-		this.pendingSends.delete(chunk.id);
-		this.pruneDormantOutbox();
-		pending.resolve({
+		if (!pending?.sentSockets.has(socket)) return;
+		const settledFrame = this.outboxCoordinator.settledFrames.get(chunk.id);
+		if (!this.outboxCoordinator.settledFrames.has(chunk.id)) {
+			this.outboxCoordinator.settledFrames.set(chunk.id, pending.frame);
+		} else if (settledFrame !== pending.frame) {
+			this.outboxCoordinator.settledFrames.set(chunk.id, null);
+		}
+		settlePending(chunk.id, pending, {
 			id: chunk.id,
 			ok: true,
 			duplicate: chunk.data.duplicate,
 		});
+		this.pruneDormantOutbox();
 	}
 
 	private settleOrRetryNack(
@@ -217,28 +335,30 @@ export class ConvWebSocket {
 		}
 		const pending = this.pendingSends.get(chunk.id);
 		if (!pending) return;
+		const isActiveSend =
+			this.activeSend?.id === chunk.id &&
+			this.activeSend.socket === socket &&
+			this.activeSend.pending === pending;
+		if (!pending.sentSockets.has(socket) && !isActiveSend) return;
 		if (!chunk.data.retryable) {
-			this.pendingSends.delete(chunk.id);
-			this.pruneDormantOutbox();
-			pending.resolve({
+			settlePending(chunk.id, pending, {
 				id: chunk.id,
 				ok: false,
 				reason: chunk.data.reason,
 				retryable: false,
 			});
+			this.pruneDormantOutbox();
 			return;
 		}
 
-		const isActiveSend =
-			this.activeSend?.id === chunk.id &&
-			this.activeSend.socket === socket &&
-			this.activeSend.pending === pending;
 		// A stale socket may still deliver a useful ACK, but its retry advice is
 		// stale once the frame has been replayed on a replacement socket.
 		if (this.ws !== socket || (pending.sentOn !== socket && !isActiveSend)) {
 			return;
 		}
 		pending.sentOn = null;
+		pending.sentSockets.delete(socket);
+		pending.sentAtLeastOnce = pending.sentSockets.size > 0;
 		pending.retryOn = socket;
 		if (
 			socket.readyState === WebSocket.OPEN ||
@@ -254,17 +374,165 @@ export class ConvWebSocket {
 
 	private pruneDormantOutbox() {
 		if (
-			this.pendingSends.size === 0 &&
-			dormantOutboxes.get(this.convId) === this.pendingSends
+			this.outboxCoordinator.participants.size === 0 &&
+			this.outboxCoordinator.outbox.size === 0 &&
+			outboxCoordinators.get(this.convId) === this.outboxCoordinator
 		) {
-			dormantOutboxes.delete(this.convId);
+			outboxCoordinators.delete(this.convId);
 		}
 	}
 
-	private handoffPendingOutbox() {
-		if (this.pendingSends.size > 0) {
-			dormantOutboxes.set(this.convId, this.pendingSends);
+	private claimCoordinatorOwnership() {
+		const coordinator = this.outboxCoordinator;
+		if (coordinator.owner && coordinator.owner !== this) return;
+		if (this.pendingSends !== coordinator.outbox) {
+			this.mergePendingOutboxes(coordinator.outbox, this.pendingSends);
+			this.pendingSends = coordinator.outbox;
 		}
+		coordinator.owner = this;
+		if (this.ws) this.flushPending(this.ws);
+	}
+
+	private coordinatorLiveRank() {
+		if (this._intentionallyClosed) return -1;
+		const state = this.ws?.readyState;
+		if (state === WebSocket.OPEN) return 3;
+		if (state === WebSocket.CONNECTING) return 2;
+		if (state === WebSocket.CLOSING || state === WebSocket.CLOSED) return 0;
+		return 1;
+	}
+
+	private rebalanceCoordinatorOwner() {
+		const coordinator = this.outboxCoordinator;
+		const owner = coordinator.owner;
+		if (
+			owner === this ||
+			!coordinator.participants.has(this) ||
+			(owner && this.coordinatorLiveRank() <= owner.coordinatorLiveRank())
+		) {
+			return;
+		}
+		coordinator.owner = null;
+		this.claimCoordinatorOwnership();
+	}
+
+	private promoteCoordinatorOwner() {
+		const coordinator = this.outboxCoordinator;
+		if (coordinator.owner) return;
+		let candidate: ConvWebSocket | null = null;
+		let candidateRank = -1;
+		let candidateGeneration = -1;
+		for (const [participant, generation] of coordinator.participants) {
+			if (participant._intentionallyClosed) continue;
+			const rank = participant.coordinatorLiveRank();
+			if (
+				rank > candidateRank ||
+				(rank === candidateRank && generation > candidateGeneration)
+			) {
+				candidate = participant;
+				candidateRank = rank;
+				candidateGeneration = generation;
+			}
+		}
+		candidate?.claimCoordinatorOwnership();
+	}
+
+	private handoffPendingOutbox() {
+		const coordinator = this.outboxCoordinator;
+		const wasOwner = coordinator.owner === this;
+		coordinator.participants.delete(this);
+		if (wasOwner) {
+			coordinator.owner = null;
+		} else if (this.pendingSends.size > 0) {
+			this.mergePendingOutboxes(coordinator.outbox, this.pendingSends);
+			this.pendingSends = coordinator.outbox;
+		}
+
+		this.promoteCoordinatorOwner();
+		const owner = coordinator.owner;
+		if (owner?.ws) owner.flushPending(owner.ws);
+		this.pruneDormantOutbox();
+	}
+
+	private mergePendingOutboxes(target: PendingOutbox, source: PendingOutbox) {
+		for (const [id, candidate] of source) {
+			const existing = target.get(id);
+			if (this.outboxCoordinator.settledFrames.has(id)) {
+				const settledFrame = this.outboxCoordinator.settledFrames.get(id);
+				const settleKnown = (pending: PendingSend) => {
+					settlePending(
+						id,
+						pending,
+						settledFrame !== null && pending.frame === settledFrame
+							? { id, ok: true, duplicate: true }
+							: {
+									id,
+									ok: false,
+									reason: "pending_message_id_conflict",
+									retryable: false,
+								},
+					);
+				};
+				if (existing && existing !== candidate) settleKnown(existing);
+				settleKnown(candidate);
+				continue;
+			}
+			if (!existing) {
+				target.set(id, candidate);
+				candidate.outboxes.add(target);
+				continue;
+			}
+			if (existing === candidate) continue;
+
+			const existingWasSent = existing.sentAtLeastOnce;
+			const candidateWasSent = candidate.sentAtLeastOnce;
+			if (
+				existing.frame !== candidate.frame &&
+				existingWasSent &&
+				candidateWasSent
+			) {
+				const conflict: DeliveryResult = {
+					id,
+					ok: false,
+					reason: "pending_message_id_conflict",
+					retryable: false,
+				};
+				this.outboxCoordinator.settledFrames.set(id, null);
+				settlePending(id, existing, conflict);
+				settlePending(id, candidate, conflict);
+				continue;
+			}
+
+			const winner =
+				existingWasSent !== candidateWasSent
+					? existingWasSent
+						? existing
+						: candidate
+					: existing.sequence <= candidate.sequence
+						? existing
+						: candidate;
+			const loser = winner === existing ? candidate : existing;
+			target.set(id, winner);
+			winner.outboxes.add(target);
+			if (winner.frame === loser.frame) {
+				for (const socket of loser.sentSockets) winner.sentSockets.add(socket);
+				winner.sentAtLeastOnce = winner.sentSockets.size > 0;
+				void winner.promise.then((result) => settlePending(id, loser, result));
+			} else {
+				settlePending(id, loser, {
+					id,
+					ok: false,
+					reason: "pending_message_id_conflict",
+					retryable: false,
+				});
+			}
+		}
+
+		const ordered = [...target.entries()].sort(
+			([, left], [, right]) => left.sequence - right.sequence,
+		);
+		target.clear();
+		for (const [id, pending] of ordered) target.set(id, pending);
 	}
 
 	private flushPending(socket: WebSocket): FlushResult {
@@ -277,9 +545,15 @@ export class ConvWebSocket {
 				if (pending.sentOn === socket) continue;
 				pending.retryOn = null;
 				this.activeSend = { id, socket, pending };
+				const wasPreviouslySent = pending.sentAtLeastOnce;
+				const wasSentOnSocket = pending.sentSockets.has(socket);
+				pending.sentAtLeastOnce = true;
+				pending.sentSockets.add(socket);
 				try {
 					socket.send(pending.frame);
 				} catch (error) {
+					pending.sentAtLeastOnce = wasPreviouslySent;
+					if (!wasSentOnSocket) pending.sentSockets.delete(socket);
 					// Keep this entry (and every later FIFO entry) for a replacement
 					// socket. sentOn changes only after a successful send.
 					if (
@@ -337,6 +611,11 @@ export class ConvWebSocket {
 			regenerateSenderId?: string;
 		},
 	): Promise<DeliveryResult> | undefined {
+		if (this._intentionallyClosed && msgId && !options?.regenerate) {
+			throw new Error(
+				"cannot send a stable user message after WebSocket has closed",
+			);
+		}
 		const frame = JSON.stringify({
 			kind: "user_message",
 			text,
@@ -365,19 +644,39 @@ export class ConvWebSocket {
 			}
 			return existing.promise;
 		}
+		if (this.outboxCoordinator.settledFrames.has(msgId)) {
+			const settledFrame = this.outboxCoordinator.settledFrames.get(msgId);
+			if (settledFrame === frame) {
+				return Promise.resolve({ id: msgId, ok: true, duplicate: true });
+			}
+			throw new Error(`settled user message ${msgId} has different content`);
+		}
 
 		let resolve!: (result: DeliveryResult) => void;
 		const promise = new Promise<DeliveryResult>((settle) => {
 			resolve = settle;
 		});
-		this.pendingSends.set(msgId, {
+		const pending: PendingSend = {
 			frame,
+			sequence: nextPendingSequence++,
+			outboxes: new Set([this.pendingSends]),
+			sentAtLeastOnce: false,
+			sentSockets: new Set(),
 			sentOn: null,
 			retryOn: null,
 			promise,
 			resolve,
-		});
+		};
+		this.pendingSends.set(msgId, pending);
 		if (this.ws) this.flushPending(this.ws);
+		const owner = this.outboxCoordinator.owner;
+		if (
+			this.pendingSends === this.outboxCoordinator.outbox &&
+			owner !== this &&
+			owner?.ws
+		) {
+			owner.flushPending(owner.ws);
+		}
 		return promise;
 	}
 
@@ -427,6 +726,11 @@ export class ConvWebSocket {
 		this._reconnecting = true;
 		try {
 			if (this.ws) {
+				if (this.connectAttempt?.socket === this.ws) {
+					this.connectAttempt.abort(
+						new Error("WebSocket connection attempt was superseded"),
+					);
+				}
 				this.ws.onclose = null;
 				this.ws.onerror = null;
 				try {
@@ -448,13 +752,19 @@ export class ConvWebSocket {
 		if (this._intentionallyClosed) return;
 		this._intentionallyClosed = true;
 		this.handoffPendingOutbox();
-		// Don't call close() while still CONNECTING — browser logs a noisy error.
-		// Its onopen handler will close it before flushing. If it's already
-		// closing/closed there's nothing to do.
+		if (this.connectAttempt?.socket === this.ws) {
+			this.connectAttempt.cancel();
+		}
+		// Abort the physical handshake too. A CONNECTING socket may otherwise stay
+		// alive forever even though its connect promise has already been settled.
 		if (!this.ws) return;
 		const state = this.ws.readyState;
-		if (state === WebSocket.OPEN) {
-			this.ws.close();
+		if (state === WebSocket.CONNECTING || state === WebSocket.OPEN) {
+			try {
+				this.ws.close();
+			} catch {
+				/* the logical close above has already settled the attempt */
+			}
 		}
 		// CLOSING / CLOSED: noop
 	}
