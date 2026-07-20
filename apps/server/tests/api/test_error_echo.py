@@ -165,6 +165,26 @@ async def test_system_error_has_null_agent(fresh_db) -> None:
     assert err["payload"]["agent_id"] is None
 
 
+@pytest.mark.asyncio
+async def test_error_emit_failure_is_best_effort_for_any_exception(fresh_db) -> None:
+    cid = new_ulid()
+    emit_calls = 0
+
+    async def failing_emit(_frame: str) -> None:
+        nonlocal emit_calls
+        emit_calls += 1
+        raise ValueError("transport failed")
+
+    await routes._persist_and_emit_error(
+        failing_emit,
+        conv_id=cid,
+        sender_id="system",
+        message="already persisted",
+    )
+
+    assert emit_calls == 1
+
+
 # ── orphaned-burst recovery on reload ────────────────────────────
 
 

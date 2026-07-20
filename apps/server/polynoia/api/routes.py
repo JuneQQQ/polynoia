@@ -3168,7 +3168,7 @@ async def _persist_and_emit_error(
                 msg_id=eid,
             )
             await _edb.commit()
-    with suppress(RuntimeError):
+    with suppress(Exception):
         await emit(
             'data: {"type":"data-error","data":'
             + json.dumps(payload, ensure_ascii=False)

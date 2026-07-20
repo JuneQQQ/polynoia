@@ -84,7 +84,7 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "messages",
         "in_reply_to",
-        "ALTER TABLE messages ADD COLUMN in_reply_to VARCHAR(26)",
+        "ALTER TABLE messages ADD COLUMN in_reply_to VARCHAR(64)",
     ),
     (
         "messages",

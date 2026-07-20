@@ -583,16 +583,29 @@ async def test_unique_id_race_exact_winner_becomes_duplicate_ack(
         )
         await db.commit()
 
-    attempts = 0
+    attempt_sessions = []
+    failed_session_active: list[bool] = []
 
-    async def integrity_then_read_winner(*args, **kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise IntegrityError("INSERT messages", {}, RuntimeError("unique id race"))
-        return await original_append_once(*args, **kwargs)
+    async def real_flush_then_read_winner(session, **kwargs):
+        attempt_sessions.append(session)
+        if len(attempt_sessions) == 1:
+            session.add(
+                MessageRow(
+                    id=kwargs["msg_id"],
+                    conv_id=kwargs["conv_id"],
+                    sender_id=kwargs["sender_id"],
+                    payload=kwargs["payload"],
+                    in_reply_to=kwargs["in_reply_to"],
+                    code_sha=kwargs["code_sha"],
+                )
+            )
+            try:
+                await session.flush()
+            finally:
+                failed_session_active.append(session.sync_session.is_active)
+        return await original_append_once(session, **kwargs)
 
-    monkeypatch.setattr(storage_repo, "append_message_once", integrity_then_read_winner)
+    monkeypatch.setattr(storage_repo, "append_message_once", real_flush_then_read_winner)
     ws = ScriptedWebSocket()
     handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
     try:
@@ -600,7 +613,9 @@ async def test_unique_id_race_exact_winner_becomes_duplicate_ack(
         await ws.disconnect()
         await asyncio.wait_for(handler, timeout=2.0)
 
-        assert attempts == 2
+        assert len(attempt_sessions) == 2
+        assert attempt_sessions[0] is not attempt_sessions[1]
+        assert failed_session_active == [False]
         assert _chunks(ws, "data-user-message-ack") == [
             {
                 "type": "data-user-message-ack",
@@ -610,6 +625,110 @@ async def test_unique_id_race_exact_winner_becomes_duplicate_ack(
         ]
         assert _chunks(ws, "data-user-message-nack") == []
         assert _chunks(ws, "data-text") == []
+    finally:
+        if not handler.done():
+            await ws.disconnect()
+            await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_post_ack_routing_failure_reports_once_and_loop_continues(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    agent_id = await _seed_adapter_agent(sessions, conv_id)
+    spawn_calls: list[tuple[str, str]] = []
+    error_calls: list[dict[str, Any]] = []
+
+    def fail_first_registration(requested_conv_id: str, requested_agent: str, coro):
+        spawn_calls.append((requested_conv_id, requested_agent))
+        coro.close()
+        if len(spawn_calls) == 1:
+            raise RuntimeError("turn registration failed")
+        return object()
+
+    async def record_error(_emit, **kwargs) -> None:
+        error_calls.append(kwargs)
+
+    monkeypatch.setattr(ws_module, "_spawn_turn", fail_first_registration)
+    monkeypatch.setattr(ws_module, "_persist_and_emit_error", record_error)
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        members = ["you", agent_id]
+        await ws.send_user(text="first", msg_id="routing-fails", members=members)
+        await _eventually(lambda: len(error_calls) == 1)
+        await ws.send_user(text="second", msg_id="routing-survives", members=members)
+        await _eventually(lambda: len(spawn_calls) == 2)
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+        assert await _user_ids(sessions, conv_id) == [
+            "routing-fails",
+            "routing-survives",
+        ]
+        assert [
+            chunk["id"] for chunk in _chunks(ws, "data-user-message-ack")
+        ] == ["routing-fails", "routing-survives"]
+        assert _chunks(ws, "data-user-message-nack") == []
+        assert spawn_calls == [(conv_id, agent_id), (conv_id, agent_id)]
+        assert len(error_calls) == 1
+        assert error_calls[0]["reason"] == "exception"
+        assert error_calls[0]["retryable"] is True
+    finally:
+        if not handler.done():
+            await ws.disconnect()
+            await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_new_message_orders_ack_echo_before_turn_registration(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    agent_id = await _seed_adapter_agent(sessions, conv_id)
+    events: list[str] = []
+    original_ack = ws_module._user_message_ack
+
+    def record_ack(message_id: str, *, duplicate: bool) -> str:
+        events.append(f"ack:{message_id}")
+        return original_ack(message_id, duplicate=duplicate)
+
+    async def record_echo(requested_conv_id: str, frame: str) -> None:
+        assert requested_conv_id == conv_id
+        assert '"type":"data-text"' in frame
+        events.append("echo:ordered-id")
+
+    def record_registration(requested_conv_id: str, requested_agent: str, coro):
+        assert requested_conv_id == conv_id
+        assert requested_agent == agent_id
+        events.append("turn:ordered-id")
+        coro.close()
+        return object()
+
+    monkeypatch.setattr(ws_module, "_user_message_ack", record_ack)
+    monkeypatch.setattr(ws_module, "_broadcast_to_conv", record_echo)
+    monkeypatch.setattr(ws_module, "_spawn_turn", record_registration)
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.send_user(
+            text="ordered",
+            msg_id="ordered-id",
+            members=["you", agent_id],
+        )
+        await _eventually(lambda: len(events) == 3)
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+        assert events == [
+            "ack:ordered-id",
+            "echo:ordered-id",
+            "turn:ordered-id",
+        ]
+        assert [
+            chunk["id"] for chunk in _chunks(ws, "data-user-message-ack")
+        ] == ["ordered-id"]
     finally:
         if not handler.done():
             await ws.disconnect()
