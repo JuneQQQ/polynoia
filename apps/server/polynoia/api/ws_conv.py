@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -270,6 +271,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         # raises — broadcast timing untouched; see api/event_log.py).
         event_log.tap(conv_id, chunk)
         await _broadcast_to_conv(conv_id, chunk)
+
+    async def emit_receipt(chunk: str) -> None:
+        """Queue an ACK/NACK only on the socket that submitted the message."""
+        await send_queue.put(chunk)
 
     # ── Conv-scoped execution state (module-level, survives this connection) ──
     # agent_id → asyncio.Task running adapter_events_to_chunks(...)
@@ -2827,21 +2832,34 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         """Durably append one ordinary user message without doing any routing."""
         user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
         code_sha = await _workspace_head_for_conv(conv_id)
-        async with SessionLocal() as db:
-            mid, inserted = await storage_repo.append_message_once(
-                db,
-                conv_id=conv_id,
-                sender_id="you",
-                payload=user_payload,
-                in_reply_to=in_reply_to,
-                code_sha=code_sha,
-                msg_id=msg_id,
-            )
-            if inserted:
-                # A draft-clear hiccup must not block durable user-message append.
-                with suppress(Exception):
-                    await storage_repo.set_draft_text(db, conv_id, "")
-                await db.commit()
+
+        async def append_attempt() -> tuple[str, bool]:
+            async with SessionLocal() as db:
+                mid, inserted = await storage_repo.append_message_once(
+                    db,
+                    conv_id=conv_id,
+                    sender_id="you",
+                    payload=user_payload,
+                    in_reply_to=in_reply_to,
+                    code_sha=code_sha,
+                    msg_id=msg_id,
+                )
+                if inserted:
+                    # A draft-clear hiccup must not block durable user append.
+                    with suppress(Exception):
+                        await storage_repo.set_draft_text(db, conv_id, "")
+                    await db.commit()
+                return mid, inserted
+
+        try:
+            mid, inserted = await append_attempt()
+        except IntegrityError:
+            if msg_id is None:
+                raise
+            # A concurrent unique-id winner may have committed after our initial
+            # lookup. The failed session has exited/rolled back; classify against
+            # the winner from a fresh session.
+            mid, inserted = await append_attempt()
         return mid, inserted, user_payload
 
     async def dispatch_user_message(
@@ -3116,7 +3134,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
             if kind == "user_message":
                 raw_text = msg.get("text")
-                raw_members = msg.get("members")
+                raw_members = msg.get("members", [])
                 raw_reply_to = msg.get("in_reply_to")
                 # Optional client-pre-allocated id — keeps the optimistic store
                 # entry and the DB row sharing one identity; without it rewind /
@@ -3139,11 +3157,16 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     not has_client_msg_id
                     or (
                         isinstance(raw_client_msg_id, str)
-                        and bool(raw_client_msg_id)
+                        and bool(raw_client_msg_id.strip())
                     )
                 )
-                if not valid_fields or (not regenerate and not valid_message_id):
-                    await emit(
+                valid_text = isinstance(raw_text, str) and bool(raw_text.strip())
+                if (
+                    not valid_fields
+                    or (not regenerate and not valid_message_id)
+                    or (not regenerate and not valid_text)
+                ):
+                    await emit_receipt(
                         _user_message_nack(
                             receipt_id,
                             reason="invalid_message",
@@ -3154,7 +3177,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
                 text = cast(str, raw_text)
                 members = cast(list[str], raw_members)
-                in_reply_to = cast(str | None, raw_reply_to)
+                in_reply_to = cast(str | None, raw_reply_to or None)
                 client_msg_id = cast(str | None, raw_client_msg_id)
                 regenerate_msg_id = msg.get("regenerate_msg_id") or None
                 regenerate_sender_id = msg.get("regenerate_sender_id") or None
@@ -3184,7 +3207,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             client_msg_id,
                         )
                     except storage_repo.MessageIdConflictError:
-                        await emit(
+                        await emit_receipt(
                             _user_message_nack(
                                 receipt_id,
                                 reason="message_id_conflict",
@@ -3198,7 +3221,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             conv_id,
                             receipt_id,
                         )
-                        await emit(
+                        await emit_receipt(
                             _user_message_nack(
                                 receipt_id,
                                 reason="persistence_error",
@@ -3207,7 +3230,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                         )
                         continue
 
-                    await emit(_user_message_ack(mid, duplicate=not inserted))
+                    await emit_receipt(
+                        _user_message_ack(mid, duplicate=not inserted)
+                    )
                     if not inserted:
                         continue
 

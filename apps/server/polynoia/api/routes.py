@@ -243,12 +243,10 @@ _conv_inflight: dict[str, set[asyncio.Task]] = RUNTIME.inflight  # conv_id → {
 # mistaken for a hung model and killed mid-command (that abort closed the MCP
 # session → "Connection closed" on the next call).
 _conv_tool_activity: dict[str, float] = RUNTIME.tool_activity
-# In-flight dispatcher tasks (the not-yet-awaited `dispatch_user_message`). The
-# disconnect-prune must not free a conv's dicts while a dispatcher is still in
-# its pre-registration await window (get_conversation / append user msg), or it
-# would orphan the agent_tasks dict the dispatcher then writes into.
+# In-flight background dispatchers (currently regeneration, which intentionally
+# stays outside ordinary durable ingress). Strong refs also keep prune from
+# orphaning the agent task registry before a dispatcher registers its turn.
 _conv_dispatchers: dict[str, set[asyncio.Task]] = RUNTIME.dispatchers  # conv_id → {dispatcher tasks}
-_conv_user_message_locks: dict[str, asyncio.Lock] = RUNTIME.user_message_locks
 
 # Live-stream accumulator for refresh-safe resume. While an agent streams, we
 # keep its in-flight message_id + ordered text/reasoning parts here so a client
@@ -470,19 +468,23 @@ def _spawn_turn(conv_id: str, agent_id: str, coro) -> asyncio.Task:
 
 
 def _spawn_dispatcher(conv_id: str, coro) -> asyncio.Task:
-    """Spawn the per-message orchestrator dispatcher with a conv-scoped strong
-    ref, so (a) it isn't GC'd and (b) the disconnect-prune can see it is still
-    in-flight and not orphan the agent_tasks dict it will register into."""
+    """Spawn a background dispatcher with a strong ref and visible failures."""
     dispatchers = _conv_dispatchers.setdefault(conv_id, set())
     t = asyncio.create_task(coro)
     dispatchers.add(t)
 
     def _done(done: asyncio.Task, *, _c=conv_id) -> None:
         _conv_dispatchers.get(_c, set()).discard(done)
-        # Retrieving the exception marks it observed so a future background use of
-        # this helper cannot leak "Task exception was never retrieved" warnings.
-        with suppress(asyncio.CancelledError):
-            done.exception()
+        try:
+            error = done.exception()
+        except asyncio.CancelledError:
+            error = None
+        if error is not None:
+            log.error(
+                "websocket dispatcher failed: conv=%s",
+                _c,
+                exc_info=(type(error), error, error.__traceback__),
+            )
         _maybe_prune_conv(_c)
 
     t.add_done_callback(_done)
