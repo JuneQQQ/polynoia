@@ -248,6 +248,7 @@ _conv_tool_activity: dict[str, float] = RUNTIME.tool_activity
 # its pre-registration await window (get_conversation / append user msg), or it
 # would orphan the agent_tasks dict the dispatcher then writes into.
 _conv_dispatchers: dict[str, set[asyncio.Task]] = RUNTIME.dispatchers  # conv_id → {dispatcher tasks}
+_conv_user_message_locks: dict[str, asyncio.Lock] = RUNTIME.user_message_locks
 
 # Live-stream accumulator for refresh-safe resume. While an agent streams, we
 # keep its in-flight message_id + ordered text/reasoning parts here so a client
@@ -478,6 +479,10 @@ def _spawn_dispatcher(conv_id: str, coro) -> asyncio.Task:
 
     def _done(done: asyncio.Task, *, _c=conv_id) -> None:
         _conv_dispatchers.get(_c, set()).discard(done)
+        # Retrieving the exception marks it observed so a future background use of
+        # this helper cannot leak "Task exception was never retrieved" warnings.
+        with suppress(asyncio.CancelledError):
+            done.exception()
         _maybe_prune_conv(_c)
 
     t.add_done_callback(_done)

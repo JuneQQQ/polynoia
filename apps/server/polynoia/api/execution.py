@@ -38,6 +38,7 @@ class ConversationRuntime:
       inflight          ← _conv_inflight        conv_id → {live turn tasks} (strong refs)
       tool_activity     ← _conv_tool_activity   conv_id → loop.time() of last terminal activity
       dispatchers       ← _conv_dispatchers     conv_id → {dispatcher tasks}
+      user_message_locks                        conv_id → ingress Lock
       live              ← _conv_live            conv_id → agent_id → live-stream accumulator
     """
 
@@ -56,7 +57,12 @@ class ConversationRuntime:
     inflight: dict[str, set[asyncio.Task]] = field(default_factory=dict)
     tool_activity: dict[str, float] = field(default_factory=dict)
     dispatchers: dict[str, set[asyncio.Task]] = field(default_factory=dict)
+    user_message_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     live: dict[str, dict[str, dict]] = field(default_factory=dict)
+
+    def user_message_lock(self, conv_id: str) -> asyncio.Lock:
+        """Serialize durable user-message ingress for one conversation."""
+        return self.user_message_locks.setdefault(conv_id, asyncio.Lock())
 
     def conv_has_open_ask(self, conv_id: str) -> bool:
         """True while this conv has an ask_user awaiting the user's answer (value
@@ -77,6 +83,9 @@ class ConversationRuntime:
             return
         if self.dispatchers.get(conv_id):
             return
+        ingress_lock = self.user_message_locks.get(conv_id)
+        if ingress_lock is not None and ingress_lock.locked():
+            return
         if conv_id in self.outboxes:
             return
         self.agent_tasks.pop(conv_id, None)
@@ -85,6 +94,7 @@ class ConversationRuntime:
         self.bursts.pop(conv_id, None)
         self.inflight.pop(conv_id, None)
         self.dispatchers.pop(conv_id, None)
+        self.user_message_locks.pop(conv_id, None)
         self.pending_dispatches.pop(conv_id, None)
         self.discussions.pop(conv_id, None)
         self.pending_discussions.pop(conv_id, None)

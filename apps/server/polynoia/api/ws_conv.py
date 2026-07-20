@@ -30,7 +30,7 @@ from polynoia.adapters.pool import get_pool
 # Conversation-runtime state + shared helpers (defined in routes.py; mutated in
 # place so importing the binding here is safe — see module docstring + CHARTER).
 from polynoia.api import event_log
-from polynoia.api.execution import BurstStateMachine
+from polynoia.api.execution import RUNTIME, BurstStateMachine
 from polynoia.api.routes import (
     _AGENT_IDLE_TIMEOUT,
     _AGENT_IDLE_TIMEOUT_MIDTURN,
@@ -96,6 +96,30 @@ from polynoia.transport.adapter_to_chunk import adapter_events_to_chunks
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
 ws_router = APIRouter()
+
+
+def _user_message_ack(message_id: str, *, duplicate: bool) -> str:
+    return (
+        'data: {"type":"data-user-message-ack","id":'
+        + json.dumps(message_id, ensure_ascii=False)
+        + ',"data":{"duplicate":'
+        + ("true" if duplicate else "false")
+        + "}}\n\n"
+    )
+
+
+def _user_message_nack(
+    message_id: str, *, reason: str, retryable: bool
+) -> str:
+    return (
+        'data: {"type":"data-user-message-nack","id":'
+        + json.dumps(message_id, ensure_ascii=False)
+        + ',"data":{"reason":'
+        + json.dumps(reason)
+        + ',"retryable":'
+        + ("true" if retryable else "false")
+        + "}}\n\n"
+    )
 
 
 def _rewrite_outgoing_chunk(
@@ -189,9 +213,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
 
     Concurrency model:
       - **Per-agent task slot**: each agent has its own `asyncio.Task`. Multiple
-        agents run *truly concurrently* for the same conv. The receive loop is
-        non-blocking so users can send new messages or abort while agents are
-        still streaming.
+        agents run *truly concurrently* for the same conv. The receive loop awaits
+        only the short durable-ingress + turn-registration section; it never awaits
+        model output, so new messages and aborts remain available while agents run.
       - **Single sender coroutine** drains a shared queue and writes to the
         WebSocket. This avoids interleaved partial frames and works around the
         fact that ``WebSocket.send_text`` is not safe for concurrent callers.
@@ -2795,10 +2819,36 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                     drain, source_agent=agent_id
                                 )
 
+    async def persist_user_message(
+        text: str,
+        in_reply_to: str | None,
+        msg_id: str | None,
+    ) -> tuple[str, bool, dict]:
+        """Durably append one ordinary user message without doing any routing."""
+        user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
+        code_sha = await _workspace_head_for_conv(conv_id)
+        async with SessionLocal() as db:
+            mid, inserted = await storage_repo.append_message_once(
+                db,
+                conv_id=conv_id,
+                sender_id="you",
+                payload=user_payload,
+                in_reply_to=in_reply_to,
+                code_sha=code_sha,
+                msg_id=msg_id,
+            )
+            if inserted:
+                # A draft-clear hiccup must not block durable user-message append.
+                with suppress(Exception):
+                    await storage_repo.set_draft_text(db, conv_id, "")
+                await db.commit()
+        return mid, inserted, user_payload
+
     async def dispatch_user_message(
-        text: str, members: list[str], in_reply_to: str | None = None,
-        msg_id: str | None = None,
-        persist_user: bool = True,
+        text: str,
+        members: list[str],
+        in_reply_to: str | None = None,
+        persisted_user_id: str | None = None,
         regenerate_msg_id: str | None = None,
         regenerate_sender_id: str | None = None,
     ) -> None:
@@ -2826,48 +2876,6 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             conv = await storage_repo.get_conversation(session, conv_id)
         orch_id = conv.orchestrator_member_id if conv else None
         use_orch = bool(orch_id and orch_id in members)
-
-        # Persist the user's message FIRST so it shows up after a refresh and so
-        # the L4 history layer (which reads MessageRow) sees this turn.
-        # Without this, both the frontend lazy-load and the context assembler
-        # think the conv is empty.
-        persisted_user_id: str | None = None
-        if persist_user and text.strip():
-            user_payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
-            # Stamp the code checkpoint: workspace main HEAD *before* this turn's
-            # work, so「回到这个对话」on this message restores to that point.
-            code_sha = await _workspace_head_for_conv(conv_id)
-            # `msg_id` (when provided by the client over WS) lets the optimistic
-            # store and the persisted row share one identity — required so that
-            # 「从此处重来」/ reply / pin on this freshly-sent message resolves
-            # the row instead of 404'ing on the client's `u-<uuid>` placeholder.
-            async with SessionLocal() as db:
-                uid = await storage_repo.append_message(
-                    db, conv_id=conv_id, sender_id="you", payload=user_payload,
-                    in_reply_to=in_reply_to, code_sha=code_sha, msg_id=msg_id,
-                )
-                persisted_user_id = uid
-                # The draft is now SENT → clear it so it stops lingering in the
-                # composer. The UI clears its local input optimistically, but the
-                # persisted conv.draft_text is only cleared here — so WS-sent
-                # messages (and pre-seeded drafts) don't leave the just-sent text
-                # sitting in the box on reload / on other live clients. Suppressed:
-                # a draft-clear hiccup must never block the send.
-                with suppress(Exception):
-                    await storage_repo.set_draft_text(db, conv_id, "")
-                await db.commit()
-            # Real-time multi-client sync: echo the human message to OTHER clients
-            # tailing this conv (e.g. desktop + web both open on the same group),
-            # so the bubble appears live instead of only after a refresh. The
-            # sending client already rendered it optimistically under the SAME id
-            # (msg_id), so an id-keyed store dedups its own echo. Additive +
-            # suppress-guarded — never breaks the dispatch path below.
-            with suppress(Exception):
-                echo = encode_polynoia_card(
-                    "text", user_payload, msg_id or uid,
-                    sender_id="you", sender_label="你",
-                )
-                await _broadcast_to_conv(conv_id, echo)
 
         # Groups MUST have an orchestrator (enforced at creation, ~912). Defense
         # in depth: if a group ever reaches dispatch without a usable orchestrator
@@ -3107,38 +3115,136 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 continue
 
             if kind == "user_message":
-                text: str = msg.get("text", "")
-                members: list[str] = msg.get("members", [])
-                in_reply_to: str | None = msg.get("in_reply_to") or None
+                raw_text = msg.get("text")
+                raw_members = msg.get("members")
+                raw_reply_to = msg.get("in_reply_to")
                 # Optional client-pre-allocated id — keeps the optimistic store
                 # entry and the DB row sharing one identity; without it rewind /
                 # reply / pin on freshly-sent messages 404 until next refresh.
-                client_msg_id: str | None = (msg.get("msg_id") or None)
+                raw_client_msg_id = msg.get("msg_id")
+                has_client_msg_id = "msg_id" in msg
                 regenerate = bool(msg.get("regenerate"))
-                regenerate_msg_id: str | None = (msg.get("regenerate_msg_id") or None)
-                regenerate_sender_id: str | None = (
-                    msg.get("regenerate_sender_id") or None
+                receipt_id = (
+                    raw_client_msg_id
+                    if isinstance(raw_client_msg_id, str)
+                    else ""
                 )
-                # Don't await — dispatch returns when fan-out is queued, the
-                # actual streams continue in the background. Tracked conv-scoped
-                # (not just locally) so it isn't GC'd AND so the disconnect-prune
-                # won't free this conv's dicts while the dispatcher is still in
-                # its pre-registration await window (else it'd orphan the
-                # agent_tasks dict the dispatcher then writes into).
-                _spawn_dispatcher(
-                    conv_id,
-                    dispatch_user_message(
-                        text,
-                        members,
-                        in_reply_to,
-                        msg_id=client_msg_id,
-                        persist_user=not regenerate,
-                        regenerate_msg_id=regenerate_msg_id if regenerate else None,
-                        regenerate_sender_id=(
-                            regenerate_sender_id if regenerate else None
+                valid_fields = (
+                    isinstance(raw_text, str)
+                    and isinstance(raw_members, list)
+                    and all(isinstance(member, str) for member in raw_members)
+                    and (raw_reply_to is None or isinstance(raw_reply_to, str))
+                )
+                valid_message_id = (
+                    not has_client_msg_id
+                    or (
+                        isinstance(raw_client_msg_id, str)
+                        and bool(raw_client_msg_id)
+                    )
+                )
+                if not valid_fields or (not regenerate and not valid_message_id):
+                    await emit(
+                        _user_message_nack(
+                            receipt_id,
+                            reason="invalid_message",
+                            retryable=False,
+                        )
+                    )
+                    continue
+
+                text = cast(str, raw_text)
+                members = cast(list[str], raw_members)
+                in_reply_to = cast(str | None, raw_reply_to)
+                client_msg_id = cast(str | None, raw_client_msg_id)
+                regenerate_msg_id = msg.get("regenerate_msg_id") or None
+                regenerate_sender_id = msg.get("regenerate_sender_id") or None
+
+                if regenerate:
+                    # Regeneration has no new user row or delivery receipt. Keep it
+                    # outside the ordinary ingress lock/outbox protocol.
+                    _spawn_dispatcher(
+                        conv_id,
+                        dispatch_user_message(
+                            text,
+                            members,
+                            in_reply_to,
+                            regenerate_msg_id=regenerate_msg_id,
+                            regenerate_sender_id=regenerate_sender_id,
                         ),
-                    ),
-                )
+                    )
+                    continue
+
+                # The critical section ends once routing has registered existing
+                # background turns; it never awaits model output.
+                async with RUNTIME.user_message_lock(conv_id):
+                    try:
+                        mid, inserted, user_payload = await persist_user_message(
+                            text,
+                            in_reply_to,
+                            client_msg_id,
+                        )
+                    except storage_repo.MessageIdConflictError:
+                        await emit(
+                            _user_message_nack(
+                                receipt_id,
+                                reason="message_id_conflict",
+                                retryable=False,
+                            )
+                        )
+                        continue
+                    except Exception:
+                        log.exception(
+                            "user message persistence failed: conv=%s id=%s",
+                            conv_id,
+                            receipt_id,
+                        )
+                        await emit(
+                            _user_message_nack(
+                                receipt_id,
+                                reason="persistence_error",
+                                retryable=True,
+                            )
+                        )
+                        continue
+
+                    await emit(_user_message_ack(mid, duplicate=not inserted))
+                    if not inserted:
+                        continue
+
+                    # Echo only newly inserted rows. Exact replay is receipt-only.
+                    with suppress(Exception):
+                        echo = encode_polynoia_card(
+                            "text",
+                            user_payload,
+                            mid,
+                            sender_id="you",
+                            sender_label="你",
+                        )
+                        await _broadcast_to_conv(conv_id, echo)
+
+                    try:
+                        await dispatch_user_message(
+                            text,
+                            members,
+                            in_reply_to,
+                            persisted_user_id=mid,
+                        )
+                    except Exception:
+                        # The durable ACK is final: routing failures become the
+                        # existing persisted error card, never a contradictory NACK.
+                        log.exception(
+                            "user message routing failed after commit: conv=%s id=%s",
+                            conv_id,
+                            mid,
+                        )
+                        await _persist_and_emit_error(
+                            emit,
+                            conv_id=conv_id,
+                            sender_id="system",
+                            message="消息已保存, 但后续处理启动失败。请稍后重试。",
+                            reason="exception",
+                            retryable=True,
+                        )
                 continue
 
             # Unknown kind — ignore but log via error chunk
