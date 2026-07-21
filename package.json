@@ -1,6 +1,7 @@
 {
   "name": "polynoia",
   "version": "0.1.4",
+  "license": "Apache-2.0",
   "private": true,
   "description": "Polynoia (AgentHub) — IM-style multi-agent collaboration platform",
   "workspaces": [
