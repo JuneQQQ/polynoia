@@ -31,7 +31,7 @@
   </a>
 </p>
 <p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 如果内联播放器没有加载，可直接打开视频。</sub>
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 点击上方真实产品画面，或直接打开视频。</sub>
 </p>
 
 ## 是同事，不是又一个标签页

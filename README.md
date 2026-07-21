@@ -31,7 +31,7 @@
   </a>
 </p>
 <p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — if the inline player does not load, open the video directly.</sub>
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — click the real product frame above or open the video directly.</sub>
 </p>
 
 ## A teammate, not another tab

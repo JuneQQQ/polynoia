@@ -60,7 +60,7 @@ cp "$poster_tmp/demo.mp4.png" assets/readme/demo-poster.png
   </a>
 </p>
 <p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — if the inline player does not load, open the video directly.</sub>
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — click the real product frame above or open the video directly.</sub>
 </p>
 ```
 
@@ -142,7 +142,7 @@ and before `## 是同事，不是又一个标签页`:
   </a>
 </p>
 <p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 如果内联播放器没有加载，可直接打开视频。</sub>
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 点击上方真实产品画面，或直接打开视频。</sub>
 </p>
 ```
 
