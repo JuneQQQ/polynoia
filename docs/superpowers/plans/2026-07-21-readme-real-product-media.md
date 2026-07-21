@@ -2,16 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep the Shared Studio hero as the sole conceptual illustration and restore the existing product demo plus six real UI captures to both READMEs.
+**Goal:** Keep the Shared Studio hero as the sole conceptual illustration and restore the existing product demo, its real-video poster, and six real UI captures to both READMEs.
 
-**Architecture:** The current product-belief narrative remains intact. The video becomes the first proof directly below the opening, the three principle sections become prose-only, and one bilingual product-media section presents the six existing captures in a two-column table. Unused generated chapter assets are removed and their provenance file is pruned to the retained hero.
+**Architecture:** The current product-belief narrative remains intact. A real Quick Look frame linked to the video becomes the first proof directly below the opening, the three principle sections become prose-only, and one bilingual product-media section presents the six existing captures in a two-column table. Unused generated chapter assets are removed and their provenance file is pruned to the retained hero. GitHub sanitizes `<video>` from README DOM, so the implementation deliberately uses supported linked-image markup instead of claiming inline playback.
 
-**Tech Stack:** GitHub Flavored Markdown, HTML `<video>` fallback markup, existing PNG/JPEG/MP4 assets, built-in ImageGen provenance, pnpm 9, Vite, and GitHub browser rendering.
+**Tech Stack:** GitHub Flavored Markdown, supported HTML anchor/image markup, macOS Quick Look thumbnail extraction, existing PNG/JPEG/MP4 assets, built-in ImageGen provenance, pnpm 9, Vite, and GitHub browser rendering.
 
 ## Global Constraints
 
 - Keep `assets/readme/community/hero-shared-studio.webp` unchanged.
-- Restore only real product media: `demo.mp4` and the six approved UI captures.
+- Restore only real product media: `demo.mp4`, its uncropped Quick Look poster,
+  and the six approved UI captures.
 - Do not restore `yw.png`, `zw.png`, `image.png`, or `产品定位概念图.png`.
 - Do not claim the demo is 90 seconds; the existing file is approximately 100 seconds.
 - English and Chinese must use the same media order and destinations.
@@ -24,6 +25,7 @@
 
 **Files:**
 - Modify: `README.md`
+- Create: `assets/readme/demo-poster.png`
 
 **Interfaces:**
 - Consumes: the retained Shared Studio hero and existing media under `assets/readme/`.
@@ -42,18 +44,27 @@ Expected: both commands exit nonzero because the README currently references fou
 
 - [ ] **Step 2: Restore the demo below the opening badges.**
 
-Insert this block after the badge paragraph and before `## A teammate, not another tab`:
+Extract the real poster, then insert the linked poster block after the badge
+paragraph and before `## A teammate, not another tab`:
+
+```bash
+poster_tmp=$(mktemp -d /tmp/polynoia-demo-poster.XXXXXX)
+qlmanage -t -s 1600 -o "$poster_tmp" assets/readme/demo.mp4
+cp "$poster_tmp/demo.mp4.png" assets/readme/demo-poster.png
+```
 
 ```html
 <p align="center">
-  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+  <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">
+    <img src="assets/readme/demo-poster.png" alt="Watch the Polynoia product demo" width="860" />
+  </a>
 </p>
 <p align="center">
   <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — if the inline player does not load, open the video directly.</sub>
 </p>
 ```
 
-Expected: GitHub has an inline player when supported and a normal fallback link otherwise, with no duration claim.
+Expected: GitHub renders an uncropped real poster that opens the MP4, plus the normal direct-link fallback, with no duration claim. An inline player is not expected because GitHub sanitizes `<video>` from README DOM.
 
 - [ ] **Step 3: Make the three product principles prose-only.**
 
@@ -92,6 +103,8 @@ Run:
 ```bash
 test "$(rg -c 'assets/readme/community/hero-shared-studio\.webp' README.md)" -eq 1
 ! rg -n 'identity-has-a-seat|chats-end-work-stays|reviewable-outcomes|90-second' README.md
+! rg -n '<video\b' README.md
+test "$(rg -c 'assets/readme/demo-poster\.png' README.md)" -eq 1
 test "$(rg -c 'assets/readme/demo\.mp4' README.md)" -eq 2
 for asset in 群聊与编排.png 预览.png diff.png 联系人.png 质量面板.jpg 角色库.jpg; do test "$(rg -c "$asset" README.md)" -eq 1; done
 git diff --check
@@ -119,11 +132,14 @@ git commit -m "docs: restore real product media to README"
 
 - [ ] **Step 1: Restore the localized demo below the opening badges.**
 
-Insert this block after the Chinese badge paragraph and before `## 是同事，不是又一个标签页`:
+Insert this linked real-video poster block after the Chinese badge paragraph
+and before `## 是同事，不是又一个标签页`:
 
 ```html
 <p align="center">
-  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+  <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">
+    <img src="assets/readme/demo-poster.png" alt="观看 Polynoia 产品演示" width="860" />
+  </a>
 </p>
 <p align="center">
   <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 如果内联播放器没有加载，可直接打开视频。</sub>
@@ -175,9 +191,10 @@ Run:
 
 ```bash
 test "$(rg -c '^## ' README.md)" = "$(rg -c '^## ' README.zh-CN.md)"
-for asset in hero-shared-studio.webp demo.mp4 群聊与编排.png 预览.png diff.png 联系人.png 质量面板.jpg 角色库.jpg; do test "$(rg -c "$asset" README.md)" = "$(rg -c "$asset" README.zh-CN.md)"; done
+for asset in hero-shared-studio.webp demo-poster.png demo.mp4 群聊与编排.png 预览.png diff.png 联系人.png 质量面板.jpg 角色库.jpg; do test "$(rg -c "$asset" README.md)" = "$(rg -c "$asset" README.zh-CN.md)"; done
 ! rg -n 'identity-has-a-seat|chats-end-work-stays|reviewable-outcomes|90-second|引导式合并冲突解决' README.md README.zh-CN.md assets/readme/community/PROMPTS.md
-for asset in assets/readme/群聊与编排.png assets/readme/预览.png assets/readme/diff.png assets/readme/联系人.png assets/readme/质量面板.jpg assets/readme/角色库.jpg assets/readme/demo.mp4; do test -s "$asset"; done
+! rg -n '<video\b' README.md README.zh-CN.md
+for asset in assets/readme/群聊与编排.png assets/readme/预览.png assets/readme/diff.png assets/readme/联系人.png assets/readme/质量面板.jpg assets/readme/角色库.jpg assets/readme/demo-poster.png assets/readme/demo.mp4; do test -s "$asset"; done
 git diff --check
 ```
 
@@ -207,11 +224,15 @@ git commit -m "docs: align bilingual README product media"
 Run:
 
 ```bash
-file assets/readme/demo.mp4 assets/readme/群聊与编排.png assets/readme/预览.png assets/readme/diff.png assets/readme/联系人.png assets/readme/质量面板.jpg assets/readme/角色库.jpg
+file assets/readme/demo.mp4 assets/readme/demo-poster.png assets/readme/群聊与编排.png assets/readme/预览.png assets/readme/diff.png assets/readme/联系人.png assets/readme/质量面板.jpg assets/readme/角色库.jpg
 curl --fail --location --silent --show-error --output /dev/null --user-agent 'Polynoia-README-Verifier/1.0' https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4
+for readme in README.md README.zh-CN.md; do ! rg -q '<video\b' "$readme" && test "$(rg -c 'assets/readme/demo-poster\.png' "$readme")" -eq 1 && test "$(rg -c 'assets/readme/demo\.mp4' "$readme")" -eq 2; done
+test -s assets/readme/demo-poster.png
 ```
 
-Expected: all local files have the expected media types and the raw video request exits `0`.
+Expected: all local files have the expected media types, the raw video request
+exits `0`, each README has one linked poster and two direct MP4 references, and
+neither README relies on GitHub-sanitized `<video>` markup.
 
 - [ ] **Step 2: Run project and hygiene gates.**
 
@@ -233,7 +254,7 @@ git merge-base --is-ancestor origin/main HEAD
 git push -u origin agent/readme-real-media
 ```
 
-Open both rendered branch READMEs in GitHub at desktop and 390 px widths. Verify the hero, inline video element and fallback, all six captures, localized labels, two-column/stacked responsive behavior, and zero browser console errors.
+Open both rendered branch READMEs in GitHub at desktop and 390 px widths. Verify the hero, linked real-video poster and direct fallback, all six captures, localized labels, two-column/stacked responsive behavior, and zero browser console errors. GitHub should sanitize no required content: the implementation intentionally contains no `<video>` element.
 
 Expected: no broken media, raw HTML, overflow, or misleading caption appears.
 

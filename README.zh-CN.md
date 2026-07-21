@@ -26,7 +26,9 @@
 [![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
 <p align="center">
-  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+  <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">
+    <img src="assets/readme/demo-poster.png" alt="观看 Polynoia 产品演示" width="860" />
+  </a>
 </p>
 <p align="center">
   <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 如果内联播放器没有加载，可直接打开视频。</sub>

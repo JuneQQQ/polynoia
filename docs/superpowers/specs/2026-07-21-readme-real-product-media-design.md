@@ -23,14 +23,18 @@ equivalent.
   row-major order:
   `群聊与编排.png`, `预览.png`, `diff.png`, `联系人.png`, `质量面板.jpg`, and
   `角色库.jpg`.
+- Extract `assets/readme/demo-poster.png` from the existing MP4 with macOS Quick
+  Look at 1600 px. It is an uncropped real video frame, not regenerated or
+  redrawn UI.
 
 ## README composition
 
 The opening remains the current logo, language switch, Shared Studio hero,
 product belief, calls to action, and factual badges. Immediately after that
-opening, embed the existing product demo with a direct fallback link. Call it a
-product demo without claiming a 90-second duration: the committed MP4 is about
-100 seconds long.
+opening, show the real video poster linked directly to the existing product
+demo, followed by the localized direct-link fallback. Call it a product demo
+without claiming a 90-second duration: the committed MP4 is about 100 seconds
+long.
 
 The three product-principle sections keep their current prose and headings but
 lose their chapter illustration blocks. After those principles, add one
@@ -54,27 +58,33 @@ the new product-media section.
 
 ## Video behavior
 
-Both READMEs use the existing raw GitHub URL for `assets/readme/demo.mp4`, an
-inline `<video>` element with controls, muted inline playback, and a normal
-anchor fallback. The caption makes no duration promise. The binary is reused
-unchanged; no 80 MB duplicate or transcoded copy is added.
+GitHub sanitizes `<video>` elements from rendered README DOM, so an inline
+player cannot be the primary presentation. Both READMEs instead use a centered
+`<a>` pointing at the existing raw GitHub URL for `assets/readme/demo.mp4` and
+wrap the real `assets/readme/demo-poster.png` thumbnail inside it. The existing
+localized direct-link fallback remains below the poster, and the caption makes
+no duration promise. The MP4 is reused unchanged; no 80 MB duplicate or
+transcoded video is added.
 
 ## Scope and exclusions
 
 This change does not rewrite product claims, change application code, recapture
-the UI, regenerate images, modify the released DMG, or add new media. Historical
-completed implementation plans remain as records; this design supersedes only
-their four-illustration presentation decision.
+or redraw the UI, regenerate images, or modify the released DMG. The only new
+media is the deterministic Quick Look poster extracted from the existing demo.
+Historical completed implementation plans remain as records; this design
+supersedes only their four-illustration presentation decision.
 
 ## Verification
 
 - Confirm both READMEs reference exactly one community ImageGen asset, the same
-  MP4 URL, and the same six UI captures in the same order.
+  real-video poster, the same MP4 URL, and the same six UI captures in the same
+  order.
 - Confirm the three removed WebPs have no live README or provenance reference.
 - Check every local media path, the raw video fallback, all local anchors, and
   English/Chinese heading and media parity.
 - Render the feature branch on GitHub at desktop and narrow widths. Verify the
-  hero, inline video/fallback, screenshot grid, captions, and absence of broken
-  media or raw HTML.
+  hero, linked video poster/direct fallback, screenshot grid, captions, and
+  absence of broken media or raw HTML. Confirm no `<video>` element is expected
+  in GitHub's sanitized DOM.
 - Run the existing README validator, TypeScript check, production build, diff
   hygiene, and an independent adversarial review before a non-force push.

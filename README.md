@@ -26,7 +26,9 @@
 [![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
 <p align="center">
-  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+  <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">
+    <img src="assets/readme/demo-poster.png" alt="Watch the Polynoia product demo" width="860" />
+  </a>
 </p>
 <p align="center">
   <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — if the inline player does not load, open the video directly.</sub>
