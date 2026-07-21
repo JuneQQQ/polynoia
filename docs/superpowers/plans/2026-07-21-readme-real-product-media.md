@@ -293,7 +293,7 @@ Observed release gate on 2026-07-21 (Asia/Shanghai):
 - Final independent adversarial review reported Critical 0, Important 0,
   Minor 0, and `Ready to merge: Yes`.
 
-- [ ] **Step 6: Fast-forward and push `main` without force.**
+- [x] **Step 6: Fast-forward and push `main` without force.**
 
 ```bash
 git fetch origin main
@@ -303,3 +303,8 @@ git -C /Users/lishaobo/governance-center/polynoia push origin main
 ```
 
 Expected: local `main`, `origin/main`, and the feature branch resolve to the same commit.
+
+Observed: `main` fast-forwarded cleanly from `428df03486c9fc5fb0db553b906351818ea361d8`
+and the first non-force push was verified remotely at
+`036a3ed8372e613676ad674bc420979c890d134e`. This final bookkeeping update is
+the only follow-up commit.
