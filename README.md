@@ -79,9 +79,11 @@ A useful teammate leaves more than a polished reply. Polynoia retains project fi
 artifacts, messages, tool traces, diffs, and process results so people can examine
 both the outcome and how it was produced.
 
-Per-agent and per-conversation Git worktrees are refreshed from the project's `main`
-branch. They keep concurrent contributions separate until a person or coordinating
-agent reviews and integrates them.
+At the start of a turn, Polynoia resets each per-agent, per-conversation Git worktree
+from the project's integration branch (`main` by default). After a successful turn,
+Polynoia automatically integrates clean commits into that branch. Coordinating agents
+and people can then inspect the resulting commits and traces; merge conflicts are
+surfaced for resolution.
 
 ## What is remembered
 
@@ -95,7 +97,7 @@ in the project conversation or record it as a shared decision or artifact.
 |---|---|---|
 | **Personal work memory** | The same agent across its conversations | Agent-scoped decisions and outcomes that support continuity |
 | **Shared project memory** | Participants within the conversation where it was recorded | Pinned context plus conversation-scoped contracts, decisions, reports, and artifact records |
-| **Durable project artifacts** | People and agents within the applicable conversation, project, or worktree scope | Conversation records such as messages, tool traces, diffs, and process outcomes, plus Git artifacts such as files, commits, and branches—each retained within its own scope |
+| **Durable project artifacts** | People and agents within the applicable conversation, project, or worktree scope | Conversation records such as messages, tool traces, diffs, and process outcomes, plus Git artifacts such as files and commits—each retained within its own scope |
 
 ## Quick start
 
@@ -138,7 +140,7 @@ API is available at [http://127.0.0.1:7780](http://127.0.0.1:7780).
 |---|---|
 | **Coding-agent adapters** | Claude Code, Codex, and OpenCode behind one conversation-oriented workspace, using their installed and authenticated CLIs |
 | **Identity and memory** | Persistent agent configuration, agent-scoped cross-conversation work memory, and conversation-scoped shared records and pinned context |
-| **Workspaces** | Per-agent and per-conversation Git worktrees refreshed from project `main` |
+| **Workspaces** | Per-agent and per-conversation Git worktrees reset from the configured integration branch (`main` by default) at turn start |
 | **Artifacts and traces** | Persisted messages, tool activity, diffs, process outcomes, files, and rich artifact records |
 | **Orchestration** | Direct and group conversations, with coordinating agents able to delegate work and gather attributable results |
 | **Application shells** | Web, Tauri desktop, and Capacitor mobile source shells; the official downloadable release is currently macOS Apple Silicon only |
@@ -171,8 +173,8 @@ packaging may change as the project matures.
   does not currently provide semantic or vector retrieval or autonomous learning.
 - Personal work memory is not global memory. Agents do not inherit another agent's
   private context, and Polynoia does not provide cloud cross-device memory.
-- A worktree is refreshed from project `main`; it does not automatically expose
-  unmerged work from another agent's branch.
+- A worktree is reset from the configured integration branch (`main` by default) at
+  turn start; it does not expose another agent's unmerged work.
 - Local-first operation is not a claim of end-to-end encryption.
 - Delivery receipts do not guarantee exactly-once model execution.
 - The repository contains web, desktop, and mobile source shells, but the official
