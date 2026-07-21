@@ -25,6 +25,13 @@
 [![Apache-2.0 license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
+<p align="center">
+  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
+</p>
+<p align="center">
+  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — if the inline player does not load, open the video directly.</sub>
+</p>
+
 ## A teammate, not another tab
 
 Most AI coding sessions are disposable: prompt, answer, close, and begin the next
@@ -41,10 +48,6 @@ That belief shapes three product principles.
 
 ## A teammate has an identity
 
-<p align="center">
-  <img src="assets/readme/community/identity-has-a-seat.webp" alt="A human works beside three materially distinct AI collaborators at one shared workbench, each surrounded by its own tools and accumulated notes to convey persistent identity and role" width="860" />
-</p>
-
 A Polynoia agent is a persistent identity, not a disposable model session. Its name,
 persona, role, configured tools, skills, and model stay attached to the agent record.
 Those choices can evolve without turning every conversation into a new anonymous
@@ -55,10 +58,6 @@ adapter and receives a Git worktree for project work, so its contribution has a
 specific place and history.
 
 ## Chats end. The work stays.
-
-<p align="center">
-  <img src="assets/readme/community/chats-end-work-stays.webp" alt="Collaborators resume an unfinished artifact beside retained annotations and revision marks, showing that scoped context survives the end of a chat" width="860" />
-</p>
 
 Polynoia keeps **durable, scoped work memory**. The same agent can carry relevant
 decisions and outcomes across its own conversations. Within a conversation, pinned
@@ -71,10 +70,6 @@ of becoming shared context for every agent.
 
 ## Teammates leave reviewable work
 
-<p align="center">
-  <img src="assets/readme/community/reviewable-outcomes.webp" alt="A human and several distinct AI collaborators assemble separately attributable materials into one inspectable project artifact" width="860" />
-</p>
-
 A useful teammate leaves more than a polished reply. Polynoia retains project files,
 artifacts, messages, tool traces, diffs, and process results so people can examine
 both the outcome and how it was produced.
@@ -84,6 +79,16 @@ from the project's integration branch (`main` by default). After a successful tu
 Polynoia automatically integrates clean commits into that branch. Coordinating agents
 and people can then inspect the resulting commits and traces; merge conflicts are
 surfaced for resolution.
+
+## See Polynoia at work
+
+| Group chat and orchestration | Inline artifact preview |
+|---|---|
+| <img src="assets/readme/群聊与编排.png" alt="Polynoia group chat showing parallel agent work lanes and attributable results" width="420" /> | <img src="assets/readme/预览.png" alt="Polynoia conversation with an inline artifact preview open beside the work" width="420" /> |
+| **Reviewable diffs and commit history** | **Persistent agent identities** |
+| <img src="assets/readme/diff.png" alt="Polynoia commit history with a side-by-side code diff" width="420" /> | <img src="assets/readme/联系人.png" alt="Polynoia contacts page with a persistent agent identity and configuration details" width="420" /> |
+| **Agent quality panel** | **Specialty library** |
+| <img src="assets/readme/质量面板.jpg" alt="Polynoia agent quality panel with per-agent reliability and benchmark evidence" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia specialty library for adding role presets as agent teammates" width="420" /> |
 
 ## What is remembered
 
