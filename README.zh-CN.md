@@ -2,340 +2,173 @@
   <img src="assets/brand/logo.svg" alt="Polynoia" width="104" height="104" />
 </p>
 
-<h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
-
-<p align="center">
-  <strong>一个通过聊天协作构建软件的开源多 Agent 工作区。</strong><br/>
-  在同一个 IM 界面中协调 Claude Code、Codex、OpenCode 和自定义 Agent,
-  内联查看产物、预览工作区、追踪提交历史并完成合并。
-</p>
-
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  <img alt="Python"  src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white">
-  <img alt="React"   src="https://img.shields.io/badge/React-18-149ECA?logo=react&logoColor=white">
-  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white">
-  <img alt="Vite"    src="https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white">
-  <img alt="uv"      src="https://img.shields.io/badge/env-uv-DE5FE9">
-  <img alt="platforms" src="https://img.shields.io/badge/平台-web%20·%20桌面%20·%20移动-1F2937">
-  <img alt="status"  src="https://img.shields.io/badge/状态-活跃开发-d97757">
+  <img src="assets/readme/community/hero-shared-studio.webp" alt="一位人类和三位各具特色的 AI 协作者回到共享工作台，笔记、决策和项目产物依然保留在原处" width="860" />
 </p>
 
-<!-- 主图 — 换成真实截图:群聊里编排者并行派活、同时打开一个内联 diff/预览 -->
-<p align="center">
-  <img src="assets/readme/zw.png" alt="Polynoia —— 一群 AI Agent 在群聊里并行开工" width="860" />
-</p>
-
-<!-- 产品演示视频 —— 经 Git LFS 提交;GitHub 从 raw 链接内联渲染播放器 -->
-<p align="center">
-  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
-</p>
-<p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示视频</a> —— 如果内联播放器没加载,点这里播放。</sub>
-</p>
-
----
-
-## 目录
-
-- [Polynoia 是什么?](#polynoia-是什么)
-- [和传统工具有何不同](#和传统工具有何不同)
-- [功能详览](#功能详览)
-  - [IM 核心](#-im-核心)
-  - [编排者(多 Agent 协作)](#-编排者多-agent-协作)
-  - [统一适配器层](#-统一适配器层)
-  - [联系人与角色库](#-联系人与角色库)
-  - [Agent 质量面板](#-agent-质量面板)
-  - [内联产物](#-内联产物)
-  - [工作区 IDE](#-工作区-ide)
-  - [冲突闭环](#-冲突闭环)
-  - [流式与刷新安全](#-流式与刷新安全)
-  - [跨平台:web · 桌面 · 移动](#-跨平台web--桌面--移动)
-  - [沙箱与安全](#-沙箱与安全)
-- [快速开始](#快速开始)
-- [架构](#架构)
-- [技术栈](#技术栈)
-- [仓库结构](#仓库结构)
-- [文档与决策](#文档与决策)
-- [与 AI 协作构建](#与-ai-协作构建)
-
----
-
-## Polynoia 是什么?
-
-Polynoia 是一个面向 Agentic Software Development 的 **IM 形态多 Agent 协作平台**。
-它不把每个编码 Agent 隔离成一个终端会话,而是给它们一个共享工作区、聊天式协调层,
-以及从想法 → 文件 → 预览 → 提交的可审查路径。
-
-你像用 Slack / 飞书 / 微信一样和 AI 编码 Agent(Claude Code、Codex、OpenCode 或自定义
-Agent)打交道:新建对话、发消息、拿回富媒体产物,然后在不离开聊天流的情况下检查和合并。
-
-- **单聊** —— 把一个明确、聚焦的任务交给单个 Agent。
-- **群聊** —— `@` 多个 Agent,由指定的**编排者(Orchestrator)** 拆解任务、**并行**派活,再验收并合并产物。
-- **内联产物** —— 回复不再是大段文字:代码 diff、网页预览、文档、幻灯片、表格、数据表、提交历史,
-  全部在对话里直接渲染,而且**可编辑**。
-- **自带 Agent** —— Claude Code / Codex / OpenCode 走同一套协议;你也能自建 Agent
-  (system prompt + 工具集 + 能力标签),甚至**一句话对话式创建**。
+<h1 align="center">Polynoia</h1>
 
 <p align="center">
-  <img src="assets/readme/产品定位概念图.png" width="860" />
+  <strong>记得工作的 AI 同事。</strong><br />
+  Polynoia 是一个本地优先的工作空间，让编码 Agent 拥有自己的身份、实际开展工作的空间，
+  以及关于决策与成果的持久、范围明确的工作记忆。
 </p>
-> 每个 Agent 在自己**独立的沙箱 git worktree** 里干活;编排者把分支合进工作区 `main`,冲突会升起
-> 一个引导式的并排解决界面。依赖**留在本地工作目录**(Python 用 `uv`,Node 用本地 `node_modules`)——
-> 不污染全局。
 
-## 和传统工具有何不同
+[快速开始](#快速开始) · [下载 macOS Apple Silicon](https://github.com/JuneQQQ/polynoia/releases/latest) · [文档](#文档与社区) · [参与贡献](CONTRIBUTING.md)
 
+[![Latest release](https://img.shields.io/github/v/release/JuneQQQ/polynoia?display_name=tag&sort=semver&label=release)](https://github.com/JuneQQQ/polynoia/releases/latest)
+[![Apache-2.0 license](https://img.shields.io/github/license/JuneQQQ/polynoia?label=license)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia/stargazers)
 
-|  | 常见 AI 编码工具 | **Polynoia** |
+## 是同事，不是又一个标签页
+
+大多数 AI 编码会话都是用完即弃的：提问、回答、关闭，下一次对话又从零开始。模型也许很强，
+但它与工作的关系总在重置。
+
+Polynoia 从一个不同的信念出发：**AI 应该像同事一样工作，而不是每次打开对话都重新认识你。**
+Agent 再回来时，应该带着可以辨认的角色、恰当的历史信息和真实的工作空间。它的记忆只应在
+连续性有用且符合预期的范围内延续；它产出的工作则始终可供人检查。
+
+这个信念形成了三项产品原则。
+
+## 同事有自己的身份
+
+<p align="center">
+  <img src="assets/readme/community/identity-has-a-seat.webp" alt="一位人类与三位明显不同的 AI 协作者共用一张工作台，每位协作者身边都有自己的工具和积累的笔记，体现出持续的身份与角色" width="860" />
+</p>
+
+每个 Polynoia Agent 都是一个持久的身份，而不是一次性的模型会话。它的名称、人设、角色、
+已配置的工具、技能和模型都与 Agent 记录相绑定。这些配置可以逐步调整，却不会让每次对话
+都变成一个全新的匿名助手。
+
+身份也让工作有了归属。每个 Agent 通过已配置的编码适配器运行，并在项目工作中获得一个
+Git worktree，因此每份贡献都有明确的位置与历史记录。
+
+## 对话会结束，工作会留下
+
+<p align="center">
+  <img src="assets/readme/community/chats-end-work-stays.webp" alt="协作者在保留下来的批注和修订标记旁继续完成未竟的产物，表明范围明确的上下文在对话结束后依然延续" width="860" />
+</p>
+
+Polynoia 保留**持久、范围明确的工作记忆**。同一个 Agent 可以把相关的决策和成果带到自己的
+后续对话中。在一次对话内，置顶上下文以及契约、决策、报告和产物等记录，会为参与者提供
+当前工作的共同背景。
+
+消息、工具活动、diff 和流程结果都会作为工作记录保留下来。这些边界很重要：连续性只沿
+明确的范围延续，不会变成所有 Agent 共用的上下文。
+
+## 同事会留下可审查的工作成果
+
+<p align="center">
+  <img src="assets/readme/community/reviewable-outcomes.webp" alt="一位人类和几位各具特色的 AI 协作者，将各自归属明确的材料汇集成一个可检查的项目产物" width="860" />
+</p>
+
+能真正帮上忙的同事，留下的不只是一段精心润色的回复。Polynoia 会保留项目文件、产物、消息、
+工具轨迹、diff 和流程结果，让人们既能检查最终成果，也能了解它是如何产生的。
+
+每轮开始时，Polynoia 都会基于项目的集成分支（默认为 main），重置每个 Agent 在每个对话中
+的 Git worktree。一轮成功结束后，Polynoia 会先把无冲突的提交自动集成进该分支；随后，
+负责协调的 Agent 和人便可检查由此产生的提交与轨迹。合并冲突会被明确呈现，以供解决。
+
+## Polynoia 会记住什么
+
+假设你在单聊中告诉 **Frontend Agent**，下个版本的代号是 “Aurora”。之后，同一个 Frontend
+Agent 再次参与项目工作时，它的个人工作记忆可以把这个代号延续下来。**QA Agent 不会继承这段
+私有记忆。** 要让项目参与者都能使用这项决定，请将它置顶到项目对话中，或将它记录为共享
+决策或产物。
+
+| 范围 | 谁可以使用 | 会保留什么 |
 |---|---|---|
-| 心智模型 | 一个助手、一条线程 | **一支能群聊的团队** —— 单聊 + 群聊 |
-| 并行 | 顺序轮流 | **编排者并发派发**子任务 |
-| 产出 | 文字 + 代码块 | **20+ 种富产物**,可预览可编辑 |
-| 多引擎 | 锁定单一厂商 | **Claude Code · Codex · OpenCode** 统一适配层 |
-| 合并成果 | 手动复制粘贴 | **每个 Agent 独立 git worktree** + 引导式冲突解决 |
-| 组队 | 选个模型 | **从 232 个角色专长库雇佣**,或一句话描述一个 |
-| 质量 | 信厂商 | **按 Agent 的质量面板** —— 综合分 + 基准矩阵 |
-| 触达 | 桌面浏览器 | **web · 桌面(Tauri) · 移动(Capacitor)** 同一份代码 |
-
----
-
-## 截图
-
-| 群聊与编排 | 内联产物预览 |
-|---|---|
-| <img src="assets/readme/群聊与编排.png" alt="并行 Agent 工作泳道" width="420"/> | <img src="assets/readme/预览.png" alt="内联文档 / 幻灯片 / diff 预览" width="420"/> |
-| **工作区 IDE** | **联系人** |
-| <img src="assets/readme/diff.png" alt="文件树 + 编辑器 + 终端" width="420"/> | <img src="assets/readme/联系人.png" alt="引导式合并冲突解决" width="420"/> |
-| **Agent 质量面板** | **角色库 —— 雇佣角色** |
-| <img src="assets/readme/质量面板.jpg" alt="按 Agent 的综合分 + 基准矩阵" width="420"/> | <img src="assets/readme/角色库.jpg" alt="从 232 个角色预设雇佣" width="420"/> |
-
----
-
-## 功能详览
-
-### 💬 IM 核心
-
-一个为「与 Agent 协作」而非「单纯提问」打造的聊天端。
-
-- **会话列表**:置顶 · 归档 · 标题与正文全文搜索,每行标题下还有**微信/Slack 式最近消息预览**
-  (按优先级:正在工作的 Agent → 未发送草稿 → 最近一条消息 → 工作区)。
-- **单聊 + 群聊**;群内可给每个成员**指派角色**。
-- **`@` 提及选择器**(模糊匹配,Slack/Linear 风格)召唤指定 Agent。
-- **回复 / 引用 / 复制 / 重试**,以及**「回到这里」代码检查点** —— 从任意历史消息处岔开重来。
-- **⌘K 命令面板**,即时搜索与跳转。
-- **对话优先的信息架构** —— 侧边栏头部一键直达**收件箱**(「待我处理」:未读 + 置顶)、
-  **联系人**、**质量面板**、**归档** 四个视图,而侧边栏本身保持干净的对话流。
-
-### 🧠 编排者(多 Agent 协作)
-
-编排者**本身就是一个 Agent**(`role="orchestrator"`),不是特殊代码 —— 可换 profile、可加进任意群、也可不要。
-
-- **自动拆解任务** → 并行派发给成员 Agent。
-- **Burst 泳道** —— 并发的 Agent 工作以并行泳道呈现,不会交织成一团乱流。
-- **验收并合并** —— 收集子任务产物、校验、把分支合进 `main`。
-- 内置**失败降级**与**多 Agent 合并冲突解决**。
-
-### 🔌 统一适配器层
-
-一套协议、多个引擎 —— 加一个新 CLI Agent 不用动核心。
-
-| 适配器 | 通信协议 | 说明 |
-|---|---|---|
-| **Claude Code** | Claude Agent SDK | 推理强、长上下文 |
-| **OpenCode** | Agent Client Protocol(ACP v1,JSON-RPC/NDJSON) | 开放标准、本地优先 |
-| **Codex** | `codex` app-server 流式 | backend 由 `~/.codex/config.toml` 指定 |
-
-支持按适配器配**网络代理**、**凭证自动复用**(直接用你已登录的 CLI,无需额外 API key),
-并清晰区分*适配器*(引擎)与*联系人*(引擎之上配置好的人设)。
-
-### 🤖 联系人与角色库
-
-**联系人** = `(适配器, 模型, 名字, 人设, 工具)` —— 一个引擎能派生多种角色。联系人住在
-**独立页面**里(侧边栏保持纯对话流);每行刻意做得安静 —— 头像 · 名字 · 一句话简介 · 适配器。
-
-- **角色库(Specialty library)** —— 从 MIT 许可的
-  [`agency-agents`](https://github.com/msitarzewski/agency-agents) 目录浅克隆 **232 个角色定义**
-  (工程 · 设计 · 产品 · 测试 · 安全 …),**一键「雇佣」成联系人**。你只需补上目录不知道的东西
-  —— 适配器 + 模型。
-- **对话式创建** —— 一句话描述需求(「一个会写 React、但不能跑 shell 命令的设计师」),
-  Polynoia 帮你起草联系人供你确认。
-- **角色预设** + **工具细勾选**(`read_file` / `edit_file` / `run_shell` / `network` /
-  `call_agent` …),以及可从 GitHub 地址 / 本地路径安装的**按联系人挂载的 skill**。
-- **自动推导能力标签**,群里一眼能看懂谁会什么。
-
-### 📊 Agent 质量面板
-
-Polynoia 的核心论点:**决定一个 Agent 交付质量的是平台 harness,而不只是模型本身。**
-质量面板把这件事*按联系人量化*出来 —— 于是你可以放心地跑弱模型 / 免费模型,看着 harness 把它们抬起来。
-
-- 每个联系人一个 **综合分(0–100)**,权重 **基准测试 45% · 工具可靠性 25% · 流程可靠性 20% ·
-  活跃度 10%**(无证据时取中性 0.6)。
-- **分项条** —— 轮次、工具成功率、流程成功率、基准均分 —— 一眼看全。
-- **基准矩阵** —— 用例 × 模型的执行打分,弱模型在 harness 下的进步随时间可见。背后是事件日志
-  管线(`GET /api/quality`)。
-
-### 📄 内联产物
-
-前端把每条消息渲染成 `parts: MessagePart[]`,经**注册表**分派 —— 一条回复可同时含
-文字 + diff + 实时状态条。已注册的 21 种 part 类型:
-
-`text` · `reasoning` · `tasks` · `diff` · `web` · `swatches` · `copy` · `metrics` · `sql` ·
-`schema` · `logs` · `terminal` · `api` · `typing` · `tool-call` · `ask-form` · `image` ·
-`file` · `files` · `error` · `conflict`
-
-外加对 `.md`(所见即所得)、**Marp** 幻灯片、`.html`、**可编辑 `.xlsx`**、`.docx` / `.pptx`、
-图片、源代码的丰富**只读/可编辑预览**,以及 Agent 刚搭好的应用的**网页实时预览**。
-
-### 🖥️ 工作区 IDE
-
-当一个对话挂在项目工作区上时,右栏就是一个完整的迷你 IDE:
-
-- **文件树** + **CodeMirror 6** 编辑器(查找替换、VS Code 键位、小地图),`Ctrl+S → PUT → 自动提交`。
-- 面板内嵌**交互式 PTY 终端**。
-- **GitHub 式提交历史**浏览,并排 diff。
-- 面板可拖动、状态持久化。
-
-### 🌿 冲突闭环
-
-并行 Agent 在不同分支上*一定*会撞车。Polynoia 把它做成一等的引导流程:冲突在聊天里升起一张卡片 →
-打开**并排解决面板** → 解决结果提交回 `main` —— 整个过程用人话讲清楚(不把 git 哈希怼到你脸上)。
-
-### 🌊 流式与刷新安全
-
-- **AI SDK 6 `UIMessageChunk` 协议**走 WebSocket(28 种 chunk + 自定义 `data-*`)。
-- **刷新安全的流式** —— 生成途中重连,思考 / 回复的打印流从断点无缝接上。
-
-### 📱 跨平台:web · 桌面 · 移动
-
-同一份 Vite 构建,三种运行时 —— **不是**三套重写。
-
-- **Web** —— 任意现代浏览器里的完整体验。
-- **桌面** —— **Tauri 2** 包裹 web 构建,默认启动随机 localhost 端口的桌面私有内置后端,也可在设置中切换到自定义本机/局域网/远程后端。
-- **移动** —— **Capacitor 6** 包裹*同一份*构建:微信式 4-tab 首页
-  (消息 · 联系人 · 项目 · 我),为触屏精简的「轻量 IM + 只读产物预览」子集。
-
-### 🔒 沙箱与安全
-
-- 每个 Agent 子进程跑在 `~/sandbox/<conv-id>/`,`cwd` 锁定、env 受限。
-- **工具白名单** + **网络白名单**(LLM 端点 + npm + pypi)。
-- 每个 Agent 独立 **git worktree**,在显式合并前彼此隔离。
-
----
+| **个人工作记忆** | 同一个 Agent，跨越它自己的多次对话 | 有助于保持连续性的 Agent 范围内的决策与成果 |
+| **共享项目记忆** | 记录所在对话中的参与者 | 置顶上下文，以及对话范围内的契约、决策、报告和产物记录 |
+| **持久项目产物** | 适用的对话、项目或 worktree 范围内的人与 Agent | 消息、工具轨迹、diff 和流程结果等对话记录，以及文件和提交等 Git 产物；每一项都保留在各自的范围内 |
 
 ## 快速开始
 
-### 前置(一次性)
+### macOS 桌面版（Apple Silicon）
 
-| 工具 | 要求 | 装法 |
-|---|---|---|
-| Python | 3.12+ | 系统包管理器 |
-| Node | 22+ | nvm / 系统包 |
-| uv | 最新 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| Claude Code CLI | 已登录 | `npm i -g @anthropic-ai/claude-code`,再 `claude` 登录 |
-| Codex CLI _(可选)_ | 已配置 | `npm i -g @openai/codex`;backend 由 `~/.codex/config.toml` 指定 |
-| OpenCode CLI _(可选)_ | — | `npm i -g opencode-ai`,再 `opencode auth login` |
-| pnpm | 9.x | **`make install` 会用 corepack 自动拉,无需手动** |
+官方可下载版本目前仅支持搭载 **Apple Silicon**、运行 **macOS 11 或更高版本**的 Mac。
 
-> 国内网络可设 npm 源:`npm config set registry https://registry.npmmirror.com`
+1. 安装至少一个受支持的编码 Agent CLI 并完成身份验证。可选项包括 **Claude Code**、
+   **Codex 0.118.0 或更高版本**、**OpenCode**；三者不必全部安装。
+2. 下载[最新版本](https://github.com/JuneQQQ/polynoia/releases/latest)，打开 DMG，
+   然后将 Polynoia 拖入 **Applications**。
+3. 当前构建采用 ad-hoc 签名，且尚未经过公证（notarization）。首次启动时，请按住 Control 键点击
+   Polynoia，然后选择**打开**。
+4. 首次启动时请保持网络连接。Polynoia 会准备它的私有后端，这可能需要几分钟。
 
-### 安装并运行
+桌面应用会直接使用已在 Mac 上安装并完成身份验证的编码 Agent CLI。
 
-```bash
-make install      # uv sync(后端)+ pnpm install(前端)
-make dev          # 后端 :7780 + 前端 :7788(Ctrl-C 全停)
-```
+### 从源码运行
 
-打开 **http://127.0.0.1:7788/**(后端 API 在 http://127.0.0.1:7780/)。
-
-### 灌一个演示(推荐)
-
-`make dev` 跑着的同时,另开一个终端:
+前置要求：**Git**、**Make**、**Python 3.12+**、**Node.js 22+**、**uv**，以及
+**pnpm 9**（首选）。开始让 Agent 工作之前，请至少安装 Claude Code、Codex 0.118.0+ 或 OpenCode
+中的一个，并完成身份验证。
 
 ```bash
-python3 scripts/seed_demo.py            # 几个人设 + 1 个工作区 + 1 个群聊
+git clone https://github.com/JuneQQQ/polynoia.git
+cd polynoia
+make install
+make dev
 ```
 
-或灌入官方提交用的**上线准备 testkit**:
+在 [http://127.0.0.1:7788](http://127.0.0.1:7788) 打开 Web 应用。开发 API 位于
+[http://127.0.0.1:7780](http://127.0.0.1:7780)。
 
-```bash
-bash scripts/testkit/reset.sh # 清库 + 灌入上线 / @ 路由 / 合并 / diff 用例
-```
+## 已实现的能力
 
-这批用例覆盖 Release Notes、QA 检查表、状态页、埋点验收报告、Go-live 群聊协作、
-@ 路由、冲突处理、main 同步、Diff/历史和工具错误恢复。
+| 领域 | 已实现内容 |
+|---|---|
+| **编码 Agent 适配器** | 将 Claude Code、Codex 和 OpenCode 接入同一个以对话为中心的工作空间，并使用它们已安装且完成身份验证的 CLI |
+| **身份与记忆** | 持久的 Agent 配置、Agent 范围的跨对话工作记忆，以及对话范围的共享记录和置顶上下文 |
+| **工作空间** | 每轮开始时，基于已配置的集成分支（默认为 main）重置每个 Agent 在每个对话中的 Git worktree |
+| **产物与轨迹** | 持久保存消息、工具活动、diff、流程结果、文件和信息丰富的产物记录 |
+| **编排** | 支持单聊和群聊；负责协调的 Agent 可以委派工作，并收集归属明确的结果 |
+| **应用外壳** | 提供 Web、Tauri 桌面端和 Capacitor 移动端的源码外壳；官方可下载版本目前仅支持 macOS Apple Silicon |
 
-### 常用命令
+## 信任与边界
 
-```bash
-make server   # 仅后端(看日志)
-make web      # 仅前端
-make test     # pytest + vitest
-make lint     # ruff + biome
-make types    # 由 Pydantic 重新生成共享 TS 类型
-```
+**本地优先存储。** 默认情况下，后端状态和项目工作都保留在你控制的机器上。桌面版本会在
+首次启动时准备一个私有的本地后端。
 
----
+**Git 隔离。** Worktree 可以隔离分支和并发 Git 工作，但它不是操作系统级沙箱。能够使用
+shell 的 Agent 会以本地用户身份执行操作，因此请保护好凭据与宿主机数据，并审查每个 Agent
+可用的工具和访问权限。
 
-## 架构
+**可审查的执行过程。** 持久保存的消息、工具轨迹、diff 和流程结果让 Agent 活动可以被检查。
+带回执的消息投递使客户端能确认系统已持久接收用户消息，并支持重放与恢复；但它不保证
+模型执行具备 exactly-once（恰好一次）语义。
 
-```
-apps/
-├── web/          Vite + React + TypeScript —— UI 壳(三端复用同一份)
-├── server/       Python 3.12 + FastAPI + asyncio(uv 管理)
-├── desktop/      Tauri 2 外壳 + 桌面后端选择 / 内置 server resource
-└── mobile/       Capacitor 6 包裹 apps/web/dist
+开发 API 仅供可信的本地开发使用。在没有适当的生产级身份验证和网络控制时，请勿将它暴露
+到不可信网络中。
 
-docs/
-├── research/          已有调研(20 个库 + UI 设计)
-├── superpowers/specs/ 完整设计 spec
-├── ADR/               23 篇架构决策记录
-└── design/            冲突闭环 charter + 图示
-```
+## 项目状态与局限
 
-**三层协议:**
+Polynoia 正在积极开发中。随着项目逐渐成熟，接口、数据格式、Agent 工作流和打包方式都可能变化。
 
-完整模型见[设计 spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) 与
-[上下文构成系统](docs/design/context-system.md)。
+- 持久、范围明确的工作记忆并不意味着无限、永久或完整回忆。Polynoia 目前不提供语义检索
+  或向量检索，也不会自主学习。
+- 个人工作记忆并不是全局记忆。Agent 不会继承另一个 Agent 的私有上下文，Polynoia 也不提供
+  基于云端的跨设备记忆。
+- 每轮开始时，worktree 会基于已配置的集成分支（默认为 main）重置；它不会暴露另一个 Agent
+  尚未合并的工作。
+- 本地优先运行并不代表端到端加密。
+- 投递回执并不保证模型执行具备 exactly-once（恰好一次）语义。
+- 仓库包含 Web、桌面端和移动端的源码外壳，但官方可下载版本目前仅支持运行 macOS 11 或
+  更高版本的 Apple Silicon Mac。
 
-## 技术栈
+## 文档与社区
 
-- **后端** · Python 3.12 · uv · FastAPI · Pydantic v2 · LiteLLM · SQLite(→ Postgres)· Alembic
-- **前端** · React 18 + Vite · Radix + shadcn/ui · Tailwind 4 · Motion · Lucide · CodeMirror 6 · `@git-diff-view/react` · Vercel AI SDK 6 · react-markdown
-- **外壳** · Tauri 2(桌面)· Capacitor 6(移动)
-
-## 仓库结构
-
-```
-polynoia/
-├── apps/            web(Vite+React)· server(FastAPI)· desktop(Tauri)· mobile(Capacitor)
-├── packages/        共享 TS 类型 · 跨平台 core · ui-web · design-tokens
-├── docs/            调研 · spec · ADR · 图示
-├── scripts/         演示 + 场景 seeder
-├── .skills/         自定义 skill(add-adapter / add-card-type / …)
-└── Makefile         make dev / test / lint / types / build
-```
-
-## 文档与决策
-
-- **设计 spec** —— [`docs/superpowers/specs/2026-05-23-polynoia-design.md`](docs/superpowers/specs/2026-05-23-polynoia-design.md)
-- **调研综合**(20 个库)—— [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)
-- **架构决策记录** —— [`docs/ADR/`](docs/ADR/)(为何编排者是一个 Agent、为何选 ACP 而非
-  stdout JSON、为何选 CodeMirror 而非 Monaco、为何选 Capacitor 而非 React Native……)
-
-## 与 AI 协作构建
-
-本项目把 AI 当作一等协作者来开发。规范见 [`CLAUDE.md`](CLAUDE.md)(项目级 AI 协作规范),
-决策记录在 [`docs/ADR/`](docs/ADR/),官方提交用的 AI 协作说明见
-[`docs/ai-collaboration.md`](docs/ai-collaboration.md),调研综合见
-[`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)。提交遵循
-[Conventional Commits](https://www.conventionalcommits.org/)。
-
-
----
-
-<p align="center"><sub>Polynoia —— 群智一谈。</sub></p>
+- 阅读[设计规范](docs/superpowers/specs/2026-05-23-polynoia-design.md)、
+  [上下文系统概览](docs/design/context-system.md)和[架构决策记录](docs/ADR/)。
+- 在[贡献指南](CONTRIBUTING.md)中了解如何构建、验证和提交更改，并遵守
+  [行为准则](CODE_OF_CONDUCT.md)。
+- 如发现疑似安全漏洞，请按照[安全政策](SECURITY.md)中的流程私下报告。
+- 使用 [GitHub Issues](https://github.com/JuneQQQ/polynoia/issues) 报告错误或提出建议，
+  通过 [Releases](https://github.com/JuneQQQ/polynoia/releases) 获取已发布的构建。
+- Polynoia 采用 [Apache-2.0](LICENSE) 许可证。
