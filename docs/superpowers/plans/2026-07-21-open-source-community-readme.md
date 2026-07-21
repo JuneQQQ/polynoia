@@ -507,7 +507,7 @@ git commit -m "docs: record README release verification"
 - The final independent adversarial review found zero Critical, Important, or
   Minor issues and assessed the package as ready to merge.
 
-- [ ] **Step 8: Fast-forward local `main` and push without force.**
+- [x] **Step 8: Fast-forward local `main` and push without force.**
 
 ```bash
 git fetch origin main
@@ -517,3 +517,8 @@ git -C /Users/lishaobo/governance-center/polynoia push origin main
 ```
 
 Expected: local `main`, `origin/main`, and the feature branch resolve to the same commit.
+
+Publication completed without force-push: local `main` fast-forwarded from
+`9aa9bc1` to the verified branch at `28c3cc8`, that commit was pushed to
+`origin/main`, and the remote ref was read back and matched before this final
+checklist update.
