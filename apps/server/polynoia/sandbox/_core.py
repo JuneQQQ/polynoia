@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -18,7 +19,6 @@ from polynoia.credentials import (
     use_direct_host_credentials,
 )
 from polynoia.settings import settings
-
 
 _IS_WINDOWS = os.name == "nt"
 _IS_DARWIN = sys.platform == "darwin"
@@ -241,6 +241,7 @@ def _git_env() -> dict[str, str]:
 # whole probe→conclude critical section must run under this lock, keyed by
 # workspace_id (NOT conv_id). See docs/design/conflict-closed-loop-2026-05-30.md.
 _WS_MERGE_LOCKS: dict[str, asyncio.Lock] = {}
+_WS_SETUP_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
@@ -250,6 +251,24 @@ def workspace_merge_lock(workspace_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _WS_MERGE_LOCKS[workspace_id] = lock
     return lock
+
+
+def _workspace_setup_lock(workspace_id: str) -> asyncio.Lock:
+    """Serialize repository/worktree creation without nesting the merge lock."""
+    lock = _WS_SETUP_LOCKS.get(workspace_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _WS_SETUP_LOCKS[workspace_id] = lock
+    return lock
+
+
+def _worktree_dir_for(ws_root: Path, agent_id: str, conv_id: str) -> Path:
+    """Return a readable path whose identity still covers the complete ids."""
+    agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
+    conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
+    identity = hashlib.sha256(f"{agent_id}\0{conv_id}".encode()).hexdigest()[:12]
+    name = f"ag-{agent_short}-conv-{conv_short}-{identity}"
+    return ws_root / ".polynoia" / "worktrees" / name
 
 
 def _stage_uploads_into_worktree(ws_root: Path, worktree_dir: Path) -> None:
@@ -383,6 +402,7 @@ class Sandbox:
         workspace_id: str,
         conv_id: str,
         agent_id: str,
+        _setup_locked: bool = False,
     ) -> "Sandbox":
         """Create (or open) a per-(agent, conv) worktree inside a
         workspace-level shared git repo. P1.1 of workspace-shared-git.md.
@@ -403,6 +423,14 @@ class Sandbox:
 
         Idempotent: re-calling returns the existing worktree object.
         """
+        if not _setup_locked:
+            async with _workspace_setup_lock(workspace_id):
+                return await cls.create_workspace_sandbox(
+                    workspace_id=workspace_id,
+                    conv_id=conv_id,
+                    agent_id=agent_id,
+                    _setup_locked=True,
+                )
         ws_root = workspace_root_for(workspace_id)
         ws_root.mkdir(parents=True, exist_ok=True)
 
@@ -418,10 +446,10 @@ class Sandbox:
         _cred_scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}")
         await _cred_scratch._copy_host_credentials()
 
-        # Step 2: short stable suffixes for path readability
-        agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
-        conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
-        worktree_dir = ws_root / ".polynoia" / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
+        # Step 2: readable suffixes plus a digest of the complete identity.
+        # The old suffix-only path collided when two ids shared their last
+        # eight characters and silently handed one agent another agent's tree.
+        worktree_dir = _worktree_dir_for(ws_root, agent_id, conv_id)
         branch = f"agent/{agent_id}/conv-{conv_id}"
         # Guard against orphan worktree dirs: a previous scenario reset (rmtree
         # with ignore_errors=True) or a half-failed worktree-add can leave the
@@ -430,29 +458,44 @@ class Sandbox:
         # Sandbox handle that works for file I/O but is invisible to git — so
         # commit_pending_worktrees / branch_ahead_of_main / merge_to_main all
         # silently skip it and the agent's writes never reach main.
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "worktree",
+            "list",
+            "--porcelain",
+            cwd=str(ws_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=_git_env(),
+        )
+        try:
+            wt_out, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            raise RuntimeError(f"git worktree list timed out ({_GIT_TIMEOUT}s)") from None
+        registered_paths: dict[str, Path] = {}
+        current_path: Path | None = None
+        for line in wt_out.decode("utf-8", "replace").splitlines():
+            if line.startswith("worktree "):
+                current_path = Path(line.removeprefix("worktree "))
+            elif line.startswith("branch ") and current_path is not None:
+                registered_branch = line.removeprefix("branch refs/heads/")
+                registered_paths[registered_branch] = current_path
+                current_path = None
+
+        # Reuse legacy suffix-only paths by their complete registered branch.
+        registered_for_branch = registered_paths.get(branch)
+        if registered_for_branch is not None and registered_for_branch.is_dir():
+            worktree_dir = registered_for_branch
+
         if worktree_dir.exists():
-            proc = await asyncio.create_subprocess_exec(
-                "git",
-                "worktree",
-                "list",
-                "--porcelain",
-                cwd=str(ws_root),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                stdin=asyncio.subprocess.DEVNULL,
-                env=_git_env(),
-            )
-            try:
-                wt_out, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                raise RuntimeError(f"git worktree list timed out ({_GIT_TIMEOUT}s)") from None
-            registered = (
-                f"worktree {worktree_dir}".encode() in wt_out
-                or f"worktree {worktree_dir.resolve()}".encode() in wt_out
+            registered = any(
+                path.resolve() == worktree_dir.resolve()
+                for path in registered_paths.values()
             )
             if not registered:
                 # Orphan — sidestep it so the worktree-add path below can
@@ -463,7 +506,7 @@ class Sandbox:
                 # them under `.recovered/<orig>-<ts>` instead of deleting,
                 # which is cheap and avoids destroying work on detection.
                 ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-                recovered_root = ws_root / "worktrees" / ".recovered"
+                recovered_root = ws_root / ".polynoia" / "worktrees" / ".recovered"
                 recovered_root.mkdir(parents=True, exist_ok=True)
                 worktree_dir.rename(recovered_root / f"{worktree_dir.name}-{ts}")
 
@@ -563,10 +606,24 @@ class Sandbox:
         (breaks the conflict closed-loop). See routes.run_adapter_turn.
         """
         ws_root = workspace_root_for(workspace_id)
-        agent_short = agent_id[-8:] if len(agent_id) >= 8 else agent_id
-        conv_short = conv_id[-8:] if len(conv_id) >= 8 else conv_id
-        worktree_dir = ws_root / ".polynoia" / "worktrees" / f"ag-{agent_short}-conv-{conv_short}"
-        if not worktree_dir.exists() or not (ws_root / ".git").exists():
+        branch = f"agent/{agent_id}/conv-{conv_id}"
+        if not (ws_root / ".git").exists():
+            return False
+        scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}")
+        rc, listing, _err = await scratch._run(
+            ["git", "worktree", "list", "--porcelain"]
+        )
+        if rc != 0:
+            return False
+        worktree_dir: Path | None = None
+        current_path: Path | None = None
+        for line in listing.splitlines():
+            if line.startswith("worktree "):
+                current_path = Path(line.removeprefix("worktree "))
+            elif line == f"branch refs/heads/{branch}" and current_path is not None:
+                worktree_dir = current_path
+                break
+        if worktree_dir is None or not worktree_dir.exists():
             return False
         # Re-sync the user's uploads on EVERY turn (this runs for pooled adapter
         # sessions too, which skip create_workspace_sandbox), so files uploaded
@@ -578,7 +635,7 @@ class Sandbox:
             workspace_root=ws_root,
             workspace_id=workspace_id,
             agent_id=agent_id,
-            branch=f"agent/{agent_id}/conv-{conv_id}",
+            branch=branch,
         )
         return await sandbox._sync_branch_with_main()
 
@@ -2349,6 +2406,17 @@ class Sandbox:
         return commits
 
     async def cleanup(self) -> None:
-        """Remove the sandbox dir entirely. Idempotent."""
+        """Remove an owned sandbox without corrupting shared-workspace state."""
+        if self.workspace_root is not None:
+            # A read-only workspace handle points `root` at the user's project
+            # itself and owns no linked worktree. It must never delete that root.
+            if self.branch is None or self.workspace_id is None:
+                return
+            async with _workspace_setup_lock(self.workspace_id):
+                await self._workspace_run(
+                    ["git", "worktree", "remove", "--force", str(self.root)]
+                )
+                await self._workspace_run(["git", "worktree", "prune"])
+            return
         if self.root.exists():
             await asyncio.to_thread(shutil.rmtree, self.root, ignore_errors=True)

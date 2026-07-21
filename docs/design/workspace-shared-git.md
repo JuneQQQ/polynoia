@@ -23,7 +23,7 @@
         │   ├── manifest.json
         │   └── audit.jsonl
         └── worktrees/                  ← 每个 (agent, conv) 一个 worktree
-            ├── ag-{agent_id_short}-conv-{conv_id_short}/
+            ├── ag-{agent_id_short}-conv-{conv_id_short}-{identity_digest}/
             │   └── (working tree on branch agent/{agent_id}/conv-{conv_id})
             └── ...
 ```
@@ -37,7 +37,8 @@
 
 `agent/{agent_id}/conv-{conv_id}`
 
-- agent_id 用 ULID 后 8 位 hex(防超长 + 唯一性够):`agent/01KSAB12/conv-01KSCD34`
+- branch 始终使用完整 agent/conv ID；目录保留后 8 位用于可读性，同时附加完整
+  `(agent_id, conv_id)` 的摘要，不能把短后缀当作身份。
 - main 是项目共识分支,初始空 / 一个 README + .gitignore
 
 ## 3. P1.1 触发条件
@@ -57,9 +58,15 @@ DM 走 legacy per-conv 路径(P1.2 再迁)。
    - 拷凭证到 `.polynoia/credentials/`
    - 写 `.polynoia/manifest.json`
    - 初始 commit `polynoia: workspace init for ws <id>`
-2. 检查目标 worktree 存在,不存在则:
+2. 在 workspace setup 锁内按完整 branch 查询 Git 已注册的 worktree（兼容旧版
+   短路径）；不存在则:
    - `git worktree add -b agent/{X}/conv-{Y} worktrees/ag-{X_short}-conv-{Y_short}/`(从 main HEAD 分叉)
-3. 返回 Sandbox 对象,`root` 指向 worktree 路径
+3. 返回 Sandbox 对象,`root` 指向 worktree 路径。同 workspace 的并发首次打开会
+   收敛到同一注册记录，不竞争 bootstrap / branch creation。
+
+linked worktree 清理必须使用 `git worktree remove --force` 后再 `prune`；不能只删
+目录留下幽灵注册。只读 workspace handle 不拥有 worktree，cleanup 必须是 no-op，
+绝不能删除用户项目根目录。
 
 ## 5. env / HOME 重写
 

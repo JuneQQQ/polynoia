@@ -11,12 +11,23 @@ Verifies:
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from polynoia.sandbox._core import Sandbox
+
+
+def _git_branch(root: Path) -> str:
+    return subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 @pytest.fixture
@@ -165,6 +176,101 @@ async def test_env_for_agent_exports_workspace_branch_ids(
     assert env["POLYNOIA_AGENT_ID"] == "ag-42"
     assert env["POLYNOIA_BRANCH"] == "agent/ag-42/conv-c-7"
     assert env["POLYNOIA_CONV_ID"] == "c-7"
+
+
+@pytest.mark.asyncio
+async def test_full_ids_with_same_short_suffix_get_distinct_worktrees(
+    ws_sandbox_root: Path,
+) -> None:
+    """Readable suffixes are not identities: colliding tails must stay isolated."""
+    a = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-collision",
+        conv_id="conv-prefix-a-shared88",
+        agent_id="agent-prefix-a-shared88",
+    )
+    b = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-collision",
+        conv_id="conv-prefix-b-shared88",
+        agent_id="agent-prefix-b-shared88",
+    )
+
+    assert a.branch != b.branch
+    assert a.root != b.root
+    (a.root / "owned-by-a.txt").write_text("a\n")
+    assert not (b.root / "owned-by-a.txt").exists()
+    assert _git_branch(a.root) == a.branch
+    assert _git_branch(b.root) == b.branch
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_open_is_idempotent(
+    ws_sandbox_root: Path,
+) -> None:
+    """Concurrent adapter starts must converge on one registered worktree."""
+    sandboxes = await asyncio.gather(
+        *(
+            Sandbox.create_workspace_sandbox(
+                workspace_id="ws-concurrent",
+                conv_id="conv-concurrent",
+                agent_id="agent-concurrent",
+            )
+            for _ in range(8)
+        )
+    )
+
+    roots = {sandbox.root for sandbox in sandboxes}
+    assert len(roots) == 1
+    root = roots.pop()
+    assert root.is_dir()
+    assert _git_branch(root) == "agent/agent-concurrent/conv-conv-concurrent"
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=sandboxes[0].workspace_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert listing.count(f"worktree {root}") == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_unregisters_before_recreate(
+    ws_sandbox_root: Path,
+) -> None:
+    """Removing a linked tree must not leave Git blocking the same identity."""
+    first = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-cleanup",
+        conv_id="conv-cleanup",
+        agent_id="agent-cleanup",
+    )
+    first_root = first.root
+
+    await first.cleanup()
+    recreated = await Sandbox.create_workspace_sandbox(
+        workspace_id="ws-cleanup",
+        conv_id="conv-cleanup",
+        agent_id="agent-cleanup",
+    )
+
+    assert recreated.root == first_root
+    assert recreated.root.is_dir()
+    assert _git_branch(recreated.root) == recreated.branch
+
+
+@pytest.mark.asyncio
+async def test_read_only_workspace_cleanup_never_deletes_workspace_root(
+    ws_sandbox_root: Path,
+) -> None:
+    await Sandbox.ensure_workspace("ws-read-only")
+    read_only = Sandbox.open_workspace_if_exists("ws-read-only")
+    assert read_only is not None
+    sentinel = read_only.root / "user-project-file.txt"
+    sentinel.write_text("keep\n")
+
+    await read_only.cleanup()
+
+    assert sentinel.read_text() == "keep\n"
+    assert (read_only.root / ".git").is_dir()
 
 
 @pytest.mark.asyncio
