@@ -31,7 +31,7 @@
 - Consumes: the retained Shared Studio hero and existing media under `assets/readme/`.
 - Produces: the canonical media ordering that Task 2 mirrors in Chinese.
 
-- [ ] **Step 1: Prove the current README violates the approved media contract.**
+- [x] **Step 1: Prove the current README violates the approved media contract.**
 
 Run:
 
@@ -42,7 +42,7 @@ test "$(rg -c 'assets/readme/demo\.mp4' README.md)" -eq 2
 
 Expected: both commands exit nonzero because the README currently references four community WebPs and no demo.
 
-- [ ] **Step 2: Restore the demo below the opening badges.**
+- [x] **Step 2: Restore the demo below the opening badges.**
 
 Extract the real poster, then insert the linked poster block after the badge
 paragraph and before `## A teammate, not another tab`:
@@ -66,7 +66,7 @@ cp "$poster_tmp/demo.mp4.png" assets/readme/demo-poster.png
 
 Expected: GitHub renders an uncropped real poster that opens the MP4, plus the normal direct-link fallback, with no duration claim. An inline player is not expected because GitHub sanitizes `<video>` from README DOM.
 
-- [ ] **Step 3: Make the three product principles prose-only.**
+- [x] **Step 3: Make the three product principles prose-only.**
 
 Remove the centered image paragraphs referencing:
 
@@ -78,7 +78,7 @@ assets/readme/community/reviewable-outcomes.webp
 
 Keep each heading and every existing prose paragraph unchanged.
 
-- [ ] **Step 4: Add the real product showcase after the third principle.**
+- [x] **Step 4: Add the real product showcase after the third principle.**
 
 Insert this section immediately before `## What is remembered`:
 
@@ -96,7 +96,7 @@ Insert this section immediately before `## What is remembered`:
 
 Expected: six existing real captures appear in the approved row-major order.
 
-- [ ] **Step 5: Verify and commit the English media contract.**
+- [x] **Step 5: Verify and commit the English media contract.**
 
 Run:
 
@@ -130,7 +130,7 @@ git commit -m "docs: restore real product media to README"
 - Consumes: Task 1's exact video and six-capture order.
 - Produces: bilingual parity and a one-illustration community asset inventory.
 
-- [ ] **Step 1: Restore the localized demo below the opening badges.**
+- [x] **Step 1: Restore the localized demo below the opening badges.**
 
 Insert this linked real-video poster block after the Chinese badge paragraph
 and before `## 是同事，不是又一个标签页`:
@@ -146,7 +146,7 @@ and before `## 是同事，不是又一个标签页`:
 </p>
 ```
 
-- [ ] **Step 2: Make the Chinese principles prose-only and add the localized grid.**
+- [x] **Step 2: Make the Chinese principles prose-only and add the localized grid.**
 
 Remove the same three chapter-image paragraphs, preserve their prose, and insert before `## Polynoia 会记住什么`:
 
@@ -164,7 +164,7 @@ Remove the same three chapter-image paragraphs, preserve their prose, and insert
 
 Expected: the old incorrect `联系人.png` conflict-resolution alt text does not return.
 
-- [ ] **Step 3: Prune unused ImageGen chapter assets and provenance.**
+- [x] **Step 3: Prune unused ImageGen chapter assets and provenance.**
 
 Run:
 
@@ -185,7 +185,7 @@ Rewrite `assets/readme/community/PROMPTS.md` so it retains only:
 
 Expected: the provenance file contains no claim that the deleted chapter assets remain final deliverables.
 
-- [ ] **Step 4: Verify bilingual media parity.**
+- [x] **Step 4: Verify bilingual media parity.**
 
 Run:
 
@@ -200,7 +200,7 @@ git diff --check
 
 Expected: every command exits `0`.
 
-- [ ] **Step 5: Commit the Chinese and asset cleanup.**
+- [x] **Step 5: Commit the Chinese and asset cleanup.**
 
 ```bash
 git add README.zh-CN.md assets/readme/community/PROMPTS.md
@@ -219,7 +219,7 @@ git commit -m "docs: align bilingual README product media"
 - Consumes: the completed bilingual README and media cleanup.
 - Produces: a verified non-force update to `main`.
 
-- [ ] **Step 1: Check local and remote media.**
+- [x] **Step 1: Check local and remote media.**
 
 Run:
 
@@ -234,7 +234,7 @@ Expected: all local files have the expected media types, the raw video request
 exits `0`, each README has one linked poster and two direct MP4 references, and
 neither README relies on GitHub-sanitized `<video>` markup.
 
-- [ ] **Step 2: Run project and hygiene gates.**
+- [x] **Step 2: Run project and hygiene gates.**
 
 ```bash
 pnpm --filter @polynoia/web exec tsc --noEmit
@@ -246,7 +246,7 @@ git diff --name-status main...HEAD
 
 Expected: type-check and build exit `0`, no whitespace error or untracked deliverable exists, and the diff contains only the approved documentation/media scope.
 
-- [ ] **Step 3: Push the feature branch and inspect GitHub rendering.**
+- [x] **Step 3: Push the feature branch and inspect GitHub rendering.**
 
 ```bash
 git fetch origin main
@@ -258,13 +258,13 @@ Open both rendered branch READMEs in GitHub at desktop and 390 px widths. Verify
 
 Expected: no broken media, raw HTML, overflow, or misleading caption appears.
 
-- [ ] **Step 4: Request independent adversarial review.**
+- [x] **Step 4: Request independent adversarial review.**
 
 Ask a read-only reviewer to check the Git range from `main` to `HEAD` against the design, including exact media selection, alt accuracy, bilingual parity, asset cleanup, and rendered GitHub behavior. Fix every Critical or Important finding and rerun Steps 1–3.
 
 Expected: zero Critical and zero Important findings.
 
-- [ ] **Step 5: Record verification and commit the completed plan.**
+- [x] **Step 5: Record verification and commit the completed plan.**
 
 Mark completed checkboxes `[x]`, add exact gate/browser/review results, then run:
 
@@ -272,6 +272,26 @@ Mark completed checkboxes `[x]`, add exact gate/browser/review results, then run
 git add docs/superpowers/plans/2026-07-21-readme-real-product-media.md
 git commit -m "docs: record README media verification"
 ```
+
+Observed release gate on 2026-07-21 (Asia/Shanghai):
+
+- Re-extracting the `1600x1200` Quick Look frame from the real MP4 produced a
+  byte-for-byte match with `assets/readme/demo-poster.png`.
+- The raw GitHub MP4 request, bilingual media-count contract, hero-only
+  community inventory, original-capture presence, and `git diff --check` all
+  passed. The existing six captures and `demo.mp4` remain unchanged.
+- `pnpm --filter @polynoia/web exec tsc --noEmit` passed. The production build
+  transformed 5,588 modules and completed in 8.59 seconds; only the repository's
+  existing mixed-import and chunk-size warnings were emitted.
+- GitHub rendered both READMEs correctly at desktop and `390x844`. English and
+  Chinese had no document-level overflow; the linked real poster and all six
+  captures loaded, and the two-column capture grid remained contained at the
+  narrow viewport. The final metadata commit was reloaded and inspected on the
+  branch page.
+- The feature branch was pushed and its remote hash matched
+  `59e4aa0b14414055c9069a8b7ced2477779194c7`.
+- Final independent adversarial review reported Critical 0, Important 0,
+  Minor 0, and `Ready to merge: Yes`.
 
 - [ ] **Step 6: Fast-forward and push `main` without force.**
 
