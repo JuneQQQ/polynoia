@@ -25,13 +25,10 @@
 [![Apache-2.0 license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
+https://github.com/user-attachments/assets/993fd4d4-a535-4900-9074-e93d28037e47
+
 <p align="center">
-  <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">
-    <img src="assets/readme/demo-poster.png" alt="Watch the Polynoia product demo" width="860" />
-  </a>
-</p>
-<p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the product demo</a> — click the real product frame above or open the video directly.</sub>
+  <sub>▶︎ If the player does not start, <a href="https://github.com/user-attachments/assets/993fd4d4-a535-4900-9074-e93d28037e47">open the video directly</a>.</sub>
 </p>
 
 ## A teammate, not another tab
