@@ -165,17 +165,17 @@ as `hero.png`, `identity.png`, `memory.png`, and `outcomes.png`, then run:
 
 ```bash
 mkdir -p assets/readme/community
-magick /tmp/polynoia-readme-imagegen/hero.png -resize '1880x800^' -gravity center -extent 1880x800 -quality 86 assets/readme/community/hero-shared-studio.webp
-magick /tmp/polynoia-readme-imagegen/identity.png -resize '1440x810^' -gravity center -extent 1440x810 -quality 84 assets/readme/community/identity-has-a-seat.webp
-magick /tmp/polynoia-readme-imagegen/memory.png -resize '1440x810^' -gravity center -extent 1440x810 -quality 84 assets/readme/community/chats-end-work-stays.webp
-magick /tmp/polynoia-readme-imagegen/outcomes.png -resize '1440x810^' -gravity center -extent 1440x810 -quality 84 assets/readme/community/reviewable-outcomes.webp
+pnpm dlx sharp-cli -i /tmp/polynoia-readme-imagegen/hero.png -o assets/readme/community/hero-shared-studio.webp -f webp -q 86 --effort 6 resize 1880 800 --fit cover --position centre
+pnpm dlx sharp-cli -i /tmp/polynoia-readme-imagegen/identity.png -o assets/readme/community/identity-has-a-seat.webp -f webp -q 84 --effort 6 resize 1440 810 --fit cover --position centre
+pnpm dlx sharp-cli -i /tmp/polynoia-readme-imagegen/memory.png -o assets/readme/community/chats-end-work-stays.webp -f webp -q 84 --effort 6 resize 1440 810 --fit cover --position centre
+pnpm dlx sharp-cli -i /tmp/polynoia-readme-imagegen/outcomes.png -o assets/readme/community/reviewable-outcomes.webp -f webp -q 84 --effort 6 resize 1440 810 --fit cover --position centre
 ```
 
 Expected: hero is `1880×800`; chapter images are `1440×810`; hero is at most 1.5 MB and each chapter image is at most 1.0 MB.
 
 - [ ] **Step 7: Record provenance and prompts.**
 
-Write `assets/readme/community/PROMPTS.md` with the exact four prompts above, `Generation mode: built-in ImageGen`, every source output path, every final asset path, final dimensions, and the exact ImageMagick commands used.
+Write `assets/readme/community/PROMPTS.md` with the exact four prompts above, `Generation mode: built-in ImageGen`, every source output path, every final asset path, final dimensions, and the exact Sharp CLI commands used.
 
 Expected: another contributor can understand how each asset was made without claiming deterministic regeneration.
 
