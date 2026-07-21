@@ -25,13 +25,10 @@
 [![Apache-2.0 license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
+https://github.com/user-attachments/assets/993fd4d4-a535-4900-9074-e93d28037e47
+
 <p align="center">
-  <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">
-    <img src="assets/readme/demo-poster.png" alt="观看 Polynoia 产品演示" width="860" />
-  </a>
-</p>
-<p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">观看产品演示</a> —— 点击上方真实产品画面，或直接打开视频。</sub>
+  <sub>▶︎ 如果播放器未启动，请<a href="https://github.com/user-attachments/assets/993fd4d4-a535-4900-9074-e93d28037e47">直接打开视频</a>。</sub>
 </p>
 
 ## 是同事，不是又一个标签页
