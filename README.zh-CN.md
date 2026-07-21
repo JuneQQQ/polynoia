@@ -22,8 +22,8 @@
 [快速开始](#快速开始) · [下载 macOS Apple Silicon](https://github.com/JuneQQQ/polynoia/releases/latest) · [文档](#文档与社区) · [参与贡献](CONTRIBUTING.md)
 
 [![Latest release](https://img.shields.io/github/v/release/JuneQQQ/polynoia?display_name=tag&sort=semver&label=release)](https://github.com/JuneQQQ/polynoia/releases/latest)
-[![Apache-2.0 license](https://img.shields.io/github/license/JuneQQQ/polynoia?label=license)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia/stargazers)
+[![Apache-2.0 license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
 ## 是同事，不是又一个标签页
 
