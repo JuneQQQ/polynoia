@@ -91,7 +91,7 @@ Insert this section immediately before `## What is remembered`:
 | **Reviewable diffs and commit history** | **Persistent agent identities** |
 | <img src="assets/readme/diff.png" alt="Polynoia commit history with a side-by-side code diff" width="420" /> | <img src="assets/readme/联系人.png" alt="Polynoia contacts page with a persistent agent identity and configuration details" width="420" /> |
 | **Agent quality panel** | **Specialty library** |
-| <img src="assets/readme/质量面板.jpg" alt="Polynoia agent quality panel with per-agent reliability and benchmark evidence" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia specialty library for adding role presets as agent teammates" width="420" /> |
+| <img src="assets/readme/质量面板.jpg" alt="Polynoia agent quality panel with per-agent reliability and benchmark status" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia specialty library for adding role presets as agent teammates" width="420" /> |
 ```
 
 Expected: six existing real captures appear in the approved row-major order.
@@ -113,7 +113,7 @@ git diff --check
 Expected: every command exits `0`.
 
 ```bash
-git add README.md
+git add README.md assets/readme/demo-poster.png
 git commit -m "docs: restore real product media to README"
 ```
 
@@ -159,7 +159,7 @@ Remove the same three chapter-image paragraphs, preserve their prose, and insert
 | **可审查的 diff 与提交历史** | **持久的 Agent 身份** |
 | <img src="assets/readme/diff.png" alt="Polynoia 提交历史中的并排代码 diff" width="420" /> | <img src="assets/readme/联系人.png" alt="Polynoia 联系人页面中的持久 Agent 身份与配置详情" width="420" /> |
 | **Agent 质量面板** | **角色专长库** |
-| <img src="assets/readme/质量面板.jpg" alt="Polynoia Agent 质量面板中的逐 Agent 可靠性与基准证据" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia 用于把角色预设添加为 AI 同事的专长库" width="420" /> |
+| <img src="assets/readme/质量面板.jpg" alt="Polynoia Agent 质量面板中的逐 Agent 可靠性与基准测试状态" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia 用于把角色预设添加为 AI 同事的专长库" width="420" /> |
 ```
 
 Expected: the old incorrect `联系人.png` conflict-resolution alt text does not return.

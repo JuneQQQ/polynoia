@@ -80,7 +80,7 @@ Polynoia 保留**持久、范围明确的工作记忆**。同一个 Agent 可以
 | **可审查的 diff 与提交历史** | **持久的 Agent 身份** |
 | <img src="assets/readme/diff.png" alt="Polynoia 提交历史中的并排代码 diff" width="420" /> | <img src="assets/readme/联系人.png" alt="Polynoia 联系人页面中的持久 Agent 身份与配置详情" width="420" /> |
 | **Agent 质量面板** | **角色专长库** |
-| <img src="assets/readme/质量面板.jpg" alt="Polynoia Agent 质量面板中的逐 Agent 可靠性与基准证据" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia 用于把角色预设添加为 AI 同事的专长库" width="420" /> |
+| <img src="assets/readme/质量面板.jpg" alt="Polynoia Agent 质量面板中的逐 Agent 可靠性与基准测试状态" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia 用于把角色预设添加为 AI 同事的专长库" width="420" /> |
 
 ## Polynoia 会记住什么
 

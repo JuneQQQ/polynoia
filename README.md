@@ -90,7 +90,7 @@ surfaced for resolution.
 | **Reviewable diffs and commit history** | **Persistent agent identities** |
 | <img src="assets/readme/diff.png" alt="Polynoia commit history with a side-by-side code diff" width="420" /> | <img src="assets/readme/联系人.png" alt="Polynoia contacts page with a persistent agent identity and configuration details" width="420" /> |
 | **Agent quality panel** | **Specialty library** |
-| <img src="assets/readme/质量面板.jpg" alt="Polynoia agent quality panel with per-agent reliability and benchmark evidence" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia specialty library for adding role presets as agent teammates" width="420" /> |
+| <img src="assets/readme/质量面板.jpg" alt="Polynoia agent quality panel with per-agent reliability and benchmark status" width="420" /> | <img src="assets/readme/角色库.jpg" alt="Polynoia specialty library for adding role presets as agent teammates" width="420" /> |
 
 ## What is remembered
 
