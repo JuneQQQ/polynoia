@@ -1,6 +1,6 @@
 [package]
 name = "polynoia-desktop"
-version = "0.1.3"
+version = "0.1.4"
 description = "Polynoia desktop app (macOS / Windows / Linux) — Tauri 2 wrapper around the Polynoia web build."
 authors = ["Polynoia Team"]
 edition = "2021"
