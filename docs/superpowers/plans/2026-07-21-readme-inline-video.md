@@ -34,7 +34,7 @@
 - Consumes: `assets/readme/demo.mp4` and authenticated GitHub browser state.
 - Produces: `/tmp/polynoia-readme-video-url`, containing one stable attachment URL followed by a newline.
 
-- [ ] **Step 1: Write the failing playback contract.**
+- [x] **Step 1: Write the failing playback contract.**
 
 Create `.superpowers/sdd/verify-readme-inline-video.sh` with executable mode and this exact content:
 
@@ -69,7 +69,7 @@ case "$disposition" in
 esac
 ```
 
-- [ ] **Step 2: Run the contract and verify RED.**
+- [x] **Step 2: Run the contract and verify RED.**
 
 Run:
 
@@ -80,7 +80,7 @@ chmod +x .superpowers/sdd/verify-readme-inline-video.sh
 
 Expected: FAIL because neither README contains a standalone stable user-attachment URL; the current raw URL resolves as `application/octet-stream`.
 
-- [ ] **Step 3: Create the exact AVFoundation transcoder.**
+- [x] **Step 3: Create the exact AVFoundation transcoder.**
 
 Create `/tmp/polynoia-demo-transcode.swift` with:
 
@@ -255,7 +255,7 @@ struct PolynoiaDemoTranscode {
 }
 ```
 
-- [ ] **Step 4: Compile, run, and validate the derivative.**
+- [x] **Step 4: Compile, run, and validate the derivative.**
 
 Run:
 
@@ -298,13 +298,13 @@ PY
 
 Expected: complete duration near `100.334`, H.264/AAC, `960x720`, fewer than 10,000,000 bytes, and `moov` before `mdat`.
 
-- [ ] **Step 5: Upload without creating an issue.**
+- [x] **Step 5: Upload without creating an issue.**
 
 Open `https://github.com/JuneQQQ/polynoia/issues/new` in the authenticated browser, attach `/tmp/polynoia-demo-720p.mp4` to the issue body, wait for GitHub to replace the upload placeholder with a stable `https://github.com/user-attachments/assets/` URL, and do not submit the issue. Save only that stable URL plus a newline to `/tmp/polynoia-readme-video-url`.
 
 Expected: the draft issue is never created; GitHub has uploaded the media and issued one stable URL.
 
-- [ ] **Step 6: Verify the attachment before touching README.**
+- [x] **Step 6: Verify the attachment before touching README.**
 
 Run:
 
@@ -336,7 +336,7 @@ Expected: the stable attachment follows to a partial `video/mp4` response and do
 - Consumes: the stable URL stored in `/tmp/polynoia-readme-video-url`.
 - Produces: two READMEs with identical standalone attachment URLs and localized direct-link fallbacks.
 
-- [ ] **Step 1: Replace both demo blocks with the native attachment form.**
+- [x] **Step 1: Replace both demo blocks with the native attachment form.**
 
 Read `video_url=$(cat /tmp/polynoia-readme-video-url)`. Replace the English poster block with exactly:
 
@@ -360,7 +360,7 @@ $video_url
 
 The literal value from `/tmp/polynoia-readme-video-url`, not the text `$video_url`, must be written in all four locations.
 
-- [ ] **Step 2: Delete the unused poster and verify GREEN.**
+- [x] **Step 2: Delete the unused poster and verify GREEN.**
 
 Run:
 
@@ -372,7 +372,7 @@ git diff --check
 
 Expected: the contract passes; there are no raw demo links or poster references.
 
-- [ ] **Step 3: Verify protected media and bilingual parity.**
+- [x] **Step 3: Verify protected media and bilingual parity.**
 
 Run:
 
@@ -395,7 +395,7 @@ git status -sb
 
 Expected: protected files are unchanged and only the approved README/player scope is dirty.
 
-- [ ] **Step 4: Commit the README playback fix.**
+- [x] **Step 4: Commit the README playback fix.**
 
 ```bash
 git add README.md README.zh-CN.md assets/readme/demo-poster.png
@@ -414,7 +414,7 @@ git commit -m "fix(docs): play product demo inline"
 - Consumes: the committed bilingual inline-player change.
 - Produces: a verified non-force update to `main`.
 
-- [ ] **Step 1: Run project and diff gates.**
+- [x] **Step 1: Run project and diff gates.**
 
 ```bash
 pnpm --filter @polynoia/web exec tsc --noEmit
@@ -427,7 +427,7 @@ git status -sb
 
 Expected: all commands exit zero and the diff contains only the spec, plan, two READMEs, and poster deletion.
 
-- [ ] **Step 2: Push the feature branch and test rendered playback.**
+- [x] **Step 2: Push the feature branch and test rendered playback.**
 
 ```bash
 git fetch origin main
@@ -445,13 +445,13 @@ Open both branch READMEs on GitHub at desktop and `390x844`. For each page verif
 - the document does not overflow horizontally and the six-capture grid remains intact;
 - the console has no new warning or error.
 
-- [ ] **Step 3: Request independent adversarial review.**
+- [x] **Step 3: Request independent adversarial review.**
 
 Ask a read-only reviewer to inspect `main...HEAD`, the design, this plan, the response-header evidence, video metadata/atom evidence, and both browser renders. Fix every Critical or Important finding and rerun Steps 1–2.
 
 Expected: Critical 0, Important 0, and `Ready to merge: Yes`.
 
-- [ ] **Step 4: Record the exact release gate and commit the plan.**
+- [x] **Step 4: Record the exact release gate and commit the plan.**
 
 Mark completed steps and record derivative bytes/codecs/duration, stable attachment URL, response type, browser playback timing, viewport widths, build result, and review result. Then run:
 
@@ -459,6 +459,36 @@ Mark completed steps and record derivative bytes/codecs/duration, stable attachm
 git add docs/superpowers/plans/2026-07-21-readme-inline-video.md
 git commit -m "docs: record README video verification"
 ```
+
+Observed feature-branch release gate (2026-07-21, Asia/Shanghai):
+
+- The complete derivative is `5,110,518` bytes: H.264 `960x720` at 20 fps
+  (`100.350s`) plus AAC stereo at 44.1 kHz (`100.333s`). Its top-level MP4
+  atoms are `ftyp`, `moov`, `mdat`, so it is fast-start. The derivative was
+  kept under `/tmp` and never entered Git; the original 80,043,319-byte video
+  retained its original blob.
+- GitHub now keeps unsubmitted issue-draft attachments authentication-gated:
+  the draft UUID returned anonymous `404` despite being complete for the
+  signed-in user. To avoid creating an issue, the same derivative was uploaded
+  through the README editor on `agent/readme-inline-video` and persisted by the
+  exact final English player block. The stable public URL is
+  `https://github.com/user-attachments/assets/993fd4d4-a535-4900-9074-e93d28037e47`.
+- A fresh anonymous ranged request follows to `206 Partial Content` with
+  `Content-Type: video/mp4`, `Content-Range: bytes 0-0/5110518`, and no
+  attachment content disposition. The localized fallback opens a native media
+  document instead of starting a download.
+- `pnpm --filter @polynoia/web exec tsc --noEmit`, the production build, the
+  playback contract, and full-branch diff hygiene all pass. The Vite build
+  completed in `9.22s`; its existing chunk-size and mixed-import notices are
+  informational.
+- Real GitHub branch playback passed at desktop `1440x900` and mobile
+  `390x844`: English advanced `1.101242s` and `1.346155s`; Chinese advanced
+  `1.092338s` and `1.405631s`. Every page rendered exactly one controlled
+  video, had no document-level horizontal overflow, retained all six product
+  captures, and added no playback warning or error. GitHub Primer and installed
+  Chrome-extension diagnostics were recorded separately as host noise.
+- Per-task and whole-branch adversarial reviews report Critical `0`, Important
+  `0`; the final reviewer returned `Ready to merge: Yes`.
 
 - [ ] **Step 5: Fast-forward and push `main` without force.**
 
