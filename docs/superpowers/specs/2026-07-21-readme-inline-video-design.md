@@ -1,7 +1,7 @@
 # README Inline Video Design
 
-**Date:** 2026-07-21  
-**Status:** Approved direction, awaiting written-spec review  
+**Date:** 2026-07-21
+**Status:** Approved direction, awaiting written-spec review
 **Scope:** English and Chinese repository READMEs only, plus removal of the now-unused derived poster
 
 ## Problem
