@@ -490,7 +490,7 @@ Observed feature-branch release gate (2026-07-21, Asia/Shanghai):
 - Per-task and whole-branch adversarial reviews report Critical `0`, Important
   `0`; the final reviewer returned `Ready to merge: Yes`.
 
-- [ ] **Step 5: Fast-forward and push `main` without force.**
+- [x] **Step 5: Fast-forward and push `main` without force.**
 
 ```bash
 git fetch origin main
@@ -500,3 +500,18 @@ git -C /Users/lishaobo/governance-center/polynoia push origin main
 ```
 
 After the push, open the actual `main` README and repeat the real playback timing check. Verify local `main`, `origin/main`, and `agent/readme-inline-video` resolve to the same commit.
+
+Observed published-main gate:
+
+- `main` was updated by ordinary fast-forward push; no force-push occurred.
+- On the real repository root, the English video advanced from `0` to
+  `1.463251s` after a trusted click. On the explicit Chinese `main` README, it
+  advanced from `0` to `1.49602s`.
+- Both published pages contain exactly one controlled video whose source is a
+  GitHub user-asset host. Both direct fallbacks open a native `video/mp4`
+  document and do not start a download.
+- At the playback check, local `main`, `origin/main`, the local feature branch,
+  and its remote ref all resolved to
+  `d4c89c4c829c56a043ed40a5c9a23c05332ca9e5` with clean working trees. This
+  documentation-only completion commit is then fast-forwarded through the same
+  feature-to-main path.
