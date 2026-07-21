@@ -2,363 +2,193 @@
   <img src="assets/brand/logo.svg" alt="Polynoia" width="104" height="104" />
 </p>
 
-<h1 align="center">Polynoia <sub><sup>(AgentHub)</sup></sub></h1>
-
-<p align="center">
-  <strong>An open-source multi-agent workspace for building software through chat.</strong><br/>
-  Coordinate Claude Code, Codex, OpenCode, and custom agents in one IM-style interface,
-  with inline artifacts, workspace preview, git history, and guided merges.
-</p>
-
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
-  <img alt="Python"  src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white">
-  <img alt="React"   src="https://img.shields.io/badge/React-18-149ECA?logo=react&logoColor=white">
-  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white">
-  <img alt="Vite"    src="https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white">
-  <img alt="uv"      src="https://img.shields.io/badge/env-uv-DE5FE9">
-  <img alt="platforms" src="https://img.shields.io/badge/platforms-web%20·%20desktop%20·%20mobile-1F2937">
-  <img alt="status"  src="https://img.shields.io/badge/status-active%20dev-d97757">
+  <img src="assets/readme/community/hero-shared-studio.webp" alt="A human and three distinct AI collaborators return to a shared workbench where notes, decisions, and project artifacts remain in place" width="860" />
 </p>
 
-<!-- HERO SHOT — replace with a real screenshot of a group chat: an orchestrator
-     dispatching sub-tasks in parallel, with an inline diff / preview open. -->
-<p align="center">
-  <img src="assets/readme/yw.png" alt="Polynoia — a group chat of AI agents building in parallel" width="860" />
-</p>
-
-<!-- PRODUCT DEMO — committed via Git LFS; GitHub renders the player inline from the raw URL. -->
-<p align="center">
-  <video src="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4" controls muted playsinline width="860"></video>
-</p>
-<p align="center">
-  <sub>▶︎ <a href="https://github.com/JuneQQQ/polynoia/raw/main/assets/readme/demo.mp4">Watch the 90-second product demo</a> — if the inline player doesn't load, click to play.</sub>
-</p>
-
----
-
-## Table of contents
-
-- [What is Polynoia?](#what-is-polynoia)
-- [Why it's different](#why-its-different)
-- [Feature tour](#feature-tour)
-  - [IM core](#-im-core)
-  - [The Orchestrator](#-the-orchestrator-multi-agent-teamwork)
-  - [Unified adapter layer](#-unified-adapter-layer)
-  - [Contacts & specialty library](#-contacts--specialty-library)
-  - [Agent quality panel](#-agent-quality-panel)
-  - [Inline artifacts](#-inline-artifacts)
-  - [Workspace IDE](#-workspace-ide)
-  - [Conflict closed-loop](#-conflict-closed-loop)
-  - [Streaming & refresh-safe](#-streaming--refresh-safe)
-  - [Cross-platform: web · desktop · mobile](#-cross-platform-web--desktop--mobile)
-  - [Sandbox & security](#-sandbox--security)
-- [Quick start](#quick-start)
-- [Architecture](#architecture)
-- [Tech stack](#tech-stack)
-- [Project layout](#project-layout)
-- [Docs & decisions](#docs--decisions)
-- [Built with AI](#built-with-ai)
-
----
-
-## What is Polynoia?
-
-Polynoia is an **IM-style multi-agent collaboration platform** for agentic software
-development. Instead of treating each coding agent as a separate terminal session,
-Polynoia gives them a shared workspace, a chat-native coordination layer, and a
-reviewable path from idea → files → preview → commit.
-
-You talk to AI coding agents — Claude Code, Codex, OpenCode, or your own custom agents —
-the same way you'd use Slack/Lark/WeChat: start a chat, send a message, get rich
-results back, then inspect and merge the work without leaving the conversation.
-
-- **1:1 chats** — pin a single, well-scoped task to one agent.
-- **Group chats** — `@`-mention several agents; a designated **Orchestrator** decomposes the
-  task, dispatches sub-tasks **in parallel**, then verifies and merges the outputs.
-- **Inline artifacts** — replies aren't walls of text: code diffs, web previews, documents,
-  slides, spreadsheets, data tables and commit history all render — and stay editable — in
-  the conversation.
-- **Bring your own agents** — Claude Code / Codex / OpenCode sit behind one protocol, and you
-  can author custom agents (system prompt + tool set + capability tags) — even **from a
-  one-line description**.
+<h1 align="center">Polynoia</h1>
 
 <p align="center">
-  <img src="assets/readme/产品定位概念图.png" alt="Polynoia product positioning — many agents in one conversation" width="860" />
+  <strong>AI teammates that remember the work.</strong><br />
+  Polynoia is a local-first workspace where coding agents have an identity, a place to work,
+  and durable, scoped memory of decisions and outcomes.
 </p>
 
-> Each agent works in its **own sandboxed git worktree**. The Orchestrator merges branches
-> into the workspace `main` and surfaces conflicts as a guided, side-by-side resolve UI.
-> Dependencies stay **local to the working directory** (Python via `uv`, Node via local
-> `node_modules`) — no global pollution.
+[Get started](#quick-start) · [Download macOS Apple Silicon](https://github.com/JuneQQQ/polynoia/releases/latest) · [Docs](#documentation-and-community) · [Contribute](CONTRIBUTING.md)
 
-## Why it's different
+[![Latest release](https://img.shields.io/github/v/release/JuneQQQ/polynoia?display_name=tag&sort=semver&label=release)](https://github.com/JuneQQQ/polynoia/releases/latest)
+[![Apache-2.0 license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/JuneQQQ/polynoia?style=flat&label=stars)](https://github.com/JuneQQQ/polynoia)
 
-|  | Typical AI coding tool | **Polynoia** |
+## A teammate, not another tab
+
+Most AI coding sessions are disposable: prompt, answer, close, and begin the next
+conversation from scratch. The model may be capable, but the relationship with the
+work keeps resetting.
+
+Polynoia starts from a different belief: **AI should work like a teammate—not wake
+up as a stranger in every chat.** An agent should return with a recognizable role,
+the right history, and a real workspace. Its memory should persist only where that
+continuity is useful and expected, while the work it produces remains available for
+people to inspect.
+
+That belief shapes three product principles.
+
+## A teammate has an identity
+
+<p align="center">
+  <img src="assets/readme/community/identity-has-a-seat.webp" alt="A human works beside three materially distinct AI collaborators at one shared workbench, each surrounded by its own tools and accumulated notes to convey persistent identity and role" width="860" />
+</p>
+
+A Polynoia agent is a persistent identity, not a disposable model session. Its name,
+persona, role, configured tools, skills, and model stay attached to the agent record.
+Those choices can evolve without turning every conversation into a new anonymous
+assistant.
+
+Identity also gives work an owner. Each agent operates through its configured coding
+adapter and receives a Git worktree for project work, so its contribution has a
+specific place and history.
+
+## Chats end. The work stays.
+
+<p align="center">
+  <img src="assets/readme/community/chats-end-work-stays.webp" alt="Collaborators resume an unfinished artifact beside retained annotations and revision marks, showing that scoped context survives the end of a chat" width="860" />
+</p>
+
+Polynoia keeps **durable, scoped work memory**. The same agent can carry relevant
+decisions and outcomes across its own conversations. Within a conversation, pinned
+context and records such as contracts, decisions, reports, and artifacts give the
+participants a shared frame for the work at hand.
+
+Messages, tool activity, diffs, and process outcomes are persisted as part of the
+work record. Those boundaries matter: continuity follows explicit scopes instead
+of becoming shared context for every agent.
+
+## Teammates leave reviewable work
+
+<p align="center">
+  <img src="assets/readme/community/reviewable-outcomes.webp" alt="A human and several distinct AI collaborators assemble separately attributable materials into one inspectable project artifact" width="860" />
+</p>
+
+A useful teammate leaves more than a polished reply. Polynoia retains project files,
+artifacts, messages, tool traces, diffs, and process results so people can examine
+both the outcome and how it was produced.
+
+Per-agent and per-conversation Git worktrees are refreshed from the project's `main`
+branch. They keep concurrent contributions separate until a person or coordinating
+agent reviews and integrates them.
+
+## What is remembered
+
+Suppose you tell **Frontend Agent** in a direct conversation that the next release is
+codenamed “Aurora.” When that same Frontend Agent joins later project work, its
+personal work memory can carry the codename forward. **QA Agent does not inherit that
+private memory.** To make the decision available to the project participants, pin it
+in the project conversation or record it as a shared decision or artifact.
+
+| Scope | Who can use it | What remains |
 |---|---|---|
-| Mental model | One assistant, one thread | **A team you chat with** — 1:1 and group |
-| Parallelism | Sequential turns | **Orchestrator fans out** sub-tasks concurrently |
-| Output | Text + code blocks | **20+ rich artifact types**, previewable & editable |
-| Multiple engines | Locked to one vendor | **Claude Code · Codex · OpenCode** under one adapter layer |
-| Merging work | Manual copy-paste | **Per-agent git worktrees** + guided conflict resolution |
-| Roster | Pick a model | **Hire from a 232-role specialty library** or describe one in a sentence |
-| Quality | Trust the vendor | **Per-agent quality panel** — composite score + benchmark matrix |
-| Reach | Desktop browser | **Web · desktop (Tauri) · mobile (Capacitor)** from one codebase |
-
----
-
-## Screenshots
-
-| Group chat & orchestration | Inline artifact preview |
-|---|---|
-| <img src="assets/readme/群聊与编排.png" alt="Parallel agent work lanes" width="420"/> | <img src="assets/readme/预览.png" alt="Inline document / slide / diff preview" width="420"/> |
-| **Workspace IDE** | **Contacts** |
-| <img src="assets/readme/diff.png" alt="File tree + editor + terminal" width="420"/> | <img src="assets/readme/联系人.png" alt="Dedicated contacts page" width="420"/> |
-| **Agent quality panel** | **Specialty library — hire a role** |
-| <img src="assets/readme/质量面板.jpg" alt="Per-agent composite scores + benchmark matrix" width="420"/> | <img src="assets/readme/角色库.jpg" alt="Hire from 232 role presets" width="420"/> |
-
----
-
-## Feature tour
-
-### 💬 IM core
-
-A chat client built for working *with* agents, not just prompting one.
-
-- **Conversation list** with pin · archive · full-text search across titles and message bodies,
-  plus a **WeChat/Slack-style last-message preview** under each row (live agent → unsent draft →
-  newest message → workspace, in priority order).
-- **1:1 and group** conversations; per-member **role assignment** inside a group.
-- **`@`-mention picker** (fuzzy, Slack/Linear-style) to summon specific agents.
-- **Reply / quote / copy / retry**, and **"rewind to here"** code checkpoints to branch a
-  conversation from any earlier message.
-- **⌘K command palette** for instant search and navigation.
-- **Conversation-first IA** — a dedicated **Inbox** ("needs me": unread + pinned), **Contacts**,
-  **Quality** and **Archive** views one click from the sidebar header, while the sidebar itself
-  stays a clean conversation stream.
-
-### 🧠 The Orchestrator (multi-agent teamwork)
-
-The Orchestrator **is an agent** (`role="orchestrator"`), not special-cased code — so you can
-swap profiles, add it to any group, or run without one.
-
-- **Automatic task decomposition** → parallel dispatch to member agents.
-- **Burst lanes** — concurrent agent work is shown as parallel lanes, never interleaved into
-  an unreadable stream.
-- **Verify & merge** — collects sub-task outputs, validates them, and merges branches into
-  `main`.
-- **Failure fallback** and **multi-agent merge-conflict resolution** built in.
-
-### 🔌 Unified adapter layer
-
-One protocol, multiple engines — add a new CLI agent without touching the core.
-
-| Adapter | Wire protocol | Notes |
-|---|---|---|
-| **Claude Code** | Claude Agent SDK | strong reasoning, long context |
-| **OpenCode** | Agent Client Protocol (ACP v1, JSON-RPC/NDJSON) | open standard, local-first |
-| **Codex** | `codex` app-server streaming | backend set via `~/.codex/config.toml` |
-
-Per-adapter **network proxy**, **credential auto-reuse** (uses your existing CLI logins — no
-extra API keys), and a clean split between *adapters* (the engine) and *contacts* (a
-configured persona on top of an engine).
-
-### 🤖 Contacts & specialty library
-
-A **contact** is `(adapter, model, name, persona, tools)` — one engine can spawn many roles.
-Contacts live on a **dedicated page** (the sidebar stays a pure conversation stream); each row
-is quiet by design — avatar · name · tagline · adapter.
-
-- **Specialty library (角色库)** — shallow-clone **232 role definitions** from the MIT-licensed
-  [`agency-agents`](https://github.com/msitarzewski/agency-agents) catalog (engineering · design ·
-  product · testing · security …) and **"hire" any of them as a contact in one click**. You only
-  supply what the catalog can't know — adapter + model.
-- **Conversational creation** — describe what you want ("a designer who writes React but can't run
-  shell commands") and Polynoia drafts the contact for you to review.
-- **Role presets** + **granular tool toggles** (`read_file` / `edit_file` / `run_shell` /
-  `network` / `call_agent` …) and **per-contact skills** you install from a GitHub URL or local path.
-- **Derived capability tags** so a group reads at a glance.
-
-### 📊 Agent quality panel
-
-Polynoia's thesis: **the platform harness — not just the model — determines an agent's delivered
-quality.** The quality panel makes that *measurable per contact*, so you can confidently run weak
-or free models and watch the harness lift them.
-
-- **Composite score (0–100)** per contact, weighted **benchmark 45% · tool reliability 25% ·
-  process reliability 20% · activity 10%** (neutral 0.6 where there's no evidence yet).
-- **Component bars** — turns, tool ok-rate, process ok-rate, benchmark average — at a glance.
-- **Benchmark matrix** — case × model executions with scores, so a weak model's progress *under the
-  harness* is visible over time. Backed by an event-log pipeline (`GET /api/quality`).
-
-### 📄 Inline artifacts
-
-The frontend renders each message as `parts: MessagePart[]` dispatched through a
-**registry** — a single reply can mix text + a diff + a live status strip. The 21 registered
-part kinds:
-
-`text` · `reasoning` · `tasks` · `diff` · `web` · `swatches` · `copy` · `metrics` · `sql` ·
-`schema` · `logs` · `terminal` · `api` · `typing` · `tool-call` · `ask-form` · `image` ·
-`file` · `files` · `error` · `conflict`
-
-Plus rich **read-only / editable previews** for `.md` (WYSIWYG), **Marp** slides, `.html`,
-**editable `.xlsx`**, `.docx` / `.pptx`, images, source code, and **live web previews** of the
-app an agent just built.
-
-### 🖥️ Workspace IDE
-
-When a chat is backed by a project workspace you get a full mini-IDE in the right rail:
-
-- **File tree** + **CodeMirror 6** editor (search/replace, VS Code keymap, minimap), with
-  `Ctrl+S → PUT → auto-commit`.
-- **Interactive PTY terminal** docked in the panel.
-- **GitHub-style commit-history browser** with side-by-side diffs.
-- Resizable, persisted panels.
-
-### 🌿 Conflict closed-loop
-
-Parallel agents on separate branches *will* collide. Polynoia turns that into a first-class,
-guided flow: conflicts surface as a card in the chat, open a **side-by-side resolve pane**,
-and the resolution is committed back to `main` — with the whole loop explained in plain
-language (no raw git hashes in your face).
-
-### 🌊 Streaming & refresh-safe
-
-- **AI SDK 6 `UIMessageChunk` protocol** over WebSocket (28 chunk types + custom `data-*`).
-- **Refresh-safe streaming** — reconnect mid-generation and the thinking/reply stream picks
-  right back up where it left off.
-
-### 📱 Cross-platform: web · desktop · mobile
-
-One Vite build, three runtimes — **not** three rewrites.
-
-- **Web** — the full experience in any modern browser.
-- **Desktop** — **Tauri 2** wraps the web build, starts an embedded private backend on
-  a random localhost port by default, and can switch to a custom local/LAN/remote backend.
-- **Mobile** — **Capacitor 6** wraps the *same* build: a WeChat-style 4-tab home
-  (Chats · Agents · Projects · Me) with a lightweight, read-only-preview IM subset tuned for
-  touch.
-
-### 🔒 Sandbox & security
-
-- Each agent subprocess runs in `~/sandbox/<conv-id>/` with `cwd` pinned and a restricted env.
-- **Tool whitelist** and **network allow-list** (LLM endpoint + npm + pypi).
-- Per-agent **git worktrees** keep work isolated until an explicit merge.
-
----
+| **Personal work memory** | The same agent across its conversations | Agent-scoped decisions and outcomes that support continuity |
+| **Shared project memory** | Participants within the conversation where it was recorded | Pinned context plus conversation-scoped contracts, decisions, reports, and artifact records |
+| **Durable project artifacts** | People and agents within the applicable conversation, project, or worktree scope | Conversation records such as messages, tool traces, diffs, and process outcomes, plus Git artifacts such as files, commits, and branches—each retained within its own scope |
 
 ## Quick start
 
-### Prerequisites (one-time)
+### macOS desktop (Apple Silicon)
 
-| Tool | Requirement | Install |
-|---|---|---|
-| Python | 3.12+ | system package manager |
-| Node | 22+ | nvm / system package |
-| uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| Claude Code CLI | logged in | `npm i -g @anthropic-ai/claude-code`, then `claude` to log in |
-| Codex CLI _(optional)_ | configured | `npm i -g @openai/codex`; backend via `~/.codex/config.toml` |
-| OpenCode CLI _(optional)_ | — | `npm i -g opencode-ai`, then `opencode auth login` |
-| pnpm | 9.x | **`make install` pulls it via corepack automatically** |
+The official downloadable build currently supports **Apple Silicon on macOS 11 or
+newer**.
 
-### Install & run
+1. Install and authenticate at least one supported coding-agent CLI: **Claude Code**,
+   **Codex 0.118.0 or newer**, or **OpenCode**. You do not need all three.
+2. Download the [latest release](https://github.com/JuneQQQ/polynoia/releases/latest),
+   open the DMG, and drag Polynoia to **Applications**.
+3. The current build is ad-hoc signed and is not notarized. On first launch,
+   Control-click Polynoia and choose **Open**.
+4. Keep a network connection available on first launch. Polynoia prepares its private
+   backend, which may take several minutes.
 
-```bash
-make install      # uv sync (server) + pnpm install (web)
-make dev          # server :7780 + web :7788  (Ctrl-C stops both)
-```
+The desktop app uses the coding-agent CLIs already installed and authenticated on
+your Mac.
 
-Open **http://127.0.0.1:7788/** (API at http://127.0.0.1:7780/).
+### Run from source
 
-### Seed a demo (recommended)
-
-With `make dev` running, in a second terminal:
+Prerequisites: **Git**, **Make**, **Python 3.12+**, **Node.js 22+**, **uv**, and
+**pnpm 9** (preferred). Install and authenticate at least one of Claude Code,
+Codex 0.118.0+, or OpenCode before asking an agent to work.
 
 ```bash
-python3 scripts/seed_demo.py            # personas + a workspace + a group chat
+git clone https://github.com/JuneQQQ/polynoia.git
+cd polynoia
+make install
+make dev
 ```
 
-Or load the **launch-readiness testkit** used for submission review:
+Open the web app at [http://127.0.0.1:7788](http://127.0.0.1:7788). The development
+API is available at [http://127.0.0.1:7780](http://127.0.0.1:7780).
 
-```bash
-bash scripts/testkit/reset.sh # clean DB + seed launch / routing / merge / diff cases
-```
+## Capabilities
 
-The seeded cases cover release notes, QA workbook, status page, telemetry report,
-Go-live collaboration, @ routing, conflict handling, main sync, diff/history, and
-tool-error recovery.
+| Area | What is implemented |
+|---|---|
+| **Coding-agent adapters** | Claude Code, Codex, and OpenCode behind one conversation-oriented workspace, using their installed and authenticated CLIs |
+| **Identity and memory** | Persistent agent configuration, agent-scoped cross-conversation work memory, and conversation-scoped shared records and pinned context |
+| **Workspaces** | Per-agent and per-conversation Git worktrees refreshed from project `main` |
+| **Artifacts and traces** | Persisted messages, tool activity, diffs, process outcomes, files, and rich artifact records |
+| **Orchestration** | Direct and group conversations, with coordinating agents able to delegate work and gather attributable results |
+| **Application shells** | Web, Tauri desktop, and Capacitor mobile source shells; the official downloadable release is currently macOS Apple Silicon only |
 
-### Handy commands
+## Trust and boundaries
 
-```bash
-make server   # backend only (logs)
-make web      # frontend only
-make test     # pytest + vitest
-make lint     # ruff + biome
-make types    # regenerate shared TS types from Pydantic
-```
+**Local-first storage.** By default, backend state and project work remain on the
+machine you control. The desktop build prepares a private local backend on first
+launch.
 
----
+**Git isolation.** Worktrees isolate branches and concurrent Git work. They are not
+an OS sandbox. Shell-capable agents act as the local user, so protect credentials and
+host data and review each agent's tools and access.
 
-## Architecture
+**Reviewable execution.** Persisted messages, tool traces, diffs, and process outcomes
+make agent activity inspectable. Receipt-backed message delivery makes durable
+user-message acceptance observable to the client and supports replay and recovery;
+it does not guarantee exactly-once model execution.
 
-```
-apps/
-├── web/          Vite + React + TypeScript — the UI shell (reused by all 3 platforms)
-├── server/       Python 3.12 + FastAPI + asyncio (uv-managed)
-├── desktop/      Tauri 2 wrapper + desktop backend selector / embedded server resource
-└── mobile/       Capacitor 6 wrapper around apps/web/dist
+The development API is intended for trusted local development. Do not expose it to
+an untrusted network without appropriate production authentication and network
+controls.
 
-docs/
-├── research/          deep-dive on 20 libraries + UI design (baseline)
-├── superpowers/specs/ full design spec
-├── ADR/               23 architecture decision records
-└── design/            conflict closed-loop charter + diagrams
-```
+## Project status and limitations
 
-**Three protocol layers:**
+Polynoia is under active development. Interfaces, data formats, agent workflows, and
+packaging may change as the project matures.
 
-See the [design spec](docs/superpowers/specs/2026-05-23-polynoia-design.md) and the
-[context-system overview](docs/design/context-system.md) for the full model.
+- Durable, scoped memory is not infinite, permanent, or complete recall. Polynoia
+  does not currently provide semantic or vector retrieval or autonomous learning.
+- Personal work memory is not global memory. Agents do not inherit another agent's
+  private context, and Polynoia does not provide cloud cross-device memory.
+- A worktree is refreshed from project `main`; it does not automatically expose
+  unmerged work from another agent's branch.
+- Local-first operation is not a claim of end-to-end encryption.
+- Delivery receipts do not guarantee exactly-once model execution.
+- The repository contains web, desktop, and mobile source shells, but the official
+  downloadable release is currently limited to macOS 11+ on Apple Silicon.
 
-## Tech stack
+## Documentation and community
 
-- **Backend** · Python 3.12 · uv · FastAPI · Pydantic v2 · LiteLLM · SQLite (→ Postgres) · Alembic
-- **Frontend** · React 18 + Vite · Radix + shadcn/ui · Tailwind 4 · Motion · Lucide · CodeMirror 6 · `@git-diff-view/react` · Vercel AI SDK 6 · react-markdown
-- **Shells** · Tauri 2 (desktop) · Capacitor 6 (mobile)
-
-## Project layout
-
-```
-polynoia/
-├── apps/            web (Vite+React) · server (FastAPI) · desktop (Tauri) · mobile (Capacitor)
-├── packages/        shared TS types · cross-platform core · ui-web · design-tokens
-├── docs/            research · specs · ADRs · diagrams
-├── scripts/         demo + scenario seeders
-├── .skills/         custom skills (add-adapter / add-card-type / …)
-└── Makefile         make dev / test / lint / types / build
-```
-
-## Docs & decisions
-
-- **Design spec** — [`docs/superpowers/specs/2026-05-23-polynoia-design.md`](docs/superpowers/specs/2026-05-23-polynoia-design.md)
-- **Research synthesis** (20 libraries) — [`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md)
-- **Architecture decisions** — [`docs/ADR/`](docs/ADR/) (why the orchestrator is an agent, ACP
-  over stdout JSON, CodeMirror over Monaco, Capacitor over React Native, …)
-
-## Built with AI
-
-This project is built **with** AI as a first-class collaborator. The conventions live in
-[`CLAUDE.md`](CLAUDE.md) (project-level AI collaboration spec), with decision records in
-[`docs/ADR/`](docs/ADR/), the submission-facing collaboration summary in
-[`docs/ai-collaboration.md`](docs/ai-collaboration.md), and research synthesis in
-[`docs/research/00-SYNTHESIS.md`](docs/research/00-SYNTHESIS.md). Commits follow
-[Conventional Commits](https://www.conventionalcommits.org/).
-
----
-
-<p align="center"><sub>Polynoia — many minds, one conversation.</sub></p>
+- Read the [design specification](docs/superpowers/specs/2026-05-23-polynoia-design.md),
+  [context-system overview](docs/design/context-system.md), and
+  [architecture decision records](docs/ADR/).
+- Learn how to build, validate, and propose changes in
+  [Contributing](CONTRIBUTING.md), and follow the
+  [Code of Conduct](CODE_OF_CONDUCT.md).
+- Report suspected vulnerabilities privately through the process in the
+  [Security Policy](SECURITY.md).
+- Use [GitHub Issues](https://github.com/JuneQQQ/polynoia/issues) for bugs and
+  proposals, and follow [Releases](https://github.com/JuneQQQ/polynoia/releases)
+  for published builds.
+- Polynoia is licensed under [Apache-2.0](LICENSE).
