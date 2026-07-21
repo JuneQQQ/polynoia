@@ -42,7 +42,7 @@
 - Consumes: user-approved Shared Studio design.
 - Produces: one authoritative spec and one execution checklist.
 
-- [ ] **Step 1: Verify the isolated branch is clean and based on `v0.1.4`.**
+- [x] **Step 1: Verify the isolated branch is clean and based on `v0.1.4`.**
 
 Run:
 
@@ -53,7 +53,7 @@ git merge-base --is-ancestor v0.1.4 HEAD
 
 Expected: branch `agent/readme-portfolio-variants` has no working-tree changes before the new spec, and the ancestry check exits `0`.
 
-- [ ] **Step 2: Save this approved design and implementation plan.**
+- [x] **Step 2: Save this approved design and implementation plan.**
 
 Run:
 
@@ -64,7 +64,7 @@ test -s docs/superpowers/plans/2026-07-21-open-source-community-readme.md
 
 Expected: both commands exit `0`.
 
-- [ ] **Step 3: Remove the rejected candidates and their superseded planning files.**
+- [x] **Step 3: Remove the rejected candidates and their superseded planning files.**
 
 Run:
 
@@ -76,7 +76,7 @@ git rm docs/superpowers/plans/2026-07-21-readme-portfolio-variants.md
 
 Expected: all ten rejected branch-only files are staged for deletion.
 
-- [ ] **Step 4: Verify no root README references rejected assets.**
+- [x] **Step 4: Verify no root README references rejected assets.**
 
 Run:
 
@@ -86,7 +86,7 @@ rg -n 'readme-variants|assets/readme/portfolio' README.md README.zh-CN.md || tru
 
 Expected: no matches.
 
-- [ ] **Step 5: Commit the design reset.**
+- [x] **Step 5: Commit the design reset.**
 
 ```bash
 git add docs/superpowers
@@ -108,7 +108,7 @@ Expected: one commit containing the approved spec, plan, and rejected-candidate 
 - Consumes: visual system and exclusions from the approved design.
 - Produces: four coherent WebP illustrations referenced by both READMEs.
 
-- [ ] **Step 1: Generate the signature hero with built-in ImageGen.**
+- [x] **Step 1: Generate the signature hero with built-in ImageGen.**
 
 Use this complete prompt:
 
@@ -118,7 +118,7 @@ Create a panoramic editorial illustration for an open-source software project's 
 
 Expected: one landscape image with no readable text or interface elements.
 
-- [ ] **Step 2: Generate the persistent-identity chapter illustration.**
+- [x] **Step 2: Generate the persistent-identity chapter illustration.**
 
 Use this complete prompt:
 
@@ -128,7 +128,7 @@ Create a 16:9 editorial illustration in the exact same visual world and palette 
 
 Expected: one 16:9 image with three visually distinct colleague identities.
 
-- [ ] **Step 3: Generate the durable-memory chapter illustration.**
+- [x] **Step 3: Generate the durable-memory chapter illustration.**
 
 Use this complete prompt:
 
@@ -138,7 +138,7 @@ Create a 16:9 cinematic editorial illustration in the same Shared Studio visual 
 
 Expected: one 16:9 image that reads as continuity across time without a diagram.
 
-- [ ] **Step 4: Generate the reviewable-outcomes chapter illustration.**
+- [x] **Step 4: Generate the reviewable-outcomes chapter illustration.**
 
 Use this complete prompt:
 
@@ -148,7 +148,7 @@ Create a 16:9 premium editorial illustration in the same Shared Studio world and
 
 Expected: one 16:9 image showing distinct contributions converging into an inspectable result.
 
-- [ ] **Step 5: Inspect each generated source at original resolution.**
+- [x] **Step 5: Inspect each generated source at original resolution.**
 
 Use the image viewer on every source output. For the three chapter images, pass
 the approved hero source back to ImageGen as a style reference. Reject and
@@ -158,7 +158,7 @@ robot faces, or inconsistent art direction.
 
 Expected: all four sources pass visual inspection.
 
-- [ ] **Step 6: Crop, resize, and optimize the approved sources.**
+- [x] **Step 6: Crop, resize, and optimize the approved sources.**
 
 Copy the four returned ImageGen sources into `/tmp/polynoia-readme-imagegen/`
 as `hero.png`, `identity.png`, `memory.png`, and `outcomes.png`, then run:
@@ -173,13 +173,13 @@ pnpm dlx sharp-cli -i /tmp/polynoia-readme-imagegen/outcomes.png -o assets/readm
 
 Expected: hero is `1880×800`; chapter images are `1440×810`; hero is at most 1.5 MB and each chapter image is at most 1.0 MB.
 
-- [ ] **Step 7: Record provenance and prompts.**
+- [x] **Step 7: Record provenance and prompts.**
 
 Write `assets/readme/community/PROMPTS.md` with the exact four prompts above, `Generation mode: built-in ImageGen`, every source output path, every final asset path, final dimensions, and the exact Sharp CLI commands used.
 
 Expected: another contributor can understand how each asset was made without claiming deterministic regeneration.
 
-- [ ] **Step 8: Commit the visual system.**
+- [x] **Step 8: Commit the visual system.**
 
 ```bash
 git add assets/readme/community
@@ -206,7 +206,7 @@ Expected: one commit containing four optimized images and prompt provenance.
 - Consumes: repository commands and real GitHub destinations.
 - Produces: legal permission, contribution instructions, conduct expectations, and a private security-reporting path.
 
-- [ ] **Step 1: Add the unmodified Apache License 2.0 text.**
+- [x] **Step 1: Add the unmodified Apache License 2.0 text.**
 
 Copy the canonical January 2004 Apache License 2.0 text from `https://www.apache.org/licenses/LICENSE-2.0.txt` into `LICENSE` without project-specific edits.
 
@@ -225,7 +225,7 @@ Expected: the file starts with `Apache License` / `Version 2.0, January 2004`,
 ends with the canonical limitations-under-the-License paragraph, and all six
 manifests expose `Apache-2.0`.
 
-- [ ] **Step 2: Write concrete contribution instructions.**
+- [x] **Step 2: Write concrete contribution instructions.**
 
 `CONTRIBUTING.md` must contain:
 
@@ -241,13 +241,13 @@ manifests expose `Apache-2.0`.
 
 Expected: every command exists in the current repository and no hosted service is invented.
 
-- [ ] **Step 3: Add Contributor Covenant 2.1.**
+- [x] **Step 3: Add Contributor Covenant 2.1.**
 
 Use the complete Contributor Covenant 2.1 text in `CODE_OF_CONDUCT.md`, retaining the attribution section. Set enforcement reporting to the repository owner's real GitHub contact route discovered during audit; do not leave placeholder text and do not direct private reports to public issues.
 
 Expected: `rg -n '\[INSERT|TODO|TBD' CODE_OF_CONDUCT.md` returns no matches.
 
-- [ ] **Step 4: Add a truthful security policy.**
+- [x] **Step 4: Add a truthful security policy.**
 
 Enable GitHub Private Vulnerability Reporting for `JuneQQQ/polynoia`, then write
 `SECURITY.md`. It must state that only the latest release is supported, request
@@ -257,7 +257,7 @@ coordination, and avoid promising a fixed response SLA.
 
 Expected: the reporting link resolves and the file contains no email address that is not already owned by the project.
 
-- [ ] **Step 5: Verify community files and commit.**
+- [x] **Step 5: Verify community files and commit.**
 
 Run:
 
@@ -282,7 +282,7 @@ git commit -m "docs: add open-source community policies"
 - Consumes: four community illustrations and new community files.
 - Produces: the default GitHub landing document.
 
-- [ ] **Step 1: Replace the opening with the approved manifesto.**
+- [x] **Step 1: Replace the opening with the approved manifesto.**
 
 The first screen must contain the brand mark, language link, hero image, title,
 `AI teammates that remember the work.`, the precise product definition, Get
@@ -291,7 +291,7 @@ badges.
 
 Expected: the primary belief and product category are visible before the first `##` heading.
 
-- [ ] **Step 2: Write `A teammate, not another tab`.**
+- [x] **Step 2: Write `A teammate, not another tab`.**
 
 Explain in concise prose that conventional chat sessions reset the relationship,
 while Polynoia gives an agent an identity, a scoped history of work, and a real
@@ -299,7 +299,7 @@ workspace. Do not attack named competitors or claim human equivalence.
 
 Expected: the section explains the project philosophy before listing features.
 
-- [ ] **Step 3: Write the three illustrated product principles.**
+- [x] **Step 3: Write the three illustrated product principles.**
 
 Use these headings and assets:
 
@@ -309,7 +309,7 @@ Use these headings and assets:
 
 Each section must connect the philosophy to implemented behavior and include precise alt text.
 
-- [ ] **Step 4: Add the continuity scenario and memory scopes.**
+- [x] **Step 4: Add the continuity scenario and memory scopes.**
 
 Use a prose example in which a Frontend Agent remembers a release codename from
 its own earlier direct conversation, carries that memory into later project work,
@@ -318,7 +318,7 @@ shared project memory, and durable project artifacts in a compact table.
 
 Expected: the scenario makes scope and persistence clear without a diagram.
 
-- [ ] **Step 5: Add the audited 60-second quick start.**
+- [x] **Step 5: Add the audited 60-second quick start.**
 
 Use only prerequisites and commands verified against the current Makefile and
 package manifests. Include the default local URL and agent-authentication caveat
@@ -326,7 +326,7 @@ only when confirmed by repository evidence.
 
 Expected: a clean checkout can follow the commands without guessing a missing step.
 
-- [ ] **Step 6: Add capabilities, trust, status, and limitations.**
+- [x] **Step 6: Add capabilities, trust, status, and limitations.**
 
 Summarize adapters, worktrees, artifacts, platforms, and orchestration in one
 compact table. Explain local-first storage, isolation, reviewable traces, and
@@ -335,12 +335,12 @@ unsupported memory guarantees from Global Constraints.
 
 Expected: technical proof supports the narrative without becoming a feature dump.
 
-- [ ] **Step 7: Add documentation and community links.**
+- [x] **Step 7: Add documentation and community links.**
 
 Link to existing ADRs/design docs, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
 `SECURITY.md`, GitHub issues, releases, and `LICENSE`. Do not invent chat or docs domains.
 
-- [ ] **Step 8: Run English README structural checks.**
+- [x] **Step 8: Run English README structural checks.**
 
 ```bash
 test "$(rg -c '^## ' README.md)" -le 12
@@ -351,7 +351,7 @@ rg -n 'AI teammates that remember the work|durable, scoped|Apache-2.0' README.md
 
 Expected: every command exits `0`.
 
-- [ ] **Step 9: Commit the English README.**
+- [x] **Step 9: Commit the English README.**
 
 ```bash
 git add README.md
@@ -367,20 +367,20 @@ git commit -m "docs: recast README around AI teammates with memory"
 - Consumes: English README structure and shared illustration assets.
 - Produces: natural Simplified Chinese documentation with the same claims and links.
 
-- [ ] **Step 1: Mirror the English section and asset order.**
+- [x] **Step 1: Mirror the English section and asset order.**
 
 Translate the primary line as `记得工作的 AI 同事。` and the supporting belief as
 `AI 应该像同事一样工作，而不是每次打开对话都重新认识你。` Use natural Chinese rather than word-for-word syntax.
 
 Expected: both READMEs reference the same four community images in the same order.
 
-- [ ] **Step 2: Preserve all capability and limitation boundaries.**
+- [x] **Step 2: Preserve all capability and limitation boundaries.**
 
 Translate durable/scoped memory as `持久、范围明确的工作记忆`. Keep explicit
 boundaries for infinite memory, autonomous learning, semantic retrieval, global
 memory, unmerged branches, cloud sync, E2E encryption, and exactly-once execution.
 
-- [ ] **Step 3: Verify structural parity.**
+- [x] **Step 3: Verify structural parity.**
 
 Run:
 
@@ -394,7 +394,7 @@ done
 
 Expected: every command exits `0`.
 
-- [ ] **Step 4: Commit the Chinese README.**
+- [x] **Step 4: Commit the Chinese README.**
 
 ```bash
 git add README.zh-CN.md
@@ -413,7 +413,7 @@ git commit -m "docs: align Chinese README with community story"
 - Consumes: all implementation tasks.
 - Produces: evidence that the GitHub landing page is correct and a safe push to `main`.
 
-- [ ] **Step 1: Verify local paths, anchors, image metadata, and file sizes.**
+- [x] **Step 1: Verify local paths, anchors, image metadata, and file sizes.**
 
 Run a repository-local validation script or shell loop that:
 
@@ -425,7 +425,7 @@ Run a repository-local validation script or shell loop that:
 
 Expected: zero missing targets, zero missing anchors, and zero image-budget violations.
 
-- [ ] **Step 2: Verify remote links.**
+- [x] **Step 2: Verify remote links.**
 
 Check all unique `https://` destinations in both READMEs with redirects enabled
 and a GitHub-compatible user agent. Treat `2xx` and intentional GitHub `429`
@@ -433,7 +433,7 @@ rate-limit responses separately; manually inspect any `4xx/5xx` destination.
 
 Expected: no broken remote destination.
 
-- [ ] **Step 3: Render both READMEs with GitHub-compatible Markdown.**
+- [x] **Step 3: Render both READMEs with GitHub-compatible Markdown.**
 
 Use GitHub's Markdown rendering API or a CommonMark/GFM-compatible renderer,
 open each rendered document in the browser, and capture full-page screenshots
@@ -442,7 +442,7 @@ tables, link targets, narrow-width behavior, and absence of raw HTML artifacts.
 
 Expected: both languages render cleanly at desktop and narrow viewport widths.
 
-- [ ] **Step 4: Run the documented project gates.**
+- [x] **Step 4: Run the documented project gates.**
 
 ```bash
 pnpm --filter @polynoia/web exec tsc --noEmit
@@ -452,7 +452,7 @@ cd apps/server && uv run pytest -q tests/context tests/sandbox/test_workspace_sa
 
 Expected: each command exits `0`; record exact pass counts and any warnings.
 
-- [ ] **Step 5: Run diff and hygiene checks.**
+- [x] **Step 5: Run diff and hygiene checks.**
 
 ```bash
 git diff --check v0.1.4...HEAD
@@ -463,7 +463,7 @@ rg -n '\[INSERT|TODO|TBD|example\.com|lorem ipsum' README.md README.zh-CN.md CON
 
 Expected: no whitespace errors, no untracked deliverables, expected scope only, and no placeholders.
 
-- [ ] **Step 6: Request independent adversarial review.**
+- [x] **Step 6: Request independent adversarial review.**
 
 Ask a reviewer to verify product-claim accuracy, open-source hygiene, visual
 consistency, GitHub rendering, quick-start truthfulness, and all user constraints.
@@ -471,7 +471,7 @@ Fix every Critical or Important finding, then rerun Steps 1–5.
 
 Expected: zero Critical and zero Important findings.
 
-- [ ] **Step 7: Mark this plan complete and commit final corrections.**
+- [x] **Step 7: Mark this plan complete and commit final corrections.**
 
 Change every completed checkbox in this file to `[x]`, record verification results,
 then run:
@@ -480,6 +480,32 @@ then run:
 git add docs/superpowers/plans/2026-07-21-open-source-community-readme.md
 git commit -m "docs: record README release verification"
 ```
+
+#### Verification record
+
+- Local link validation checked 36 relative references and four GitHub-style
+  heading anchors with zero failures. All seven unique HTTPS destinations
+  returned HTTP 200, including the three badge images and the latest-release
+  redirect to `v0.1.4`.
+- The four ImageGen WebPs fully decode and match the required metadata:
+  `1880×800` / 330,200 bytes for the hero and `1440×810` / 238,616,
+  242,320, and 281,544 bytes for the chapter art. `identify` was unavailable;
+  `sips`, `file`, and Pillow independently confirmed format, dimensions, and
+  complete pixel decoding.
+- GitHub rendered both languages cleanly at the default desktop width and a
+  390 px viewport. The four illustrations and three badges loaded, the hero
+  and chapter crops remained readable, the top calls to action and language
+  switch were clicked successfully, and the browser console reported zero
+  errors or warnings.
+- `pnpm --filter @polynoia/web exec tsc --noEmit` and the production build
+  passed. The focused server suite passed 41 tests; Vite's existing
+  mixed-import/large-chunk warnings and 205 `datetime.utcnow()` deprecation
+  warnings remain non-blocking technical debt.
+- Diff validation found the exact 19-path approved scope, no whitespace error,
+  no missing deliverable, and no placeholder or prohibited README structure.
+  GitHub Private Vulnerability Reporting is enabled for the repository.
+- The final independent adversarial review found zero Critical, Important, or
+  Minor issues and assessed the package as ready to merge.
 
 - [ ] **Step 8: Fast-forward local `main` and push without force.**
 
