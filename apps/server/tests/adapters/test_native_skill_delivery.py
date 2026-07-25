@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from polynoia.adapters.claude_code import ClaudeCodeAdapter
 from polynoia.adapters.codex import CodexAdapter
-from polynoia.adapters.opencode import OpenCodeAdapter
+from polynoia.adapters.opencode import OpenCodeAdapter, _opencode_config_content
+from polynoia.sandbox import Sandbox
 
 
 def _install_test_skill(root: Path) -> None:
@@ -78,10 +82,11 @@ async def test_opencode_session_uses_contact_scoped_native_skill_path(
     session = await OpenCodeAdapter().start_session(
         conv_id="opencode-skills",
         agent_id="contact-a",
-        skills=["demo-skill"],
+        skills=["demo-skill", "missing-skill"],
     )
     try:
         runtime_home = session._sandbox.agent_runtime_home("opencoder")
+        assert session._skills == ["demo-skill"]
         assert (
             runtime_home
             / ".config"
@@ -91,5 +96,68 @@ async def test_opencode_session_uses_contact_scoped_native_skill_path(
             / "scripts"
             / "run.py"
         ).is_file()
+        config = json.loads(_opencode_config_content(None, session._skills))
+        assert config["permission"]["skill"] == {
+            "*": "deny",
+            "demo-skill": "allow",
+        }
+        monkeypatch.setattr(
+            "polynoia.adapters.opencode._polynoia_opencode_data_home",
+            lambda: str(tmp_path / "opencode-data"),
+        )
+        env = session._prepare_subprocess_env()
+        written = json.loads(Path(env["OPENCODE_CONFIG"]).read_text(encoding="utf-8"))
+        assert written["permission"]["skill"] == {
+            "*": "deny",
+            "demo-skill": "allow",
+        }
+        assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == written
+
+        # The idempotent guard must not replace a running subprocess.
+        running_marker = object()
+        session._proc = running_marker
+        await session._ensure_subprocess()
+        assert session._proc is running_marker
+        session._proc = None
+
+        # Exercise the real startup handoff through environment preparation,
+        # while stopping before an external OpenCode process is created.
+        monkeypatch.setattr(
+            "polynoia.adapters.opencode._opencode_executable",
+            lambda _env: (_ for _ in ()).throw(RuntimeError("stop before spawn")),
+        )
+        with pytest.raises(RuntimeError, match="stop before spawn"):
+            await session._ensure_subprocess()
+    finally:
+        session._proc = None
+        await session.close()
+
+
+async def test_opencode_workspace_session_keeps_bound_skill_allowlist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    skills_dir = tmp_path / "installed"
+    _install_test_skill(skills_dir)
+    sandbox = Sandbox(
+        root=tmp_path / "workspace-agent",
+        workspace_root=tmp_path / "workspace",
+        conv_id="workspace-conv",
+        agent_id="contact-a",
+    )
+
+    async def _workspace_sandbox(**_kwargs) -> Sandbox:
+        return sandbox
+
+    monkeypatch.setattr("polynoia.settings.settings.skills_dir", skills_dir)
+    monkeypatch.setattr(Sandbox, "create_workspace_sandbox", _workspace_sandbox)
+
+    session = await OpenCodeAdapter().start_session(
+        conv_id="workspace-conv",
+        workspace_id="workspace-a",
+        agent_id="contact-a",
+        skills=["demo-skill"],
+    )
+    try:
+        assert session._skills == ["demo-skill"]
     finally:
         await session.close()

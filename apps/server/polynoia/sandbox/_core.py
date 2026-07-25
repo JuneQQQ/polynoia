@@ -2199,20 +2199,25 @@ class Sandbox:
         explicit per-session name allowlist.
         """
         dest_root = self.native_skill_root(adapter_id)
-        from polynoia.skills import find_skill_dir
+        from polynoia.skills import (
+            copy_skill_package,
+            find_skill_dir,
+            native_skill_package_name,
+        )
 
         resolved: dict[str, Path] = {}
         for raw in names:
-            src = find_skill_dir((raw or "").strip())
-            if src is None or not src.is_dir():
+            requested = (raw or "").strip()
+            src = find_skill_dir(requested)
+            native_name = native_skill_package_name(requested)
+            if src is None or not src.is_dir() or native_name is None:
                 continue
             # Use the canonical installed directory name, never request input,
             # as a path component (prevents ../../name traversal).
-            resolved[src.name] = src
+            resolved[native_name] = src
 
-        if adapter_id != "claudeCode":
-            if dest_root.exists():
-                shutil.rmtree(dest_root)
+        if adapter_id != "claudeCode" and dest_root.exists():
+            shutil.rmtree(dest_root)
 
         placed: list[str] = []
         for name, src in resolved.items():
@@ -2220,7 +2225,7 @@ class Sandbox:
             if dest.exists():
                 shutil.rmtree(dest)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
+            copy_skill_package(src, dest)
             placed.append(name)
         return placed
 

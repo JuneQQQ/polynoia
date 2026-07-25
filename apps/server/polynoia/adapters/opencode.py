@@ -106,9 +106,6 @@ _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
     "list": "deny",
     "bash": "deny",
     "task": "deny",
-    # Native Skill loading is read-only and restricted to the bound packages
-    # Polynoia places in this contact's isolated HOME.
-    "skill": "allow",
     "lsp": "deny",
     "todoread": "deny",
     "todowrite": "deny",
@@ -118,10 +115,20 @@ _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
 }
 
 
-def _opencode_config_content(model: str | None) -> str:
+def _opencode_config_content(
+    model: str | None,
+    skills: list[str] | None = None,
+) -> str:
+    skill_permissions = {
+        "*": "deny",
+        **{name: "allow" for name in skills or []},
+    }
     config: dict[str, Any] = {
         "permission": {
             **_OPENCODE_BUILTIN_PERMISSION_DENY,
+            # OpenCode also discovers project-local Skill directories. Deny
+            # everything by default, then expose only contact-bound packages.
+            "skill": skill_permissions,
             # MCP tools from the registered server are surfaced as polynoia_<tool>.
             "polynoia_*": "allow",
         },
@@ -131,9 +138,15 @@ def _opencode_config_content(model: str | None) -> str:
     return json.dumps(config)
 
 
-def _write_opencode_config(path: Path, model: str | None) -> None:
+def _write_opencode_config(
+    path: Path,
+    model: str | None,
+    skills: list[str] | None = None,
+) -> str:
+    content = _opencode_config_content(model, skills)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_opencode_config_content(model), encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
+    return content
 
 
 def _opencode_executable(env: dict[str, str]) -> str:
@@ -253,7 +266,9 @@ class OpenCodeAdapter:
             sandbox = await Sandbox.create(conv_id)
         if agent_id and sandbox.agent_id is None:
             sandbox.agent_id = agent_id
-        await sandbox.place_skill_packages(skills or [], adapter_id=self.meta.agent_id)
+        placed_skills = await sandbox.place_skill_packages(
+            skills or [], adapter_id=self.meta.agent_id
+        )
         # Proxy egress (system inherit / direct strip / custom override) — shared.
         _env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return OpenCodeSession(
@@ -264,9 +279,10 @@ class OpenCodeAdapter:
             system_prompt=system_prompt,
             env=_env,
             agent_id=self.meta.agent_id,
-            turn_agent_id=agent_id,
+            turn_agent_id=agent_id or "",
             tool_role=tool_role,
             tools_whitelist=tools_whitelist,
+            skills=placed_skills,
         )
 
 
@@ -545,6 +561,7 @@ class OpenCodeSession:
         agent_id: str,
         tool_role: str = "generalist",
         tools_whitelist: list[str] | None = None,
+        skills: list[str] | None = None,
         turn_agent_id: str = "",
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
@@ -558,6 +575,7 @@ class OpenCodeSession:
         self._env = env
         self._tool_role = tool_role
         self._tools_whitelist = tools_whitelist or []
+        self._skills = skills or []
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
         self._acp_session_id: str | None = None
@@ -571,19 +589,8 @@ class OpenCodeSession:
 
     # ── subprocess lifecycle ────────────────────────────────
 
-    async def _ensure_subprocess(self) -> None:
-        if self._proc is not None:
-            return
-
-        # Isolate opencode's RUNTIME state from the user's own opencode.
-        # opencode keeps its session store in a single sqlite (opencode.db,
-        # WAL) under $XDG_DATA_HOME/opencode. If Polynoia's spawned sessions
-        # share the host data dir with the user's interactive opencode, all of
-        # them contend on that one db → a session can wedge waiting on a lock
-        # (the "卡死" we hit). So we point XDG_DATA_HOME at a dedicated Polynoia
-        # dir. To dodge opencode's slow first-run migration, that dir is seeded
-        # ONCE from the host's already-migrated db (+ auth). HOME stays the host
-        # HOME; only the data dir is redirected.
+    def _prepare_subprocess_env(self) -> dict[str, str]:
+        """Build the isolated environment and materialize bound-skill policy."""
         env = self._sandbox.env_for_agent(self._env)
         skill_home = self._sandbox.agent_runtime_home("opencoder")
         env.update(
@@ -595,15 +602,34 @@ class OpenCodeSession:
                 "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
             }
         )
+        opencode_config = self._sandbox.root / ".polynoia" / "opencode-config.json"
+        config_content = _write_opencode_config(
+            opencode_config, self._model, self._skills
+        )
+        env["OPENCODE_CONFIG"] = str(opencode_config)
+        env["OPENCODE_CONFIG_CONTENT"] = config_content
+        return env
+
+    async def _ensure_subprocess(self) -> None:
+        if self._proc is not None:
+            return
+
+        # Isolate opencode's RUNTIME state from the user's own opencode.
+        # opencode keeps its session store in a single sqlite (opencode.db,
+        # WAL) under $XDG_DATA_HOME/opencode. If Polynoia's spawned sessions
+        # share the host data dir with the user's interactive opencode, all of
+        # them contend on that one db → a session can wedge waiting on a lock
+        # (the "卡死" we hit). So we point XDG_DATA_HOME at a dedicated Polynoia
+        # dir. To dodge opencode's slow first-run migration, that dir is seeded
+        # ONCE from the host's already-migrated db (+ auth). HOME is separately
+        # contact-scoped so native Skill discovery cannot share user-level
+        # Polynoia packages across contacts.
+        env = self._prepare_subprocess_env()
         opencode_bin = _opencode_executable(env)
         # CRITICAL: opencode ACP `session/new` ignores any client-supplied
         # model — it uses config's default `model`. We also deny OpenCode's
         # built-in file/shell tools and allow only the registered Polynoia MCP
         # server, so every mutation stays audit/merge/reviewable.
-        opencode_config = self._sandbox.root / ".polynoia" / "opencode-config.json"
-        _write_opencode_config(opencode_config, self._model)
-        env["OPENCODE_CONFIG"] = str(opencode_config)
-        env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(self._model)
         # NOTE: do NOT set OPENCODE_ACP_NEXT=1 — see module docstring.
         # `limit` overrides asyncio's default 64KB StreamReader buffer. ACP
         # emits one JSON-RPC message per line; large tool results (file reads,

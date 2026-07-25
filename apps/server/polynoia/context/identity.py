@@ -175,9 +175,11 @@ def build_identity_layer(
     # ability — bound per-contact via the contact editor.
     skills = getattr(agent, "skills", None) or []
     if skills:
-        from polynoia.skills import read_skill_instructions, supports_native_skills
-
-        native = supports_native_skills(adapter_id)
+        from polynoia.skills import (
+            native_skill_package_name,
+            read_skill_instructions,
+            supports_native_skills,
+        )
 
         parts.append("")
         parts.append("## 你已装配的技能")
@@ -186,7 +188,10 @@ def build_identity_layer(
             desc = s.description or fallback.get("description")
             # Explicit per-contact overrides remain inline. Package instructions
             # are otherwise left to native progressive disclosure; only future
-            # adapters without native Skill support receive the full fallback.
+            # adapters or non-portable packages receive the full fallback.
+            native = supports_native_skills(adapter_id) and bool(
+                native_skill_package_name(s.name)
+            )
             instructions = (s.instructions or "").strip()
             if not instructions and not native:
                 instructions = fallback.get("instructions", "")

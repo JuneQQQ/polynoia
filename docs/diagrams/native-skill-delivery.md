@@ -31,9 +31,11 @@ Use a left-to-right flow with five columns:
    - Blue box: "Codex" and "~/.agents/skills" and
      "contact-scoped HOME"
    - Green box: "OpenCode" and "~/.config/opencode/skills" and
-     "skill permission: allow"
-   Draw a pale green boundary around all three labeled
-   "Per-contact runtime isolation".
+     "deny * → allow bound names"
+   Draw a pale green boundary around Codex and OpenCode labeled
+   "Per-contact runtime HOME".
+   Add a small note beside Claude Code:
+   "Shared credential snapshot; per-session name allowlist".
 
 5. A gray fallback box below the routing diamond labeled:
    "Future adapter fallback"
@@ -46,7 +48,7 @@ Show a thin arrow from every native target to a final green box labeled:
 Add a red crossed-out note under the flow:
 "No shared all-agent Skill directory"
 and a small security note:
-"Native write/shell stays denied; side effects use Polynoia MCP".
+"Symlinks rejected; native write/shell stays denied".
 
 Color palette: off-white background, soft blue #5B8FF9 for system and registry,
 warm orange #F2994A for binding/routing, pale purple #8B7CF6 for Claude,

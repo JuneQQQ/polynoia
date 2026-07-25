@@ -26,12 +26,14 @@ async def _collect(gen: AsyncIterator) -> list:
 
 
 def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
-    config = json.loads(_opencode_config_content("opencode-go/glm5.1"))
+    config = json.loads(
+        _opencode_config_content("opencode-go/glm5.1", ["demo-skill"])
+    )
 
     assert config["model"] == "opencode-go/glm5.1"
     permission = config["permission"]
     assert permission["polynoia_*"] == "allow"
-    assert permission["skill"] == "allow"
+    assert permission["skill"] == {"*": "deny", "demo-skill": "allow"}
     for builtin in (
         "read",
         "edit",
