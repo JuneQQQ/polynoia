@@ -31,6 +31,7 @@ def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
     assert config["model"] == "opencode-go/glm5.1"
     permission = config["permission"]
     assert permission["polynoia_*"] == "allow"
+    assert permission["skill"] == "allow"
     for builtin in (
         "read",
         "edit",
@@ -39,7 +40,6 @@ def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
         "list",
         "bash",
         "task",
-        "skill",
         "lsp",
         "todoread",
         "todowrite",

@@ -62,9 +62,11 @@ class AgentSetup(BaseModel):
 
 
 class AgentSkill(BaseModel):
-    """A reusable capability/prompt preset bound to a contact (agent). Its
-    ``instructions`` are injected into the agent's identity layer (system
-    prompt) at turn time, so "attaching a skill" gives the agent that ability."""
+    """A reusable Skill package bound to a contact (agent).
+
+    Native-capable adapters receive the complete package and load it on demand.
+    ``instructions`` is an optional per-contact inline override/fallback.
+    """
 
     name: str
     instructions: str

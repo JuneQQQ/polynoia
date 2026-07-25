@@ -391,7 +391,7 @@ class CodexAdapter:
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
-        skills: list[str] | None = None,  # accepted for adapter parity (Codex skill placement: P1)
+        skills: list[str] | None = None,
     ) -> CodexSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
@@ -407,6 +407,13 @@ class CodexAdapter:
             ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
+
+        # Legacy/non-project sandboxes are conv-scoped and do not carry the
+        # contact id from construction; attach it to this session's handle so
+        # the Skill runtime HOME remains contact-scoped in group DMs too.
+        if agent_id and sandbox.agent_id is None:
+            sandbox.agent_id = agent_id
+        await sandbox.place_skill_packages(skills or [], adapter_id=self.meta.agent_id)
 
         # The sandbox has already snapshotted the user's ~/.codex/{config.toml,
         # auth.json, sessions} into this CODEX_HOME (Sandbox._copy_host_credentials).
@@ -554,6 +561,12 @@ class CodexSession:
         # that env_for_agent points at. Nothing backend-specific is hardcoded.
         env = self._sandbox.env_for_agent(self._extra_env)
         env["CODEX_HOME"] = self._codex_home
+        # Codex discovers user-scoped skills from ~/.agents/skills. Keep HOME
+        # contact-scoped while CODEX_HOME continues to point at the isolated
+        # credential/config snapshot.
+        skill_home = self._sandbox.agent_runtime_home("codex")
+        env["HOME"] = str(skill_home)
+        env["USERPROFILE"] = str(skill_home)
         return env
 
     async def send(

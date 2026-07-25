@@ -106,7 +106,9 @@ _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
     "list": "deny",
     "bash": "deny",
     "task": "deny",
-    "skill": "deny",
+    # Native Skill loading is read-only and restricted to the bound packages
+    # Polynoia places in this contact's isolated HOME.
+    "skill": "allow",
     "lsp": "deny",
     "todoread": "deny",
     "todowrite": "deny",
@@ -233,8 +235,7 @@ class OpenCodeAdapter:
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
-        skills: list[str]
-        | None = None,  # accepted for adapter parity (OpenCode skill placement: P1)
+        skills: list[str] | None = None,
     ) -> OpenCodeSession:
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
@@ -250,6 +251,9 @@ class OpenCodeAdapter:
             ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
+        if agent_id and sandbox.agent_id is None:
+            sandbox.agent_id = agent_id
+        await sandbox.place_skill_packages(skills or [], adapter_id=self.meta.agent_id)
         # Proxy egress (system inherit / direct strip / custom override) — shared.
         _env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return OpenCodeSession(
@@ -581,8 +585,11 @@ class OpenCodeSession:
         # ONCE from the host's already-migrated db (+ auth). HOME stays the host
         # HOME; only the data dir is redirected.
         env = self._sandbox.env_for_agent(self._env)
+        skill_home = self._sandbox.agent_runtime_home("opencoder")
         env.update(
             {
+                "HOME": str(skill_home),
+                "USERPROFILE": str(skill_home),
                 "XDG_DATA_HOME": _polynoia_opencode_data_home(),
                 "POLYNOIA_CONV_ID": self._sandbox.conv_id,
                 "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),

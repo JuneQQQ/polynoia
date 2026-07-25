@@ -226,6 +226,7 @@ class Adapter(Protocol):
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
+        skills: list[str] | None = None,
     ) -> AdapterSession:
         """Start a fresh session.
 
@@ -250,5 +251,6 @@ class Adapter(Protocol):
             proxy_kind: "system" (inherit host HTTP_PROXY etc.), "direct"
                 (strip all proxy env vars), or "custom" (set proxy URL as
                 HTTP_PROXY + HTTPS_PROXY).
+            skills: installed Skill package names bound to this contact.
         """
         ...
