@@ -31,6 +31,7 @@ from pathlib import Path
 from polynoia.settings import settings
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+_NATIVE_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 BUILTIN_SKILLS_DIR = Path(__file__).resolve().parent / "builtin_skills"
 
 # Adapter id -> (base scope, native path below that scope). Keeping discovery
@@ -142,6 +143,53 @@ def find_skill_dir(name: str) -> Path | None:
     return None
 
 
+def native_skill_package_name(name: str) -> str | None:
+    """Return the portable Agent Skills name when a package is native-safe.
+
+    Claude Code, Codex, and OpenCode all consume Agent Skills-style packages.
+    OpenCode enforces the strictest common name/description contract, so use
+    that as the portability gate. Packages outside the contract stay usable
+    through Polynoia's inline fallback instead of silently disappearing.
+    """
+    folder = find_skill_dir(name)
+    if folder is None:
+        return None
+    meta = _parse_skill_md(folder)
+    native_name = str(meta.get("name") or "")
+    description = str(meta.get("description") or "")
+    if (
+        native_name != folder.name
+        or len(native_name) > 64
+        or not _NATIVE_SKILL_NAME_RE.fullmatch(native_name)
+        or not 1 <= len(description) <= 1024
+    ):
+        return None
+    return native_name
+
+
+def _validate_skill_package(source: Path) -> None:
+    for entry in source.rglob("*"):
+        if entry.is_symlink():
+            relative = entry.relative_to(source)
+            raise ValueError(f"skill package contains unsupported symlink: {relative}")
+
+
+def _copy_validated_skill_package(source: Path, destination: Path) -> None:
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".git"))
+
+
+def copy_skill_package(source: Path, destination: Path) -> None:
+    """Copy a Skill package without allowing symlink escapes.
+
+    Skill packages can originate from third-party repositories. Dereferencing
+    a symlink during installation/delivery could copy files outside the package
+    (for example host credentials) into an agent-visible runtime directory.
+    Reject the package instead of producing a partial or unsafe copy.
+    """
+    _validate_skill_package(source)
+    _copy_validated_skill_package(source, destination)
+
+
 def _find_skill_dirs(root: Path) -> list[Path]:
     """Locate the skill folder(s) inside a fetched source, most-specific first:
     a root skill, a ``skills/`` collection, top-level ``<name>/SKILL.md`` dirs,
@@ -168,9 +216,11 @@ def _install_one(skill_dir: Path, *, fallback_name: str) -> dict:
     meta = _parse_skill_md(skill_dir)
     name = _safe_name(meta.get("name") or "") or _safe_name(skill_dir.name) or _safe_name(fallback_name) or "skill"
     dest = settings.skills_dir / name
+    # Validate the source before replacing an existing installed package.
+    _validate_skill_package(skill_dir)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
-    shutil.copytree(skill_dir, dest, ignore=shutil.ignore_patterns(".git"))
+    _copy_validated_skill_package(skill_dir, dest)
     return {**_parse_skill_md(dest), "name": name, "path": str(dest)}
 
 

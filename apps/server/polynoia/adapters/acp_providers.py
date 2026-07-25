@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 from polynoia.adapters.acp import AcpLaunchContext, AcpProvider, GenericAcpAdapter
@@ -36,7 +37,7 @@ _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
 
 
 def _opencode_config_content(
-    model: str | None, skills: tuple[str, ...] = ()
+    model: str | None, skills: Iterable[str] = ()
 ) -> str:
     config: dict[str, object] = {
         "permission": {
@@ -53,7 +54,7 @@ def _opencode_config_content(
 
 
 def _write_opencode_config(
-    path: Path, model: str | None, skills: tuple[str, ...] = ()
+    path: Path, model: str | None, skills: Iterable[str] = ()
 ) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = _opencode_config_content(model, skills)
