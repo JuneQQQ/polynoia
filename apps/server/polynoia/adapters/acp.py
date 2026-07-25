@@ -99,6 +99,7 @@ class AcpLaunchContext:
     sandbox: Sandbox
     cwd: str
     model: str | None
+    skills: tuple[str, ...] = ()
 
 
 AcpEnvironmentPreparer = Callable[[AcpLaunchContext, dict[str, str]], None]
@@ -192,7 +193,7 @@ class GenericAcpAdapter:
         proxy_kind: str = "system",
         skills: list[str] | None = None,
     ) -> GenericAcpSession:
-        del allowed_tools, merge_mode, skills
+        del allowed_tools, merge_mode
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id,
@@ -205,6 +206,11 @@ class GenericAcpAdapter:
             ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
+        if agent_id and sandbox.agent_id is None:
+            sandbox.agent_id = agent_id
+        placed_skills = await sandbox.place_skill_packages(
+            skills or [], adapter_id=self.meta.agent_id
+        )
         session_env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return GenericAcpSession(
             provider=self.provider,
@@ -218,6 +224,7 @@ class GenericAcpAdapter:
             turn_agent_id=(agent_id or self.meta.agent_id),
             tool_role=tool_role,
             tools_whitelist=tools_whitelist,
+            skills=placed_skills,
         )
 
 
@@ -545,6 +552,7 @@ class GenericAcpSession:
         agent_id: str,
         tool_role: str = "generalist",
         tools_whitelist: list[str] | None = None,
+        skills: list[str] | None = None,
         turn_agent_id: str = "",
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
@@ -559,6 +567,7 @@ class GenericAcpSession:
         self._env = env
         self._tool_role = tool_role
         self._tools_whitelist = tools_whitelist or []
+        self._skills = tuple(skills or [])
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
         self._connection: ClientSideConnection | None = None
@@ -594,6 +603,7 @@ class GenericAcpSession:
             sandbox=self._sandbox,
             cwd=self._cwd,
             model=self._model,
+            skills=self._skills,
         )
         if self._provider.prepare_environment is not None:
             self._provider.prepare_environment(launch_context, env)

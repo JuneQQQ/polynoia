@@ -42,3 +42,4 @@
 | 021 | [Codex adapter app-server JSON-RPC streaming](ADR-021-codex-app-server-streaming.md) | accepted | 2026-05-31 |
 | 022 | [群聊 @mention 致谢接力抑制 + 收敛协议](ADR-022-mention-chain-ack-suppression.md) | accepted | 2026-06-10 |
 | 023 | [终端卡生命周期由后端权威接管](ADR-023-terminal-card-lifecycle-backend-owned.md) | accepted | 2026-06-10 |
+| 024 | [Adapter-native Skill delivery with contact isolation](ADR-024-native-skill-delivery.md) | accepted | 2026-07-25 |

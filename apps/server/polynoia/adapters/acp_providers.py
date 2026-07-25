@@ -26,7 +26,6 @@ _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
     "list": "deny",
     "bash": "deny",
     "task": "deny",
-    "skill": "deny",
     "lsp": "deny",
     "todoread": "deny",
     "todowrite": "deny",
@@ -36,10 +35,15 @@ _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
 }
 
 
-def _opencode_config_content(model: str | None) -> str:
+def _opencode_config_content(
+    model: str | None, skills: tuple[str, ...] = ()
+) -> str:
     config: dict[str, object] = {
         "permission": {
             **_OPENCODE_BUILTIN_PERMISSION_DENY,
+            # Project-local skills are discoverable too. Expose only packages
+            # explicitly bound to this contact.
+            "skill": {"*": "deny", **{name: "allow" for name in skills}},
             "polynoia_*": "allow",
         },
     }
@@ -48,9 +52,13 @@ def _opencode_config_content(model: str | None) -> str:
     return json.dumps(config)
 
 
-def _write_opencode_config(path: Path, model: str | None) -> None:
+def _write_opencode_config(
+    path: Path, model: str | None, skills: tuple[str, ...] = ()
+) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_opencode_config_content(model), encoding="utf-8")
+    content = _opencode_config_content(model, skills)
+    path.write_text(content, encoding="utf-8")
+    return content
 
 
 def _opencode_executable(env: dict[str, str]) -> str:
@@ -88,11 +96,18 @@ def _prepare_opencode_environment(
 ) -> None:
     """Preserve the OpenCode-specific isolation, model and tool policy."""
 
+    # Keep OpenCode's native Skill directory contact-scoped while retaining
+    # explicit config/data paths for its isolated credentials and session DB.
+    skill_home = context.sandbox.agent_runtime_home("opencoder")
+    env["HOME"] = str(skill_home)
+    env["USERPROFILE"] = str(skill_home)
     env["XDG_DATA_HOME"] = _polynoia_opencode_data_home()
     config_path = context.sandbox.root / ".polynoia" / "opencode-config.json"
-    _write_opencode_config(config_path, context.model)
+    config_content = _write_opencode_config(
+        config_path, context.model, context.skills
+    )
     env["OPENCODE_CONFIG"] = str(config_path)
-    env["OPENCODE_CONFIG_CONTENT"] = _opencode_config_content(context.model)
+    env["OPENCODE_CONFIG_CONTENT"] = config_content
     # Do not enable OPENCODE_ACP_NEXT: OpenCode 1.15.x does not implement
     # prompt/cancel on that path. The default ACP v1 path streams correctly.
 

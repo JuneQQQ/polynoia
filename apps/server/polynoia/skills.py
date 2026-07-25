@@ -17,8 +17,8 @@ skill(s) inside it — a source can be:
 Sources: a git URL (``git clone``, via settings.git_proxy / the ambient proxy
 env) or a local directory (copied).
 
-At agent spawn the bound skill folders are placed into the sandbox's native
-skills dir (e.g. ~/.claude/skills/) so the underlying CLI discovers them.
+At agent spawn the bound skill folders are placed into the sandbox's
+adapter-native skills dir so the underlying CLI discovers them.
 """
 from __future__ import annotations
 
@@ -32,6 +32,26 @@ from polynoia.settings import settings
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 BUILTIN_SKILLS_DIR = Path(__file__).resolve().parent / "builtin_skills"
+
+# Adapter id -> (base scope, native path below that scope). Keeping discovery
+# declarative means a future adapter adds one layout instead of another branch
+# throughout context and sandbox code.
+NATIVE_SKILL_LAYOUTS: dict[str, tuple[str, Path]] = {
+    "claudeCode": ("credentials", Path(".claude") / "skills"),
+    "codex": ("runtime", Path(".agents") / "skills"),
+    "opencoder": ("runtime", Path(".config") / "opencode" / "skills"),
+}
+
+
+def supports_native_skills(adapter_id: str | None) -> bool:
+    return bool(adapter_id and adapter_id in NATIVE_SKILL_LAYOUTS)
+
+
+def native_skill_layout(adapter_id: str) -> tuple[str, Path]:
+    try:
+        return NATIVE_SKILL_LAYOUTS[adapter_id]
+    except KeyError:
+        raise ValueError(f"adapter does not support native skills: {adapter_id}") from None
 
 
 def _safe_name(name: str) -> str:

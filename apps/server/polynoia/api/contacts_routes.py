@@ -308,8 +308,8 @@ def _parse_skills(raw) -> list:
     """Validate contact-level skills from request input → [AgentSkill].
 
     A skill is bound by NAME (referencing an installed skill package placed into
-    the agent's sandbox at spawn). ``instructions`` are optional — when present
-    they're also injected into the identity layer (inline-prompt fallback)."""
+    the agent's native Skill path at spawn). ``instructions`` are optional —
+    when present they're injected as an explicit per-contact override."""
     from polynoia.domain.entities import AgentSkill
 
     out: list = []
