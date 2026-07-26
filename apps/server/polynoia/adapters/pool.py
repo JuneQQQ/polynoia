@@ -25,10 +25,10 @@ import os
 import time
 from typing import cast
 
+from polynoia.adapters.acp_providers import build_registered_acp_adapters
 from polynoia.adapters.base import Adapter, AdapterSession
 from polynoia.adapters.claude_code import ClaudeCodeAdapter
 from polynoia.adapters.codex import CodexAdapter
-from polynoia.adapters.opencode import OpenCodeAdapter
 
 logger = logging.getLogger("polynoia.adapters.pool")
 
@@ -79,9 +79,22 @@ _GRANTED_ACCESS_BANNER = """
 def _ensure_base_adapters() -> dict[str, Adapter]:
     """Lazy-init base adapter instances. One per CLI, shared across all contacts."""
     if not _BASE_ADAPTERS:
-        _BASE_ADAPTERS["claudeCode"] = cast(Adapter, ClaudeCodeAdapter())
-        _BASE_ADAPTERS["opencoder"] = cast(Adapter, OpenCodeAdapter())
-        _BASE_ADAPTERS["codex"] = cast(Adapter, CodexAdapter())
+        dedicated_adapters = {
+            "claudeCode": cast(Adapter, ClaudeCodeAdapter()),
+            "codex": cast(Adapter, CodexAdapter()),
+        }
+        acp_adapters = build_registered_acp_adapters()
+        conflicts = dedicated_adapters.keys() & acp_adapters.keys()
+        if conflicts:
+            names = ", ".join(sorted(conflicts))
+            raise ValueError(f"ACP provider conflicts with dedicated adapter: {names}")
+        _BASE_ADAPTERS.update(dedicated_adapters)
+        _BASE_ADAPTERS.update(
+            {
+                adapter_id: cast(Adapter, adapter)
+                for adapter_id, adapter in acp_adapters.items()
+            }
+        )
     return _BASE_ADAPTERS
 
 
@@ -164,8 +177,8 @@ class AdapterPool:
             # Lazy DB lookup — avoid top-level import cycle.
             from polynoia.storage.db import SessionLocal
             from polynoia.storage.repo import (
-                get_conversation,
                 active_access_grant,
+                get_conversation,
                 list_agents,
                 list_onboarded_adapter_rows,
             )

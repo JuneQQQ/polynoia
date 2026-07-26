@@ -12,14 +12,13 @@ yield AdapterEvent instances from `AdapterSession.send()`.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Any, Literal, Protocol, Union
-from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, Field
 
 from polynoia.domain.messages import MessagePayload
-
 
 # ── Capabilities + meta ────────────────────────────────────────────
 
@@ -226,6 +225,7 @@ class Adapter(Protocol):
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
+        skills: list[str] | None = None,
     ) -> AdapterSession:
         """Start a fresh session.
 
@@ -250,5 +250,7 @@ class Adapter(Protocol):
             proxy_kind: "system" (inherit host HTTP_PROXY etc.), "direct"
                 (strip all proxy env vars), or "custom" (set proxy URL as
                 HTTP_PROXY + HTTPS_PROXY).
+            skills: Optional contact-level skills exposed to runtimes that
+                support native skill discovery.
         """
         ...
