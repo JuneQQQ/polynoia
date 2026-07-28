@@ -350,6 +350,16 @@ const STR = {
 	},
 	custom: { zh: "自定义…", en: "Custom…" },
 	customModelId: { zh: "自定义模型 id", en: "Custom model ID" },
+	apiKey: { zh: "API Key（可选）", en: "API key (optional)" },
+	apiKeyHint: {
+		zh: "仅在保存时提交，之后不会在界面或 API 中回显。留空则沿用已有密钥或全局配置。",
+		en: "Submitted only when saved and never shown again. Leave blank to keep the existing key or use global configuration.",
+	},
+	apiBaseUrl: { zh: "API Base URL（可选）", en: "API base URL (optional)" },
+	apiBaseUrlHint: {
+		zh: "例如 https://api.example.com/v1。联系人配置优先于全局配置和环境变量。",
+		en: "For example, https://api.example.com/v1. Contact configuration overrides global settings and environment variables.",
+	},
 	maxContextLength: {
 		zh: "模型最大上下文长度",
 		en: "Model max context length",

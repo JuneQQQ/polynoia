@@ -600,6 +600,8 @@ export const api = {
 		tool_role?: string;
 		tools_whitelist?: string[];
 		max_context_tokens?: number | null;
+		api_key?: string;
+		api_base_url?: string | null;
 		skills?: { name: string; instructions: string; description?: string }[];
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
 	/**「回到这个对话」dry-run: what reverting workspace main to `sha` would undo. */
@@ -662,6 +664,8 @@ export const api = {
 			tool_role: string;
 			tools_whitelist: string[];
 			max_context_tokens: number | null;
+			api_key: string | null;
+			api_base_url: string | null;
 			skills: { name: string; instructions: string; description?: string }[];
 		}>,
 	) =>
