@@ -6,13 +6,15 @@ import asyncio
 import contextlib
 import json
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from acp.client.connection import ClientSideConnection
 
-from polynoia.adapters import opencode as oc
+from polynoia.adapters import acp as acp_runtime
+from polynoia.adapters import acp_providers
 from polynoia.adapters.opencode import OpenCodeSession, _OpenCodeAcpClient
 
 
@@ -34,7 +36,7 @@ class _SetupConnection:
 
     async def initialize(self, **kwargs: Any) -> Any:
         self.initialize_calls.append(kwargs)
-        return SimpleNamespace(protocol_version=oc.PROTOCOL_VERSION)
+        return SimpleNamespace(protocol_version=acp_runtime.PROTOCOL_VERSION)
 
     async def new_session(self, **kwargs: Any) -> Any:
         self.new_session_calls.append(kwargs)
@@ -78,9 +80,13 @@ async def test_setup_advertises_only_capabilities_polynoia_implements(
         finally:
             context_closed = True
 
-    monkeypatch.setattr(oc, "spawn_agent_process", _spawn)
-    monkeypatch.setattr(oc, "_opencode_executable", lambda env: "opencode")
-    monkeypatch.setattr(oc, "_polynoia_opencode_data_home", lambda: str(tmp_path / "data"))
+    monkeypatch.setattr(acp_runtime, "spawn_agent_process", _spawn)
+    monkeypatch.setattr(acp_runtime.shutil, "which", lambda *args, **kwargs: "opencode")
+    monkeypatch.setattr(
+        acp_providers,
+        "_polynoia_opencode_data_home",
+        lambda: str(tmp_path / "data"),
+    )
 
     await session._ensure_subprocess()
 
@@ -88,7 +94,7 @@ async def test_setup_advertises_only_capabilities_polynoia_implements(
     capabilities = initialize["client_capabilities"]
     assert capabilities.fs is None
     assert capabilities.terminal is False
-    assert initialize["protocol_version"] == oc.PROTOCOL_VERSION
+    assert initialize["protocol_version"] == acp_runtime.PROTOCOL_VERSION
     assert session._acp_session_id == "acp-session"
 
     await session.close()
@@ -113,9 +119,13 @@ async def test_dead_process_is_replaced_before_next_turn(
         finally:
             closed.append(process)
 
-    monkeypatch.setattr(oc, "spawn_agent_process", _spawn)
-    monkeypatch.setattr(oc, "_opencode_executable", lambda env: "opencode")
-    monkeypatch.setattr(oc, "_polynoia_opencode_data_home", lambda: str(tmp_path / "data"))
+    monkeypatch.setattr(acp_runtime, "spawn_agent_process", _spawn)
+    monkeypatch.setattr(acp_runtime.shutil, "which", lambda *args, **kwargs: "opencode")
+    monkeypatch.setattr(
+        acp_providers,
+        "_polynoia_opencode_data_home",
+        lambda: str(tmp_path / "data"),
+    )
 
     await session._ensure_subprocess()
     processes[0].returncode = 1
@@ -200,8 +210,8 @@ async def test_prompt_timeout_cancels_and_discards_runtime(
         return
 
     session._ensure_subprocess = _noop_ensure  # type: ignore[method-assign]
-    monkeypatch.setattr(oc, "_ACP_PROMPT_TIMEOUT_S", 0.01)
-    monkeypatch.setattr(oc, "_TRAILING_FLUSH_GRACE_S", 0.0)
+    monkeypatch.setattr(acp_runtime, "_ACP_PROMPT_TIMEOUT_S", 0.01)
+    session._provider = replace(session._provider, trailing_flush_grace_s=0.0)
 
     events = [event async for event in session.send("task-1", "hello")]
 
