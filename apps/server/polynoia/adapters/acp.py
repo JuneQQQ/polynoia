@@ -567,7 +567,9 @@ class GenericAcpSession:
         self._env = env
         self._tool_role = tool_role
         self._tools_whitelist = tools_whitelist or []
-        self._skills = tuple(skills or [])
+        # Keep the historical list-shaped session attribute for adapter
+        # compatibility while freezing it at the provider-launch boundary.
+        self._skills = list(skills or [])
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
         self._connection: ClientSideConnection | None = None
@@ -579,6 +581,29 @@ class GenericAcpSession:
         self._closed: bool = False
 
     # ── subprocess lifecycle ────────────────────────────────
+
+    def _prepare_subprocess_env(self) -> dict[str, str]:
+        """Build the provider process environment without spawning it.
+
+        Kept as a small compatibility seam for provider-specific sessions and
+        makes launch policy independently testable.
+        """
+        env = self._sandbox.env_for_agent(self._env)
+        env.update(
+            {
+                "POLYNOIA_CONV_ID": self._sandbox.conv_id,
+                "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
+            }
+        )
+        launch_context = AcpLaunchContext(
+            sandbox=self._sandbox,
+            cwd=self._cwd,
+            model=self._model,
+            skills=tuple(self._skills),
+        )
+        if self._provider.prepare_environment is not None:
+            self._provider.prepare_environment(launch_context, env)
+        return env
 
     async def _ensure_subprocess(self) -> None:
         if self._closed:
@@ -592,21 +617,7 @@ class GenericAcpSession:
         if self._proc is not None or self._process_stack is not None:
             await self._reset_subprocess()
 
-        env = self._sandbox.env_for_agent(self._env)
-        env.update(
-            {
-                "POLYNOIA_CONV_ID": self._sandbox.conv_id,
-                "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
-            }
-        )
-        launch_context = AcpLaunchContext(
-            sandbox=self._sandbox,
-            cwd=self._cwd,
-            model=self._model,
-            skills=self._skills,
-        )
-        if self._provider.prepare_environment is not None:
-            self._provider.prepare_environment(launch_context, env)
+        env = self._prepare_subprocess_env()
         command = self._provider.launch_command(cwd=self._cwd, env=env)
 
         # `limit` overrides asyncio's default 64KB StreamReader buffer. ACP

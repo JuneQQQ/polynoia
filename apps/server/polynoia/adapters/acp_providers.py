@@ -99,7 +99,10 @@ def _prepare_opencode_environment(
 
     # Keep OpenCode's native Skill directory contact-scoped while retaining
     # explicit config/data paths for its isolated credentials and session DB.
-    skill_home = context.sandbox.agent_runtime_home("opencoder")
+    runtime_home = getattr(context.sandbox, "agent_runtime_home", None)
+    skill_home = (
+        runtime_home("opencoder") if callable(runtime_home) else context.sandbox.root
+    )
     env["HOME"] = str(skill_home)
     env["USERPROFILE"] = str(skill_home)
     env["XDG_DATA_HOME"] = _polynoia_opencode_data_home()

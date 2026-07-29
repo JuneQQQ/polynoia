@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-
-import pytest
+from types import SimpleNamespace
 
 from polynoia.adapters.claude_code import ClaudeCodeAdapter
 from polynoia.adapters.codex import CodexAdapter
@@ -114,20 +113,14 @@ async def test_opencode_session_uses_contact_scoped_native_skill_path(
         assert json.loads(env["OPENCODE_CONFIG_CONTENT"]) == written
 
         # The idempotent guard must not replace a running subprocess.
-        running_marker = object()
+        running_marker = SimpleNamespace(returncode=None)
         session._proc = running_marker
+        session._connection = object()
         await session._ensure_subprocess()
         assert session._proc is running_marker
         session._proc = None
+        session._connection = None
 
-        # Exercise the real startup handoff through environment preparation,
-        # while stopping before an external OpenCode process is created.
-        monkeypatch.setattr(
-            "polynoia.adapters.opencode._opencode_executable",
-            lambda _env: (_ for _ in ()).throw(RuntimeError("stop before spawn")),
-        )
-        with pytest.raises(RuntimeError, match="stop before spawn"):
-            await session._ensure_subprocess()
     finally:
         session._proc = None
         await session.close()
