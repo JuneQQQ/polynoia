@@ -2164,25 +2164,70 @@ class Sandbox:
             return self.workspace_root / ".polynoia" / "credentials"
         return self.root / ".polynoia" / "credentials"
 
-    async def place_skill_packages(self, names: list[str]) -> None:
-        """Copy installed skill packages into this agent's native skills dir
-        (``<HOME>/.claude/skills/<name>``) so the spawned Claude CLI discovers
-        them. Source folders live in ``settings.skills_dir``. Best-effort:
-        unknown names are skipped; existing copies are refreshed."""
-        dest_root = self.credentials_home / ".claude" / "skills"
-        from polynoia.skills import find_skill_dir
+    def agent_runtime_home(self, adapter_id: str) -> Path:
+        """Private HOME for adapter runtime state that must be contact-scoped.
 
+        Workspace credentials are intentionally shared, but bound skills are
+        not: two contacts in the same workspace may have different packages.
+        Codex/OpenCode therefore get a per-(adapter, agent, conversation) HOME
+        while their credentials/config remain in the existing explicit paths.
+        """
+        safe_adapter = "".join(c for c in adapter_id if c.isalnum() or c in "-_") or "agent"
+        owner = self.agent_id or "direct"
+        identity = hashlib.sha256(f"{owner}\0{self.conv_id}".encode()).hexdigest()[:16]
+        base = self.workspace_root if self.workspace_root is not None else self.root
+        return base / ".polynoia" / "agent-homes" / safe_adapter / identity
+
+    def native_skill_root(self, adapter_id: str) -> Path:
+        """Return the adapter's native, sandbox-isolated Skill directory."""
+        from polynoia.skills import native_skill_layout
+
+        scope, relative = native_skill_layout(adapter_id)
+        base = (
+            self.credentials_home
+            if scope == "credentials"
+            else self.agent_runtime_home(adapter_id)
+        )
+        return base / relative
+
+    async def place_skill_packages(self, names: list[str], adapter_id: str = "claudeCode") -> list[str]:
+        """Refresh complete bound packages in an adapter's native Skill path.
+
+        Returns the canonical names that were placed. Unknown packages are
+        skipped. Runtime homes are contact-scoped and synchronized exactly;
+        Claude's shared credential home is additive because the SDK applies an
+        explicit per-session name allowlist.
+        """
+        dest_root = self.native_skill_root(adapter_id)
+        from polynoia.skills import (
+            copy_skill_package,
+            find_skill_dir,
+            native_skill_package_name,
+        )
+
+        resolved: dict[str, Path] = {}
         for raw in names:
-            name = (raw or "").strip()
-            src = find_skill_dir(name)
-            if not name or src is None or not src.is_dir():
+            requested = (raw or "").strip()
+            src = find_skill_dir(requested)
+            native_name = native_skill_package_name(requested)
+            if src is None or not src.is_dir() or native_name is None:
                 continue
+            # Use the canonical installed directory name, never request input,
+            # as a path component (prevents ../../name traversal).
+            resolved[native_name] = src
+
+        if adapter_id != "claudeCode" and dest_root.exists():
+            shutil.rmtree(dest_root)
+
+        placed: list[str] = []
+        for name, src in resolved.items():
             dest = dest_root / name
-            with contextlib.suppress(OSError):
-                if dest.exists():
-                    shutil.rmtree(dest, ignore_errors=True)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".git"))
+            if dest.exists():
+                shutil.rmtree(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            copy_skill_package(src, dest)
+            placed.append(name)
+        return placed
 
     def env_for_agent(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Construct subprocess env dict for an agent.

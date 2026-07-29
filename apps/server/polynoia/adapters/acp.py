@@ -99,6 +99,7 @@ class AcpLaunchContext:
     sandbox: Sandbox
     cwd: str
     model: str | None
+    skills: tuple[str, ...] = ()
 
 
 AcpEnvironmentPreparer = Callable[[AcpLaunchContext, dict[str, str]], None]
@@ -192,7 +193,7 @@ class GenericAcpAdapter:
         proxy_kind: str = "system",
         skills: list[str] | None = None,
     ) -> GenericAcpSession:
-        del allowed_tools, merge_mode, skills
+        del allowed_tools, merge_mode
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id,
@@ -205,6 +206,11 @@ class GenericAcpAdapter:
             ) or await Sandbox.create(conv_id)
         else:
             sandbox = await Sandbox.create(conv_id)
+        if agent_id and sandbox.agent_id is None:
+            sandbox.agent_id = agent_id
+        placed_skills = await sandbox.place_skill_packages(
+            skills or [], adapter_id=self.meta.agent_id
+        )
         session_env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return GenericAcpSession(
             provider=self.provider,
@@ -218,6 +224,7 @@ class GenericAcpAdapter:
             turn_agent_id=(agent_id or self.meta.agent_id),
             tool_role=tool_role,
             tools_whitelist=tools_whitelist,
+            skills=placed_skills,
         )
 
 
@@ -545,6 +552,7 @@ class GenericAcpSession:
         agent_id: str,
         tool_role: str = "generalist",
         tools_whitelist: list[str] | None = None,
+        skills: list[str] | None = None,
         turn_agent_id: str = "",
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
@@ -559,6 +567,9 @@ class GenericAcpSession:
         self._env = env
         self._tool_role = tool_role
         self._tools_whitelist = tools_whitelist or []
+        # Keep the historical list-shaped session attribute for adapter
+        # compatibility while freezing it at the provider-launch boundary.
+        self._skills = list(skills or [])
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
         self._connection: ClientSideConnection | None = None
@@ -570,6 +581,29 @@ class GenericAcpSession:
         self._closed: bool = False
 
     # ── subprocess lifecycle ────────────────────────────────
+
+    def _prepare_subprocess_env(self) -> dict[str, str]:
+        """Build the provider process environment without spawning it.
+
+        Kept as a small compatibility seam for provider-specific sessions and
+        makes launch policy independently testable.
+        """
+        env = self._sandbox.env_for_agent(self._env)
+        env.update(
+            {
+                "POLYNOIA_CONV_ID": self._sandbox.conv_id,
+                "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
+            }
+        )
+        launch_context = AcpLaunchContext(
+            sandbox=self._sandbox,
+            cwd=self._cwd,
+            model=self._model,
+            skills=tuple(self._skills),
+        )
+        if self._provider.prepare_environment is not None:
+            self._provider.prepare_environment(launch_context, env)
+        return env
 
     async def _ensure_subprocess(self) -> None:
         if self._closed:
@@ -583,20 +617,7 @@ class GenericAcpSession:
         if self._proc is not None or self._process_stack is not None:
             await self._reset_subprocess()
 
-        env = self._sandbox.env_for_agent(self._env)
-        env.update(
-            {
-                "POLYNOIA_CONV_ID": self._sandbox.conv_id,
-                "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
-            }
-        )
-        launch_context = AcpLaunchContext(
-            sandbox=self._sandbox,
-            cwd=self._cwd,
-            model=self._model,
-        )
-        if self._provider.prepare_environment is not None:
-            self._provider.prepare_environment(launch_context, env)
+        env = self._prepare_subprocess_env()
         command = self._provider.launch_command(cwd=self._cwd, env=env)
 
         # `limit` overrides asyncio's default 64KB StreamReader buffer. ACP

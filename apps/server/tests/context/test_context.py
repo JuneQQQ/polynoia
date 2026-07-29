@@ -157,9 +157,9 @@ async def test_identity_layer_always_present(clean_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bound_skill_name_only_is_injected_from_skill_package(clean_db) -> None:
-    """Contact editor stores bound skills by name; identity must still expose
-    the package so the agent can answer what skills it has."""
+async def test_bound_native_skill_uses_compact_identity_metadata(clean_db) -> None:
+    """Native adapters get name/description metadata without duplicating the
+    complete SKILL.md body in the hard identity layer."""
     a = await _seed_agent("Deck Agent")
     a.skills = [AgentSkill(name="ppt-master", instructions="")]
     async with db_module.SessionLocal() as session:
@@ -174,7 +174,7 @@ async def test_bound_skill_name_only_is_injected_from_skill_package(clean_db) ->
 
     assert "## 你已装配的技能" in prompt
     assert "### ppt-master" in prompt
-    assert "PPT Master" in prompt
+    assert "PPT Master" not in prompt
 
 
 @pytest.mark.asyncio
