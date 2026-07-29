@@ -51,7 +51,16 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from acp import PROTOCOL_VERSION, Client, spawn_agent_process
+from acp.client.connection import ClientSideConnection
+from acp.schema import (
+    ClientCapabilities,
+    Implementation,
+    McpServerStdio,
+    TextContentBlock,
+)
 
 from polynoia.adapters._utils import (
     _new_id,
@@ -71,8 +80,8 @@ from polynoia.adapters.base import (
     TurnStartedEvent,
 )
 from polynoia.credentials import credential_source_home
-from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
+from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
 
@@ -93,6 +102,13 @@ _SENTINEL: Any = object()
 # window and the translator drains it into THIS turn. Bounded + tiny, so turn-end
 # (and the burst is_last/merge it can trigger) is delayed at most this much.
 _TRAILING_FLUSH_GRACE_S = 0.2
+
+# ACP requests must be bounded. Prompt turns can legitimately run for a long
+# time, while initialize/session setup should fail quickly enough for the pool
+# to recover instead of retaining a wedged subprocess forever.
+_ACP_SETUP_TIMEOUT_S = 30.0
+_ACP_PROMPT_TIMEOUT_S = 30 * 60.0
+_ACP_NOTIFICATION_QUEUE_SIZE = 1024
 
 
 _OPENCODE_BUILTIN_PERMISSION_DENY: dict[str, str] = {
@@ -260,7 +276,7 @@ class OpenCodeAdapter:
             system_prompt=system_prompt,
             env=_env,
             agent_id=self.meta.agent_id,
-            turn_agent_id=agent_id,
+            turn_agent_id=(agent_id or self.meta.agent_id),
             tool_role=tool_role,
             tools_whitelist=tools_whitelist,
         )
@@ -526,6 +542,54 @@ async def _translate_acp_stream_to_pap(
 # ── Session implementation ────────────────────────────────────────
 
 
+class _OpenCodeAcpClient:
+    """Minimal ACP client surface used by Polynoia.
+
+    Filesystem and terminal methods are deliberately absent. The official SDK
+    therefore returns JSON-RPC ``method not found`` if an agent calls them, and
+    our initialize capabilities truthfully advertise that those operations are
+    unsupported. All side effects must continue to flow through Polynoia MCP.
+    """
+
+    def __init__(self) -> None:
+        self._active_session_id: str | None = None
+        self._active_queue: asyncio.Queue[Any] | None = None
+
+    def begin_turn(self, session_id: str) -> asyncio.Queue[Any]:
+        if self._active_queue is not None:
+            raise RuntimeError("an ACP turn is already active")
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_ACP_NOTIFICATION_QUEUE_SIZE)
+        self._active_session_id = session_id
+        self._active_queue = queue
+        return queue
+
+    def end_turn(self, queue: asyncio.Queue[Any]) -> None:
+        if self._active_queue is queue:
+            self._active_queue = None
+            self._active_session_id = None
+
+    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        queue = self._active_queue
+        if queue is None or session_id != self._active_session_id:
+            log.debug("dropping ACP update outside active turn: session=%s", session_id)
+            return
+        update_payload = update.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        )
+        await queue.put(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": update_payload,
+                },
+            }
+        )
+
+
 class OpenCodeSession:
     """One OpenCode ACP session — a single `opencode acp` subprocess across turns."""
 
@@ -556,11 +620,10 @@ class OpenCodeSession:
         self._tools_whitelist = tools_whitelist or []
         self._lock = asyncio.Lock()
         self._proc: asyncio.subprocess.Process | None = None
+        self._connection: ClientSideConnection | None = None
+        self._process_stack: contextlib.AsyncExitStack | None = None
+        self._client = _OpenCodeAcpClient()
         self._acp_session_id: str | None = None
-        self._next_request_id = 0
-        self._pending: dict[int, asyncio.Future[Any]] = {}
-        self._notification_queue: asyncio.Queue[Any] | None = None
-        self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._sent_system: bool = False
         self._closed: bool = False
@@ -568,8 +631,16 @@ class OpenCodeSession:
     # ── subprocess lifecycle ────────────────────────────────
 
     async def _ensure_subprocess(self) -> None:
-        if self._proc is not None:
+        if self._closed:
+            raise RuntimeError("OpenCode session is closed")
+        if (
+            self._proc is not None
+            and self._proc.returncode is None
+            and self._connection is not None
+        ):
             return
+        if self._proc is not None or self._process_stack is not None:
+            await self._reset_subprocess()
 
         # Isolate opencode's RUNTIME state from the user's own opencode.
         # opencode keeps its session store in a single sqlite (opencode.db,
@@ -605,31 +676,54 @@ class OpenCodeSession:
         # but chunk is longer than limit" → the whole turn fails. 32MB covers
         # any realistic single-message payload without unbounded memory risk
         # (per-line, not per-stream).
-        self._proc = await asyncio.create_subprocess_exec(
-            opencode_bin,
-            "acp",
-            "--cwd",
-            self._cwd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            limit=32 * 1024 * 1024,
-        )
-        self._notification_queue = asyncio.Queue()
-        self._reader_task = asyncio.create_task(self._stdout_reader())
+        stack = contextlib.AsyncExitStack()
+        try:
+            connection, proc = await stack.enter_async_context(
+                spawn_agent_process(
+                    cast(Client, self._client),
+                    opencode_bin,
+                    "acp",
+                    "--cwd",
+                    self._cwd,
+                    env=env,
+                    transport_kwargs={
+                        "stderr": asyncio.subprocess.PIPE,
+                        "limit": 32 * 1024 * 1024,
+                        "shutdown_timeout": 2.0,
+                    },
+                )
+            )
+        except Exception:
+            await stack.aclose()
+            raise
+        self._process_stack = stack
+        self._connection = connection
+        self._proc = proc
         self._stderr_task = asyncio.create_task(self._stderr_drain())
 
-        # ACP handshake
-        await self._rpc_request(
-            "initialize",
-            {
-                "protocolVersion": 1,
-                "clientCapabilities": {
-                    "fs": {"readTextFile": True, "writeTextFile": False},
-                },
-            },
-        )
+        try:
+            async with asyncio.timeout(_ACP_SETUP_TIMEOUT_S):
+                initialized = await connection.initialize(
+                    protocol_version=PROTOCOL_VERSION,
+                    client_capabilities=ClientCapabilities(
+                        fs=None,
+                        terminal=False,
+                        auth=None,
+                    ),
+                    client_info=Implementation(
+                        name="polynoia",
+                        title="Polynoia",
+                        version="0.1.0",
+                    ),
+                )
+            if initialized.protocol_version != PROTOCOL_VERSION:
+                raise RuntimeError(
+                    "opencode acp selected unsupported protocol version "
+                    f"{initialized.protocol_version}"
+                )
+        except Exception:
+            await self._reset_subprocess()
+            raise
 
         # Register the Polynoia MCP server with this ACP session. ACP's MCP
         # env format is a list of {name, value} objects (see opencode's
@@ -686,68 +780,17 @@ class OpenCodeSession:
             ],
         }
 
-        new_session_params: dict[str, Any] = {
-            "cwd": str(self._sandbox.root),
-            "mcpServers": [polynoia_mcp],
-        }
-        result = await self._rpc_request("session/new", new_session_params)
-        session_id = result.get("sessionId") if isinstance(result, dict) else None
-        if not session_id:
-            raise RuntimeError(f"opencode acp session/new returned no sessionId: {result!r}")
-        self._acp_session_id = session_id
-
-    async def _stdout_reader(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        assert self._notification_queue is not None
         try:
-            while True:
-                line = await self._proc.stdout.readline()
-                if not line:
-                    # EOF — wake any pending futures with an error
-                    for fut in self._pending.values():
-                        if not fut.done():
-                            fut.set_exception(RuntimeError("opencode acp subprocess closed stdout"))
-                    self._pending.clear()
-                    await self._notification_queue.put(_SENTINEL)
-                    return
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    log.warning("opencode acp emitted non-JSON line: %r", line[:200])
-                    continue
-
-                # JSON-RPC response (has "id" and "result"/"error")
-                if isinstance(msg, dict) and "id" in msg and ("result" in msg or "error" in msg):
-                    req_id = msg["id"]
-                    response_fut = self._pending.pop(req_id, None)  # type: ignore[arg-type]
-                    if response_fut is not None and not response_fut.done():
-                        if "error" in msg:
-                            err = msg["error"]
-                            response_fut.set_exception(
-                                RuntimeError(f"ACP error {err.get('code')}: {err.get('message')}")
-                            )
-                        else:
-                            response_fut.set_result(msg.get("result"))
-                    continue
-
-                # JSON-RPC notification (has "method" without "id" for responses)
-                if isinstance(msg, dict) and "method" in msg:
-                    await self._notification_queue.put(msg)
-                    continue
-
-                # Unknown shape — log and drop
-                log.debug("opencode acp unrecognized message: %r", msg)
-        except asyncio.CancelledError:
+            async with asyncio.timeout(_ACP_SETUP_TIMEOUT_S):
+                result = await connection.new_session(
+                    cwd=str(self._sandbox.root),
+                    mcp_servers=[McpServerStdio.model_validate(polynoia_mcp)],
+                )
+        except Exception:
+            await self._reset_subprocess()
             raise
-        except Exception as e:
-            log.warning("opencode acp stdout reader crashed: %s", e)
-            for fut in self._pending.values():
-                if not fut.done():
-                    fut.set_exception(e)
-            self._pending.clear()
-            if self._notification_queue is not None:
-                with contextlib.suppress(Exception):
-                    self._notification_queue.put_nowait(_SENTINEL)
+        self._acp_session_id = result.session_id
+        self._sent_system = False
 
     async def _stderr_drain(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -762,27 +805,37 @@ class OpenCodeSession:
         except Exception:
             return
 
-    async def _rpc_request(self, method: str, params: dict[str, Any]) -> Any:
-        assert self._proc is not None and self._proc.stdin is not None
-        self._next_request_id += 1
-        req_id = self._next_request_id
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[Any] = loop.create_future()
-        self._pending[req_id] = fut
-        message = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params,
-        }
-        line = (json.dumps(message) + "\n").encode("utf-8")
-        try:
-            self._proc.stdin.write(line)
-            await self._proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError) as e:
-            self._pending.pop(req_id, None)
-            raise RuntimeError(f"opencode acp stdin closed: {e}") from e
-        return await fut
+    async def _reset_subprocess(self) -> None:
+        """Close the current ACP runtime and make the session restartable."""
+        stack = self._process_stack
+        proc = self._proc
+        stderr_task = self._stderr_task
+        self._process_stack = None
+        self._connection = None
+        self._proc = None
+        self._stderr_task = None
+        self._acp_session_id = None
+        self._sent_system = False
+
+        if stack is not None:
+            with contextlib.suppress(Exception):
+                await stack.aclose()
+        elif proc is not None and proc.returncode is None:
+            # Defensive fallback for partially-created runtimes.
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+
+        if stderr_task is not None:
+            stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stderr_task
 
     # ── send (single turn) ───────────────────────────────────
 
@@ -795,24 +848,21 @@ class OpenCodeSession:
         async with self._lock:
             await self._ensure_subprocess()
             assert self._acp_session_id is not None
-            assert self._notification_queue is not None
+            assert self._connection is not None
+            connection = self._connection
+            acp_session_id = self._acp_session_id
 
             turn_id = _new_id()
             yield TurnStartedEvent(turn_id=turn_id, task_id=task_id)
+            notif_queue = self._client.begin_turn(acp_session_id)
 
             # Prepend system_prompt to the first turn — ACP has no native
             # system_prompt field, so we embed it in the first user message.
-            if self._system_prompt and not self._sent_system:
+            includes_system_prompt = bool(self._system_prompt and not self._sent_system)
+            if includes_system_prompt:
                 prompt_text = f"[SYSTEM]\n{self._system_prompt}\n\n[USER]\n{text}"
-                self._sent_system = True
             else:
                 prompt_text = text
-
-            # The notification queue is shared across turns; we treat
-            # notifications arriving during this turn as belonging to it.
-            # When the session/prompt response lands, we push a per-turn sentinel
-            # onto the queue so the translator stops.
-            notif_queue = self._notification_queue
 
             async def _notification_stream() -> AsyncIterator[dict[str, Any]]:
                 while True:
@@ -821,20 +871,15 @@ class OpenCodeSession:
                         return
                     yield item
 
-            prompt_params: dict[str, Any] = {
-                "sessionId": self._acp_session_id,
-                "prompt": [{"type": "text", "text": prompt_text}],
-            }
+            async def _run_prompt() -> Any:
+                async with asyncio.timeout(_ACP_PROMPT_TIMEOUT_S):
+                    return await connection.prompt(
+                        session_id=acp_session_id,
+                        prompt=[TextContentBlock(type="text", text=prompt_text)],
+                    )
 
-            # Kick off the session/prompt request concurrently with notification
-            # consumption.  The request future resolves when the agent emits its
-            # JSON-RPC response (stopReason + usage).
-            request_task: asyncio.Task[Any] = asyncio.create_task(
-                self._rpc_request("session/prompt", prompt_params)
-            )
+            request_task: asyncio.Task[Any] = asyncio.create_task(_run_prompt())
 
-            # When the response lands, push a sentinel to terminate the
-            # notification stream feeding the translator.
             async def _finalize_on_response() -> None:
                 try:
                     await request_task
@@ -846,35 +891,67 @@ class OpenCodeSession:
                     with contextlib.suppress(Exception):
                         await asyncio.sleep(_TRAILING_FLUSH_GRACE_S)
                     with contextlib.suppress(Exception):
-                        notif_queue.put_nowait(_SENTINEL)
+                        await notif_queue.put(_SENTINEL)
 
             finalizer = asyncio.create_task(_finalize_on_response())
 
             stop_reason: str = "complete"
             usage: dict[str, Any] = {}
             error: dict[str, Any] | None = None
+            reset_subprocess = False
             try:
-                async for ev in _translate_acp_stream_to_pap(
-                    _notification_stream(),
-                    turn_id=turn_id,
-                    task_id=task_id,
-                ):
-                    yield ev
-            except Exception as e:
-                error = {"subtype": "translator_error", "message": str(e)}
+                try:
+                    async for ev in _translate_acp_stream_to_pap(
+                        _notification_stream(),
+                        turn_id=turn_id,
+                        task_id=task_id,
+                    ):
+                        yield ev
+                except Exception as e:
+                    error = {"subtype": "translator_error", "message": str(e)}
 
-            # Make sure the request future has settled
-            try:
-                result = await request_task
-                if isinstance(result, dict):
-                    stop_reason = str(result.get("stopReason") or "complete")
-                    if isinstance(result.get("usage"), dict):
-                        usage = dict(result["usage"])
-            except Exception as e:
-                error = {"subtype": "acp_error", "message": str(e)}
-            finally:
+                # Make sure the request future has settled
+                try:
+                    result = await request_task
+                    stop_reason = str(result.stop_reason or "complete")
+                    if result.usage is not None:
+                        usage = result.usage.model_dump(mode="json", exclude_none=True)
+                    if includes_system_prompt:
+                        self._sent_system = True
+                except TimeoutError as e:
+                    error = {
+                        "subtype": "acp_timeout",
+                        "message": str(e) or "ACP prompt timed out",
+                    }
+                    reset_subprocess = True
+                    with contextlib.suppress(Exception):
+                        await connection.cancel(session_id=acp_session_id)
+                except Exception as e:
+                    error = {"subtype": "acp_error", "message": str(e)}
+                    reset_subprocess = (
+                        isinstance(e, ConnectionError)
+                        or self._proc is None
+                        or self._proc.returncode is not None
+                    )
+                finally:
+                    with contextlib.suppress(Exception):
+                        await finalizer
+            except asyncio.CancelledError:
                 with contextlib.suppress(Exception):
+                    await connection.cancel(session_id=acp_session_id)
+                request_task.cancel()
+                finalizer.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await request_task
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await finalizer
+                await self._reset_subprocess()
+                raise
+            finally:
+                self._client.end_turn(notif_queue)
+
+            if reset_subprocess:
+                await self._reset_subprocess()
 
             if error is not None:
                 yield TurnFailedEvent(
@@ -905,42 +982,13 @@ class OpenCodeSession:
     async def interrupt(self, task_id: str | None = None) -> None:
         if self._proc is None or self._proc.returncode is not None:
             return
-        if self._acp_session_id is None:
+        if self._acp_session_id is None or self._connection is None:
             return
-        # ACP "cancel" is a notification per spec; opencode accepts it via the
-        # same NDJSON channel as other notifications (no response expected).
-        assert self._proc.stdin is not None
-        notif = {
-            "jsonrpc": "2.0",
-            "method": "session/cancel",
-            "params": {"sessionId": self._acp_session_id},
-        }
-        line = (json.dumps(notif) + "\n").encode("utf-8")
         with contextlib.suppress(Exception):
-            self._proc.stdin.write(line)
-            await self._proc.stdin.drain()
+            await self._connection.cancel(session_id=self._acp_session_id)
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._proc is None:
-            return
-        with contextlib.suppress(ProcessLookupError):
-            self._proc.terminate()
-        if self._reader_task:
-            self._reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._reader_task
-        if self._stderr_task:
-            self._stderr_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._stderr_task
-        try:
-            await asyncio.wait_for(self._proc.wait(), timeout=2.0)
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                self._proc.kill()
-            with contextlib.suppress(Exception):
-                await self._proc.wait()
-        self._proc = None
+        await self._reset_subprocess()
