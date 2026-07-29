@@ -52,6 +52,11 @@ class AgentSetup(BaseModel):
     docs: str | None = None
     adapter_id: str | None = None  # claudeCode / codex / opencoder
     model: str | None = None  # backend model id, e.g. "claude-sonnet-4"
+    # A contact's credential is deliberately excluded from every API model
+    # serialization.  The storage repository persists it explicitly; callers
+    # can replace it, but can never read it back through a contact response.
+    api_key: str | None = Field(default=None, exclude=True)
+    api_base_url: str | None = None
     # User-specified model context-window ceiling, in tokens. The contact modal
     # requires picking a preset (128k / 200k / 256k / 1M / custom) — there is no
     # model→context guessing table (it mis-guessed third-party / proxy models).

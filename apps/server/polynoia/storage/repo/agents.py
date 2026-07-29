@@ -44,6 +44,18 @@ def _agent_from_row(r: AgentRow) -> Agent:
     )
 
 
+def _setup_for_storage(setup: AgentSetup | None) -> dict | None:
+    """Serialize setup without turning its write-only API key into API output."""
+    if setup is None:
+        return None
+    value = setup.model_dump()
+    # ``api_key`` is excluded from normal Pydantic serialization to prevent
+    # accidental response leaks, so add it only on the DB write path.
+    if setup.api_key is not None:
+        value["api_key"] = setup.api_key
+    return value
+
+
 async def list_agents(session: AsyncSession) -> list[Agent]:
     result = await session.execute(select(AgentRow).order_by(AgentRow.handle))
     return [_agent_from_row(r) for r in result.scalars().all()]
@@ -60,7 +72,7 @@ async def delete_agent(session: AsyncSession, agent_id: str) -> bool:
 
 async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
     existing = await session.get(AgentRow, a.id)
-    setup_dict = a.setup.model_dump() if a.setup else None
+    setup_dict = _setup_for_storage(a.setup)
     if existing:
         existing.name = a.name
         existing.role = a.role

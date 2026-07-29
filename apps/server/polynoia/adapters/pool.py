@@ -205,6 +205,10 @@ class AdapterPool:
             base = _ensure_base_adapters().get(agent.setup.adapter_id)
             if base is None:
                 return None
+            from polynoia.adapters.endpoint_config import resolve_endpoint
+            endpoint_env = resolve_endpoint(
+                agent.setup.adapter_id, agent.setup
+            ).as_env(agent.setup.adapter_id)
 
             # The conv's DESIGNATED orchestrator is self-enabling: force its
             # EFFECTIVE tool_role to "orchestrator" regardless of the contact's
@@ -273,6 +277,7 @@ class AdapterPool:
             new_sess = await base.start_session(
                 conv_id=conv_id,
                 model=agent.setup.model,
+                env=endpoint_env,
                 system_prompt=system_prompt,
                 allowed_tools=allowed,
                 workspace_id=ws_id,
