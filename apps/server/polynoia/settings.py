@@ -63,5 +63,17 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
 
+    # Remote A2A clients. Network access still requires an explicit discovery
+    # or invocation action; the flag can remove both surfaces for a deployment.
+    a2a_enabled: bool = True
+    a2a_allow_private_networks: bool = False
+    a2a_connect_timeout_s: float = 5.0
+    a2a_read_timeout_s: float = 30.0
+    a2a_stream_idle_timeout_s: float = 45.0
+    a2a_task_timeout_s: float = 600.0
+    a2a_card_max_bytes: int = 262_144
+    a2a_response_max_bytes: int = 8_388_608
+    a2a_max_redirects: int = 3
+
 
 settings = Settings()

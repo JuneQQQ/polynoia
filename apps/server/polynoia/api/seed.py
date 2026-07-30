@@ -8,6 +8,7 @@ Per spec § 8:Orchestrator IS an Agent(系统视它和别人没区别)。Designe
 """
 
 from polynoia.domain.entities import Agent, Provider, Server, Workspace
+from polynoia.settings import settings
 
 # ── System prompts(per spec § 8 — 决定每个 agent 的"人格")────
 
@@ -70,8 +71,21 @@ CODEX_PROMPT = """你是 Polynoia 平台上的 **Codex(代码 Agent · OpenAI �
 CLAUDECODE_PROMPT = None
 
 
+def a2a_provider() -> Provider:
+    """Stable provider row for installed remote A2A contacts."""
+    return Provider(
+        id="a2a",
+        name="A2A Remote",
+        vendor="A2A",
+        version="1.0",
+        online=True,
+        color="#6D5BD0",
+        bg="#ECE8FF",
+    )
+
+
 def seed_providers() -> list[Provider]:
-    return [
+    providers = [
         Provider(
             id="claude",
             name="Claude Code",
@@ -100,6 +114,9 @@ def seed_providers() -> list[Provider]:
             bg="#DCEAF8",
         ),
     ]
+    if settings.a2a_enabled:
+        providers.append(a2a_provider())
+    return providers
 
 
 def seed_agents() -> list[Agent]:

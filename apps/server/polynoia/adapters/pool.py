@@ -23,12 +23,12 @@ import contextlib
 import logging
 import os
 import time
-from typing import cast
 
 from polynoia.adapters.base import Adapter, AdapterSession
-from polynoia.adapters.claude_code import ClaudeCodeAdapter
-from polynoia.adapters.codex import CodexAdapter
-from polynoia.adapters.opencode import OpenCodeAdapter
+from polynoia.adapters.registry import (
+    get_adapter_registration,
+    iter_enabled_adapter_ids,
+)
 
 logger = logging.getLogger("polynoia.adapters.pool")
 
@@ -78,10 +78,18 @@ _GRANTED_ACCESS_BANNER = """
 
 def _ensure_base_adapters() -> dict[str, Adapter]:
     """Lazy-init base adapter instances. One per CLI, shared across all contacts."""
-    if not _BASE_ADAPTERS:
-        _BASE_ADAPTERS["claudeCode"] = cast(Adapter, ClaudeCodeAdapter())
-        _BASE_ADAPTERS["opencoder"] = cast(Adapter, OpenCodeAdapter())
-        _BASE_ADAPTERS["codex"] = cast(Adapter, CodexAdapter())
+    enabled = iter_enabled_adapter_ids()
+    for adapter_id in tuple(_BASE_ADAPTERS):
+        if adapter_id not in enabled:
+            _BASE_ADAPTERS.pop(adapter_id, None)
+    for adapter_id in enabled:
+        if adapter_id in _BASE_ADAPTERS:
+            continue
+        registration = get_adapter_registration(adapter_id)
+        # This helper also backs the local CLI-management API. It must not
+        # construct remote transports just to enumerate/probe local adapters.
+        if registration is not None and not registration.remote:
+            _BASE_ADAPTERS[adapter_id] = registration.factory()
     return _BASE_ADAPTERS
 
 
@@ -132,7 +140,7 @@ class AdapterPool:
                 self._last_used.pop(k, None)
                 if s is not None:
                     popped.append((k, s))
-        for k, s in popped:
+        for _k, s in popped:
             with contextlib.suppress(Exception):
                 await s.close()
         if popped:
@@ -164,8 +172,8 @@ class AdapterPool:
             # Lazy DB lookup — avoid top-level import cycle.
             from polynoia.storage.db import SessionLocal
             from polynoia.storage.repo import (
-                get_conversation,
                 active_access_grant,
+                get_conversation,
                 list_agents,
                 list_onboarded_adapter_rows,
             )
@@ -189,6 +197,9 @@ class AdapterPool:
                 agent.setup.adapter_id, (None, "system")
             )
 
+            registration = get_adapter_registration(agent.setup.adapter_id)
+            if registration is None:
+                return None
             base = _ensure_base_adapters().get(agent.setup.adapter_id)
             if base is None:
                 return None
@@ -308,10 +319,8 @@ class AdapterPool:
                 self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
         for _, s in to_close:
-            try:
+            with contextlib.suppress(Exception):
                 await s.close()
-            except Exception:
-                pass
 
     async def close_sessions_for_conv(self, conv_id: str) -> None:
         """Drop all cached sessions (across all agents) for a conversation.
@@ -325,10 +334,8 @@ class AdapterPool:
                 self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
         for _, s in to_close:
-            try:
+            with contextlib.suppress(Exception):
                 await s.close()
-            except Exception:
-                pass
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -336,10 +343,8 @@ class AdapterPool:
             self._sessions.clear()
             self._last_used.clear()
         for s in sessions:
-            try:
+            with contextlib.suppress(Exception):
                 await s.close()
-            except Exception:
-                pass
 
 
 # ─────────── singleton bootstrap ───────────

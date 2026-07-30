@@ -5,8 +5,8 @@ ID 全用 ULID(26 字符,词典序 = 时间序)。
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer
 from ulid import ULID as _ULID
@@ -33,6 +33,21 @@ class Provider(BaseModel):
 
 
 # ── Agent(角色) ───────────────────────────────────────────────
+class A2AAgentSetup(BaseModel):
+    """Validated connection snapshot for an installed remote A2A contact."""
+
+    card_url: str
+    endpoint_url: str
+    protocol_binding: Literal["JSONRPC", "HTTP+JSON"]
+    protocol_version: str
+    card: dict[str, Any]
+    card_hash: str
+    etag: str | None = None
+    last_checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    signature_status: Literal["signed_valid", "unsigned"]
+    bearer_env_var: str | None = None
+
+
 class AgentSetup(BaseModel):
     """Adapter setup info — shown in EnablePanel.
 
@@ -50,7 +65,7 @@ class AgentSetup(BaseModel):
     auth_kinds: list[Literal["cli-login", "api-key", "llm-endpoint", "custom"]] = []
     base_model: str | None = None
     docs: str | None = None
-    adapter_id: str | None = None  # claudeCode / codex / opencoder
+    adapter_id: str | None = None  # claudeCode / codex / opencoder / a2a
     model: str | None = None  # backend model id, e.g. "claude-sonnet-4"
     # User-specified model context-window ceiling, in tokens. The contact modal
     # requires picking a preset (128k / 200k / 256k / 1M / custom) — there is no
@@ -59,6 +74,7 @@ class AgentSetup(BaseModel):
     # context.budget.DEFAULT_FALLBACK_CONTEXT (128k). Polynoia subtracts Claude
     # Code's fixed overhead (~35k) from this to compute the L1-L5 budget. ADR-012.
     max_context_tokens: int | None = None
+    a2a: A2AAgentSetup | None = None
 
 
 class AgentSkill(BaseModel):
