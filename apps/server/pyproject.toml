@@ -53,4 +53,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "slow: marks tests that hit live LLM backends (deselect with '-m \"not slow\"'); auto-skipped unless POLYNOIA_RUN_SLOW_INTEGRATION=1",
+    "a2a_live: hits a separately running official A2A sample; requires POLYNOIA_A2A_SAMPLE_URL",
 ]

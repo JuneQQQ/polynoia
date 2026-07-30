@@ -502,26 +502,29 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
     burst_sm = BurstStateMachine(burst_registry)
 
     async def _mark_burst_task(tp_id: str, task_id: str, state: str) -> None:
-        # Load-bearing claim→pop (CHARTER §2): flip task state, discard from
-        # pending, decide is_last + pop the registry — all SYNCHRONOUSLY, before
-        # any await, so a concurrently-finishing worker can't double-fire the
-        # merge. Lives in BurstStateMachine; the async persist/emit/merge below
-        # runs only AFTER this returns.
-        reg, is_last = burst_sm.mark_and_claim_last(tp_id, task_id, state)
-        if reg is None:
-            return
-        payload = reg["payload"]
-        async with SessionLocal() as _db:
-            await storage_repo.update_message_payload(_db, tp_id, payload)
-            await _db.commit()
-        # Re-emit with the SAME id → frontend updates the card in place.
-        await emit(
-            'data: {"type":"data-tasks","data":'
-            + json.dumps(payload, ensure_ascii=False)
-            + ',"id":' + json.dumps(tp_id)
-            + ',"sender_id":' + json.dumps(reg["orch"])
-            + "}\n\n"
-        )
+        # Serialize the in-memory transition together with its durable write.
+        # The state-machine mutation itself is synchronous and still owns the
+        # single last-worker claim, while the shared conversation lock prevents
+        # two workers from committing stale task-card snapshots out of order.
+        # Without this boundary, a fast final worker could commit {done, failed}
+        # first and a slower earlier worker could then overwrite it with
+        # {done, run}, even though the summary had already started.
+        async with RUNTIME.user_message_lock(conv_id):
+            reg, is_last = burst_sm.mark_and_claim_last(tp_id, task_id, state)
+            if reg is None:
+                return
+            payload = reg["payload"]
+            async with SessionLocal() as _db:
+                await storage_repo.update_message_payload(_db, tp_id, payload)
+                await _db.commit()
+            # Re-emit with the SAME id → frontend updates the card in place.
+            await emit(
+                'data: {"type":"data-tasks","data":'
+                + json.dumps(payload, ensure_ascii=False)
+                + ',"id":' + json.dumps(tp_id)
+                + ',"sender_id":' + json.dumps(reg["orch"])
+                + "}\n\n"
+            )
         if is_last:
             log.info("burst %s: last task landed → merge", tp_id)
             # Merge first + capture what landed, so we can decide whether the
