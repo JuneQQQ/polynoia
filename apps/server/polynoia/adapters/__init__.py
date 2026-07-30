@@ -5,6 +5,7 @@ into a Polynoia `AdapterEvent` stream. The Orchestrator (or single-chat handler)
 consumes these events and converts them to UIMessageChunk frames for the client.
 """
 
+from polynoia.adapters.a2a import A2AAdapter, A2ASession
 from polynoia.adapters.base import (
     Adapter,
     AdapterCapabilities,
@@ -23,6 +24,8 @@ from polynoia.adapters.base import (
 )
 
 __all__ = [
+    "A2AAdapter",
+    "A2ASession",
     "Adapter",
     "AdapterCapabilities",
     "AdapterEvent",

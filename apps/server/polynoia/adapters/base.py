@@ -12,14 +12,12 @@ yield AdapterEvent instances from `AdapterSession.send()`.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Annotated, Any, Literal, Protocol, Union
 from collections.abc import AsyncIterator
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
 from polynoia.domain.messages import MessagePayload
-
 
 # ── Capabilities + meta ────────────────────────────────────────────
 
@@ -154,19 +152,7 @@ class RateLimitEvent(BaseModel):
 
 
 AdapterEvent = Annotated[
-    Union[
-        SessionStartedEvent,
-        SessionEndedEvent,
-        TurnStartedEvent,
-        TurnCompletedEvent,
-        TurnFailedEvent,
-        PartStartedEvent,
-        PartDeltaEvent,
-        PartCompletedEvent,
-        PermissionRequestedEvent,
-        HookTriggeredEvent,
-        RateLimitEvent,
-    ],
+    SessionStartedEvent | SessionEndedEvent | TurnStartedEvent | TurnCompletedEvent | TurnFailedEvent | PartStartedEvent | PartDeltaEvent | PartCompletedEvent | PermissionRequestedEvent | HookTriggeredEvent | RateLimitEvent,
     Field(discriminator="type"),
 ]
 
@@ -226,6 +212,8 @@ class Adapter(Protocol):
         read_only_workspace_id: str | None = None,
         proxy: str | None = None,
         proxy_kind: str = "system",
+        skills: list[str] | None = None,
+        adapter_config: dict[str, Any] | None = None,
     ) -> AdapterSession:
         """Start a fresh session.
 
@@ -250,5 +238,8 @@ class Adapter(Protocol):
             proxy_kind: "system" (inherit host HTTP_PROXY etc.), "direct"
                 (strip all proxy env vars), or "custom" (set proxy URL as
                 HTTP_PROXY + HTTPS_PROXY).
+            skills: contact-bound local skill packages, when supported.
+            adapter_config: complete per-contact setup for transport-specific
+                adapters such as A2A. Local CLI adapters ignore it.
         """
         ...

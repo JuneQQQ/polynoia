@@ -161,6 +161,30 @@ def _connected_peer(response: httpx.Response) -> str | None:
     return str(server_addr)
 
 
+async def guard_httpx_response(
+    response: httpx.Response,
+    *,
+    allow_private: bool,
+    resolver: HostResolver | None = None,
+) -> None:
+    """httpx response hook used by long-lived A2A invocation clients."""
+
+    allowed_addresses = await validate_target_url(
+        str(response.request.url),
+        allow_private=allow_private,
+        resolver=resolver,
+    )
+    peer = _connected_peer(response)
+    if peer is None:
+        return
+    validate_ip_address(peer, allow_private=allow_private)
+    if peer not in allowed_addresses:
+        raise A2AError(
+            "unsafe_target",
+            "connected peer does not match the validated DNS answer",
+        )
+
+
 async def bounded_get(
     url: str,
     *,

@@ -71,8 +71,8 @@ from polynoia.adapters.base import (
     TurnStartedEvent,
 )
 from polynoia.credentials import credential_source_home
-from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
+from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
 
@@ -235,7 +235,9 @@ class OpenCodeAdapter:
         proxy_kind: str = "system",
         skills: list[str]
         | None = None,  # accepted for adapter parity (OpenCode skill placement: P1)
+        adapter_config: dict[str, Any] | None = None,
     ) -> OpenCodeSession:
+        _ = adapter_config
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
         if workspace_id and agent_id:

@@ -6,6 +6,7 @@ import pytest
 from polynoia.a2a.models import A2AError
 from polynoia.a2a.security import (
     bounded_get,
+    guard_httpx_response,
     normalize_card_locator,
     validate_ip_address,
     validate_target_url,
@@ -145,3 +146,21 @@ async def test_bounded_get_rejects_connected_peer_outside_dns_answer() -> None:
                 max_bytes=100,
                 client=client,
             )
+
+
+@pytest.mark.asyncio
+async def test_runtime_response_hook_revalidates_connected_peer() -> None:
+    class FakeStream:
+        def get_extra_info(self, key: str):
+            assert key == "server_addr"
+            return ("10.0.0.8", 443)
+
+    request = httpx.Request("POST", "http://127.0.0.1:9999/a2a")
+    response = httpx.Response(
+        200,
+        request=request,
+        extensions={"network_stream": FakeStream()},
+    )
+
+    with pytest.raises(A2AError, match="unsafe_target"):
+        await guard_httpx_response(response, allow_private=False)

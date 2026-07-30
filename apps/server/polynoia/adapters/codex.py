@@ -392,7 +392,9 @@ class CodexAdapter:
         proxy: str | None = None,
         proxy_kind: str = "system",
         skills: list[str] | None = None,  # accepted for adapter parity (Codex skill placement: P1)
+        adapter_config: dict[str, Any] | None = None,
     ) -> CodexSession:
+        _ = adapter_config
         # P1.1 routing — see workspace-shared-git.md. read_only_workspace_id:
         # project-external DM opens its agent's workspace READ-ONLY (ADR-019).
         if workspace_id and agent_id:

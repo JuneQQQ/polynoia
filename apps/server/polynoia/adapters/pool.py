@@ -201,6 +201,9 @@ class AdapterPool:
             if registration is None:
                 return None
             base = _ensure_base_adapters().get(agent.setup.adapter_id)
+            if base is None and registration.remote:
+                base = registration.factory()
+                _BASE_ADAPTERS[agent.setup.adapter_id] = base
             if base is None:
                 return None
 
@@ -258,7 +261,7 @@ class AdapterPool:
             )
             system_prompt = agent.system_prompt
             read_only_ws_id: str | None = None
-            if not in_project:
+            if not in_project and not registration.remote:
                 if granted_ws:
                     # ADR-020: the user approved this DM's access to a project.
                     # Mount that project's worktree (write-enabled) instead of
@@ -273,13 +276,13 @@ class AdapterPool:
                 model=agent.setup.model,
                 system_prompt=system_prompt,
                 allowed_tools=allowed,
-                workspace_id=ws_id,
+                workspace_id=None if registration.remote else ws_id,
                 # Always pass the real agent_id so the spawned polynoia MCP
                 # server identifies as THIS contact (POLYNOIA_AGENT_ID) — needed
                 # for audit + request_project_access grants. The worktree path
                 # gates on (workspace_id AND agent_id), so agent_id alone (a DM
                 # with no project) does NOT create a worktree — stays private.
-                agent_id=agent_id,
+                agent_id=None if registration.remote else agent_id,
                 merge_mode=merge_mode,
                 tool_role=effective_role,
                 # Tool governance is a PROJECT concern now (tool_policy.py): the
@@ -288,12 +291,19 @@ class AdapterPool:
                 # contact-level gate and is intentionally NOT passed, so the role
                 # set is used wholesale. Restriction is opt-in per project/conv.
                 tools_whitelist=None,
-                read_only_workspace_id=read_only_ws_id,
+                read_only_workspace_id=(
+                    None if registration.remote else read_only_ws_id
+                ),
                 proxy=proxy,
                 proxy_kind=proxy_kind,
                 # Contact-bound skill packages → placed into the sandbox's native
                 # skills dir so the CLI discovers them.
-                skills=[s.name for s in (agent.skills or []) if s.name],
+                skills=(
+                    []
+                    if registration.remote
+                    else [s.name for s in (agent.skills or []) if s.name]
+                ),
+                adapter_config=agent.setup.model_dump(mode="json"),
             )
             self._sessions[key] = new_sess
             self._last_used[key] = time.monotonic()
