@@ -1,6 +1,6 @@
 # Standalone A2A Demo Agent Design
 
-**Date:** 2026-07-30  
+**Date:** 2026-07-30
 **Status:** Approved for specification; implementation awaits written-spec review
 
 ## Goal
