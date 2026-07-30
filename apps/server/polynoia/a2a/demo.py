@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit, urlunsplit
 
 from a2a import types
-from a2a.helpers import new_task
+from a2a.helpers import new_task, new_text_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -73,14 +74,49 @@ class DemoAgentExecutor(AgentExecutor):
             )
         )
         await updater.start_work()
+        command = text.strip()
+        if command == "demo:wait":
+            self.wait_started.set()
+            await asyncio.Event().wait()
+            return
+        if command == "demo:fail":
+            await updater.add_artifact(
+                [types.Part(text="demo partial before failure")],
+                artifact_id="failure-note",
+                append=False,
+                last_chunk=True,
+            )
+            await updater.failed(
+                new_text_message(
+                    "planned demo failure",
+                    context_id=context_id,
+                    task_id=task_id,
+                )
+            )
+            return
         await updater.add_artifact(
-            [types.Part(text="Polynoia Demo Agent received: ")],
+            [types.Part(text=f"Polynoia Demo Agent received: {text}\n\n")],
             artifact_id="review",
             append=False,
             last_chunk=False,
         )
         await updater.add_artifact(
-            [types.Part(text=text)],
+            [
+                types.Part(
+                    text=(
+                        "Review checklist:\n"
+                        "- Goal and boundary are explicit\n"
+                        "- Interfaces and failure states are testable\n"
+                        "- Delivery can be verified independently\n\n"
+                    )
+                )
+            ],
+            artifact_id="review",
+            append=True,
+            last_chunk=False,
+        )
+        await updater.add_artifact(
+            [types.Part(text=f"Remote context: {context_id}")],
             artifact_id="review",
             append=True,
             last_chunk=True,
