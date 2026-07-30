@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from polynoia.adapters.base import AdapterEvent
 
 from polynoia.adapters.pool import get_pool
+from polynoia.adapters.registry import get_adapter_registration
 
 # Conversation-runtime state + shared helpers (defined in routes.py; mutated in
 # place so importing the binding here is safe — see module docstring + CHARTER).
@@ -89,6 +90,8 @@ from polynoia.api.routes import (
     open_ask_ids,
     orphan_conv_asks,
 )
+from polynoia.context.remote import worker_delivery_instruction
+from polynoia.domain.entities import Agent
 from polynoia.domain.messages import ConflictFile, ConflictPayload
 from polynoia.sandbox import Sandbox, workspace_merge_lock, workspace_root_for
 from polynoia.storage import repo as storage_repo
@@ -108,6 +111,24 @@ _STARLETTE_DISCONNECT_RUNTIME_ERRORS = frozenset(
         'Cannot call "receive" once a disconnect message has been received.',
     }
 )
+
+
+def _setup_has_available_adapter(setup: object | None) -> bool:
+    """Return whether a persisted contact setup can start a session now."""
+
+    adapter_id = getattr(setup, "adapter_id", None)
+    if not isinstance(adapter_id, str) or not adapter_id:
+        return False
+    registration = get_adapter_registration(adapter_id)
+    if registration is None:
+        return False
+    return not registration.remote or getattr(setup, "a2a", None) is not None
+
+
+def _agent_is_routable(agent: object | None) -> bool:
+    """Only installed Agent contacts with an enabled adapter are routable."""
+
+    return isinstance(agent, Agent) and _setup_has_available_adapter(agent.setup)
 
 
 async def _write_streamed_tool_part(
@@ -2241,8 +2262,9 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                                     if p != agent_id
                                     and (p in (_reg.get("participants") or set())
                                          or p in (_agent_setup_by_id or {}))
-                                    and (_agent_setup_by_id.get(p) is not None)
-                                    and _agent_setup_by_id[p].adapter_id
+                                    and _setup_has_available_adapter(
+                                        _agent_setup_by_id.get(p)
+                                    )
                                 ]
                                 if _seed:
                                     _reg["round"] = _current_round + 1
@@ -2508,7 +2530,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                             await _mark_burst_task(tp_id, task_id, "failed")
                         continue
                     setup = _agent_setup_by_id.get(worker_id)
-                    if not setup or not setup.adapter_id:
+                    if not _setup_has_available_adapter(setup):
                         # Can't spawn → don't leave its lane stuck on "run".
                         with contextlib.suppress(Exception):
                             await _mark_burst_task(tp_id, task_id, "failed")
@@ -2527,16 +2549,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     # Closed-loop handoff (RuFlo): require an explicit verdict +
                     # point at the live blackboard. The orchestrator reads these
                     # back to verify the burst instead of trusting silence.
-                    worker_text += (
-                        "\n\n# 动手(别空转)\n"
-                        "说了要写 / 要改就**在同一轮立刻调用真实 `write` / `edit` / `bash` 工具**做出来;"
-                        "别反复说\"我去落盘 / 我现在写 / 接下来写\"却一个工具都不发——本轮只说不做 = 交付失败、产物为空。\n"
-                        "# 收尾(必须)\n"
-                        "完成后调用 `report` 工具自评交付:status(ok/partial/failed)、"
-                        "deliverables(产物文件名+一句话)、contract_ok(是否符合上面的契约)。"
-                        "这是你向 Orchestrator 的正式交付确认——没有它,你的产物按\"未验证\"对待。\n"
-                        "执行中若需确认最新契约或队友已交付的接口,用 `recall` 查共享记忆。"
-                    )
+                    worker_text += worker_delivery_instruction(setup.adapter_id)
                     _spawn_turn(
                         conv_id, worker_id,
                         run_adapter_turn(
@@ -2568,7 +2581,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     if not _pid or _pid in ("you", agent_id) or _pid in _pids:
                         continue
                     _su = _agent_setup_by_id.get(_pid)
-                    if _su and _su.adapter_id:
+                    if _setup_has_available_adapter(_su):
                         _pids.append(_pid)
                 if not _topic or len(_pids) < 2:
                     # discuss() resolved to <2 valid participants (typo'd / hallucinated
@@ -2855,7 +2868,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 _fanout = 0
                 for target in _raw_targets:
                     setup = _agent_setup_by_id.get(target)
-                    if not setup or not setup.adapter_id:
+                    if not _setup_has_available_adapter(setup):
                         continue  # not a real agent we can spawn
                     if _is_bare_ack_bounce(
                         target=target,
@@ -3114,7 +3127,6 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             all_agents = await storage_repo.list_agents(session)
             recent_msgs, _ = await storage_repo.list_messages(session, conv_id, limit=30)
         agent_by_id = {a.id: a for a in all_agents}
-        known_adapters = {"claudeCode", "opencoder", "codex"}
         resolver = _build_mention_resolver(all_agents)
         previous_user_texts: list[str] = []
         for m in recent_msgs:
@@ -3140,8 +3152,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
         member_set = set(members)
 
         def _agent_ok(aid: str) -> bool:
-            a = agent_by_id.get(aid)
-            return bool(a and a.setup and a.setup.adapter_id in known_adapters)
+            return _agent_is_routable(agent_by_id.get(aid))
 
         if use_orch:
             # Tool-based orchestration (ADR-013). The orchestrator member runs a
@@ -3213,10 +3224,10 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             return
 
         # Real-adapter branch: pull each member's AgentRow and check whether
-        # setup.adapter_id is one of the known adapters. Contacts created
+        # setup.adapter_id resolves through the shared adapter registry. Contacts created
         # through /api/contacts have ULID ids and `setup.adapter_id=claudeCode`
         # (or codex/opencoder) — those count too.
-        # (all_agents / agent_by_id / known_adapters / resolver / mentioned_ids /
+        # (all_agents / agent_by_id / resolver / mentioned_ids /
         # member_set were computed above and shared with the orchestrator branch.)
         #
         # Mention narrowing: if the user text contains @-mentions, ONLY dispatch
@@ -3239,7 +3250,7 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
             agent = agent_by_id.get(m)
             if agent is None:
                 continue
-            if agent.setup and agent.setup.adapter_id in known_adapters:
+            if _agent_is_routable(agent):
                 targets.append(m)
 
         if not targets:
@@ -3247,7 +3258,8 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 emit, conv_id=conv_id, sender_id="system",
                 message=(
                     "本对话没有 adapter 联系人。请先在「新建联系人」里基于已接入的 "
-                    "适配器(Claude Code / Codex / OpenCode)创建联系人,或者把 "
+                    "适配器(Claude Code / Codex / OpenCode / Remote A2A)"
+                    "创建联系人,或者把 "
                     "@orchestrator 加入成员。"
                 ),
                 reason="unavailable",

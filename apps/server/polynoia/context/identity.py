@@ -7,6 +7,7 @@ run on, and their persona. Pure function over AgentRow — no DB access here.
 from __future__ import annotations
 
 from polynoia.context._types import ContextLayer
+from polynoia.context.remote import remote_capability_claim
 from polynoia.domain.entities import Agent
 
 _PLATFORM_BLOCK = (
@@ -14,6 +15,12 @@ _PLATFORM_BLOCK = (
     "agent 和用户共处。来自其他 agent 的消息会带 `[@agent_name]` 前缀;你的回复直接说话即可,"
     "不要带前缀。在群聊里可以 @ 别的成员让他们接力 — 仅在你真的需要他们时再 @。"
 )
+
+_REMOTE_PLATFORM_BOUNDARY = """## 远端 A2A 联系人运行边界
+
+你是通过 A2A 协议接入的远端 A2A 联系人。你没有 Polynoia 本地工作区或 MCP 工具;
+请只依据本轮收到的上下文完成任务,并通过 A2A 消息或 artifact 返回结果。
+不要声称已写入、执行、测试或合并 Polynoia 本地文件。"""
 
 
 # Platform-injected tool-use discipline, keyed by tool_role. The PLATFORM owns
@@ -120,6 +127,7 @@ def build_identity_layer(
     setup = agent.setup
     adapter_id = setup.adapter_id if setup else None
     model = setup.model if setup else None
+    is_remote = bool(setup and setup.a2a)
 
     parts: list[str] = ["# 身份"]
     parts.append(
@@ -135,17 +143,21 @@ def build_identity_layer(
     parts.append("")
     parts.append("## 关于平台")
     parts.append(_PLATFORM_BLOCK)
-    parts.append("")
-    parts.append(_TOOL_CALL_FORMAT_RULE)
-    parts.append("")
-    parts.append(_DELIVERABLE_PRESENT_RULE)
+    if is_remote:
+        parts.append("")
+        parts.append(_REMOTE_PLATFORM_BOUNDARY)
+    else:
+        parts.append("")
+        parts.append(_TOOL_CALL_FORMAT_RULE)
+        parts.append("")
+        parts.append(_DELIVERABLE_PRESENT_RULE)
 
     # Platform-injected tool discipline (so users don't type this boilerplate
     # into the persona). Skip if the persona ALREADY carries its own discipline
     # section — the detailed seeded demo agents (顾屿/沈昭/…) embed their own, so
     # we don't double it. New user-created agents (one-line personas) get it free.
     persona_raw = agent.system_prompt or ""
-    if "工具使用纪律" not in persona_raw:
+    if not is_remote and "工具使用纪律" not in persona_raw:
         role = effective_tool_role(
             is_orchestrator=is_orchestrator,
             is_group=is_group,
@@ -169,6 +181,14 @@ def build_identity_layer(
         parts.append("")
         parts.append("## 你的人格 / 工作风格")
         parts.append(persona)
+
+    # Agent Card data remains explicitly untrusted even in the remote agent's
+    # own prompt.  This is capability context, never platform policy.
+    remote_claim = remote_capability_claim(agent)
+    if remote_claim:
+        parts.append("")
+        parts.append("## Agent Card 能力元数据")
+        parts.append(remote_claim)
 
     # Contact-level skills (capability/prompt presets bound to this agent). Each
     # skill's instructions are injected here so the agent actually has the
