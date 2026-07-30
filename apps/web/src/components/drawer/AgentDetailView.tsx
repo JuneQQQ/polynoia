@@ -11,9 +11,13 @@
 import {
 	ChevronDown,
 	ChevronRight,
+	Cloud,
 	MessageCircle,
 	Pencil,
+	RefreshCw,
 	Settings,
+	ShieldAlert,
+	ShieldCheck,
 	Trash2,
 	User,
 	UserMinus,
@@ -70,6 +74,11 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
 	const [memberBusy, setMemberBusy] = useState(false);
 	const [memberErr, setMemberErr] = useState<string | null>(null);
 	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const [cardRefreshBusy, setCardRefreshBusy] = useState(false);
+	const [cardRefreshResult, setCardRefreshResult] = useState<string | null>(
+		null,
+	);
+	const [cardRefreshError, setCardRefreshError] = useState<string | null>(null);
 
 	// 联系人编辑/删除 — the contacts section left the sidebar in the flat IA, so
 	// this drawer is now the management surface for a contact.
@@ -110,6 +119,10 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
 	const isYou = agent.id === "you";
 	const isSystem = agent.id === "system";
 	const setup = agent.setup ?? null;
+	const remoteSetup = setup?.a2a ?? null;
+	const declaredRemoteSkills = remoteSetup
+		? remoteCardSkills(remoteSetup.card)
+		: [];
 	const adapterLabel =
 		ADAPTER_LABEL[setup?.adapter_id ?? ""] ?? setup?.adapter_id;
 	const persona = agent.system_prompt ?? "";
@@ -123,6 +136,32 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
 	// project role, so showing "本对话中的角色: 未指定" there is just noise (R2:
 	// roles are per-project).
 	const inProjectConv = !!convSummary?.workspace_id;
+
+	const refreshAgentCard = async () => {
+		if (!remoteSetup || cardRefreshBusy) return;
+		setCardRefreshBusy(true);
+		setCardRefreshResult(null);
+		setCardRefreshError(null);
+		try {
+			const result = await api.refreshA2AAgent(agent.id);
+			const list = await api.agents();
+			useStore.setState({ agents: list });
+			setCardRefreshResult(
+				result.changes.length > 0
+					? t("a2aRefreshChanged", lang).replace(
+							"{changes}",
+							result.changes.join(", "),
+						)
+					: t("a2aRefreshUnchanged", lang),
+			);
+		} catch (error) {
+			setCardRefreshError(
+				error instanceof Error ? error.message : String(error),
+			);
+		} finally {
+			setCardRefreshBusy(false);
+		}
+	};
 
 	// Recent activity in current conv: filter messageOrder for this sender,
 	// newest 5, render with payload-aware summary.
@@ -216,6 +255,91 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
 					)}
 					{setup.model && <Badge label="Model" value={setup.model} mono />}
 					{agent.custom && <Badge label="Type" value="Custom" accent />}
+				</div>
+			)}
+
+			{remoteSetup && (
+				<div className="space-y-3 border-b border-[var(--color-line)] px-6 py-4">
+					<div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.22em] text-[var(--color-fg-3)] font-medium">
+						<Cloud size={11} />
+						{t("a2aConnection", lang)}
+					</div>
+					<div className="grid grid-cols-2 gap-3">
+						<ConnectionMeta
+							label={t("a2aRemoteHost", lang)}
+							value={safeUrlHost(remoteSetup.endpoint_url, lang)}
+						/>
+						<ConnectionMeta
+							label={t("a2aProtocol", lang)}
+							value={`${remoteSetup.protocol_binding} · ${remoteSetup.protocol_version}`}
+						/>
+						<ConnectionMeta
+							label={t("a2aLastChecked", lang)}
+							value={formatCheckedAt(remoteSetup.last_checked_at, lang)}
+						/>
+						<ConnectionMeta
+							label={t("a2aSignature", lang)}
+							value={
+								remoteSetup.signature_status === "signed_valid"
+									? t("a2aSignatureValid", lang)
+									: t("a2aSignatureUnsigned", lang)
+							}
+							icon={
+								remoteSetup.signature_status === "signed_valid" ? (
+									<ShieldCheck size={12} />
+								) : (
+									<ShieldAlert size={12} />
+								)
+							}
+						/>
+					</div>
+					{remoteSetup.bearer_env_var && (
+						<ConnectionMeta
+							label={t("a2aCredentialEnv", lang)}
+							value={remoteSetup.bearer_env_var}
+						/>
+					)}
+					<div>
+						<div className="section-eyebrow mb-1.5">{t("a2aSkills", lang)}</div>
+						<div className="flex flex-wrap gap-1.5">
+							{declaredRemoteSkills.length > 0 ? (
+								declaredRemoteSkills.map((skill) => (
+									<span
+										key={skill}
+										className="rounded bg-[var(--color-surface-2)] px-2 py-1 text-[10.5px] text-[var(--color-fg-2)]"
+									>
+										{skill}
+									</span>
+								))
+							) : (
+								<span className="text-[11px] text-[var(--color-fg-3)]">
+									{t("a2aNoSkills", lang)}
+								</span>
+							)}
+						</div>
+					</div>
+					<button
+						type="button"
+						onClick={refreshAgentCard}
+						disabled={cardRefreshBusy}
+						className="inline-flex items-center gap-1.5 rounded border border-[var(--color-line-strong)] px-2.5 py-1.5 text-[11.5px] text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] disabled:opacity-50"
+					>
+						<RefreshCw
+							size={12}
+							className={cardRefreshBusy ? "animate-spin" : ""}
+						/>
+						{cardRefreshBusy ? t("a2aRefreshing", lang) : t("a2aRefresh", lang)}
+					</button>
+					{cardRefreshResult && (
+						<div className="text-[10.5px] text-[var(--color-green)]">
+							{cardRefreshResult}
+						</div>
+					)}
+					{cardRefreshError && (
+						<div className="rounded bg-[var(--color-red-soft)] px-2.5 py-1.5 text-[10.5px] text-[var(--color-red)]">
+							{cardRefreshError}
+						</div>
+					)}
 				</div>
 			)}
 
@@ -331,14 +455,16 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
 					{/* Contact management — only user-created contacts are editable. */}
 					{agent.custom && (
 						<>
-							<button
-								type="button"
-								onClick={editContact}
-								className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] transition font-medium"
-							>
-								<Pencil size={12} />
-								{t("editContact", lang)}
-							</button>
+							{!remoteSetup && (
+								<button
+									type="button"
+									onClick={editContact}
+									className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] rounded-md border border-[var(--color-line)] text-[var(--color-fg-2)] hover:bg-[var(--color-surface-2)] transition font-medium"
+								>
+									<Pencil size={12} />
+									{t("editContact", lang)}
+								</button>
+							)}
 							<button
 								type="button"
 								disabled={memberBusy}
@@ -491,6 +617,26 @@ function Badge({
 	);
 }
 
+function ConnectionMeta({
+	label,
+	value,
+	icon,
+}: {
+	label: string;
+	value: string;
+	icon?: React.ReactNode;
+}) {
+	return (
+		<div className="min-w-0">
+			<div className="section-eyebrow mb-1">{label}</div>
+			<div className="flex items-center gap-1 break-all font-mono text-[10.5px] text-[var(--color-fg-2)]">
+				{icon}
+				{value}
+			</div>
+		</div>
+	);
+}
+
 function SectionRow({
 	icon,
 	title,
@@ -515,7 +661,35 @@ const ADAPTER_LABEL: Record<string, string> = {
 	claudeCode: "Claude Code",
 	codex: "Codex",
 	opencoder: "OpenCode",
+	a2a: "A2A Remote",
 };
+
+function safeUrlHost(value: string, lang: Lang): string {
+	try {
+		return new URL(value).host;
+	} catch {
+		return t("a2aUnknownHost", lang);
+	}
+}
+
+function formatCheckedAt(value: string, lang: Lang): string {
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return "—";
+	return date.toLocaleString(lang === "zh" ? "zh-CN" : "en-US");
+}
+
+function remoteCardSkills(card: Record<string, unknown>): string[] {
+	const skills = card.skills;
+	if (!Array.isArray(skills)) return [];
+	return skills
+		.map((skill) => {
+			if (!skill || typeof skill !== "object") return "";
+			const name = (skill as { name?: unknown }).name;
+			return typeof name === "string" ? name.trim() : "";
+		})
+		.filter((name): name is string => Boolean(name))
+		.slice(0, 20);
+}
 
 function summarizePayload(payload: unknown, lang: Lang): string {
 	const p = payload as { kind?: string; body?: Array<{ c: string }> };

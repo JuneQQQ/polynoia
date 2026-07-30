@@ -444,6 +444,28 @@ const STR = {
 	a2aInstall: { zh: "安装联系人", en: "Install contact" },
 	a2aInstalling: { zh: "正在安装…", en: "Installing…" },
 	a2aUnsupportedInstall: { zh: "暂不支持安装", en: "Cannot install" },
+	a2aConnection: { zh: "Agent Card 连接", en: "Agent Card connection" },
+	a2aRemoteHost: { zh: "远端主机", en: "Remote host" },
+	a2aProtocol: { zh: "协议", en: "Protocol" },
+	a2aLastChecked: { zh: "最近检查", en: "Last checked" },
+	a2aSignature: { zh: "签名", en: "Signature" },
+	a2aSignatureValid: { zh: "签名有效", en: "Valid signature" },
+	a2aSignatureUnsigned: { zh: "未签名", en: "Unsigned" },
+	a2aCredentialEnv: {
+		zh: "认证环境变量",
+		en: "Credential environment variable",
+	},
+	a2aRefresh: { zh: "刷新 Agent Card", en: "Refresh Agent Card" },
+	a2aRefreshing: { zh: "正在刷新…", en: "Refreshing…" },
+	a2aRefreshChanged: {
+		zh: "已刷新,变化:{changes}",
+		en: "Refreshed; changed: {changes}",
+	},
+	a2aRefreshUnchanged: {
+		zh: "Agent Card 已是最新",
+		en: "Agent Card is up to date",
+	},
+	a2aUnknownHost: { zh: "未知主机", en: "Unknown host" },
 	projectNameHint: { zh: "如:Webhook Router", en: "e.g., Webhook Router" },
 	projectDescHint: {
 		zh: "一句话说明项目目标",

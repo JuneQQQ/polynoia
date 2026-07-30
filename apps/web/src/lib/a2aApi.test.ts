@@ -77,4 +77,24 @@ describe("A2A API client", () => {
 			"unsafe_target: metadata addresses are blocked",
 		);
 	});
+
+	it("refreshes one installed Agent Card", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				contact: { id: "remote/1" },
+				changes: ["skills"],
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await api.refreshA2AAgent("remote/1");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining("/api/a2a/agents/remote%2F1/refresh"),
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({}),
+			}),
+		);
+	});
 });

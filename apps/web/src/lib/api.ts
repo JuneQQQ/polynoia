@@ -608,6 +608,11 @@ export const api = {
 		bearer_env_var?: string;
 	}) =>
 		postJSON<{ contact: Agent; existing: boolean }>("/api/a2a/install", body),
+	refreshA2AAgent: (id: string) =>
+		postJSON<{ contact: Agent; changes: string[] }>(
+			`/api/a2a/agents/${encodeURIComponent(id)}/refresh`,
+			{},
+		),
 	// Network egress for an adapter (shared by all its contacts). proxy is only
 	// honored when proxy_kind === "custom".
 	setAdapterProxy: (
