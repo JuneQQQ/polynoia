@@ -149,8 +149,10 @@ export POLYNOIA_A2A_SAMPLE_BEARER_ENV_VAR=REMOTE_AGENT_TOKEN
 | `POLYNOIA_A2A_ALLOW_PRIVATE_NETWORKS` | `false` | 是否信任 RFC1918 等私网地址 |
 | `POLYNOIA_A2A_CONNECT_TIMEOUT_S` | `5` | 连接超时 |
 | `POLYNOIA_A2A_READ_TIMEOUT_S` | `30` | HTTP 读取/写入超时 |
+| `POLYNOIA_A2A_STREAM_IDLE_TIMEOUT_S` | `45` | 流式响应相邻字节块的最大空闲时间 |
 | `POLYNOIA_A2A_TASK_TIMEOUT_S` | `600` | 单个远端任务总时限 |
 | `POLYNOIA_A2A_CARD_MAX_BYTES` | `262144` | Agent Card/JWKS 最大字节数 |
+| `POLYNOIA_A2A_RESPONSE_MAX_BYTES` | `8388608` | 单个远端 A2A HTTP 响应的最大传输字节数 |
 | `POLYNOIA_A2A_MAX_REDIRECTS` | `3` | Agent Card 最大重定向次数 |
 
 网络策略：
@@ -162,6 +164,8 @@ export POLYNOIA_A2A_SAMPLE_BEARER_ENV_VAR=REMOTE_AGENT_TOKEN
 - 云 metadata、link-local、multicast、unspecified 和 reserved 地址始终拒绝。
 - 每次重定向、DNS 解析和实际连接 peer 都重新校验，降低 SSRF 和 DNS rebinding
   风险。
+- 运行时请求只接受 identity 编码，逐块限制响应大小和空闲时间，避免无界流与压缩
+  放大。
 - 有签名的 Agent Card 必须验证成功；未签名卡片会明确标记，仍需人工确认。
 
 当前支持 A2A 主版本 1 的 `JSONRPC` 与 `HTTP+JSON`；只声明 gRPC 的卡片会被

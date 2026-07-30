@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from polynoia.a2a import A2AError, DirectUrlDiscoveryProvider, DiscoveredAgent
 from polynoia.adapters.pool import get_pool
@@ -70,19 +71,21 @@ def _initials(name: str) -> str:
     return name[:2] or "A2"
 
 
-def _validate_install_auth(
-    found: DiscoveredAgent, bearer_env_var: str | None
-) -> None:
+def _validate_install_auth(found: DiscoveredAgent, bearer_env_var: str | None) -> None:
     if not found.installable or found.auth_kind == "unsupported":
         raise A2AError(
             "unsupported_auth",
-            found.unsupported_auth_reason
-            or "the remote agent requires unsupported authentication",
+            found.unsupported_auth_reason or "the remote agent requires unsupported authentication",
         )
     if found.auth_kind == "bearer" and not bearer_env_var:
         raise A2AError(
             "unsupported_auth",
             "this remote agent requires a bearer-token environment variable",
+        )
+    if found.auth_kind == "none" and bearer_env_var:
+        raise A2AError(
+            "unsupported_auth",
+            "a bearer-token variable cannot be attached to an unauthenticated agent",
         )
     if bearer_env_var and not os.environ.get(bearer_env_var):
         raise A2AError(
@@ -91,9 +94,7 @@ def _validate_install_auth(
         )
 
 
-def _remote_setup(
-    found: DiscoveredAgent, bearer_env_var: str | None
-) -> A2AAgentSetup:
+def _remote_setup(found: DiscoveredAgent, bearer_env_var: str | None) -> A2AAgentSetup:
     return A2AAgentSetup(
         card_url=found.card_url,
         endpoint_url=found.endpoint_url,
@@ -107,9 +108,7 @@ def _remote_setup(
     )
 
 
-def _new_contact(
-    found: DiscoveredAgent, bearer_env_var: str | None
-) -> Agent:
+def _new_contact(found: DiscoveredAgent, bearer_env_var: str | None) -> Agent:
     name = str(found.card.get("name") or "A2A Agent").strip()[:120]
     description = str(found.card.get("description") or "").strip()[:240]
     return Agent(
@@ -182,17 +181,28 @@ async def install_a2a_agent(body: A2AInstallRequest):
         raise _http_error(error) from error
 
     async with SessionLocal() as session:
-        existing = await storage_repo.find_a2a_agent_by_card_url(
-            session, found.card_url
-        )
+        existing = await storage_repo.find_a2a_agent_by_card_url(session, found.card_url)
         if existing is not None:
             return {
                 "contact": existing.model_dump(mode="json"),
                 "existing": True,
             }
         contact = _new_contact(found, body.bearer_env_var)
-        await storage_repo.upsert_agent(session, contact)
-        await session.commit()
+        try:
+            await storage_repo.upsert_agent(session, contact)
+            await session.commit()
+        except IntegrityError:
+            # The deterministic A2A handle is unique. If another request or
+            # process installed this card after our lookup, resolve the winner
+            # instead of leaking a database conflict as a 500.
+            await session.rollback()
+            existing = await storage_repo.find_a2a_agent_by_card_url(session, found.card_url)
+            if existing is None:
+                raise
+            return {
+                "contact": existing.model_dump(mode="json"),
+                "existing": True,
+            }
     return {"contact": contact.model_dump(mode="json"), "existing": False}
 
 
@@ -224,7 +234,8 @@ async def refresh_a2a_agent(agent_id: str):
     old_setup = contact.setup.a2a
     try:
         found = await _discovery_provider.discover(old_setup.card_url)
-        _validate_install_auth(found, old_setup.bearer_env_var)
+        bearer_env_var = old_setup.bearer_env_var if found.auth_kind == "bearer" else None
+        _validate_install_auth(found, bearer_env_var)
     except A2AError as error:
         await _mark_refresh_failed(agent_id)
         raise _http_error(error) from error
@@ -238,10 +249,8 @@ async def refresh_a2a_agent(agent_id: str):
     contact.caps = _skill_names(found.card)
     contact.online = True
     contact.setup.docs = found.card_url
-    contact.setup.auth_kinds = (
-        ["api-key"] if found.auth_kind == "bearer" else []
-    )
-    contact.setup.a2a = _remote_setup(found, old_setup.bearer_env_var)
+    contact.setup.auth_kinds = ["api-key"] if found.auth_kind == "bearer" else []
+    contact.setup.a2a = _remote_setup(found, bearer_env_var)
     async with SessionLocal() as session:
         await storage_repo.upsert_agent(session, contact)
         await session.commit()

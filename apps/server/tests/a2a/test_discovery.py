@@ -114,18 +114,29 @@ async def test_rejects_grpc_only_card() -> None:
 @pytest.mark.asyncio
 async def test_rejects_unsupported_protocol_major() -> None:
     card = copy.deepcopy(VALID_CARD)
-    card["supportedInterfaces"][0]["protocolVersion"] = "2.0"
+    for interface in card["supportedInterfaces"]:
+        interface["protocolVersion"] = "2.0"
 
     with pytest.raises(A2AError, match="unsupported_version"):
         await fetcher_for(card).fetch("http://127.0.0.1:9999")
 
 
 @pytest.mark.asyncio
+async def test_skips_newer_interface_for_later_supported_version() -> None:
+    card = copy.deepcopy(VALID_CARD)
+    card["supportedInterfaces"][0]["protocolVersion"] = "2.0"
+
+    found = await fetcher_for(card).fetch("http://127.0.0.1:9999")
+
+    assert found.endpoint_url == "http://127.0.0.1:9999/rest"
+    assert found.protocol_binding == "HTTP+JSON"
+    assert found.protocol_version == "1.0"
+
+
+@pytest.mark.asyncio
 async def test_marks_bearer_auth_installable() -> None:
     card = copy.deepcopy(VALID_CARD)
-    card["securitySchemes"] = {
-        "bearer": {"httpAuthSecurityScheme": {"scheme": "bearer"}}
-    }
+    card["securitySchemes"] = {"bearer": {"httpAuthSecurityScheme": {"scheme": "bearer"}}}
     card["securityRequirements"] = [{"schemes": {"bearer": {}}}]
 
     found = await fetcher_for(card).fetch("http://127.0.0.1:9999")
@@ -137,9 +148,7 @@ async def test_marks_bearer_auth_installable() -> None:
 @pytest.mark.asyncio
 async def test_marks_oauth_auth_unsupported_without_hiding_preview() -> None:
     card = copy.deepcopy(VALID_CARD)
-    card["securitySchemes"] = {
-        "oauth": {"oauth2SecurityScheme": {"flows": {}}}
-    }
+    card["securitySchemes"] = {"oauth": {"oauth2SecurityScheme": {"flows": {}}}}
     card["securityRequirements"] = [{"schemes": {"oauth": {}}}]
 
     found = await fetcher_for(card).fetch("http://127.0.0.1:9999")
@@ -153,9 +162,7 @@ async def test_marks_oauth_auth_unsupported_without_hiding_preview() -> None:
 @pytest.mark.asyncio
 async def test_rejects_invalid_card() -> None:
     with pytest.raises(A2AError, match="invalid_card"):
-        await fetcher_for({"name": "missing everything"}).fetch(
-            "http://127.0.0.1:9999"
-        )
+        await fetcher_for({"name": "missing everything"}).fetch("http://127.0.0.1:9999")
 
 
 def test_card_hash_is_stable_across_key_order() -> None:
@@ -166,14 +173,10 @@ def test_card_hash_is_stable_across_key_order() -> None:
 @pytest.mark.asyncio
 async def test_declared_bad_signature_is_rejected() -> None:
     card = copy.deepcopy(VALID_CARD)
-    card["signatures"] = [
-        {"protected": "e30", "signature": "invalid", "header": {}}
-    ]
+    card["signatures"] = [{"protected": "e30", "signature": "invalid", "header": {}}]
 
     def reject_signature(_card) -> None:
         raise ValueError("bad signature")
 
     with pytest.raises(A2AError, match="invalid_signature"):
-        await fetcher_for(card, signature_verifier=reject_signature).fetch(
-            "http://127.0.0.1:9999"
-        )
+        await fetcher_for(card, signature_verifier=reject_signature).fetch("http://127.0.0.1:9999")

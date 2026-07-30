@@ -73,12 +73,16 @@ def _protobuf_value(value: Any) -> Any:
 
 
 def _json_text(value: Any) -> str:
-    return "```json\n" + json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-    ) + "\n```"
+    return (
+        "```json\n"
+        + json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n```"
+    )
 
 
 class A2ASession:
@@ -238,11 +242,7 @@ class A2ASession:
             artifact.name or artifact.description or artifact.HasField("metadata")
         ):
             key = f"{artifact_id}:metadata"
-            metadata = (
-                MessageToDict(artifact.metadata)
-                if artifact.HasField("metadata")
-                else {}
-            )
+            metadata = MessageToDict(artifact.metadata) if artifact.HasField("metadata") else {}
             self._completed_parts.add(key)
             events.append(
                 PartCompletedEvent(
@@ -286,9 +286,7 @@ class A2ASession:
         status_text = ""
         if status.HasField("message"):
             status_text = " ".join(
-                part.text
-                for part in status.message.parts
-                if part.WhichOneof("content") == "text"
+                part.text for part in status.message.parts if part.WhichOneof("content") == "text"
             ).strip()
         if state == types.TaskState.TASK_STATE_COMPLETED:
             events.append(
@@ -353,9 +351,7 @@ class A2ASession:
             if task.status.HasField("message"):
                 events.extend(self._message_events(task.status.message))
             for artifact in task.artifacts:
-                events.extend(
-                    self._artifact_events(artifact, final=True, append=False)
-                )
+                events.extend(self._artifact_events(artifact, final=True, append=False))
             events.extend(self._terminal_events(task.status))
             return events
         if kind == "status_update":
@@ -380,29 +376,20 @@ class A2ASession:
                 final=update.last_chunk,
                 append=update.append,
             )
-        raise A2AError(
-            "remote_protocol_error", "remote stream contained no A2A payload", 502
-        )
+        raise A2AError("remote_protocol_error", "remote stream contained no A2A payload", 502)
 
     def _task_events(self, task: Any) -> list[AdapterEvent]:
         response = types.StreamResponse(task=task)
         return self._stream_response_events(response)
 
-    async def _send_and_poll(
-        self, request: Any
-    ) -> AsyncIterator[AdapterEvent]:
+    async def _send_and_poll(self, request: Any) -> AsyncIterator[AdapterEvent]:
         async for response in self.client.send_message(request):
             for event in self._stream_response_events(response):
                 yield event
-        while (
-            not self._turn_terminal
-            and self._active_task_id is not None
-        ):
+        while not self._turn_terminal and self._active_task_id is not None:
             if self.poll_interval_s:
                 await asyncio.sleep(self.poll_interval_s)
-            task = await self.client.get_task(
-                types.GetTaskRequest(id=self._active_task_id)
-            )
+            task = await self.client.get_task(types.GetTaskRequest(id=self._active_task_id))
             for event in self._task_events(task):
                 yield event
         if not self._turn_terminal:
@@ -459,8 +446,7 @@ class A2ASession:
                     task_id=task_id,
                     error={
                         **error.as_detail(),
-                        "retryable": error.category
-                        in {"remote_unavailable", "remote_timeout"},
+                        "retryable": error.category in {"remote_unavailable", "remote_timeout"},
                     },
                 )
         except TimeoutError:
@@ -477,11 +463,7 @@ class A2ASession:
                 )
         except httpx.HTTPStatusError as error:
             status = error.response.status_code
-            category = (
-                "remote_unauthorized"
-                if status in {401, 403}
-                else "remote_unavailable"
-            )
+            category = "remote_unauthorized" if status in {401, 403} else "remote_unavailable"
             if not self._turn_terminal:
                 self._turn_terminal = True
                 yield TurnFailedEvent(
@@ -524,9 +506,7 @@ class A2ASession:
         if remote_task_id is None:
             return
         try:
-            await self.client.cancel_task(
-                types.CancelTaskRequest(id=remote_task_id)
-            )
+            await self.client.cancel_task(types.CancelTaskRequest(id=remote_task_id))
         finally:
             self._active_task_id = None
 
@@ -617,9 +597,7 @@ class A2AAdapter:
             ) from error
         remote: A2AAgentSetup | None = setup.a2a
         if setup.adapter_id != "a2a" or remote is None:
-            raise A2AError(
-                "remote_protocol_error", "installed contact has no A2A setup", 500
-            )
+            raise A2AError("remote_protocol_error", "installed contact has no A2A setup", 500)
         if remote.protocol_version.split(".", 1)[0] != "1":
             raise A2AError(
                 "unsupported_version",
@@ -629,7 +607,10 @@ class A2AAdapter:
             remote.endpoint_url,
             allow_private=settings.a2a_allow_private_networks,
         )
-        headers = {"user-agent": "Polynoia/0.1 A2A-Client"}
+        headers = {
+            "accept-encoding": "identity",
+            "user-agent": "Polynoia/0.1 A2A-Client",
+        }
         if remote.bearer_env_var:
             token = os.environ.get(remote.bearer_env_var)
             if not token:
@@ -644,12 +625,17 @@ class A2AAdapter:
             await guard_httpx_response(
                 response,
                 allow_private=settings.a2a_allow_private_networks,
+                max_bytes=settings.a2a_response_max_bytes,
+                idle_timeout_s=settings.a2a_stream_idle_timeout_s,
             )
 
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=settings.a2a_connect_timeout_s,
-                read=settings.a2a_read_timeout_s,
+                read=max(
+                    settings.a2a_read_timeout_s,
+                    settings.a2a_stream_idle_timeout_s,
+                ),
                 write=settings.a2a_read_timeout_s,
                 pool=settings.a2a_connect_timeout_s,
             ),

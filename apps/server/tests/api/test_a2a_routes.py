@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from collections import deque
@@ -65,9 +66,7 @@ def discovered(
         signature_status="unsigned",
         installable=installable,
         auth_kind=auth_kind,
-        unsupported_auth_reason=(
-            None if installable else "OAuth authentication is unsupported"
-        ),
+        unsupported_auth_reason=(None if installable else "OAuth authentication is unsupported"),
     )
 
 
@@ -107,15 +106,11 @@ async def installed_remote_contacts() -> list:
 
 
 @pytest.mark.asyncio
-async def test_discover_returns_preview_without_persisting(
-    a2a_catalog, monkeypatch
-) -> None:
+async def test_discover_returns_preview_without_persisting(a2a_catalog, monkeypatch) -> None:
     provider = FakeDiscoveryProvider(discovered())
     monkeypatch.setattr(a2a_routes, "_discovery_provider", provider)
 
-    result = await discover_a2a_agent(
-        A2ADiscoverRequest(locator="http://127.0.0.1:9999")
-    )
+    result = await discover_a2a_agent(A2ADiscoverRequest(locator="http://127.0.0.1:9999"))
 
     assert result["agent"]["card"]["name"] == "Cloud Reviewer"
     assert result["agent"]["card_hash"] == CARD_HASH
@@ -123,9 +118,7 @@ async def test_discover_returns_preview_without_persisting(
 
 
 @pytest.mark.asyncio
-async def test_install_refetches_and_persists_only_env_name(
-    a2a_catalog, monkeypatch
-) -> None:
+async def test_install_refetches_and_persists_only_env_name(a2a_catalog, monkeypatch) -> None:
     provider = FakeDiscoveryProvider(discovered(auth_kind="bearer"))
     monkeypatch.setattr(a2a_routes, "_discovery_provider", provider)
     monkeypatch.setenv("REMOTE_AGENT_TOKEN", "super-secret")
@@ -147,13 +140,9 @@ async def test_install_refetches_and_persists_only_env_name(
 
 
 @pytest.mark.asyncio
-async def test_install_rejects_preview_race_without_writing(
-    a2a_catalog, monkeypatch
-) -> None:
+async def test_install_rejects_preview_race_without_writing(a2a_catalog, monkeypatch) -> None:
     changed = discovered(card_hash="sha256:" + "b" * 64)
-    monkeypatch.setattr(
-        a2a_routes, "_discovery_provider", FakeDiscoveryProvider(changed)
-    )
+    monkeypatch.setattr(a2a_routes, "_discovery_provider", FakeDiscoveryProvider(changed))
 
     with pytest.raises(HTTPException) as exc:
         await install_a2a_agent(
@@ -169,9 +158,7 @@ async def test_install_rejects_preview_race_without_writing(
 
 
 @pytest.mark.asyncio
-async def test_duplicate_card_url_returns_existing_contact(
-    a2a_catalog, monkeypatch
-) -> None:
+async def test_duplicate_card_url_returns_existing_contact(a2a_catalog, monkeypatch) -> None:
     provider = FakeDiscoveryProvider(discovered(), discovered())
     monkeypatch.setattr(a2a_routes, "_discovery_provider", provider)
     request = A2AInstallRequest(
@@ -188,13 +175,42 @@ async def test_duplicate_card_url_returns_existing_contact(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_install_is_idempotent_by_card_url(a2a_catalog, monkeypatch) -> None:
+    provider = FakeDiscoveryProvider(discovered(), discovered())
+    monkeypatch.setattr(a2a_routes, "_discovery_provider", provider)
+    original_find = storage_repo.find_a2a_agent_by_card_url
+
+    async def delayed_absent_lookup(session, card_url):
+        result = await original_find(session, card_url)
+        if result is None:
+            await asyncio.sleep(0.05)
+        return result
+
+    monkeypatch.setattr(
+        storage_repo,
+        "find_a2a_agent_by_card_url",
+        delayed_absent_lookup,
+    )
+    request = A2AInstallRequest(
+        locator="http://127.0.0.1:9999",
+        expected_card_hash=CARD_HASH,
+    )
+
+    results = await asyncio.gather(
+        install_a2a_agent(request),
+        install_a2a_agent(request),
+    )
+
+    assert sorted(result["existing"] for result in results) == [False, True]
+    assert len(await installed_remote_contacts()) == 1
+
+
+@pytest.mark.asyncio
 async def test_install_rejects_unsupported_auth(a2a_catalog, monkeypatch) -> None:
     monkeypatch.setattr(
         a2a_routes,
         "_discovery_provider",
-        FakeDiscoveryProvider(
-            discovered(auth_kind="unsupported", installable=False)
-        ),
+        FakeDiscoveryProvider(discovered(auth_kind="unsupported", installable=False)),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -210,9 +226,31 @@ async def test_install_rejects_unsupported_auth(a2a_catalog, monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_refresh_updates_snapshot_and_invalidates_sessions(
+async def test_install_rejects_bearer_variable_for_unauthenticated_agent(
     a2a_catalog, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        a2a_routes,
+        "_discovery_provider",
+        FakeDiscoveryProvider(discovered(auth_kind="none")),
+    )
+    monkeypatch.setenv("REMOTE_AGENT_TOKEN", "must-not-be-sent")
+
+    with pytest.raises(HTTPException) as exc:
+        await install_a2a_agent(
+            A2AInstallRequest(
+                locator="http://127.0.0.1:9999",
+                expected_card_hash=CARD_HASH,
+                bearer_env_var="REMOTE_AGENT_TOKEN",
+            )
+        )
+
+    assert exc.value.detail["category"] == "unsupported_auth"
+    assert await installed_remote_contacts() == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_updates_snapshot_and_invalidates_sessions(a2a_catalog, monkeypatch) -> None:
     initial = discovered()
     updated = discovered(card_hash="sha256:" + "c" * 64, name="Cloud Auditor")
     updated.card["skills"][0]["name"] = "Security audit"
@@ -237,9 +275,32 @@ async def test_refresh_updates_snapshot_and_invalidates_sessions(
 
 
 @pytest.mark.asyncio
-async def test_failed_refresh_preserves_card_and_marks_offline(
+async def test_refresh_clears_bearer_when_card_no_longer_requires_it(
     a2a_catalog, monkeypatch
 ) -> None:
+    initial = discovered(auth_kind="bearer")
+    updated = discovered(
+        auth_kind="none",
+        card_hash="sha256:" + "d" * 64,
+    )
+    provider = FakeDiscoveryProvider(initial, updated)
+    monkeypatch.setattr(a2a_routes, "_discovery_provider", provider)
+    monkeypatch.setenv("REMOTE_AGENT_TOKEN", "must-not-be-sent")
+    installed = await install_a2a_agent(
+        A2AInstallRequest(
+            locator="http://127.0.0.1:9999",
+            expected_card_hash=CARD_HASH,
+            bearer_env_var="REMOTE_AGENT_TOKEN",
+        )
+    )
+
+    result = await refresh_a2a_agent(installed["contact"]["id"])
+
+    assert result["contact"]["setup"]["a2a"]["bearer_env_var"] is None
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_preserves_card_and_marks_offline(a2a_catalog, monkeypatch) -> None:
     provider = FakeDiscoveryProvider(
         discovered(),
         A2AError("remote_unavailable", "offline", 502),
@@ -262,15 +323,11 @@ async def test_failed_refresh_preserves_card_and_marks_offline(
 
 
 @pytest.mark.asyncio
-async def test_feature_flag_hides_management_surface(
-    a2a_catalog, monkeypatch
-) -> None:
+async def test_feature_flag_hides_management_surface(a2a_catalog, monkeypatch) -> None:
     monkeypatch.setattr("polynoia.settings.settings.a2a_enabled", False)
 
     with pytest.raises(HTTPException) as exc:
-        await discover_a2a_agent(
-            A2ADiscoverRequest(locator="http://127.0.0.1:9999")
-        )
+        await discover_a2a_agent(A2ADiscoverRequest(locator="http://127.0.0.1:9999"))
 
     assert exc.value.status_code == 404
 

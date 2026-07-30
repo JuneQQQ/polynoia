@@ -45,9 +45,7 @@ def _decode_protected_header(value: str) -> dict[str, Any]:
             "invalid_signature", "Agent Card signature has an invalid protected header"
         ) from exc
     if not isinstance(header, dict):
-        raise A2AError(
-            "invalid_signature", "Agent Card signature header must be an object"
-        )
+        raise A2AError("invalid_signature", "Agent Card signature header must be an object")
     return header
 
 
@@ -63,6 +61,7 @@ def _required_card_fields(card: Any) -> None:
 
 
 def _select_interface(card: Any) -> tuple[str, str, str]:
+    unsupported_versions: list[str] = []
     for interface in card.supported_interfaces:
         binding = interface.protocol_binding.upper()
         if binding not in _SUPPORTED_BINDINGS:
@@ -70,13 +69,17 @@ def _select_interface(card: Any) -> tuple[str, str, str]:
         version = interface.protocol_version.strip() or "1.0"
         major = version.split(".", 1)[0]
         if major != "1":
-            raise A2AError(
-                "unsupported_version",
-                f"A2A protocol version {version} is not supported",
-            )
+            unsupported_versions.append(version)
+            continue
         if not interface.url.strip():
             raise A2AError("invalid_card", "selected A2A interface has no URL")
         return interface.url, binding, version
+    if unsupported_versions:
+        versions = ", ".join(dict.fromkeys(unsupported_versions))
+        raise A2AError(
+            "unsupported_version",
+            f"A2A protocol version {versions} is not supported",
+        )
     raise A2AError(
         "unsupported_binding",
         "Agent Card has no HTTP+JSON or JSON-RPC interface",
@@ -157,9 +160,7 @@ class AgentCardFetcher:
                 jwks = orjson.loads(response.body)
                 candidates = jwks["keys"]
             except (orjson.JSONDecodeError, KeyError, TypeError) as exc:
-                raise A2AError(
-                    "invalid_signature", "Agent Card JWKS response is invalid"
-                ) from exc
+                raise A2AError("invalid_signature", "Agent Card JWKS response is invalid") from exc
             for item in candidates:
                 if isinstance(item, dict) and item.get("kid") == kid:
                     try:
@@ -170,9 +171,7 @@ class AgentCardFetcher:
                         ) from exc
                     break
             if (kid, jku) not in keys:
-                raise A2AError(
-                    "invalid_signature", f"Agent Card signing key {kid!r} was not found"
-                )
+                raise A2AError("invalid_signature", f"Agent Card signing key {kid!r} was not found")
 
         def key_provider(kid: str | None, jku: str | None):
             if not kid or not jku or (kid, jku) not in keys:
@@ -182,9 +181,7 @@ class AgentCardFetcher:
         try:
             create_signature_verifier(key_provider, _SIGNATURE_ALGORITHMS)(card)
         except Exception as exc:
-            raise A2AError(
-                "invalid_signature", "Agent Card signature verification failed"
-            ) from exc
+            raise A2AError("invalid_signature", "Agent Card signature verification failed") from exc
 
     async def fetch(self, locator: str) -> DiscoveredAgent:
         card_url = normalize_card_locator(locator)
@@ -198,9 +195,7 @@ class AgentCardFetcher:
         try:
             card = parse_agent_card(raw_card)
         except Exception as exc:
-            raise A2AError(
-                "invalid_card", "Agent Card does not match the A2A v1 schema"
-            ) from exc
+            raise A2AError("invalid_card", "Agent Card does not match the A2A v1 schema") from exc
         _required_card_fields(card)
         endpoint_url, binding, protocol_version = _select_interface(card)
         await validate_target_url(

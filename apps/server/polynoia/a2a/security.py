@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
@@ -48,8 +48,10 @@ def _canonical_netloc(parts: SplitResult) -> str:
     except (UnicodeError, ValueError) as exc:
         raise _invalid_locator("locator contains an invalid hostname or port") from exc
     rendered_host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
-    if port is None or (parts.scheme == "https" and port == 443) or (
-        parts.scheme == "http" and port == 80
+    if (
+        port is None
+        or (parts.scheme == "https" and port == 443)
+        or (parts.scheme == "http" and port == 80)
     ):
         return rendered_host
     return f"{rendered_host}:{port}"
@@ -85,21 +87,33 @@ def normalize_card_locator(locator: str) -> str:
     return urlunsplit(canonical_parts._replace(path=path))
 
 
+def _normalized_ip(address: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    parsed = ipaddress.ip_address(address)
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        return parsed.ipv4_mapped
+    return parsed
+
+
 def validate_ip_address(address: str, *, allow_private: bool) -> None:
     """Reject addresses that must never receive server-side requests."""
 
     try:
-        ip = ipaddress.ip_address(address)
+        policy_ip = _normalized_ip(address)
     except ValueError as exc:
         raise A2AError("unsafe_target", f"invalid target address: {address}") from exc
-    if ip in _METADATA_ADDRESSES:
+    if policy_ip in _METADATA_ADDRESSES:
         raise A2AError("unsafe_target", "cloud metadata targets are forbidden")
-    if ip.is_loopback:
+    if policy_ip.is_loopback:
         return
-    if ip.is_unspecified or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-        raise A2AError("unsafe_target", f"non-routable target is forbidden: {ip}")
-    if ip.is_private and not allow_private:
-        raise A2AError("unsafe_target", f"private target is not trusted: {ip}")
+    if (
+        policy_ip.is_unspecified
+        or policy_ip.is_link_local
+        or policy_ip.is_multicast
+        or policy_ip.is_reserved
+    ):
+        raise A2AError("unsafe_target", f"non-routable target is forbidden: {policy_ip}")
+    if policy_ip.is_private and not allow_private:
+        raise A2AError("unsafe_target", f"private target is not trusted: {policy_ip}")
 
 
 async def _resolve_host(hostname: str, port: int) -> set[str]:
@@ -141,7 +155,7 @@ async def validate_target_url(
     for address in addresses:
         validate_ip_address(address, allow_private=allow_private)
     if parts.scheme == "http" and not all(
-        ipaddress.ip_address(address).is_loopback for address in addresses
+        _normalized_ip(address).is_loopback for address in addresses
     ):
         raise A2AError(
             "unsafe_target", "plain HTTP is allowed only for loopback development agents"
@@ -161,11 +175,79 @@ def _connected_peer(response: httpx.Response) -> str | None:
     return str(server_addr)
 
 
+def _same_address(address: str, candidates: set[str]) -> bool:
+    parsed = _normalized_ip(address)
+    return any(parsed == _normalized_ip(candidate) for candidate in candidates)
+
+
+def _declared_content_length(response: httpx.Response) -> int | None:
+    value = response.headers.get("content-length")
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except ValueError as exc:
+        raise A2AError(
+            "remote_protocol_error",
+            "remote response has an invalid Content-Length header",
+            502,
+        ) from exc
+    if length < 0:
+        raise A2AError(
+            "remote_protocol_error",
+            "remote response has an invalid Content-Length header",
+            502,
+        )
+    return length
+
+
+class _GuardedResponseStream(httpx.AsyncByteStream):
+    def __init__(
+        self,
+        stream: httpx.AsyncByteStream,
+        *,
+        max_bytes: int,
+        idle_timeout_s: float,
+    ) -> None:
+        self._stream = stream
+        self._max_bytes = max_bytes
+        self._idle_timeout_s = idle_timeout_s
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        iterator = self._stream.__aiter__()
+        total = 0
+        while True:
+            try:
+                async with asyncio.timeout(self._idle_timeout_s):
+                    chunk = await anext(iterator)
+            except StopAsyncIteration:
+                return
+            except TimeoutError as exc:
+                raise A2AError(
+                    "remote_timeout",
+                    "remote A2A response stream was idle too long",
+                    504,
+                ) from exc
+            total += len(chunk)
+            if total > self._max_bytes:
+                raise A2AError(
+                    "remote_protocol_error",
+                    "remote A2A response exceeded the configured size limit",
+                    502,
+                )
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
 async def guard_httpx_response(
     response: httpx.Response,
     *,
     allow_private: bool,
     resolver: HostResolver | None = None,
+    max_bytes: int | None = None,
+    idle_timeout_s: float | None = None,
 ) -> None:
     """httpx response hook used by long-lived A2A invocation clients."""
 
@@ -175,13 +257,39 @@ async def guard_httpx_response(
         resolver=resolver,
     )
     peer = _connected_peer(response)
-    if peer is None:
-        return
-    validate_ip_address(peer, allow_private=allow_private)
-    if peer not in allowed_addresses:
-        raise A2AError(
-            "unsafe_target",
-            "connected peer does not match the validated DNS answer",
+    if peer is not None:
+        validate_ip_address(peer, allow_private=allow_private)
+        if not _same_address(peer, allowed_addresses):
+            raise A2AError(
+                "unsafe_target",
+                "connected peer does not match the validated DNS answer",
+            )
+    if max_bytes is not None:
+        content_encoding = response.headers.get("content-encoding", "identity").lower()
+        if content_encoding not in {"", "identity"}:
+            raise A2AError(
+                "remote_protocol_error",
+                "remote A2A response used an unsupported Content-Encoding",
+                502,
+            )
+        declared_length = _declared_content_length(response)
+        if declared_length is not None and declared_length > max_bytes:
+            raise A2AError(
+                "remote_protocol_error",
+                "remote A2A response exceeded the configured size limit",
+                502,
+            )
+    if max_bytes is not None and idle_timeout_s is not None:
+        if not isinstance(response.stream, httpx.AsyncByteStream):
+            raise A2AError(
+                "remote_protocol_error",
+                "remote A2A response did not provide an async byte stream",
+                502,
+            )
+        response.stream = _GuardedResponseStream(
+            response.stream,
+            max_bytes=max_bytes,
+            idle_timeout_s=idle_timeout_s,
         )
 
 
@@ -197,9 +305,7 @@ async def bounded_get(
     """GET JSON with validation before every connection and redirect."""
 
     trusted_private = (
-        settings.a2a_allow_private_networks
-        if allow_private is None
-        else allow_private
+        settings.a2a_allow_private_networks if allow_private is None else allow_private
     )
     redirect_limit = settings.a2a_max_redirects if max_redirects is None else max_redirects
     owns_client = client is None
@@ -231,7 +337,7 @@ async def bounded_get(
                     peer = _connected_peer(response)
                     if peer is not None:
                         validate_ip_address(peer, allow_private=trusted_private)
-                        if peer not in allowed_addresses:
+                        if not _same_address(peer, allowed_addresses):
                             raise A2AError(
                                 "unsafe_target",
                                 "connected peer does not match the validated DNS answer",
@@ -266,17 +372,13 @@ async def bounded_get(
                             f"Agent Card request returned HTTP {response.status_code}",
                             502,
                         )
-                    content_type = response.headers.get("content-type", "").split(";", 1)[
-                        0
-                    ].strip().lower()
-                    if content_type != "application/json" and not content_type.endswith(
-                        "+json"
-                    ):
-                        raise A2AError(
-                            "invalid_card", "Agent Card response is not JSON"
-                        )
-                    declared_length = response.headers.get("content-length")
-                    if declared_length and int(declared_length) > max_bytes:
+                    content_type = (
+                        response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                    )
+                    if content_type != "application/json" and not content_type.endswith("+json"):
+                        raise A2AError("invalid_card", "Agent Card response is not JSON")
+                    declared_length = _declared_content_length(response)
+                    if declared_length is not None and declared_length > max_bytes:
                         raise A2AError(
                             "card_too_large", "Agent Card exceeds the configured size limit"
                         )
@@ -297,16 +399,10 @@ async def bounded_get(
                         etag=response.headers.get("etag"),
                     )
             except httpx.TimeoutException as exc:
-                raise A2AError(
-                    "remote_timeout", "Agent Card request timed out", 504
-                ) from exc
+                raise A2AError("remote_timeout", "Agent Card request timed out", 504) from exc
             except httpx.HTTPError as exc:
-                raise A2AError(
-                    "remote_unavailable", "Agent Card request failed", 502
-                ) from exc
-        raise A2AError(
-            "remote_protocol_error", "Agent Card redirect limit exceeded", 502
-        )
+                raise A2AError("remote_unavailable", "Agent Card request failed", 502) from exc
+        raise A2AError("remote_protocol_error", "Agent Card redirect limit exceeded", 502)
     finally:
         if owns_client:
             await client.aclose()

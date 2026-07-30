@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -75,15 +77,18 @@ def test_private_network_requires_explicit_setting() -> None:
     validate_ip_address("10.12.0.8", allow_private=True)
 
 
+def test_ipv4_mapped_metadata_target_is_always_rejected() -> None:
+    with pytest.raises(A2AError, match="unsafe_target"):
+        validate_ip_address("::ffff:169.254.169.254", allow_private=True)
+
+
 @pytest.mark.asyncio
 async def test_allows_http_only_for_loopback() -> None:
-    assert await validate_target_url(
-        "http://127.0.0.1:9999/card.json", allow_private=False
-    ) == {"127.0.0.1"}
+    assert await validate_target_url("http://127.0.0.1:9999/card.json", allow_private=False) == {
+        "127.0.0.1"
+    }
     with pytest.raises(A2AError, match="unsafe_target"):
-        await validate_target_url(
-            "http://93.184.216.34/card.json", allow_private=False
-        )
+        await validate_target_url("http://93.184.216.34/card.json", allow_private=False)
 
 
 @pytest.mark.asyncio
@@ -164,3 +169,96 @@ async def test_runtime_response_hook_revalidates_connected_peer() -> None:
 
     with pytest.raises(A2AError, match="unsafe_target"):
         await guard_httpx_response(response, allow_private=False)
+
+
+class _ChunkStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes], *, delay_s: float = 0) -> None:
+        self._chunks = chunks
+        self._delay_s = delay_s
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            if self._delay_s:
+                await asyncio.sleep(self._delay_s)
+            yield chunk
+
+
+@pytest.mark.asyncio
+async def test_runtime_response_hook_limits_streamed_bytes() -> None:
+    request = httpx.Request("POST", "http://127.0.0.1:9999/a2a")
+    response = httpx.Response(
+        200,
+        request=request,
+        stream=_ChunkStream([b"123", b"456"]),
+    )
+
+    await guard_httpx_response(
+        response,
+        allow_private=False,
+        max_bytes=5,
+        idle_timeout_s=1,
+    )
+
+    with pytest.raises(A2AError, match="remote_protocol_error"):
+        _ = [chunk async for chunk in response.aiter_bytes()]
+
+
+@pytest.mark.asyncio
+async def test_runtime_response_hook_limits_stream_idle_time() -> None:
+    request = httpx.Request("POST", "http://127.0.0.1:9999/a2a")
+    response = httpx.Response(
+        200,
+        request=request,
+        stream=_ChunkStream([b"event"], delay_s=0.05),
+    )
+
+    await guard_httpx_response(
+        response,
+        allow_private=False,
+        max_bytes=100,
+        idle_timeout_s=0.001,
+    )
+
+    with pytest.raises(A2AError, match="remote_timeout"):
+        _ = [chunk async for chunk in response.aiter_bytes()]
+
+
+@pytest.mark.asyncio
+async def test_runtime_response_hook_rejects_compressed_content() -> None:
+    request = httpx.Request("POST", "http://127.0.0.1:9999/a2a")
+    response = httpx.Response(
+        200,
+        headers={"content-encoding": "gzip"},
+        request=request,
+        stream=_ChunkStream([b"compressed"]),
+    )
+
+    with pytest.raises(A2AError, match="remote_protocol_error"):
+        await guard_httpx_response(
+            response,
+            allow_private=False,
+            max_bytes=100,
+            idle_timeout_s=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_bounded_get_rejects_invalid_content_length() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json",
+                "content-length": "not-a-number",
+            },
+            content=b"{}",
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(A2AError, match="remote_protocol_error"):
+            await bounded_get(
+                "http://127.0.0.1:9999/card.json",
+                max_bytes=100,
+                client=client,
+            )
