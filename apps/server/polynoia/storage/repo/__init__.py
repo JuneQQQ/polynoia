@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from polynoia.storage.repo.agents import (
     delete_agent,
+    find_a2a_agent_by_card_url,
     list_agents,
     upsert_agent,
 )
@@ -119,7 +120,6 @@ __all__ = [
     "abandon_pending_edits_for_adapter",
     "active_access_grant",
     "add_conv_memory",
-    "delete_conv_memory_from",
     "add_onboarded_adapter",
     "add_pin",
     "append_message",
@@ -131,10 +131,12 @@ __all__ = [
     "create_pending_access",
     "create_pending_edit",
     "delete_agent",
+    "delete_conv_memory_from",
     "delete_conversation",
     "delete_message",
     "delete_messages_from",
     "delete_workspace",
+    "find_a2a_agent_by_card_url",
     "finish_stale_blocking_processes",
     "get_adapter_proxy",
     "get_conflict",

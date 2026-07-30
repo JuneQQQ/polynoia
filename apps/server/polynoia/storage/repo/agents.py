@@ -49,6 +49,18 @@ async def list_agents(session: AsyncSession) -> list[Agent]:
     return [_agent_from_row(r) for r in result.scalars().all()]
 
 
+async def find_a2a_agent_by_card_url(
+    session: AsyncSession, card_url: str
+) -> Agent | None:
+    """Return the installed A2A contact for one canonical card URL."""
+
+    for agent in await list_agents(session):
+        remote = agent.setup.a2a if agent.setup else None
+        if remote is not None and remote.card_url == card_url:
+            return agent
+    return None
+
+
 async def delete_agent(session: AsyncSession, agent_id: str) -> bool:
     row = await session.get(AgentRow, agent_id)
     if row is None:
@@ -60,7 +72,7 @@ async def delete_agent(session: AsyncSession, agent_id: str) -> bool:
 
 async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
     existing = await session.get(AgentRow, a.id)
-    setup_dict = a.setup.model_dump() if a.setup else None
+    setup_dict = a.setup.model_dump(mode="json") if a.setup else None
     if existing:
         existing.name = a.name
         existing.role = a.role
