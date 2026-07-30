@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 import pytest
@@ -21,6 +24,8 @@ from polynoia.adapters.base import (
     TurnFailedEvent,
 )
 from polynoia.domain.entities import A2AAgentSetup, AgentSetup
+
+SERVER_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.asyncio
@@ -190,3 +195,24 @@ async def test_demo_agent_waits_for_remote_cancellation(
         isinstance(event, TurnFailedEvent) and event.error["category"] == "remote_task_canceled"
         for event in events
     )
+
+
+def test_demo_cli_exposes_copyable_defaults() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SERVER_ROOT / "scripts" / "a2a_demo_agent.py"),
+            "--help",
+        ],
+        cwd=SERVER_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "--host" in result.stdout
+    assert "--port" in result.stdout
+    assert "--public-base-url" in result.stdout
+    assert "127.0.0.1" in result.stdout
+    assert "9999" in result.stdout

@@ -54,6 +54,41 @@ Polynoia v1 实现第 1、3 种方式：
 `card_changed`，必须重新检查并确认。联系人详情页可以手动刷新卡片；能力或安全
 配置变化会列出变更项，并使旧会话失效。
 
+## 在完整前端模拟一个远端 Agent
+
+从仓库根目录启动内置的开发 Agent：
+
+```bash
+apps/server/.venv/bin/python apps/server/scripts/a2a_demo_agent.py
+```
+
+它默认监听 `127.0.0.1:9999`，不调用 LLM、工具或外网。保持终端运行，打开
+`http://127.0.0.1:7788`，进入
+`联系人 → 新建联系人 → Remote A2A`，输入以下任一地址：
+
+```text
+http://127.0.0.1:9999
+http://127.0.0.1:9999/.well-known/agent-card.json
+```
+
+点击“发现 Agent”后应看到 `Polynoia Demo Reviewer`、A2A v1、JSON-RPC、
+streaming 和 `Deterministic architecture review`。安装联系人并新建对话后，
+可以发送：
+
+| 消息 | 预期结果 |
+| --- | --- |
+| `review this architecture` | 分段返回原消息、评审清单和 remote context id |
+| `demo:fail` | 先返回部分内容，再以远端任务失败结束 |
+| `demo:wait` | 保持运行，使用 Polynoia 的停止操作测试 A2A cancel |
+
+按 `Ctrl-C` 停止 Demo Agent。它是无签名、无认证的开发夹具，不应暴露到生产
+网络。
+
+地址由 **Polynoia 后端**访问。如果后端在容器或另一台主机，
+`127.0.0.1` 指向后端自身；需要让 Demo Agent 对后端可达，并通过
+`--public-base-url` 写入正确的公开地址。绑定 `0.0.0.0` 或 `::` 时，该参数是
+必填项。非 loopback 的明文 HTTP 会被 Polynoia 网络策略拒绝，应使用 HTTPS。
+
 ## 通过 API 验证发现与安装
 
 假设 Polynoia 后端运行在 `http://127.0.0.1:7780`，远端 Agent 运行在
