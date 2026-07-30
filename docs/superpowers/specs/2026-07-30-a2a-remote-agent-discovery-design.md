@@ -1,7 +1,7 @@
 # A2A Remote Agent Discovery and Invocation Design
 
 **Date:** 2026-07-30
-**Status:** Pending written-spec review
+**Status:** Approved
 **Target branch:** `feature/a2a-remote-agents`
 
 ## 1. Goal
