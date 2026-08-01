@@ -22,11 +22,11 @@ from polynoia.context.budget import compute_budget
 from polynoia.context.group_members import build_group_members_layer
 from polynoia.context.history import build_conv_history_layer
 from polynoia.context.identity import build_identity_layer
-from polynoia.context.ledger import build_activity_ledger_layer, _format_message_body
+from polynoia.context.ledger import _format_message_body, build_activity_ledger_layer
 from polynoia.context.membership import build_membership_layer
 from polynoia.context.orchestrator import build_orchestrator_protocol_layer
+from polynoia.context.remote import remote_capability_claim
 from polynoia.context.shared import build_shared_memory_layer, member_role_for
-from polynoia.context.budget import compute_budget
 from polynoia.context.window import enforce_budgets
 from polynoia.storage.repo import get_conversation, list_agents, list_pinned_messages
 
@@ -107,11 +107,18 @@ async def build_context_for_turn(
         # orchestrator-protocol layer and the regular group-members layer, so
         # EVERY member (not just the orchestrator) knows who is responsible for
         # what, per the conversation's user-configured member_roles.
-        roster_roles = [
-            (a.name, member_role_for(conv, a.id))
-            for a in rows
-            if a.id in (conv.members or []) and a.id not in (agent_id, "you")
-        ]
+        roster_roles: list[tuple[str, str | None]] = []
+        for teammate in rows:
+            if (
+                teammate.id not in (conv.members or [])
+                or teammate.id in (agent_id, "you")
+            ):
+                continue
+            role = member_role_for(conv, teammate.id)
+            claim = remote_capability_claim(teammate)
+            if claim:
+                role = f"{role}\n{claim}" if role else claim
+            roster_roles.append((teammate.name, role))
         if conv.orchestrator_member_id == agent_id:
             layers.append(
                 build_orchestrator_protocol_layer(
@@ -119,7 +126,11 @@ async def build_context_for_turn(
                 )
             )
         else:
-            gm = build_group_members_layer(agent_id=agent_id, roster=roster_roles)
+            gm = build_group_members_layer(
+                agent_id=agent_id,
+                roster=roster_roles,
+                local_workspace=not bool(agent.setup and agent.setup.a2a),
+            )
             if gm is not None:
                 layers.append(gm)
         membership = await build_membership_layer(

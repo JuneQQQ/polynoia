@@ -52,7 +52,6 @@ _MENTION_RE = re.compile(
     r"@([A-Za-z一-鿿㐀-䶿]"  # first char: letter or CJK
     r"[\w一-鿿㐀-䶿_-]{0,63})"  # rest: word chars / CJK / -_
 )
-_ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
 # Bounds a single linear @mention relay. Kept tight (was 5): in practice a depth
 # of 5 let post-work "收到 / 已就位 / 感谢" acknowledgements ping-pong between the
 # orchestrator and workers for several rounds of pure noise before cutting. 3

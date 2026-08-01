@@ -29,6 +29,7 @@ from polynoia.adapters.acp_providers import build_registered_acp_adapters
 from polynoia.adapters.base import Adapter, AdapterSession
 from polynoia.adapters.claude_code import ClaudeCodeAdapter
 from polynoia.adapters.codex import CodexAdapter
+from polynoia.adapters.registry import get_adapter_registration
 
 logger = logging.getLogger("polynoia.adapters.pool")
 
@@ -78,6 +79,12 @@ _GRANTED_ACCESS_BANNER = """
 
 def _ensure_base_adapters() -> dict[str, Adapter]:
     """Lazy-init base adapter instances. One per CLI, shared across all contacts."""
+    # A2A is created only when a remote session is requested. If the feature
+    # flag is later disabled, do not leave that cached transport discoverable
+    # through the local adapter-management API.
+    if get_adapter_registration("a2a") is None:
+        _BASE_ADAPTERS.pop("a2a", None)
+
     if not _BASE_ADAPTERS:
         dedicated_adapters = {
             "claudeCode": cast(Adapter, ClaudeCodeAdapter()),
@@ -90,10 +97,7 @@ def _ensure_base_adapters() -> dict[str, Adapter]:
             raise ValueError(f"ACP provider conflicts with dedicated adapter: {names}")
         _BASE_ADAPTERS.update(dedicated_adapters)
         _BASE_ADAPTERS.update(
-            {
-                adapter_id: cast(Adapter, adapter)
-                for adapter_id, adapter in acp_adapters.items()
-            }
+            {adapter_id: cast(Adapter, adapter) for adapter_id, adapter in acp_adapters.items()}
         )
     return _BASE_ADAPTERS
 
@@ -136,8 +140,7 @@ class AdapterPool:
         now = time.monotonic()
         async with self._lock:
             stale = [
-                k for k, sess in self._sessions.items()
-                if now - self._last_used.get(k, now) > ttl
+                k for k, sess in self._sessions.items() if now - self._last_used.get(k, now) > ttl
             ]
             popped = []
             for k in stale:
@@ -145,11 +148,13 @@ class AdapterPool:
                 self._last_used.pop(k, None)
                 if s is not None:
                     popped.append((k, s))
-        for k, s in popped:
+        for _k, s in popped:
             with contextlib.suppress(Exception):
                 await s.close()
         if popped:
-            logger.info("reaped %d idle adapter session(s): %s", len(popped), [k for k, _ in popped])
+            logger.info(
+                "reaped %d idle adapter session(s): %s", len(popped), [k for k, _ in popped]
+            )
         return len(popped)
 
     async def get_session(self, agent_id: str, conv_id: str) -> AdapterSession | None:
@@ -198,17 +203,22 @@ class AdapterPool:
             agent = next((r for r in rows if r.id == agent_id), None)
             if agent is None or agent.setup is None or not agent.setup.adapter_id:
                 return None
-            proxy, proxy_kind = adapter_proxy.get(
-                agent.setup.adapter_id, (None, "system")
-            )
+            proxy, proxy_kind = adapter_proxy.get(agent.setup.adapter_id, (None, "system"))
 
+            registration = get_adapter_registration(agent.setup.adapter_id)
+            if registration is None:
+                return None
             base = _ensure_base_adapters().get(agent.setup.adapter_id)
+            if base is None and registration.remote:
+                base = registration.factory()
+                _BASE_ADAPTERS[agent.setup.adapter_id] = base
             if base is None:
                 return None
             from polynoia.adapters.endpoint_config import resolve_endpoint
-            endpoint_env = resolve_endpoint(
-                agent.setup.adapter_id, agent.setup
-            ).as_env(agent.setup.adapter_id)
+
+            endpoint_env = resolve_endpoint(agent.setup.adapter_id, agent.setup).as_env(
+                agent.setup.adapter_id
+            )
 
             # The conv's DESIGNATED orchestrator is self-enabling: force its
             # EFFECTIVE tool_role to "orchestrator" regardless of the contact's
@@ -220,9 +230,7 @@ class AdapterPool:
             # uses the role-derived list); kept as-is to not perturb existing
             # behavior. ADR-017.
             is_conv_orch = (
-                conv is not None
-                and conv.group
-                and agent_id == conv.orchestrator_member_id
+                conv is not None and conv.group and agent_id == conv.orchestrator_member_id
             )
             allowed: list[str] | None = [] if is_conv_orch else None
 
@@ -264,7 +272,7 @@ class AdapterPool:
             )
             system_prompt = agent.system_prompt
             read_only_ws_id: str | None = None
-            if not in_project:
+            if not in_project and not registration.remote:
                 if granted_ws:
                     # ADR-020: the user approved this DM's access to a project.
                     # Mount that project's worktree (write-enabled) instead of
@@ -280,13 +288,13 @@ class AdapterPool:
                 env=endpoint_env,
                 system_prompt=system_prompt,
                 allowed_tools=allowed,
-                workspace_id=ws_id,
+                workspace_id=None if registration.remote else ws_id,
                 # Always pass the real agent_id so the spawned polynoia MCP
                 # server identifies as THIS contact (POLYNOIA_AGENT_ID) — needed
                 # for audit + request_project_access grants. The worktree path
                 # gates on (workspace_id AND agent_id), so agent_id alone (a DM
                 # with no project) does NOT create a worktree — stays private.
-                agent_id=agent_id,
+                agent_id=None if registration.remote else agent_id,
                 merge_mode=merge_mode,
                 tool_role=effective_role,
                 # Tool governance is a PROJECT concern now (tool_policy.py): the
@@ -295,12 +303,15 @@ class AdapterPool:
                 # contact-level gate and is intentionally NOT passed, so the role
                 # set is used wholesale. Restriction is opt-in per project/conv.
                 tools_whitelist=None,
-                read_only_workspace_id=read_only_ws_id,
+                read_only_workspace_id=(None if registration.remote else read_only_ws_id),
                 proxy=proxy,
                 proxy_kind=proxy_kind,
                 # Contact-bound skill packages → placed into the sandbox's native
                 # skills dir so the CLI discovers them.
-                skills=[s.name for s in (agent.skills or []) if s.name],
+                skills=(
+                    [] if registration.remote else [s.name for s in (agent.skills or []) if s.name]
+                ),
+                adapter_config=agent.setup.model_dump(mode="json"),
             )
             self._sessions[key] = new_sess
             self._last_used[key] = time.monotonic()
@@ -326,10 +337,8 @@ class AdapterPool:
                 self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
         for _, s in to_close:
-            try:
+            with contextlib.suppress(Exception):
                 await s.close()
-            except Exception:
-                pass
 
     async def close_sessions_for_conv(self, conv_id: str) -> None:
         """Drop all cached sessions (across all agents) for a conversation.
@@ -343,10 +352,8 @@ class AdapterPool:
                 self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
         for _, s in to_close:
-            try:
+            with contextlib.suppress(Exception):
                 await s.close()
-            except Exception:
-                pass
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -354,10 +361,8 @@ class AdapterPool:
             self._sessions.clear()
             self._last_used.clear()
         for s in sessions:
-            try:
+            with contextlib.suppress(Exception):
                 await s.close()
-            except Exception:
-                pass
 
 
 # ─────────── singleton bootstrap ───────────

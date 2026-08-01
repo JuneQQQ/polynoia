@@ -13,8 +13,7 @@ yield AdapterEvent instances from `AdapterSession.send()`.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
-from typing import Annotated, Any, Literal, Protocol, Union
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -153,19 +152,17 @@ class RateLimitEvent(BaseModel):
 
 
 AdapterEvent = Annotated[
-    Union[
-        SessionStartedEvent,
-        SessionEndedEvent,
-        TurnStartedEvent,
-        TurnCompletedEvent,
-        TurnFailedEvent,
-        PartStartedEvent,
-        PartDeltaEvent,
-        PartCompletedEvent,
-        PermissionRequestedEvent,
-        HookTriggeredEvent,
-        RateLimitEvent,
-    ],
+    SessionStartedEvent
+    | SessionEndedEvent
+    | TurnStartedEvent
+    | TurnCompletedEvent
+    | TurnFailedEvent
+    | PartStartedEvent
+    | PartDeltaEvent
+    | PartCompletedEvent
+    | PermissionRequestedEvent
+    | HookTriggeredEvent
+    | RateLimitEvent,
     Field(discriminator="type"),
 ]
 
@@ -226,6 +223,7 @@ class Adapter(Protocol):
         proxy: str | None = None,
         proxy_kind: str = "system",
         skills: list[str] | None = None,
+        adapter_config: dict[str, Any] | None = None,
     ) -> AdapterSession:
         """Start a fresh session.
 
@@ -252,5 +250,7 @@ class Adapter(Protocol):
                 HTTP_PROXY + HTTPS_PROXY).
             skills: Optional contact-level skills exposed to runtimes that
                 support native skill discovery.
+            adapter_config: complete per-contact setup for transport-specific
+                adapters such as A2A. Local CLI adapters ignore it.
         """
         ...

@@ -76,6 +76,7 @@ from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayl
 from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
+from polynoia.skills import supports_native_skills
 
 log = logging.getLogger(__name__)
 
@@ -161,10 +162,7 @@ class GenericAcpAdapter:
             tokens = line[0].split() if line else []
             version = (
                 tokens[self.provider.version_token_index]
-                if tokens
-                and -len(tokens)
-                <= self.provider.version_token_index
-                < len(tokens)
+                if tokens and -len(tokens) <= self.provider.version_token_index < len(tokens)
                 else None
             )
             if proc.returncode != 0 or version is None:
@@ -192,8 +190,9 @@ class GenericAcpAdapter:
         proxy: str | None = None,
         proxy_kind: str = "system",
         skills: list[str] | None = None,
+        adapter_config: dict[str, Any] | None = None,
     ) -> GenericAcpSession:
-        del allowed_tools, merge_mode
+        del allowed_tools, merge_mode, adapter_config
         if workspace_id and agent_id:
             sandbox = await Sandbox.create_workspace_sandbox(
                 workspace_id=workspace_id,
@@ -208,8 +207,10 @@ class GenericAcpAdapter:
             sandbox = await Sandbox.create(conv_id)
         if agent_id and sandbox.agent_id is None:
             sandbox.agent_id = agent_id
-        placed_skills = await sandbox.place_skill_packages(
-            skills or [], adapter_id=self.meta.agent_id
+        placed_skills = (
+            await sandbox.place_skill_packages(skills or [], adapter_id=self.meta.agent_id)
+            if supports_native_skills(self.meta.agent_id)
+            else []
         )
         session_env = apply_proxy_egress(dict(env or {}), proxy_kind, proxy)
         return GenericAcpSession(
@@ -852,9 +853,7 @@ class GenericAcpSession:
                     # bounded grace window so it stays in the current turn.
                     if self._provider.trailing_flush_grace_s:
                         with contextlib.suppress(Exception):
-                            await asyncio.sleep(
-                                self._provider.trailing_flush_grace_s
-                            )
+                            await asyncio.sleep(self._provider.trailing_flush_grace_s)
                     with contextlib.suppress(Exception):
                         await notif_queue.put(_SENTINEL)
 

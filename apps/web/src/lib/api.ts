@@ -1,6 +1,7 @@
 import { getServerHttpBase } from "./runtime-config";
 /** HTTP API client — Polynoia server REST. */
 import type {
+	A2ADiscoveredAgent,
 	Agent,
 	ConflictFile,
 	Provider,
@@ -171,8 +172,36 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
 		headers: { "content-type": "application/json" },
 		body: body !== undefined ? JSON.stringify(body) : undefined,
 	});
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await responseError(res);
 	return res.json() as Promise<T>;
+}
+
+async function responseError(res: Response): Promise<Error> {
+	const fallback = `${res.status} ${res.statusText}`.trim();
+	try {
+		const payload = (await res.json()) as {
+			detail?:
+				| string
+				| {
+						category?: string;
+						message?: string;
+				  };
+		};
+		const detail = payload.detail;
+		if (typeof detail === "string" && detail.trim()) {
+			return new Error(detail);
+		}
+		if (detail && typeof detail === "object") {
+			const category = String(detail.category || "").trim();
+			const message = String(detail.message || "").trim();
+			if (category && message) return new Error(`${category}: ${message}`);
+			if (message) return new Error(message);
+			if (category) return new Error(category);
+		}
+	} catch {
+		// Non-JSON error response: retain the HTTP status fallback.
+	}
+	return new Error(fallback);
 }
 
 async function patchJSON<T>(path: string, body?: unknown): Promise<T> {
@@ -571,6 +600,19 @@ export const api = {
 
 	// Contacts — user-created agents using an enabled adapter
 	listEnabledAdapters: () => getJSON<EnabledAdapter[]>("/api/adapters/enabled"),
+	discoverA2A: (locator: string) =>
+		postJSON<{ agent: A2ADiscoveredAgent }>("/api/a2a/discover", { locator }),
+	installA2A: (body: {
+		locator: string;
+		expected_card_hash: string;
+		bearer_env_var?: string;
+	}) =>
+		postJSON<{ contact: Agent; existing: boolean }>("/api/a2a/install", body),
+	refreshA2AAgent: (id: string) =>
+		postJSON<{ contact: Agent; changes: string[] }>(
+			`/api/a2a/agents/${encodeURIComponent(id)}/refresh`,
+			{},
+		),
 	// Network egress for an adapter (shared by all its contacts). proxy is only
 	// honored when proxy_kind === "custom".
 	setAdapterProxy: (

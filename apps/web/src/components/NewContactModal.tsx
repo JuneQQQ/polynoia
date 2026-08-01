@@ -13,6 +13,7 @@ import { api } from "../lib/api";
 import { t } from "../lib/i18n";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
+import { A2AImportPanel } from "./A2AImportPanel";
 
 type EnabledAdapter = {
 	id: string;
@@ -20,6 +21,8 @@ type EnabledAdapter = {
 	default_model: string | null;
 	model_hint: string | null;
 };
+
+type ContactMode = "local" | "a2a";
 
 const COLOR_OPTIONS = [
 	"#D2691E", // claude orange
@@ -80,6 +83,7 @@ export function NewContactModal({
 	const agents = useStore((s) => s.agents);
 	const lang = useStore((s) => s.lang);
 	const isEdit = editing !== null;
+	const [contactMode, setContactMode] = useState<ContactMode>("local");
 	// In create mode, a heuristic suggestion can seed fields (对话式创建).
 	const pf = isEdit ? null : prefill;
 
@@ -277,6 +281,11 @@ export function NewContactModal({
 		() => agents.some((a) => a.name === name.trim() && a.id !== "you"),
 		[agents, name],
 	);
+	const showLocalLoading = contactMode === "local" && adapters === null;
+	const showNoLocalAdapters =
+		contactMode === "local" && adapters !== null && adapters.length === 0;
+	const showLocalForm =
+		contactMode === "local" && adapters !== null && adapters.length > 0;
 
 	const submit = async () => {
 		if (!canSubmit) return;
@@ -368,13 +377,61 @@ export function NewContactModal({
 				</header>
 
 				<div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-					{adapters === null && (
+					{!isEdit && (
+						<div
+							role="tablist"
+							aria-label={t("newContact", lang)}
+							className="grid grid-cols-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-surface-2)] p-1"
+						>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={contactMode === "local"}
+								onClick={() => setContactMode("local")}
+								className={`rounded px-3 py-1.5 text-[12px] transition ${
+									contactMode === "local"
+										? "bg-[var(--color-bg)] text-[var(--color-fg)] shadow-sm"
+										: "text-[var(--color-fg-3)]"
+								}`}
+							>
+								{t("a2aLocalMode", lang)}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={contactMode === "a2a"}
+								onClick={() => setContactMode("a2a")}
+								className={`rounded px-3 py-1.5 text-[12px] transition ${
+									contactMode === "a2a"
+										? "bg-[var(--color-bg)] text-[var(--color-fg)] shadow-sm"
+										: "text-[var(--color-fg-3)]"
+								}`}
+							>
+								{t("a2aRemoteMode", lang)}
+							</button>
+						</div>
+					)}
+
+					{!isEdit && contactMode === "a2a" && (
+						<A2AImportPanel
+							onCancel={onClose}
+							onInstalled={async (agent) => {
+								await onCreated();
+								setOkMsg(
+									t("contactCreated", lang).replace("{name}", agent.name),
+								);
+								setTimeout(onClose, 1100);
+							}}
+						/>
+					)}
+
+					{showLocalLoading && (
 						<div className="text-center py-8 text-[12px] text-[var(--color-fg-3)]">
 							{t("loadingAdapters", lang)}
 						</div>
 					)}
 
-					{adapters !== null && adapters.length === 0 && (
+					{showNoLocalAdapters && (
 						<div className="border border-dashed border-[var(--color-line-strong)] rounded p-4 text-center space-y-2">
 							<div className="text-[12.5px] text-[var(--color-fg-2)]">
 								{t("noAdaptersConnected", lang)}
@@ -396,7 +453,7 @@ export function NewContactModal({
 						</div>
 					)}
 
-					{adapters !== null && adapters.length > 0 && (
+					{showLocalForm && (
 						<>
 							<Field label={t("adapters", lang)} required>
 								<select
@@ -750,7 +807,7 @@ export function NewContactModal({
 						</>
 					)}
 
-					{err && (
+					{contactMode === "local" && err && (
 						<div className="text-[11.5px] text-[var(--color-red)] bg-[var(--color-red-soft)]/40 px-3 py-2 rounded border border-[var(--color-red)]/30">
 							{err}
 						</div>
@@ -763,41 +820,43 @@ export function NewContactModal({
 					)}
 				</div>
 
-				<footer className="px-6 py-4 border-t border-[var(--color-line)] flex items-center gap-3">
-					<button
-						type="button"
-						onClick={() => {
-							onClose();
-							onOpenAdapterManager();
-						}}
-						className="link-accent text-[12px] inline-flex items-center gap-1"
-					>
-						<Wrench size={11} />
-						{t("manageAdapters", lang)}
-					</button>
-					<div className="flex-1" />
-					<button
-						type="button"
-						onClick={onClose}
-						className="text-[13px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:underline transition"
-					>
-						{t("cancel", lang)}
-					</button>
-					<button
-						type="button"
-						onClick={submit}
-						disabled={!canSubmit}
-						className="btn-primary"
-					>
-						{busy
-							? isEdit
-								? t("saving", lang)
-								: t("creating", lang)
-							: isEdit
-								? t("saveChanges", lang)
-								: t("createContact", lang)}
-					</button>
-				</footer>
+				{(isEdit || contactMode === "local") && (
+					<footer className="px-6 py-4 border-t border-[var(--color-line)] flex items-center gap-3">
+						<button
+							type="button"
+							onClick={() => {
+								onClose();
+								onOpenAdapterManager();
+							}}
+							className="link-accent text-[12px] inline-flex items-center gap-1"
+						>
+							<Wrench size={11} />
+							{t("manageAdapters", lang)}
+						</button>
+						<div className="flex-1" />
+						<button
+							type="button"
+							onClick={onClose}
+							className="text-[13px] text-[var(--color-fg-3)] hover:text-[var(--color-fg)] hover:underline transition"
+						>
+							{t("cancel", lang)}
+						</button>
+						<button
+							type="button"
+							onClick={submit}
+							disabled={!canSubmit}
+							className="btn-primary"
+						>
+							{busy
+								? isEdit
+									? t("saving", lang)
+									: t("creating", lang)
+								: isEdit
+									? t("saveChanges", lang)
+									: t("createContact", lang)}
+						</button>
+					</footer>
+				)}
 			</div>
 		</div>
 	);

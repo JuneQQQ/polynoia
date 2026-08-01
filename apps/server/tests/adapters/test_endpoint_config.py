@@ -62,6 +62,7 @@ def test_api_key_is_redacted_from_api_model_but_persisted_for_storage():
         "model": None,
         "api_base_url": "https://api.example/v1",
         "max_context_tokens": None,
+        "a2a": None,
         "api_key": "secret",
     }
 

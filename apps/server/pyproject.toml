@@ -5,6 +5,7 @@ description = "Polynoia multi-agent collaboration platform — backend"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
+    "a2a-sdk>=1.0,<2",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.9.0",
@@ -53,4 +54,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "slow: marks tests that hit live LLM backends (deselect with '-m \"not slow\"'); auto-skipped unless POLYNOIA_RUN_SLOW_INTEGRATION=1",
+    "a2a_live: hits a separately running official A2A sample; requires POLYNOIA_A2A_SAMPLE_URL",
 ]

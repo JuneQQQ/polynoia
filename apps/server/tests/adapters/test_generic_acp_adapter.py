@@ -73,6 +73,21 @@ def test_provider_record_builds_adapter_without_new_adapter_class() -> None:
     assert adapters["demo-acp"].provider is provider
 
 
+@pytest.mark.asyncio
+async def test_generic_provider_without_native_skill_layout_starts(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(acp_runtime.settings, "sandbox_root", tmp_path)
+
+    session = await GenericAcpAdapter(_provider()).start_session(
+        conv_id="generic-no-native-skills",
+        skills=[],
+    )
+
+    assert session._skills == []
+
+
 def test_provider_registry_rejects_mismatched_key() -> None:
     with pytest.raises(ValueError, match="does not match"):
         build_registered_acp_adapters({"wrong-id": _provider()})

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from polynoia.api.a2a_routes import router as a2a_router
 from polynoia.api.contacts_routes import router as contacts_router
 from polynoia.api.conversations_routes import router as conversations_router
 from polynoia.api.onboarding import router as onboarding_router
@@ -16,7 +17,6 @@ from polynoia.api.terminal import router as terminal_router
 from polynoia.api.workspace_files import router as workspace_files_router
 from polynoia.api.workspaces_routes import router as workspaces_router
 from polynoia.api.ws_conv import ws_router
-from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import SessionLocal, dispose_engine
 from polynoia.storage.repo import (
@@ -94,7 +94,7 @@ async def lifespan(_app: FastAPI):
         if mani.exists():
             try:
                 return _json.loads(mani.read_text()).get("integration_branch") or None
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return None
         return None
 
@@ -138,9 +138,9 @@ async def lifespan(_app: FastAPI):
                             sender_id=sender_id, sender_label=sender_id,
                         )
                         await _broadcast_to_conv(conv_id, frame)
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _log.exception("liveness sweep failed")
 
     _sweeper_task = _asyncio.create_task(_liveness_sweeper())
@@ -177,6 +177,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations_router)
     app.include_router(quality_router)
     app.include_router(role_presets_router)
+    app.include_router(a2a_router)
     app.include_router(ws_router)
     return app
 

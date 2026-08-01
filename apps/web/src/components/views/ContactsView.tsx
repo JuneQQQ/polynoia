@@ -18,6 +18,7 @@ const ADAPTER_LABEL: Record<string, string> = {
 	claudeCode: "Claude Code",
 	codex: "Codex",
 	opencoder: "OpenCode",
+	a2a: "A2A Remote",
 };
 
 export function ContactsView() {

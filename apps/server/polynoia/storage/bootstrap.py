@@ -27,7 +27,6 @@ from polynoia.storage.repo import (
     upsert_workspace,
 )
 
-
 # Per-column SQLite patches for tables that pre-date a newer model. Each entry
 # is (table, column, full `ADD COLUMN` SQL). Idempotent: each column is
 # detected via PRAGMA table_info, applied only if missing. Keeps dev DBs
@@ -209,6 +208,14 @@ async def bootstrap_db() -> None:
         # Step 2: short-circuit if any provider row exists
         existing = await session.execute(select(ProviderRow).limit(1))
         if existing.scalar_one_or_none() is not None:
+            # Feature providers must also be added to databases seeded by an
+            # older release. Do this only after the empty-database check: adding
+            # it first would make a fresh database skip every other seed row.
+            if settings.a2a_enabled:
+                from polynoia.api.seed import a2a_provider
+
+                await upsert_provider(session, a2a_provider())
+                await session.commit()
             return
 
         # Lazy import — seed.py is in api/ which would otherwise cycle.

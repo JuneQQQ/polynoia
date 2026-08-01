@@ -33,6 +33,7 @@ const ADAPTER_LABEL: Record<string, string> = {
 	claudeCode: "Claude Code",
 	codex: "Codex",
 	opencoder: "OpenCode",
+	a2a: "A2A Remote",
 };
 
 import { isMobile as _isMobile } from "../lib/platform";
@@ -145,7 +146,7 @@ export function Sidebar({
 			const id = (ev as CustomEvent<{ agentId?: string }>).detail?.agentId;
 			if (!id) return;
 			const a = useStore.getState().agents.find((x) => x.id === id);
-			if (!a) return;
+			if (!a || a.setup?.a2a) return;
 			setEditingContact(a);
 			setNewContactOpen(true);
 		};

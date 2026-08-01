@@ -62,9 +62,9 @@ from polynoia.adapters.base import (
     TurnFailedEvent,
     TurnStartedEvent,
 )
-from polynoia.domain.messages import TextBlock as PNTextBlock
-from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
 from polynoia.credentials import use_direct_host_credentials
+from polynoia.domain.messages import ReasoningPayload, TextPayload, ToolCallPayload
+from polynoia.domain.messages import TextBlock as PNTextBlock
 from polynoia.mcp.tools import tools_for_role
 from polynoia.sandbox import Sandbox
 from polynoia.settings import settings
@@ -140,7 +140,9 @@ class ClaudeCodeAdapter:
         proxy: str | None = None,
         proxy_kind: str = "system",
         skills: list[str] | None = None,
+        adapter_config: dict[str, Any] | None = None,
     ) -> ClaudeCodeSession:
+        _ = adapter_config
         # P1.1 routing — group convs in a workspace share git via worktrees.
         # Project access for DMs is explicit; there is no read-only fallback role.
         if workspace_id and agent_id:
@@ -313,10 +315,8 @@ class ClaudeCodeAdapter:
             stderr_buf.append(line)
             if len(stderr_buf) > 200:
                 del stderr_buf[: len(stderr_buf) - 200]
-            try:
+            with contextlib.suppress(Exception):
                 _sys.stderr.write(line)
-            except Exception:  # noqa: BLE001 — best-effort tee
-                pass
 
         # On macOS the SDK's BUNDLED `claude` binary fails the Pro OAuth request
         # with a 403 ("Request not allowed") — it isn't the Keychain item's

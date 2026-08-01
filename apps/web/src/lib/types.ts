@@ -376,6 +376,51 @@ export type Provider = {
 	bg: string;
 };
 
+export type A2AAgentSetup = {
+	card_url: string;
+	endpoint_url: string;
+	protocol_binding: "JSONRPC" | "HTTP+JSON";
+	protocol_version: string;
+	card: Record<string, unknown>;
+	card_hash: string;
+	etag?: string | null;
+	last_checked_at: string;
+	signature_status: "signed_valid" | "unsigned";
+	/** Server environment-variable name only; never a bearer-token value. */
+	bearer_env_var?: string | null;
+};
+
+export type A2AAgentSkill = {
+	id: string;
+	name: string;
+	description?: string;
+	tags?: string[];
+};
+
+export type A2ADiscoveredAgent = {
+	locator: string;
+	card_url: string;
+	endpoint_url: string;
+	protocol_binding: "JSONRPC" | "HTTP+JSON";
+	protocol_version: string;
+	card: {
+		name: string;
+		description?: string;
+		version: string;
+		skills?: A2AAgentSkill[];
+		capabilities?: { streaming?: boolean; [key: string]: unknown };
+		defaultInputModes?: string[];
+		defaultOutputModes?: string[];
+		[key: string]: unknown;
+	};
+	card_hash: string;
+	etag?: string | null;
+	signature_status: "signed_valid" | "unsigned";
+	installable: boolean;
+	auth_kind: "none" | "bearer" | "unsupported";
+	unsupported_auth_reason?: string | null;
+};
+
 export type AgentSetup = {
 	cli_command?: string | null;
 	detected?: boolean;
@@ -384,7 +429,7 @@ export type AgentSetup = {
 	auth_kinds?: string[];
 	base_model?: string | null;
 	docs?: string | null;
-	/** Which adapter backs this contact (claudeCode / codex / opencoder). */
+	/** Which adapter backs this contact (claudeCode / codex / opencoder / a2a). */
 	adapter_id?: string | null;
 	/** Backend model id, e.g. "claude-sonnet-4-6" or "anthropic/claude-opus-4-7". */
 	model?: string | null;
@@ -393,6 +438,7 @@ export type AgentSetup = {
 	/** User-set model context-window ceiling, in tokens. When null, server
 	 * falls back to KNOWN_MODEL_CONTEXT table. See ADR-012. */
 	max_context_tokens?: number | null;
+	a2a?: A2AAgentSetup | null;
 };
 
 export type Agent = {
