@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 import httpx
@@ -95,6 +96,54 @@ async def test_cards_default_alias_and_rpc_slash_alias() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lifespan_attempts_every_handler_close_before_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _alpha, _beta = build_two_agent_runtime()
+    closed: list[str] = []
+
+    async def close_alpha() -> None:
+        closed.append("alpha")
+
+    async def close_beta() -> None:
+        closed.append("beta")
+        raise RuntimeError("beta close failed")
+
+    monkeypatch.setattr(runtime.handlers[0], "aclose", close_alpha)
+    monkeypatch.setattr(runtime.handlers[1], "aclose", close_beta)
+
+    with pytest.raises(ExceptionGroup, match="A2A handler shutdown failed"):
+        async with runtime.app.router.lifespan_context(runtime.app):
+            pass
+
+    assert closed == ["beta", "alpha"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_remaining_handlers_after_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _alpha, _beta = build_two_agent_runtime()
+    closed: list[str] = []
+
+    async def close_alpha() -> None:
+        closed.append("alpha")
+
+    async def cancel_beta_close() -> None:
+        closed.append("beta")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runtime.handlers[0], "aclose", close_alpha)
+    monkeypatch.setattr(runtime.handlers[1], "aclose", cancel_beta_close)
+
+    with pytest.raises(BaseExceptionGroup, match="A2A handler shutdown failed"):
+        async with runtime.app.router.lifespan_context(runtime.app):
+            pass
+
+    assert closed == ["beta", "alpha"]
+
+
+@pytest.mark.asyncio
 async def test_task_ids_cannot_cross_agent_routes() -> None:
     runtime, _alpha, _beta = build_two_agent_runtime()
     async with (
@@ -121,6 +170,27 @@ async def test_task_ids_cannot_cross_agent_routes() -> None:
         )
 
     assert leaked.json()["error"]["code"] == -32001
+
+
+@pytest.mark.asyncio
+async def test_wrong_rpc_content_type_is_rejected_before_json_parsing() -> None:
+    runtime, _alpha, _beta = build_two_agent_runtime()
+    async with (
+        runtime.app.router.lifespan_context(runtime.app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=runtime.app),
+            base_url="http://test",
+            headers={"A2A-Version": "1.0"},
+        ) as client,
+    ):
+        response = await client.post(
+            "/agents/alpha/a2a",
+            content=b"{'not': 'json'}",
+            headers={"Content-Type": "text/plain"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["error"]["code"] == -32005
 
 
 @pytest.mark.asyncio

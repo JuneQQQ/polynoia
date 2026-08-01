@@ -8,13 +8,17 @@ from dataclasses import dataclass
 from a2a import types
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.request_handlers import DefaultRequestHandlerV2
+from a2a.server.request_handlers.response_helpers import build_error_response
 from a2a.server.routes import (
     add_a2a_routes_to_fastapi,
     create_agent_card_routes,
     create_jsonrpc_routes,
 )
 from a2a.server.tasks import TaskStore
+from a2a.utils.errors import ContentTypeNotSupportedError
 from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from polynoia_a2a_bridge.context import (
     RedactingServerCallContextBuilder,
@@ -62,6 +66,7 @@ def build_bridge_runtime(
     handlers: list[DefaultRequestHandlerV2] = []
     card_routes = []
     rpc_routes = []
+    rpc_paths: set[str] = set()
     for agent_id, mount in by_id.items():
         context_builder = StrictRequestContextBuilder(
             mount.task_store,
@@ -78,6 +83,7 @@ def build_bridge_runtime(
         rpc_path = f"/agents/{agent_id}/a2a"
         card_routes.extend(create_agent_card_routes(mount.card, card_url=card_path))
         for compatible_path in (rpc_path, f"{rpc_path}/"):
+            rpc_paths.add(compatible_path)
             rpc_routes.extend(
                 create_jsonrpc_routes(
                     handler,
@@ -98,10 +104,31 @@ def build_bridge_runtime(
         try:
             yield
         finally:
+            close_errors: list[BaseException] = []
             for handler in reversed(handlers):
-                await handler.aclose()
+                try:
+                    await handler.aclose()
+                except BaseException as error:
+                    close_errors.append(error)
+            if close_errors:
+                raise BaseExceptionGroup("A2A handler shutdown failed", close_errors)
 
     app = FastAPI(title="Polynoia A2A Bridge", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def enforce_jsonrpc_content_type(request: Request, call_next):
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if (
+            request.method == "POST"
+            and request.url.path in rpc_paths
+            and media_type != "application/json"
+        ):
+            error = ContentTypeNotSupportedError(
+                message="A2A JSON-RPC endpoints require Content-Type: application/json"
+            )
+            return JSONResponse(build_error_response(None, error), status_code=200)
+        return await call_next(request)
+
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=card_routes,

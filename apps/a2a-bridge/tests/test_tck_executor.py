@@ -42,6 +42,8 @@ async def send(prefix: str) -> dict:
         ("tck-input-required", "TASK_STATE_INPUT_REQUIRED"),
         ("tck-reject-task", "TASK_STATE_REJECTED"),
         ("tck-stream-001", "TASK_STATE_COMPLETED"),
+        ("tck-stream-002", "TASK_STATE_COMPLETED"),
+        ("tck-stream-003", "TASK_STATE_COMPLETED"),
         ("test-resubscribe-message-id", "TASK_STATE_COMPLETED"),
     ],
 )
@@ -58,7 +60,9 @@ async def test_tck_task_states(prefix: str, state: str) -> None:
         ("tck-artifact-file", "raw"),
         ("tck-artifact-file-url", "url"),
         ("tck-artifact-data", "data"),
+        ("tck-stream-artifact-text", "text"),
         ("tck-stream-artifact-file", "raw"),
+        ("tck-stream-ordering-001", "text"),
     ],
 )
 async def test_tck_artifact_vocabulary(prefix: str, content_key: str) -> None:

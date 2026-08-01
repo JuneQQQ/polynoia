@@ -1,0 +1,19 @@
+diff --git a/tck/requirements/core_operations.py b/tck/requirements/core_operations.py
+index 8f42037..24f999c 100644
+--- a/tck/requirements/core_operations.py
++++ b/tck/requirements/core_operations.py
+@@ -10,5 +10,6 @@
+ from tck.requirements.base import (
+     CANCEL_TASK_BINDING,
++    CONTENT_TYPE_NOT_SUPPORTED_ERROR,
+     GET_TASK_BINDING,
+     LIST_TASKS_BINDING,
+     SEND_MESSAGE_BINDING,
+@@ -105,6 +106,7 @@ CORE_OPERATIONS_REQUIREMENTS: list[RequirementSpec] = [
+         binding=SEND_MESSAGE_BINDING,
+         proto_request_type="SendMessageRequest",
+         expected_behavior="ContentTypeNotSupportedError returned",
++        expected_error=CONTENT_TYPE_NOT_SUPPORTED_ERROR,
+         spec_url=f"{SPEC_BASE}311-send-message",
+         tags=[CORE, SEND_MESSAGE, ERROR],
+         sample_input={
