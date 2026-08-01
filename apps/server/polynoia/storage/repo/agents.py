@@ -1,4 +1,5 @@
 """Storage repo — agents entity functions (split from the former monolithic repo.py)."""
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -44,14 +45,26 @@ def _agent_from_row(r: AgentRow) -> Agent:
     )
 
 
+def _setup_for_storage(setup: AgentSetup | None) -> dict | None:
+    """Serialize setup without turning its write-only API key into API output."""
+    if setup is None:
+        return None
+    # JSON mode converts A2A URL values to primitives accepted by the JSON DB
+    # column while the normal API serialization still excludes ``api_key``.
+    value = setup.model_dump(mode="json")
+    # ``api_key`` is excluded from normal Pydantic serialization to prevent
+    # accidental response leaks, so add it only on the DB write path.
+    if setup.api_key is not None:
+        value["api_key"] = setup.api_key
+    return value
+
+
 async def list_agents(session: AsyncSession) -> list[Agent]:
     result = await session.execute(select(AgentRow).order_by(AgentRow.handle))
     return [_agent_from_row(r) for r in result.scalars().all()]
 
 
-async def find_a2a_agent_by_card_url(
-    session: AsyncSession, card_url: str
-) -> Agent | None:
+async def find_a2a_agent_by_card_url(session: AsyncSession, card_url: str) -> Agent | None:
     """Return the installed A2A contact for one canonical card URL."""
 
     for agent in await list_agents(session):
@@ -72,7 +85,7 @@ async def delete_agent(session: AsyncSession, agent_id: str) -> bool:
 
 async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
     existing = await session.get(AgentRow, a.id)
-    setup_dict = a.setup.model_dump(mode="json") if a.setup else None
+    setup_dict = _setup_for_storage(a.setup)
     if existing:
         existing.name = a.name
         existing.role = a.role
@@ -94,15 +107,29 @@ async def upsert_agent(session: AsyncSession, a: Agent) -> Agent:
         existing.human = a.human
         existing.foreign_from = a.foreign_from
     else:
-        session.add(AgentRow(
-            id=a.id, name=a.name, role=a.role, provider=a.provider, handle=a.handle,
-            initials=a.initials, color=a.color, bg=a.bg, tagline=a.tagline,
-            caps=a.caps, online=a.online, enabled=a.enabled, custom=a.custom,
-            system_prompt=a.system_prompt, tools_whitelist=a.tools_whitelist,
-            tool_role=a.tool_role,
-            skills=[s.model_dump() for s in a.skills],
-            setup=setup_dict,
-            human=a.human, foreign_from=a.foreign_from,
-        ))
+        session.add(
+            AgentRow(
+                id=a.id,
+                name=a.name,
+                role=a.role,
+                provider=a.provider,
+                handle=a.handle,
+                initials=a.initials,
+                color=a.color,
+                bg=a.bg,
+                tagline=a.tagline,
+                caps=a.caps,
+                online=a.online,
+                enabled=a.enabled,
+                custom=a.custom,
+                system_prompt=a.system_prompt,
+                tools_whitelist=a.tools_whitelist,
+                tool_role=a.tool_role,
+                skills=[s.model_dump() for s in a.skills],
+                setup=setup_dict,
+                human=a.human,
+                foreign_from=a.foreign_from,
+            )
+        )
     await session.flush()
     return a

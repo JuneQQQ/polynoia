@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -26,11 +27,14 @@ async def _collect(gen: AsyncIterator) -> list:
 
 
 def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
-    config = json.loads(_opencode_config_content("opencode-go/glm5.1"))
+    config = json.loads(
+        _opencode_config_content("opencode-go/glm5.1", ["demo-skill"])
+    )
 
     assert config["model"] == "opencode-go/glm5.1"
     permission = config["permission"]
     assert permission["polynoia_*"] == "allow"
+    assert permission["skill"] == {"*": "deny", "demo-skill": "allow"}
     for builtin in (
         "read",
         "edit",
@@ -39,7 +43,6 @@ def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
         "list",
         "bash",
         "task",
-        "skill",
         "lsp",
         "todoread",
         "todowrite",
@@ -53,11 +56,13 @@ def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
 def test_opencode_executable_uses_agent_path(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    exe = bin_dir / "opencode"
-    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    exe = bin_dir / ("opencode.cmd" if os.name == "nt" else "opencode")
+    exe.write_text("@exit /b 0\n" if os.name == "nt" else "#!/bin/sh\nexit 0\n", encoding="utf-8")
     exe.chmod(0o755)
 
-    assert _opencode_executable({"PATH": str(bin_dir)}) == str(exe)
+    assert os.path.normcase(_opencode_executable({"PATH": str(bin_dir)})) == os.path.normcase(
+        str(exe)
+    )
 
 
 def test_opencode_executable_has_clear_error_for_missing_cli() -> None:

@@ -23,12 +23,13 @@ import contextlib
 import logging
 import os
 import time
+from typing import cast
 
+from polynoia.adapters.acp_providers import build_registered_acp_adapters
 from polynoia.adapters.base import Adapter, AdapterSession
-from polynoia.adapters.registry import (
-    get_adapter_registration,
-    iter_enabled_adapter_ids,
-)
+from polynoia.adapters.claude_code import ClaudeCodeAdapter
+from polynoia.adapters.codex import CodexAdapter
+from polynoia.adapters.registry import get_adapter_registration
 
 logger = logging.getLogger("polynoia.adapters.pool")
 
@@ -78,18 +79,26 @@ _GRANTED_ACCESS_BANNER = """
 
 def _ensure_base_adapters() -> dict[str, Adapter]:
     """Lazy-init base adapter instances. One per CLI, shared across all contacts."""
-    enabled = iter_enabled_adapter_ids()
-    for adapter_id in tuple(_BASE_ADAPTERS):
-        if adapter_id not in enabled:
-            _BASE_ADAPTERS.pop(adapter_id, None)
-    for adapter_id in enabled:
-        if adapter_id in _BASE_ADAPTERS:
-            continue
-        registration = get_adapter_registration(adapter_id)
-        # This helper also backs the local CLI-management API. It must not
-        # construct remote transports just to enumerate/probe local adapters.
-        if registration is not None and not registration.remote:
-            _BASE_ADAPTERS[adapter_id] = registration.factory()
+    # A2A is created only when a remote session is requested. If the feature
+    # flag is later disabled, do not leave that cached transport discoverable
+    # through the local adapter-management API.
+    if get_adapter_registration("a2a") is None:
+        _BASE_ADAPTERS.pop("a2a", None)
+
+    if not _BASE_ADAPTERS:
+        dedicated_adapters = {
+            "claudeCode": cast(Adapter, ClaudeCodeAdapter()),
+            "codex": cast(Adapter, CodexAdapter()),
+        }
+        acp_adapters = build_registered_acp_adapters()
+        conflicts = dedicated_adapters.keys() & acp_adapters.keys()
+        if conflicts:
+            names = ", ".join(sorted(conflicts))
+            raise ValueError(f"ACP provider conflicts with dedicated adapter: {names}")
+        _BASE_ADAPTERS.update(dedicated_adapters)
+        _BASE_ADAPTERS.update(
+            {adapter_id: cast(Adapter, adapter) for adapter_id, adapter in acp_adapters.items()}
+        )
     return _BASE_ADAPTERS
 
 
@@ -131,8 +140,7 @@ class AdapterPool:
         now = time.monotonic()
         async with self._lock:
             stale = [
-                k for k, sess in self._sessions.items()
-                if now - self._last_used.get(k, now) > ttl
+                k for k, sess in self._sessions.items() if now - self._last_used.get(k, now) > ttl
             ]
             popped = []
             for k in stale:
@@ -144,7 +152,9 @@ class AdapterPool:
             with contextlib.suppress(Exception):
                 await s.close()
         if popped:
-            logger.info("reaped %d idle adapter session(s): %s", len(popped), [k for k, _ in popped])
+            logger.info(
+                "reaped %d idle adapter session(s): %s", len(popped), [k for k, _ in popped]
+            )
         return len(popped)
 
     async def get_session(self, agent_id: str, conv_id: str) -> AdapterSession | None:
@@ -193,9 +203,7 @@ class AdapterPool:
             agent = next((r for r in rows if r.id == agent_id), None)
             if agent is None or agent.setup is None or not agent.setup.adapter_id:
                 return None
-            proxy, proxy_kind = adapter_proxy.get(
-                agent.setup.adapter_id, (None, "system")
-            )
+            proxy, proxy_kind = adapter_proxy.get(agent.setup.adapter_id, (None, "system"))
 
             registration = get_adapter_registration(agent.setup.adapter_id)
             if registration is None:
@@ -206,6 +214,11 @@ class AdapterPool:
                 _BASE_ADAPTERS[agent.setup.adapter_id] = base
             if base is None:
                 return None
+            from polynoia.adapters.endpoint_config import resolve_endpoint
+
+            endpoint_env = resolve_endpoint(agent.setup.adapter_id, agent.setup).as_env(
+                agent.setup.adapter_id
+            )
 
             # The conv's DESIGNATED orchestrator is self-enabling: force its
             # EFFECTIVE tool_role to "orchestrator" regardless of the contact's
@@ -217,9 +230,7 @@ class AdapterPool:
             # uses the role-derived list); kept as-is to not perturb existing
             # behavior. ADR-017.
             is_conv_orch = (
-                conv is not None
-                and conv.group
-                and agent_id == conv.orchestrator_member_id
+                conv is not None and conv.group and agent_id == conv.orchestrator_member_id
             )
             allowed: list[str] | None = [] if is_conv_orch else None
 
@@ -274,6 +285,7 @@ class AdapterPool:
             new_sess = await base.start_session(
                 conv_id=conv_id,
                 model=agent.setup.model,
+                env=endpoint_env,
                 system_prompt=system_prompt,
                 allowed_tools=allowed,
                 workspace_id=None if registration.remote else ws_id,
@@ -291,17 +303,13 @@ class AdapterPool:
                 # contact-level gate and is intentionally NOT passed, so the role
                 # set is used wholesale. Restriction is opt-in per project/conv.
                 tools_whitelist=None,
-                read_only_workspace_id=(
-                    None if registration.remote else read_only_ws_id
-                ),
+                read_only_workspace_id=(None if registration.remote else read_only_ws_id),
                 proxy=proxy,
                 proxy_kind=proxy_kind,
                 # Contact-bound skill packages → placed into the sandbox's native
                 # skills dir so the CLI discovers them.
                 skills=(
-                    []
-                    if registration.remote
-                    else [s.name for s in (agent.skills or []) if s.name]
+                    [] if registration.remote else [s.name for s in (agent.skills or []) if s.name]
                 ),
                 adapter_config=agent.setup.model_dump(mode="json"),
             )

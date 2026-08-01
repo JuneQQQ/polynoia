@@ -152,7 +152,17 @@ class RateLimitEvent(BaseModel):
 
 
 AdapterEvent = Annotated[
-    SessionStartedEvent | SessionEndedEvent | TurnStartedEvent | TurnCompletedEvent | TurnFailedEvent | PartStartedEvent | PartDeltaEvent | PartCompletedEvent | PermissionRequestedEvent | HookTriggeredEvent | RateLimitEvent,
+    SessionStartedEvent
+    | SessionEndedEvent
+    | TurnStartedEvent
+    | TurnCompletedEvent
+    | TurnFailedEvent
+    | PartStartedEvent
+    | PartDeltaEvent
+    | PartCompletedEvent
+    | PermissionRequestedEvent
+    | HookTriggeredEvent
+    | RateLimitEvent,
     Field(discriminator="type"),
 ]
 
@@ -238,7 +248,8 @@ class Adapter(Protocol):
             proxy_kind: "system" (inherit host HTTP_PROXY etc.), "direct"
                 (strip all proxy env vars), or "custom" (set proxy URL as
                 HTTP_PROXY + HTTPS_PROXY).
-            skills: contact-bound local skill packages, when supported.
+            skills: Optional contact-level skills exposed to runtimes that
+                support native skill discovery.
             adapter_config: complete per-contact setup for transport-specific
                 adapters such as A2A. Local CLI adapters ignore it.
         """

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+from polynoia.adapters.acp import GenericAcpAdapter
+from polynoia.adapters.acp_providers import ACP_PROVIDERS, OPENCODE_PROVIDER
 from polynoia.adapters.pool import _BASE_ADAPTERS, _ensure_base_adapters
-from polynoia.adapters.registry import adapter_is_remote, iter_enabled_adapter_ids
+from polynoia.adapters.registry import (
+    adapter_is_remote,
+    get_adapter_registration,
+    iter_enabled_adapter_ids,
+)
 from polynoia.domain.entities import A2AAgentSetup, AgentSetup
 
 
@@ -45,3 +53,18 @@ def test_local_adapter_probe_does_not_construct_remote_adapter(monkeypatch) -> N
     adapters = _ensure_base_adapters()
 
     assert set(adapters) == {"claudeCode", "opencoder", "codex"}
+
+
+def test_registry_exposes_declarative_acp_provider(monkeypatch) -> None:
+    provider = replace(
+        OPENCODE_PROVIDER,
+        meta=OPENCODE_PROVIDER.meta.model_copy(update={"agent_id": "demo-acp"}),
+    )
+    monkeypatch.setitem(ACP_PROVIDERS, "demo-acp", provider)
+
+    registration = get_adapter_registration("demo-acp")
+
+    assert registration is not None
+    assert registration.remote is False
+    assert isinstance(registration.factory(), GenericAcpAdapter)
+    assert "demo-acp" in iter_enabled_adapter_ids()

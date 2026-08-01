@@ -67,6 +67,11 @@ class AgentSetup(BaseModel):
     docs: str | None = None
     adapter_id: str | None = None  # claudeCode / codex / opencoder / a2a
     model: str | None = None  # backend model id, e.g. "claude-sonnet-4"
+    # A contact's credential is deliberately excluded from every API model
+    # serialization.  The storage repository persists it explicitly; callers
+    # can replace it, but can never read it back through a contact response.
+    api_key: str | None = Field(default=None, exclude=True)
+    api_base_url: str | None = None
     # User-specified model context-window ceiling, in tokens. The contact modal
     # requires picking a preset (128k / 200k / 256k / 1M / custom) — there is no
     # model→context guessing table (it mis-guessed third-party / proxy models).
@@ -78,9 +83,11 @@ class AgentSetup(BaseModel):
 
 
 class AgentSkill(BaseModel):
-    """A reusable capability/prompt preset bound to a contact (agent). Its
-    ``instructions`` are injected into the agent's identity layer (system
-    prompt) at turn time, so "attaching a skill" gives the agent that ability."""
+    """A reusable Skill package bound to a contact (agent).
+
+    Native-capable adapters receive the complete package and load it on demand.
+    ``instructions`` is an optional per-contact inline override/fallback.
+    """
 
     name: str
     instructions: str

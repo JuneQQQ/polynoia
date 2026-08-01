@@ -61,7 +61,11 @@ class Settings(BaseSettings):
 
     # Anthropic / OpenAI
     anthropic_api_key: str | None = None
+    anthropic_api_base_url: str | None = None
     openai_api_key: str | None = None
+    openai_api_base_url: str | None = None
+    opencode_api_key: str | None = None
+    opencode_api_base_url: str | None = None
 
     # Remote A2A clients. Network access still requires an explicit discovery
     # or invocation action; the flag can remove both surfaces for a deployment.

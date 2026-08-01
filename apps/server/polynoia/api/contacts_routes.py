@@ -14,6 +14,7 @@ defines ``router = APIRouter()``; ``main.py`` includes it.
 from __future__ import annotations
 
 import contextlib
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 
@@ -308,8 +309,8 @@ def _parse_skills(raw) -> list:
     """Validate contact-level skills from request input → [AgentSkill].
 
     A skill is bound by NAME (referencing an installed skill package placed into
-    the agent's sandbox at spawn). ``instructions`` are optional — when present
-    they're also injected into the identity layer (inline-prompt fallback)."""
+    the agent's native Skill path at spawn). ``instructions`` are optional —
+    when present they're injected as an explicit per-contact override."""
     from polynoia.domain.entities import AgentSkill
 
     out: list = []
@@ -422,6 +423,8 @@ async def create_contact(body: dict):
             adapter_id=adapter_id,
             model=model,
             max_context_tokens=body.get("max_context_tokens"),
+            api_key=_optional_api_key(body.get("api_key")),
+            api_base_url=_optional_api_base_url(body.get("api_base_url")),
         ),
     )
 
@@ -491,6 +494,16 @@ async def update_contact(contact_id: str, body: dict):
             if existing.setup is None:
                 existing.setup = AgentSetup()
             existing.setup.max_context_tokens = body["max_context_tokens"]
+        if "api_key" in body:
+            if existing.setup is None:
+                from polynoia.domain.entities import AgentSetup
+                existing.setup = AgentSetup()
+            existing.setup.api_key = _optional_api_key(body["api_key"])
+        if "api_base_url" in body:
+            if existing.setup is None:
+                from polynoia.domain.entities import AgentSetup
+                existing.setup = AgentSetup()
+            existing.setup.api_base_url = _optional_api_base_url(body["api_base_url"])
         await storage_repo.upsert_agent(session, existing)
         await session.commit()
     # Invalidate cached sessions so the next turn re-spawns with new model/prompt.
@@ -582,3 +595,30 @@ def _default_initials(name: str) -> str | None:
     if len(parts) >= 2 and parts[0][0].isascii() and parts[1][0].isascii():
         return (parts[0][0] + parts[1][0]).title()
     return name[0]
+
+
+def _optional_api_key(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="api_key must be a string")
+    value = value.strip()
+    if len(value) > 4096:
+        raise HTTPException(status_code=400, detail="api_key is too long")
+    return value or None
+
+
+def _optional_api_base_url(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="api_base_url must be a string")
+    value = value.strip().rstrip("/")
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="api_base_url must be an http(s) URL")
+    if len(value) > 2048:
+        raise HTTPException(status_code=400, detail="api_base_url is too long")
+    return value

@@ -93,6 +93,10 @@ export function NewContactModal({
 	);
 	const [model, setModel] = useState<string>(editing?.setup?.model ?? "");
 	const [customModel, setCustomModel] = useState(editing?.setup?.model ?? "");
+	const [apiKey, setApiKey] = useState("");
+	const [apiBaseUrl, setApiBaseUrl] = useState(
+		editing?.setup?.api_base_url ?? "",
+	);
 	// Context-window ceiling — required, chosen from presets (or 自定义). The
 	// dropdown value is the preset number as a string, or "custom"; customCtx
 	// holds the free-typed number when "custom". Seeds from the editing value:
@@ -306,6 +310,8 @@ export function NewContactModal({
 					tagline: tagline.trim(),
 					color,
 					max_context_tokens: parsedMaxCtx,
+					...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+					api_base_url: apiBaseUrl.trim() || null,
 					skills: cleanSkills(),
 				});
 			} else {
@@ -317,6 +323,8 @@ export function NewContactModal({
 					tagline: tagline.trim() || undefined,
 					color,
 					max_context_tokens: parsedMaxCtx ?? undefined,
+					api_key: apiKey.trim() || undefined,
+					api_base_url: apiBaseUrl.trim() || undefined,
 					skills: cleanSkills(),
 				});
 			}
@@ -548,6 +556,33 @@ export function NewContactModal({
 									<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
 										{t("contextLengthHint", lang)}
 									</div>
+								</div>
+							</Field>
+
+							<Field label={t("apiKey", lang)}>
+								<input
+									type="password"
+									autoComplete="new-password"
+									value={apiKey}
+									onChange={(e) => setApiKey(e.target.value)}
+									placeholder={isEdit ? "••••••••" : "sk-…"}
+									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
+								/>
+								<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
+									{t("apiKeyHint", lang)}
+								</div>
+							</Field>
+
+							<Field label={t("apiBaseUrl", lang)}>
+								<input
+									type="url"
+									value={apiBaseUrl}
+									onChange={(e) => setApiBaseUrl(e.target.value)}
+									placeholder="https://api.example.com/v1"
+									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
+								/>
+								<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
+									{t("apiBaseUrlHint", lang)}
 								</div>
 							</Field>
 

@@ -160,8 +160,9 @@ class ClaudeCodeAdapter:
         # Contact-level skill packages: copy each bound skill folder into the
         # sandbox's native ~/.claude/skills/ so the underlying Claude CLI
         # discovers them (progressive disclosure) and can run their scripts.
-        if skills:
-            await sandbox.place_skill_packages(skills)
+        placed_skills = await sandbox.place_skill_packages(
+            skills or [], adapter_id=self.meta.agent_id
+        )
 
         # Register the Polynoia MCP server. Claude Code spawns it as a stdio
         # subprocess; POLYNOIA_CONV_ID + POLYNOIA_AGENT_ID bind that MCP instance
@@ -331,6 +332,10 @@ class ClaudeCodeAdapter:
             tools=[],                       # no built-ins — MCP tools only
             allowed_tools=effective_allowed,
             setting_sources=[],             # don't inherit parent skills/plugins
+            # SDK-level allowlist enables only this contact's bound packages.
+            # It also exposes the native progressive-disclosure Skill tool
+            # without re-enabling unrelated Claude Code built-ins.
+            skills=placed_skills,
             strict_mcp_config=True,         # only the `polynoia` MCP server
             permission_mode="bypassPermissions",   # MCP boundary suffices
             model=model,
