@@ -162,3 +162,25 @@ def test_server_context_does_not_retain_headers_or_credentials() -> None:
     rendered = repr(result)
     assert "top-secret" not in rendered
     assert "session=private" not in rendered
+
+
+def test_server_context_preserves_only_the_protocol_version_header() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/agents/test/a2a",
+            "headers": [
+                (b"a2a-version", b"1.0"),
+                (b"authorization", b"Bearer top-secret"),
+                (b"x-forwarded-for", b"192.0.2.1"),
+            ],
+        }
+    )
+
+    result = RedactingServerCallContextBuilder().build(request)
+
+    assert result.state == {
+        "bridge.principal": "anonymous",
+        "headers": {"A2A-Version": "1.0"},
+    }

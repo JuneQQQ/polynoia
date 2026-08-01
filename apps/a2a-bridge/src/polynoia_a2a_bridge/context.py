@@ -13,6 +13,7 @@ from a2a.server.agent_execution import (
 from a2a.server.context import ServerCallContext
 from a2a.server.routes.common import ServerCallContextBuilder, StarletteUser
 from a2a.server.tasks import TaskStore
+from a2a.utils import constants
 from a2a.utils.errors import (
     ContentTypeNotSupportedError,
     InvalidParamsError,
@@ -93,11 +94,15 @@ class RedactingServerCallContextBuilder(ServerCallContextBuilder):
     def build(self, request: Request) -> ServerCallContext:
         user = StarletteUser(request.user) if "user" in request.scope else UnauthenticatedUser()
         principal = user.user_name if user.is_authenticated else "anonymous"
+        state: dict[str, object] = {"bridge.principal": principal}
+        protocol_version = request.headers.get(constants.VERSION_HEADER)
+        if protocol_version:
+            state["headers"] = {constants.VERSION_HEADER: protocol_version}
         return ServerCallContext(
             user=user,
             tenant=self._tenant,
             requested_extensions=get_requested_extensions(
                 request.headers.getlist(HTTP_EXTENSION_HEADER)
             ),
-            state={"bridge.principal": principal},
+            state=state,
         )
