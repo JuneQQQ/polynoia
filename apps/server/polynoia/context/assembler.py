@@ -65,6 +65,13 @@ async def build_context_for_turn(
         # callers pass valid agent_ids.)
         return user_text
 
+    # A2A is a trust boundary, not another local model backend. Remote agents
+    # receive only the task supplied for this turn; local identity, Agent Card
+    # capability metadata, conversation history, pinned messages, and shared
+    # workspace context must never be folded into their role=user message.
+    if agent.setup is not None and agent.setup.a2a is not None:
+        return user_text
+
     # Resolve the current conv ONCE for per-turn, conv-scoped facts: the
     # per-project role (R2). member_role_for returns None unless this is a
     # project conv, so out-of-project chats inject zero project-role text.

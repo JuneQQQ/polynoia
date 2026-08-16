@@ -18,8 +18,10 @@ from pathlib import Path
 
 import pytest
 
+import polynoia.storage.db as db_module
 from polynoia.context import build_context_for_turn
 from polynoia.domain.entities import (
+    A2AAgentSetup,
     Agent,
     AgentSetup,
     AgentSkill,
@@ -27,7 +29,6 @@ from polynoia.domain.entities import (
     Workspace,
     new_ulid,
 )
-import polynoia.storage.db as db_module
 from polynoia.storage.models import MessageRow
 from polynoia.storage.repo import (
     append_message,
@@ -154,6 +155,56 @@ async def test_identity_layer_always_present(clean_db) -> None:
     assert "你是 孤独 Agent" in prompt  # persona injected via system_prompt
     assert "# 当前用户消息" in prompt
     assert "你好" in prompt
+
+
+@pytest.mark.asyncio
+async def test_remote_a2a_agent_receives_only_current_task(clean_db) -> None:
+    remote = Agent(
+        id=new_ulid(),
+        name="Refund Agent",
+        role="support",
+        provider="a2a",
+        handle="@refund-agent",
+        initials="RA",
+        color="#000",
+        bg="#fff",
+        system_prompt="Handle refund requests.",
+        setup=AgentSetup(
+            adapter_id="a2a",
+            a2a=A2AAgentSetup(
+                card_url="https://agent.example/.well-known/agent-card.json",
+                endpoint_url="https://agent.example/a2a",
+                protocol_binding="JSONRPC",
+                protocol_version="1.0",
+                card={
+                    "name": "Refund Agent",
+                    "skills": [{"name": "refund", "description": "Issue refunds"}],
+                },
+                card_hash="sha256:test",
+                signature_status="unsigned",
+            ),
+        ),
+    )
+    async with db_module.SessionLocal() as session:
+        await upsert_agent(session, remote)
+        await session.commit()
+    conv = await _seed_conv(
+        "Remote support",
+        members=["you", remote.id],
+        direct=True,
+    )
+    await _post_message(conv.id, "you", "Please refund the previous order")
+    current_task = "What is the shipping status for order 1234?"
+
+    async with db_module.SessionLocal() as db:
+        prompt = await build_context_for_turn(
+            db,
+            agent_id=remote.id,
+            conv_id=conv.id,
+            user_text=current_task,
+        )
+
+    assert prompt == current_task
 
 
 @pytest.mark.asyncio
