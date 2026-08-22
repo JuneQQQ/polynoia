@@ -962,16 +962,32 @@ export const useStore = create<Store>((set, get) => ({
 					),
 				),
 			]);
-			set({
+			set((state) => ({
 				providers,
 				agents,
 				servers,
 				workspaces,
 				serverReachable: true,
 				connectionProbed: true,
-			});
+				// With no active conversation there is no WebSocket to promote the
+				// initial `connecting` state. A successful seed probe is the desktop/
+				// home-screen connection truth. Do not override a live chat's explicit
+				// `reconnecting` state merely because REST still answers.
+				connectionStatus:
+					state.connectionStatus === "connecting" ||
+					state.connectionStatus === "offline"
+						? "online"
+						: state.connectionStatus,
+			}));
 		} catch (e) {
-			set({ serverReachable: false, connectionProbed: true });
+			set((state) => ({
+				serverReachable: false,
+				connectionProbed: true,
+				connectionStatus:
+					state.connectionStatus === "connecting"
+						? "offline"
+						: state.connectionStatus,
+			}));
 			throw e;
 		}
 	},

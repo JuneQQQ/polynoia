@@ -48,6 +48,7 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
       "exceptionDomain": "127.0.0.1"
     }
   }
