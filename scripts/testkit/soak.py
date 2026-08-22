@@ -10,7 +10,7 @@
     I2 无卡死 agent(running_agents 清空)
     I3 工作区单 HEAD、无 MERGE_HEAD、无冲突标记
     I4 notes.md 行数 == 已完成轮数(交付物没有丢轮)
-    I5 turn_events seq 严格单调(事件日志无空洞)
+    I5 Conversation Stream seq 严格单调
 
 用法:
   python3 scripts/testkit/soak.py --model opencode/deepseek-v4-flash-free \\
@@ -64,7 +64,7 @@ def invariants(base: str, conv_id: str, ws_id: str, done_rounds: int, prev_msg_c
     else:
         chk("I3 工作区存在", False, str(ws_dir))
 
-    ev = req(base, "GET", f"/api/conversations/{conv_id}/events?after=0&limit=2000")
+    ev = req(base, "GET", f"/api/conversations/{conv_id}/stream?after=0&limit=2000")
     seqs = [e["seq"] for e in ev["events"]]
     chk("I5 事件 seq 严格单调", all(b > a for a, b in zip(seqs, seqs[1:])), f"{len(seqs)} events")
     return checks, len(items)

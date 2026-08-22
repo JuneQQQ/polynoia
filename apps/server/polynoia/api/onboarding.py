@@ -8,10 +8,9 @@ detected adapters via POST /api/agents/{id}/enable. This avoids the misleading
 default of showing 3 CLI contacts that the user hasn't actually authenticated.
 
 Credential handling:
-    We never copy the user's auth tokens — sandboxes run with HOME rewritten so
-    each adapter subprocess sees the host's original credential files
-    (~/.claude, ~/.codex, ~/.config/opencode). Detection here only checks for
-    the presence of those files so we can tell the user "ready to enable".
+    The response reports only credential presence/source, never secret values.
+    A Harness can be ready through a host CLI login, a server-level endpoint,
+    or a write-only per-contact endpoint configured in the next step.
 """
 
 from __future__ import annotations
@@ -19,10 +18,14 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
+
+from polynoia.sandbox import agent_subprocess_path
+from polynoia.settings import settings
 
 router = APIRouter()
 
@@ -60,19 +63,19 @@ ADAPTER_CANDIDATES: list[dict[str, Any]] = [
     {
         "id": "claudeCode",
         "name": "Claude Code",
-        "cli": "claude",
+        "cli": "claude-agent-acp",
         "version_flag": "--version",
         # ~/.claude works on both POSIX and Windows (Path.home() returns
         # %USERPROFILE% on Windows), so we list the same paths.
         "auth_paths": [
             _HOME / ".claude" / ".credentials.json",
             _HOME / ".claude" / "auth.json",
-            _HOME / ".claude.json",
         ],
         "login_cmd": "claude  # then run /login inside the REPL",
-        "install_hint": "npm i -g @anthropic-ai/claude-code",
-        "docs": "https://docs.claude.com/en/docs/claude-code",
-        "tagline": "Anthropic · 官方代码 Agent",
+        "contact_endpoint": True,
+        "install_hint": "npm i -g @agentclientprotocol/claude-agent-acp",
+        "docs": "https://github.com/agentclientprotocol/claude-agent-acp",
+        "tagline": "Claude Code · ACP Adapter",
     },
     {
         "id": "opencoder",
@@ -96,19 +99,82 @@ ADAPTER_CANDIDATES: list[dict[str, Any]] = [
     {
         "id": "codex",
         "name": "Codex",
-        "cli": "codex",
+        "cli": "codex-acp",
         "version_flag": "--version",
         # ~/.codex works on both platforms; Codex respects CODEX_HOME env.
         "auth_paths": [
             _HOME / ".codex" / "auth.json",
-            _HOME / ".codex" / "config.toml",
         ],
-        "login_cmd": "codex login",
-        "install_hint": "npm i -g @openai/codex",
-        "docs": "https://developers.openai.com/codex",
-        "tagline": "OpenAI · gpt-5 系",
+        "login_cmd": "codex-acp login",
+        "contact_endpoint": True,
+        "install_hint": "npm i -g @agentclientprotocol/codex-acp",
+        "docs": "https://github.com/agentclientprotocol/codex-acp",
+        "tagline": "Codex · ACP Adapter",
+    },
+    {
+        "id": "qwenCode",
+        "name": "Qwen Code",
+        "cli": "qwen",
+        "version_flag": "--version",
+        "auth_paths": [
+            _HOME / ".qwen" / "oauth_creds.json",
+        ],
+        "login_cmd": "qwen auth login",
+        "contact_endpoint": True,
+        "install_hint": "npm i -g @qwen-code/qwen-code",
+        "docs": "https://qwenlm.github.io/qwen-code-docs/",
+        "tagline": "Qwen · ACP 代码 Agent",
+    },
+    {
+        "id": "deepseek",
+        "name": "DeepSeek Harness",
+        "cli": "dsh-acp-demo",
+        "version_flag": "--version",
+        "auth_paths": [],
+        "login_cmd": "在联系人设置中填写 endpoint 和 API key",
+        "contact_endpoint": True,
+        "install_hint": "python -m polynoia.installers.deepseek_harness",
+        "docs": "https://github.com/deepseek-ai/deepseek-harness",
+        "tagline": "DeepSeek · 实验性官方 ACP (工具能力取决于 endpoint)",
     },
 ]
+
+
+def credential_state(adapter_id: str) -> dict[str, Any]:
+    """Return non-secret credential readiness for one Harness."""
+
+    spec = next((item for item in ADAPTER_CANDIDATES if item["id"] == adapter_id), None)
+    if spec is None:
+        return {
+            "credential_ready": False,
+            "credential_source": None,
+            "auth_path": None,
+            "contact_endpoint": False,
+            "allows_unverified_host_login": False,
+        }
+    auth_path = next((path for path in spec["auth_paths"] if path.exists()), None)
+    server_endpoint = {
+        "claudeCode": bool(
+            settings.anthropic_api_key
+            or os.getenv("ANTHROPIC_API_KEY")
+            or os.getenv("ANTHROPIC_AUTH_TOKEN")
+        ),
+        "codex": bool(settings.openai_api_key or os.getenv("OPENAI_API_KEY")),
+        "qwenCode": bool(
+            (settings.openai_api_key and settings.openai_api_base_url)
+            or (os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_BASE_URL"))
+        ),
+        "deepseek": bool(os.getenv("DEEPSEEK_API_KEY")),
+        "opencoder": bool(settings.opencode_api_key or os.getenv("OPENCODE_API_KEY")),
+    }.get(adapter_id, False)
+    source = "cli-login" if auth_path else "server-endpoint" if server_endpoint else None
+    return {
+        "credential_ready": bool(auth_path or server_endpoint),
+        "credential_source": source,
+        "auth_path": str(auth_path) if auth_path else None,
+        "contact_endpoint": bool(spec.get("contact_endpoint")),
+        "allows_unverified_host_login": bool(spec["auth_paths"]),
+    }
 
 
 async def _probe_version(cli: str, flag: str) -> str | None:
@@ -129,10 +195,15 @@ async def _probe_version(cli: str, flag: str) -> str | None:
 
 async def _probe_one(spec: dict[str, Any], onboarded: set[str]) -> dict[str, Any]:
     """Probe a single adapter — `shutil.which` + optional `--version` + auth file check."""
-    cli_path = shutil.which(spec["cli"])
+    cli_path = shutil.which(spec["cli"], path=agent_subprocess_path())
     installed = bool(cli_path)
-    version = await _probe_version(spec["cli"], spec["version_flag"]) if installed else None
-    auth_path = next((p for p in spec["auth_paths"] if p.exists()), None)
+    version = await _probe_version(cli_path, spec["version_flag"]) if cli_path else None
+    credentials = credential_state(spec["id"])
+    authenticated = credentials["credential_ready"]
+    contact_endpoint = credentials["contact_endpoint"]
+    install_hint = spec["install_hint"]
+    if spec["id"] == "deepseek":
+        install_hint = f'"{sys.executable}" -m polynoia.installers.deepseek_harness'
     return {
         "id": spec["id"],
         "name": spec["name"],
@@ -140,10 +211,13 @@ async def _probe_one(spec: dict[str, Any], onboarded: set[str]) -> dict[str, Any
         "cli_path": cli_path,
         "installed": installed,
         "version": version,
-        "authenticated": auth_path is not None,
-        "auth_path": str(auth_path) if auth_path else None,
+        "authenticated": authenticated,
+        "contact_endpoint": contact_endpoint,
+        "ready": installed and (authenticated or contact_endpoint),
+        "auth_path": credentials["auth_path"],
+        "credential_source": credentials["credential_source"],
         "login_cmd": spec["login_cmd"],
-        "install_hint": spec["install_hint"],
+        "install_hint": install_hint,
         "docs": spec["docs"],
         "tagline": spec["tagline"],
         "enabled": spec["id"] in onboarded,

@@ -1,11 +1,12 @@
 """Storage repo — workspaces entity functions (split from the former monolithic repo.py)."""
+
 from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.domain.entities import Workspace
-from polynoia.storage.models import ConversationRow, WorkspaceRow
+from polynoia.storage.models import ConversationRow, WorkspaceEventRow, WorkspaceRow
 from polynoia.storage.repo.conversations import delete_conversation
 
 # ── Workspace ────────────────────────────────────────────────────────
@@ -46,12 +47,21 @@ async def upsert_workspace(session: AsyncSession, w: Workspace) -> Workspace:
         existing.members = w.members
         existing.default_merge_mode = w.default_merge_mode
     else:
-        session.add(WorkspaceRow(
-            id=w.id, server_id=w.server_id, name=w.name, desc=w.desc,
-            repo=w.repo, path=w.path, integration_branch=w.integration_branch,
-            color=w.color, role=w.role, members=w.members,
-            default_merge_mode=w.default_merge_mode,
-        ))
+        session.add(
+            WorkspaceRow(
+                id=w.id,
+                server_id=w.server_id,
+                name=w.name,
+                desc=w.desc,
+                repo=w.repo,
+                path=w.path,
+                integration_branch=w.integration_branch,
+                color=w.color,
+                role=w.role,
+                members=w.members,
+                default_merge_mode=w.default_merge_mode,
+            )
+        )
     await session.flush()
     return w
 
@@ -70,6 +80,9 @@ async def delete_workspace(session: AsyncSession, ws_id: str) -> bool:
     )
     for conv_id in result.scalars().all():
         await delete_conversation(session, conv_id)
+    await session.execute(
+        WorkspaceEventRow.__table__.delete().where(WorkspaceEventRow.workspace_id == ws_id)
+    )
     await session.delete(row)
     await session.flush()
     return True

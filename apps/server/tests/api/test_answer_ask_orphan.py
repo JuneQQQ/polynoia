@@ -33,6 +33,13 @@ async def fresh_db(tmp_path, monkeypatch):
 
 async def _seed_ask_form(conv_id: str) -> str:
     """Persist an ask-form card and return its message id (== ask_id)."""
+    turn_id = f"turn-{conv_id}"[:40]
+    await storage_repo.create_polynoia_turn(
+        turn_id=turn_id,
+        conv_id=conv_id,
+        agent_id="agent-a",
+        input_json={"text": "ask"},
+    )
     async with SessionLocal() as db:
         mid = await storage_repo.append_message(
             db,
@@ -43,6 +50,7 @@ async def _seed_ask_form(conv_id: str) -> str:
                 "blocking_tool": True,
                 "questions": [{"prompt": "几个?"}],
             },
+            turn_id=turn_id,
         )
         await db.commit()
     return mid
@@ -127,6 +135,10 @@ async def test_live_ask_persists_user_bubble_no_stamp(fresh_db) -> None:
     senders = [r["sender_id"] for r in rows]
     assert senders == ["agent-a", "you"]
     assert "answer" not in card.payload
+    events = await storage_repo.list_conversation_events(conv_id)
+    assert [(event.event_type, event.message_id) for event in events] == [
+        ("user/message", routes._ask_answer_message_id(ask_id))
+    ]
 
 
 @pytest.mark.asyncio

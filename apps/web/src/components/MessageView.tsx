@@ -13,7 +13,6 @@ import {
 	RefreshCw,
 	Reply,
 	RotateCcw,
-	Undo2,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { api } from "../lib/api";
@@ -107,6 +106,20 @@ export function isRenderableMessagePayload(
 	return true;
 }
 
+/** A turn retry is safe only when the persisted error points at an exact
+ * Polynoia turn. Never fall back to resending text: that can target a different
+ * Harness session or repeat side effects. */
+export function retryableErrorTurnId(
+	message: Pick<Message, "payload" | "turn_id">,
+): string | null {
+	return message.payload.kind === "error" &&
+		message.payload.retryable === true &&
+		typeof message.turn_id === "string" &&
+		message.turn_id.length > 0
+		? message.turn_id
+		: null;
+}
+
 type Props = {
 	convId: string;
 	msgId: string;
@@ -116,7 +129,7 @@ type Props = {
 	isGrouped?: boolean;
 	/** Lane-compact mode (TasksBurstPart): skip avatar column, skip sender
 	 * name (lane header already shows the agent), tighter padding. Payload
-	 * + action row (reply/copy/pin/regenerate) still rendered. */
+	 * + action row (reply/copy/pin/retry) still rendered. */
 	compact?: boolean;
 	/** Show the agent-level action row only on the final visible message of one
 	 * agent turn, not on every intermediate step/tool/result message. */
@@ -149,6 +162,7 @@ function MessageViewInner({
 
 	if (!msg) return null;
 	if (!isRenderableMessagePayload(msg.payload, isStreaming)) return null;
+	const errorTurnId = retryableErrorTurnId(msg);
 	const isYou = msg.sender_id === "you";
 	const isSystem = msg.sender_id === "system";
 	// Tombstone: a real sender who is no longer a member of this conv (e.g.
@@ -347,10 +361,11 @@ function MessageViewInner({
 						)}
 						{!isYou && !isSystem && agent?.custom && (
 							<span
-								className="text-[9px] font-mono uppercase tracking-[0.18em] px-1.5 py-[1px] rounded-sm font-medium"
+								title={agent.setup?.model ?? "ACP contact"}
+								className="max-w-36 truncate text-[9px] font-mono px-1.5 py-[1px] rounded-sm font-medium"
 								style={{ background: agent.bg, color: agent.color }}
 							>
-								CUSTOM
+								{agent.setup?.model ?? "ACP"}
 							</span>
 						)}
 						{!isYou &&
@@ -379,6 +394,7 @@ function MessageViewInner({
 								convId={convId}
 								pinned={msg.pinned ?? false}
 								deliveryPending={deliveryPending}
+								mobile={mobile}
 							/>
 						)}
 					</div>
@@ -395,6 +411,7 @@ function MessageViewInner({
 							convId={convId}
 							pinned={msg.pinned ?? false}
 							deliveryPending={deliveryPending}
+							mobile={mobile}
 						/>
 					</div>
 				)}
@@ -449,7 +466,11 @@ function MessageViewInner({
 							payload={
 								isStreaming && isEmptyStreamingTextPayload(msg.payload)
 									? { kind: "typing", note: t("replying", lang) }
-									: msg.payload
+									: msg.payload.kind === "error" &&
+											msg.payload.retryable === true &&
+											!errorTurnId
+										? { ...msg.payload, retryable: false }
+										: msg.payload
 							}
 							isStreaming={isStreaming}
 							convId={convId}
@@ -462,6 +483,9 @@ function MessageViewInner({
 						msgId={msg.id}
 						convId={convId}
 						pinned={msg.pinned ?? false}
+						turnId={msg.turn_id ?? null}
+						prominentRetry={errorTurnId !== null}
+						mobile={mobile}
 					/>
 				)}
 			</div>
@@ -473,10 +497,16 @@ function AgentMessageActions({
 	msgId,
 	convId,
 	pinned,
+	turnId,
+	prominentRetry,
+	mobile,
 }: {
 	msgId: string;
 	convId: string;
 	pinned: boolean;
+	turnId: string | null;
+	prominentRetry: boolean;
+	mobile: boolean;
 }) {
 	const lang = useStore((s) => s.lang);
 	const [busy, setBusy] = useState(false);
@@ -518,12 +548,11 @@ function AgentMessageActions({
 		}
 	};
 
-	const regenerate = () => {
-		const m = currentMessage();
-		if (!m) return;
+	const retryTurn = () => {
+		if (!turnId) return;
 		window.dispatchEvent(
-			new CustomEvent("polynoia:regenerate", {
-				detail: { convId, msgId, senderId: m.sender_id, text: "" },
+			new CustomEvent("polynoia:retry-turn", {
+				detail: { convId, turnId },
 			}),
 		);
 	};
@@ -551,11 +580,25 @@ function AgentMessageActions({
 		}
 	};
 
-	const buttonClass =
-		"grid h-5 w-5 place-items-center rounded-sm text-[var(--color-fg-4)] opacity-0 transition group-hover/msg:opacity-70 hover:opacity-100 hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]";
+	const buttonClass = `grid place-items-center rounded-sm text-[var(--color-fg-4)] transition hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-[var(--color-accent)] ${
+		mobile
+			? "h-11 w-11 opacity-70"
+			: "h-5 w-5 opacity-0 group-hover/msg:opacity-70 hover:opacity-100 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:opacity-70"
+	}`;
 
 	return (
-		<div className="mt-1 flex items-center gap-0.5">
+		<div className="mt-1 flex flex-wrap items-center gap-0.5">
+			{prominentRetry && turnId && (
+				<button
+					type="button"
+					onClick={retryTurn}
+					aria-label={t("retryThisTurn", lang)}
+					className="mr-1 inline-flex min-h-11 items-center gap-1.5 rounded border border-[var(--color-accent)]/50 bg-[var(--color-accent-soft)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-accent)] transition hover:border-[var(--color-accent)] hover:brightness-95"
+				>
+					<RefreshCw size={13} />
+					{t("retryThisTurn", lang)}
+				</button>
+			)}
 			<button
 				type="button"
 				onClick={reply}
@@ -572,14 +615,16 @@ function AgentMessageActions({
 			>
 				<Copy size={11} />
 			</button>
-			<button
-				type="button"
-				onClick={regenerate}
-				title={t("regenerateThisTurn", lang)}
-				className={buttonClass}
-			>
-				<RefreshCw size={11} />
-			</button>
+			{turnId && !prominentRetry && (
+				<button
+					type="button"
+					onClick={retryTurn}
+					title={t("retryThisTurn", lang)}
+					className={buttonClass}
+				>
+					<RefreshCw size={11} />
+				</button>
+			)}
 			<button
 				type="button"
 				onClick={togglePin}
@@ -598,11 +643,13 @@ function MessageActions({
 	convId,
 	pinned,
 	deliveryPending,
+	mobile,
 }: {
 	msgId: string;
 	convId: string;
 	pinned: boolean;
 	deliveryPending: boolean;
+	mobile: boolean;
 }) {
 	const lang = useStore((s) => s.lang);
 	const [busy, setBusy] = useState(false);
@@ -698,34 +745,25 @@ function MessageActions({
 		});
 	};
 
-	const codeSha = useStore
-		.getState()
-		.convs.get(convId)
-		?.msgById.get(msgId)?.code_sha;
-	const workspaceId = useStore((s) => s.preview.data?.workspaceId ?? null);
 	const [restoreBusy, setRestoreBusy] = useState(false);
-	const [undoSha, setUndoSha] = useState<string | null>(null);
 
 	// 从此处重来 — user messages only. It deletes this message and every later
 	// one in the conv. If this message has a workspace checkpoint, the server
 	// restores that checkpoint first so code and timeline stay aligned.
 	const rewindHere = async () => {
 		if (restoreBusy || deliveryPending) return;
-		// Light preview when we have a workspace + checkpoint — surfaces the
-		// "you'll lose N commits" warning. For non-workspace convs (DMs)
-		// it's purely a timeline truncation; skip the preview.
 		let confirmMsg = "从此处重来:将删除这条消息以及它之后的所有消息。继续?";
-		if (workspaceId && codeSha) {
-			try {
-				const pv = await api.restorePreview(workspaceId, codeSha, convId);
-				if (!pv.ok) {
-					window.alert(`无法重来:${pv.error ?? "未知错误"}`);
-					return;
-				}
-				if (pv.blocked) {
-					window.alert("有 Agent 正在本对话里干活,先等它完成或取消再重来。");
-					return;
-				}
+		try {
+			const pv = await api.rewindPreview(convId, msgId);
+			if (!pv.ok) {
+				window.alert(`无法重来:${pv.error ?? "未知错误"}`);
+				return;
+			}
+			if (pv.blocked) {
+				window.alert("有 Agent 正在工作,先等它完成或取消再重来。");
+				return;
+			}
+			if (pv.code_restore) {
 				// Agent commits are authored by the persona id; map id/name/handle →
 				// display name so the dialog reads "(顾屿、沈昭)" not raw ULIDs. The
 				// system merge identity (polynoia-agent) → "系统".
@@ -742,9 +780,10 @@ function MessageActions({
 					`从此处重来:将删除这条消息以及之后的所有对话,并把代码回退到此刻 ` +
 					`(撤销 ${pv.commits} 处改动${who}${pv.files.length ? `;涉及 ${fileList}` : ""})。\n\n` +
 					"代码会先存可撤销快照;消息删除不可撤销。继续?";
-			} catch (e) {
-				if (!window.confirm(`预览失败 (${e}),仍要继续吗?`)) return;
 			}
+		} catch (e) {
+			window.alert(`无法预览回退:${e}`);
+			return;
 		}
 		if (!window.confirm(confirmMsg)) return;
 		// Grab the rewound message's text BEFORE truncation drops it from the
@@ -789,10 +828,6 @@ function MessageActions({
 			useStore.getState().truncateMessagesFrom(convId, msgId, res.rewind_id);
 			if (res.restored) {
 				useStore.getState().bumpWorkspaceFiles();
-				if (res.undo_sha) {
-					setUndoSha(res.undo_sha);
-					window.setTimeout(() => setUndoSha(null), 12_000);
-				}
 			}
 			// One-shot push to Composer. Composer subscribes to composerDraft,
 			// fills textarea, then clears the store so a later re-render of
@@ -810,19 +845,11 @@ function MessageActions({
 		}
 	};
 
-	const undoRestore = async () => {
-		if (!workspaceId || !undoSha) return;
-		setRestoreBusy(true);
-		try {
-			await api.restoreWorkspace(workspaceId, undoSha, convId);
-			useStore.getState().bumpWorkspaceFiles();
-			setUndoSha(null);
-		} catch (e) {
-			window.alert(`撤销失败:${e}`);
-		} finally {
-			setRestoreBusy(false);
-		}
-	};
+	const buttonClass = `grid place-items-center rounded-sm text-[var(--color-fg-4)] transition hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-[var(--color-accent)] ${
+		mobile
+			? "h-11 w-11 opacity-70"
+			: "h-5 w-5 opacity-0 group-hover/msg:opacity-60 hover:opacity-100 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:opacity-70"
+	}`;
 
 	return (
 		<div className="ml-auto flex items-center gap-0.5">
@@ -831,7 +858,7 @@ function MessageActions({
 				onClick={reply}
 				disabled={deliveryPending}
 				title={t("replyLabel", lang)}
-				className="p-0.5 rounded-sm opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)] transition-opacity duration-200"
+				className={buttonClass}
 			>
 				<Reply size={11} />
 			</button>
@@ -839,10 +866,8 @@ function MessageActions({
 				type="button"
 				onClick={copy}
 				title={copied ? t("copiedAgent", lang) : t("copyContent", lang)}
-				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
-					copied
-						? "opacity-90 text-[var(--color-green)]"
-						: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
+				className={`${buttonClass} ${
+					copied ? "opacity-90 text-[var(--color-green)]" : ""
 				}`}
 			>
 				<Copy size={11} />
@@ -852,10 +877,8 @@ function MessageActions({
 				onClick={togglePin}
 				disabled={busy || deliveryPending}
 				title={pinned ? t("convUnpin", lang) : t("pinMessageAction", lang)}
-				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
-					pinned
-						? "opacity-90 text-[var(--color-accent)]"
-						: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
+				className={`${buttonClass} ${
+					pinned ? "opacity-90 text-[var(--color-accent)]" : ""
 				}`}
 			>
 				{pinned ? <PinOff size={11} /> : <Pin size={11} />}
@@ -864,31 +887,13 @@ function MessageActions({
 				type="button"
 				onClick={rewindHere}
 				disabled={restoreBusy || deliveryPending}
-				title={
-					workspaceId && codeSha
-						? t("rewindWithWorkspace", lang)
-						: t("rewindNoWorkspace", lang)
-				}
-				className={`p-0.5 rounded-sm transition-opacity duration-200 ${
-					restoreBusy
-						? "opacity-90 text-[var(--color-accent)]"
-						: "opacity-0 group-hover/msg:opacity-60 hover:opacity-100 text-[var(--color-fg-4)]"
+				title={t("rewindFromHere", lang)}
+				className={`${buttonClass} ${
+					restoreBusy ? "opacity-90 text-[var(--color-accent)]" : ""
 				}`}
 			>
 				<RotateCcw size={11} className={restoreBusy ? "animate-spin" : ""} />
 			</button>
-			{undoSha && (
-				<button
-					type="button"
-					onClick={undoRestore}
-					disabled={restoreBusy}
-					title="撤销回退(恢复到回退前)"
-					className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-				>
-					<Undo2 size={10} />
-					{t("undoRevert", lang)}
-				</button>
-			)}
 		</div>
 	);
 }

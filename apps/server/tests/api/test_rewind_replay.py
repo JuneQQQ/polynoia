@@ -16,6 +16,7 @@ correct, deterministic boundary is ULID order (which `list_messages` itself
 tie-breaks on, id.desc()). We assert the ULID-correct outcome and let it FAIL
 if the code uses the ambiguous created_at boundary — that failure is the win.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -91,10 +92,24 @@ async def test_rewind_same_millisecond_keeps_earlier_ulid(fresh_db) -> None:
     assert m_lo < m_hi
 
     async with SessionLocal() as db:
-        db.add(MessageRow(id=m_lo, conv_id=conv_id, sender_id="you",
-                          payload=_text("keep me"), created_at=same_ts))
-        db.add(MessageRow(id=m_hi, conv_id=conv_id, sender_id="agent-a",
-                          payload=_text("rewind from here"), created_at=same_ts))
+        db.add(
+            MessageRow(
+                id=m_lo,
+                conv_id=conv_id,
+                sender_id="you",
+                payload=_text("keep me"),
+                created_at=same_ts,
+            )
+        )
+        db.add(
+            MessageRow(
+                id=m_hi,
+                conv_id=conv_id,
+                sender_id="you",
+                payload=_text("rewind from here"),
+                created_at=same_ts,
+            )
+        )
         await db.commit()
 
     res = await rewind_conversation(conv_id, {"from_msg_id": m_hi})
@@ -140,9 +155,7 @@ async def test_rewind_response_and_broadcast_share_unique_operation_id(
                 msg_id=msg_id,
             )
             await db.commit()
-        responses.append(
-            await rewind_conversation(conv_id, {"from_msg_id": msg_id})
-        )
+        responses.append(await rewind_conversation(conv_id, {"from_msg_id": msg_id}))
 
     rewind_ids = [response["rewind_id"] for response in responses]
     assert len(set(rewind_ids)) == 2
@@ -151,8 +164,7 @@ async def test_rewind_response_and_broadcast_share_unique_operation_id(
         json.loads(line[5:].strip())
         for frame in broadcasts
         for line in frame.splitlines()
-        if line.startswith("data:")
-        and '"data-conv-rewound"' in line
+        if line.startswith("data:") and '"data-conv-rewound"' in line
     ]
     assert [frame["data"]["rewind_id"] for frame in rewind_frames] == rewind_ids
     assert [frame["data"]["from_msg_id"] for frame in rewind_frames] == message_ids
@@ -171,8 +183,11 @@ async def test_list_messages_ordering_is_ulid_deterministic(fresh_db) -> None:
     async with SessionLocal() as db:
         # insert in REVERSE ULID order to prove ordering isn't insertion order
         for mid in reversed(ids):
-            db.add(MessageRow(id=mid, conv_id=conv_id, sender_id="you",
-                              payload=_text(mid), created_at=same_ts))
+            db.add(
+                MessageRow(
+                    id=mid, conv_id=conv_id, sender_id="you", payload=_text(mid), created_at=same_ts
+                )
+            )
         await db.commit()
 
     async with SessionLocal() as db:
@@ -204,8 +219,7 @@ async def test_create_message_same_optimistic_id_is_idempotent(fresh_db) -> None
     await _mk_conv(conv_id)
 
     opt_id = new_ulid()
-    body = {"conv_id": conv_id, "sender_id": "you", "payload": _text("hi"),
-            "msg_id": opt_id}
+    body = {"conv_id": conv_id, "sender_id": "you", "payload": _text("hi"), "msg_id": opt_id}
 
     r1 = await create_message(body)
     assert r1["id"] == opt_id
@@ -428,13 +442,9 @@ async def test_interrupt_stuck_write_cannot_overwrite_concurrent_completion(
     async def no_broadcast(*_args, **_kwargs) -> None:
         return None
 
-    monkeypatch.setattr(
-        storage_repo, "update_message_payload", gated_recovery_update
-    )
+    monkeypatch.setattr(storage_repo, "update_message_payload", gated_recovery_update)
     monkeypatch.setattr(routes, "_broadcast_to_conv", no_broadcast)
-    recovery = asyncio.create_task(
-        routes.interrupt_stuck_write_message(conv_id, "write-race")
-    )
+    recovery = asyncio.create_task(routes.interrupt_stuck_write_message(conv_id, "write-race"))
     await asyncio.wait_for(recovery_validated.wait(), timeout=1.0)
     writer = asyncio.create_task(complete_normally())
     await asyncio.sleep(0.05)
@@ -453,9 +463,7 @@ async def test_interrupt_stuck_write_cannot_overwrite_concurrent_completion(
 
 
 @pytest.mark.asyncio
-async def test_interrupt_and_completion_broadcast_in_commit_order(
-    fresh_db, monkeypatch
-) -> None:
+async def test_interrupt_and_completion_broadcast_in_commit_order(fresh_db, monkeypatch) -> None:
     """The final live frame must project the same state as the final DB row."""
     conv_id = new_ulid()
     await _mk_conv(conv_id)
@@ -516,9 +524,7 @@ async def test_interrupt_and_completion_broadcast_in_commit_order(
 
 
 @pytest.mark.asyncio
-async def test_late_running_frame_cannot_reopen_recovery_terminal(
-    fresh_db, monkeypatch
-) -> None:
+async def test_late_running_frame_cannot_reopen_recovery_terminal(fresh_db, monkeypatch) -> None:
     conv_id = new_ulid()
     await _mk_conv(conv_id)
     running = {"kind": "tool-call", "name": "write", "state": "running"}
@@ -539,9 +545,10 @@ async def test_late_running_frame_cannot_reopen_recovery_terminal(
         delivered_states.append(payload["data"]["payload"]["state"])
 
     monkeypatch.setattr(routes, "_broadcast_to_conv", capture_recovery)
-    assert await routes.interrupt_stuck_write_message(
-        conv_id, "late-running"
-    ) == {"ok": True, "updated": True}
+    assert await routes.interrupt_stuck_write_message(conv_id, "late-running") == {
+        "ok": True,
+        "updated": True,
+    }
 
     applied = await ws_module._persist_streamed_tool_part(
         conv_id=conv_id,
@@ -623,9 +630,7 @@ async def test_interrupt_stuck_write_is_conversation_scoped(fresh_db) -> None:
     ["msg_id", "in_reply_to"],
 )
 @pytest.mark.asyncio
-async def test_create_message_rejects_overlong_message_references(
-    fresh_db, field: str
-) -> None:
+async def test_create_message_rejects_overlong_message_references(fresh_db, field: str) -> None:
     conv_id = new_ulid()
     await _mk_conv(conv_id)
     body = {
@@ -648,9 +653,7 @@ async def test_create_message_rejects_overlong_message_references(
     ["msg_id", "in_reply_to"],
 )
 @pytest.mark.asyncio
-async def test_create_message_accepts_64_character_references(
-    fresh_db, field: str
-) -> None:
+async def test_create_message_accepts_64_character_references(fresh_db, field: str) -> None:
     conv_id = new_ulid()
     await _mk_conv(conv_id)
     body = {
@@ -681,7 +684,8 @@ async def test_rewind_then_append_no_collision(fresh_db) -> None:
     async with SessionLocal() as db:
         for i in range(4):
             mid = await storage_repo.append_message(
-                db, conv_id=conv_id, sender_id="you", payload=_text(f"m{i}"))
+                db, conv_id=conv_id, sender_id="you", payload=_text(f"m{i}")
+            )
             ids.append(mid)
         await db.commit()
 
@@ -698,7 +702,8 @@ async def test_rewind_then_append_no_collision(fresh_db) -> None:
     # reuse a deleted id.
     async with SessionLocal() as db:
         new_mid = await storage_repo.append_message(
-            db, conv_id=conv_id, sender_id="you", payload=_text("replay"))
+            db, conv_id=conv_id, sender_id="you", payload=_text("replay")
+        )
         await db.commit()
     assert new_mid not in ids[2:], "new message reused a rewound-away id"
     assert new_mid > ids[1], "replayed message must sort after the survivors"
@@ -728,13 +733,14 @@ async def test_reply_to_rewound_message_reads_gracefully(fresh_db) -> None:
 
     async with SessionLocal() as db:
         a = await storage_repo.append_message(
-            db, conv_id=conv_id, sender_id="you", payload=_text("question"))
+            db, conv_id=conv_id, sender_id="you", payload=_text("question")
+        )
         reply = await storage_repo.append_message(
-            db, conv_id=conv_id, sender_id="agent-a", payload=_text("answer"),
-            in_reply_to=a)
+            db, conv_id=conv_id, sender_id="agent-a", payload=_text("answer"), in_reply_to=a
+        )
         later = await storage_repo.append_message(
-            db, conv_id=conv_id, sender_id="you", payload=_text("followup"),
-            in_reply_to=reply)
+            db, conv_id=conv_id, sender_id="you", payload=_text("followup"), in_reply_to=reply
+        )
         await db.commit()
 
     # Rewind from `later` (the message that replies to `reply`): `later` is gone,
@@ -746,13 +752,13 @@ async def test_reply_to_rewound_message_reads_gracefully(fresh_db) -> None:
     # a SURVIVING message with a dangling in_reply_to we rewind from `reply`,
     # which deletes reply+later but keeps `a`. That leaves no dangling ref.
     #
-    # The genuine dangling case: a message replies FORWARD-safe but its target is
-    # individually deletable. delete_message removes a single row by id; do that
-    # to the target `a`, leaving `reply` with in_reply_to=a pointing at a hole.
+    # The genuine dangling case: remove the target row directly, leaving `reply`
+    # with in_reply_to=a pointing at a hole.
     async with SessionLocal() as db:
-        ok = await storage_repo.delete_message(db, a)
+        target = await db.get(MessageRow, a)
+        assert target is not None
+        await db.delete(target)
         await db.commit()
-    assert ok is True
 
     # Reading must not crash and the orphaned reply must still be returned with
     # its (now-dangling) in_reply_to preserved verbatim — no resolution attempt.
@@ -766,12 +772,12 @@ async def test_reply_to_rewound_message_reads_gracefully(fresh_db) -> None:
     )
     assert by_id[later]["in_reply_to"] == reply
 
-    # And a rewind that targets the now-orphan-referencing message is still fine.
-    res = await rewind_conversation(conv_id, {"from_msg_id": reply})
+    # Revert is anchored to the surviving USER message, never the agent reply.
+    res = await rewind_conversation(conv_id, {"from_msg_id": later})
     assert res["ok"] is True
     async with SessionLocal() as db:
         final, _ = await storage_repo.list_messages(db, conv_id)
-    assert [m["id"] for m in final] == []  # reply + later both >= cutoff
+    assert [m["id"] for m in final] == [reply]
 
 
 # ── (5) Rewind targeting a foreign / missing id is a clean no-op vs 404 ───────
@@ -791,9 +797,11 @@ async def test_rewind_unknown_id_does_not_touch_other_conv(fresh_db, monkeypatch
 
     async with SessionLocal() as db:
         b_mid = await storage_repo.append_message(
-            db, conv_id=conv_b, sender_id="you", payload=_text("in B"))
+            db, conv_id=conv_b, sender_id="you", payload=_text("in B")
+        )
         a_mid = await storage_repo.append_message(
-            db, conv_id=conv_a, sender_id="you", payload=_text("in A"))
+            db, conv_id=conv_a, sender_id="you", payload=_text("in A")
+        )
         await db.commit()
 
     # Ask conv_a to rewind from a message that lives in conv_b → must 404.

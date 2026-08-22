@@ -1,30 +1,27 @@
-"""Quality & telemetry surface: turn-event log reads, benchmark run records,
-and the per-agent quality profile aggregation.
+"""Canonical stream reads, benchmark records, and agent quality aggregation.
 
 All read paths + two small writes (benchmark start/finish). Free zone per
 api/CLAUDE.md — touches no merge/burst machinery.
 """
+
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import case, func, select
 
-from polynoia.api import event_log
 from polynoia.domain.entities import new_ulid
+from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import (
     AgentRow,
     BenchmarkRunRow,
-    MessageRow,
+    ConversationEventRow,
+    PolynoiaTurnRow,
     ProcessRunRow,
-    TurnEventRow,
 )
 
 log = logging.getLogger(__name__)
@@ -35,40 +32,53 @@ def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-# ── turn-event log ───────────────────────────────────────────────────
+# ── canonical domain streams ────────────────────────────────────────
 
 
-@router.get("/api/conversations/{conv_id}/events")
-async def list_turn_events(conv_id: str, after: int = 0, limit: int = 500):
-    """Append-only event log for one conversation (forensics / replay).
+@router.get("/api/conversations/{conv_id}/stream")
+async def get_conversation_stream(conv_id: str, after: int = 0, limit: int = 500):
+    rows = await storage_repo.list_conversation_events(conv_id, after=after, limit=limit)
+    events = [
+        {
+            "id": row.id,
+            "seq": row.seq,
+            "type": row.event_type,
+            "turn_id": row.turn_id,
+            "actor_id": row.actor_id,
+            "message_id": row.message_id,
+            "task_id": row.task_id,
+            "commit_sha": row.commit_sha,
+            "payload": row.payload,
+            "ts": row.created_at.isoformat() + "Z",
+        }
+        for row in rows
+    ]
+    return {
+        "stream": "conversation",
+        "events": events,
+        "next": events[-1]["seq"] if events else after,
+    }
 
-    ``after`` is the last seq the caller has; returns events with seq > after,
-    oldest first, capped at ``limit`` (≤2000). Flushes the in-memory buffer
-    first so callers always see their own just-streamed turn.
-    """
-    await event_log.flush()
-    limit = max(1, min(limit, 2000))
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(TurnEventRow)
-                .where(TurnEventRow.conv_id == conv_id, TurnEventRow.seq > after)
-                .order_by(TurnEventRow.seq.asc())
-                .limit(limit)
-            )
-        ).scalars()
-        events = [
-            {
-                "seq": r.seq,
-                "etype": r.etype,
-                "turn_id": r.turn_id,
-                "sender_id": r.sender_id,
-                "ts": r.created_at.isoformat() + "Z",
-                "data": json.loads(r.data),
-            }
-            for r in rows
-        ]
-    return {"events": events, "next": events[-1]["seq"] if events else after}
+
+@router.get("/api/workspaces/{workspace_id}/stream")
+async def get_workspace_stream(workspace_id: str, after: int = 0, limit: int = 500):
+    rows = await storage_repo.list_workspace_events(workspace_id, after=after, limit=limit)
+    events = [
+        {
+            "id": row.id,
+            "seq": row.seq,
+            "type": row.event_type,
+            "conv_id": row.conv_id,
+            "turn_id": row.turn_id,
+            "actor_id": row.actor_id,
+            "message_id": row.message_id,
+            "commit_sha": row.commit_sha,
+            "payload": row.payload,
+            "ts": row.created_at.isoformat() + "Z",
+        }
+        for row in rows
+    ]
+    return {"stream": "workspace", "events": events, "next": events[-1]["seq"] if events else after}
 
 
 # ── benchmark runs ───────────────────────────────────────────────────
@@ -124,10 +134,14 @@ async def finish_benchmark_run(run_id: str, body: dict):
 
 
 @router.get("/api/benchmark/runs")
-async def list_benchmark_runs(case_key: str | None = None, model: str | None = None, limit: int = 200):
+async def list_benchmark_runs(
+    case_key: str | None = None, model: str | None = None, limit: int = 200
+):
     async with SessionLocal() as session:
-        q = select(BenchmarkRunRow).order_by(BenchmarkRunRow.started_at.desc()).limit(
-            max(1, min(limit, 1000))
+        q = (
+            select(BenchmarkRunRow)
+            .order_by(BenchmarkRunRow.started_at.desc())
+            .limit(max(1, min(limit, 1000)))
         )
         if case_key:
             q = q.where(BenchmarkRunRow.case_key == case_key)
@@ -163,8 +177,8 @@ async def list_benchmark_runs(case_key: str | None = None, model: str | None = N
 async def quality_overview():
     """Per-agent quality metrics, aggregated from data the system already has:
 
-    * turns / avg turn seconds — messages (sender_id × turn_id × created_at)
-    * tool calls / tool errors — turn_events ``data-tool-call`` states
+    * turns / avg turn seconds — ``polynoia_turns``
+    * tool calls / tool errors — Conversation Stream ``tool/call`` events
     * process runs / failures — process_runs (exit_code, status)
     * benchmark avg score / runs — benchmark_runs
 
@@ -173,13 +187,6 @@ async def quality_overview():
     component are scored neutrally there (the score must not punish absence
     of data — only evidence of failure).
     """
-    # Best-effort, time-bounded flush. This is a read-only aggregation, so being
-    # a few un-flushed events stale is harmless — but during a burst the flush
-    # contends for aiosqlite's single writer and can stall the whole request
-    # (the "30s 监控面板" hang seen under the 500-case stress load). Cap it so the
-    # panel always responds; the next refresh picks up anything skipped.
-    with suppress(Exception, asyncio.TimeoutError):
-        await asyncio.wait_for(event_log.flush(), timeout=2.0)
     async with SessionLocal() as session:
         agents = {
             a.id: {"agent_id": a.id, "name": a.name}
@@ -190,20 +197,21 @@ async def quality_overview():
             b = agents.get(agent_id)
             return b if b is not None else None
 
-        # turns + avg duration (per sender over distinct turn_id)
+        # Turns are first-class rows, so duration and count no longer need to be
+        # inferred from mutable message projections.
         turn_rows = await session.execute(
             select(
-                MessageRow.sender_id,
-                MessageRow.turn_id,
-                func.min(MessageRow.created_at),
-                func.max(MessageRow.created_at),
+                PolynoiaTurnRow.agent_id,
+                PolynoiaTurnRow.started_at,
+                PolynoiaTurnRow.ended_at,
             )
-            .where(MessageRow.turn_id.isnot(None))
-            .group_by(MessageRow.sender_id, MessageRow.turn_id)
+            .where(PolynoiaTurnRow.ended_at.isnot(None))
         )
         durs: dict[str, list[float]] = {}
-        for sender, _turn, lo, hi in turn_rows:
-            durs.setdefault(sender, []).append(max(0.0, (hi - lo).total_seconds()))
+        for sender, started_at, ended_at in turn_rows:
+            durs.setdefault(sender, []).append(
+                max(0.0, (ended_at - started_at).total_seconds())
+            )
         for aid, ds in durs.items():
             b = bucket(aid)
             if b is None:
@@ -211,27 +219,22 @@ async def quality_overview():
             b["turns"] = len(ds)
             b["avg_turn_seconds"] = round(sum(ds) / len(ds), 1)
 
-        # tool calls / errors from the event log (data-tool-call carries state).
-        # Windowed to the most-recent N events: the log is append-only and grows
-        # unbounded, but the quality signal is "recent reliability"; an unbounded
-        # full scan on every /quality load would be O(all-events-ever). The
-        # window keeps it bounded while staying representative.
+        # One canonical tool/call event is written per completed/failed call.
+        # Keep the quality signal bounded to the newest 20k calls.
         ev_rows = await session.execute(
-            select(TurnEventRow.sender_id, TurnEventRow.data)
-            .where(TurnEventRow.etype == "data-tool-call")
-            .order_by(TurnEventRow.id.desc())
+            select(ConversationEventRow.actor_id, ConversationEventRow.payload)
+            .where(ConversationEventRow.event_type == "tool/call")
+            .order_by(ConversationEventRow.created_at.desc())
             .limit(20_000)
         )
-        for sender, raw in ev_rows:
+        for sender, payload in ev_rows:
             b = bucket(sender or "")
             if b is None:
                 continue
-            try:
-                state = str((json.loads(raw).get("data") or {}).get("state") or "")
-            except (json.JSONDecodeError, ValueError):
-                continue
+            data = payload if isinstance(payload, dict) else {}
+            state = str(data.get("state") or "")
             b["tool_calls"] = b.get("tool_calls", 0) + 1
-            if state in ("error", "timeout"):
+            if bool(data.get("is_error")) or state in ("error", "timeout"):
                 b["tool_errors"] = b.get("tool_errors", 0) + 1
 
         # process runs: total + UNHEALTHY (killed OR non-zero exit). One CASE,
@@ -247,8 +250,7 @@ async def quality_overview():
                         (
                             (ProcessRunRow.status == "killed")
                             | (
-                                ProcessRunRow.exit_code.isnot(None)
-                                & (ProcessRunRow.exit_code != 0)
+                                ProcessRunRow.exit_code.isnot(None) & (ProcessRunRow.exit_code != 0)
                             ),
                             1,
                         ),

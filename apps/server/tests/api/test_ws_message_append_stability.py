@@ -13,10 +13,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import polynoia.storage.db as db_module
+from polynoia.adapters.base import (
+    PartCompletedEvent,
+    PartDeltaEvent,
+    PartStartedEvent,
+    TurnCompletedEvent,
+    TurnFailedEvent,
+    TurnStartedEvent,
+)
 from polynoia.api import routes
 from polynoia.api import ws_conv as ws_module
 from polynoia.api.execution import RUNTIME, ConversationRuntime
 from polynoia.domain.entities import Agent, AgentSetup, Conversation, new_ulid
+from polynoia.domain.messages import TextBlock, TextPayload
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.models import MessageRow
 
@@ -97,7 +106,6 @@ async def ws_env(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(db_module, "SessionLocal", sessions)
     monkeypatch.setattr(routes, "SessionLocal", sessions)
     monkeypatch.setattr(ws_module, "SessionLocal", sessions)
-    monkeypatch.setattr(ws_module.event_log, "tap", lambda *_args: None)
 
     async def no_workspace_head(_conv_id: str) -> None:
         return None
@@ -164,6 +172,76 @@ async def _user_rows(sessions, conv_id: str) -> list[MessageRow]:
         )
 
 
+@pytest.mark.asyncio
+async def test_retry_turn_is_distinct_from_user_message(ws_env, monkeypatch) -> None:
+    conv_id, _sessions = ws_env
+    await storage_repo.create_polynoia_turn(
+        turn_id="turn-original",
+        conv_id=conv_id,
+        agent_id="agent-a",
+        user_message_id="user-original",
+        input_json={"text": "stored turn input"},
+    )
+    await storage_repo.finish_polynoia_turn("turn-original", status="completed")
+    await storage_repo.create_polynoia_turn(
+        turn_id="turn-prior-retry",
+        conv_id=conv_id,
+        agent_id="agent-a",
+        retry_of_turn_id="turn-original",
+        input_json={"text": "stored turn input"},
+    )
+    await storage_repo.finish_polynoia_turn("turn-prior-retry", status="completed")
+
+    captured: dict[str, Any] = {}
+
+    class FakePool:
+        async def close_session(self, agent_id: str, requested_conv_id: str) -> None:
+            captured["closed"] = (agent_id, requested_conv_id)
+
+    def capture_dispatch(requested_conv_id: str, coro):
+        assert requested_conv_id == conv_id
+        assert coro.cr_frame is not None
+        captured.update(coro.cr_frame.f_locals)
+        coro.close()
+        return object()
+
+    monkeypatch.setattr(ws_module, "_spawn_dispatcher", capture_dispatch)
+    monkeypatch.setattr(ws_module, "get_pool", lambda: FakePool())
+
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.incoming.put(
+            json.dumps({"kind": "retry_turn", "turn_id": "turn-prior-retry"})
+        )
+        await _eventually(lambda: "retry_of_turn_id" in captured)
+        assert captured["agent_id"] == "agent-a"
+        assert captured["text"] == "stored turn input"
+        assert captured["retry_of_turn_id"] == "turn-prior-retry"
+        assert captured["user_message_id"] == "user-original"
+        assert captured["closed"] == ("agent-a", conv_id)
+
+        await ws.incoming.put(
+            json.dumps(
+                {
+                    "kind": "user_message",
+                    "text": "invalid extra field",
+                    "members": ["agent-a"],
+                    "msg_id": "invalid-extra-field",
+                    "obsolete_field": True,
+                }
+            )
+        )
+        await _eventually(lambda: bool(_chunks(ws, "data-user-message-nack")))
+        assert _chunks(ws, "data-user-message-nack")[-1]["data"]["reason"] == (
+            "unknown_message_fields"
+        )
+        assert await _user_ids(_sessions, conv_id) == []
+    finally:
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+
 async def _seed_adapter_agent(sessions, conv_id: str) -> str:
     agent_id = new_ulid()
     agent = Agent(
@@ -181,6 +259,296 @@ async def _seed_adapter_agent(sessions, conv_id: str) -> str:
         await storage_repo.set_members(db, conv_id, ["you", agent_id])
         await db.commit()
     return agent_id
+
+
+class _TurnTestSandbox:
+    def append_timeline(self, **_kwargs: Any) -> None:
+        return None
+
+
+class _TurnTestPool:
+    def __init__(self, session: Any) -> None:
+        self.session = session
+        self.closed: list[tuple[str, str]] = []
+
+    async def get_session(self, _agent_id: str, _conv_id: str, **_kwargs: Any) -> Any:
+        return self.session
+
+    async def incremental_prompt(
+        self,
+        _agent_id: str,
+        _conv_id: str,
+        *,
+        text: str,
+        current_message_id: str | None = None,
+    ) -> tuple[str, int]:
+        return text, 0
+
+    async def commit_context_delivery(
+        self, _agent_id: str, _conv_id: str, _delivered_through_seq: int
+    ) -> None:
+        return None
+
+    async def close_session(self, agent_id: str, conv_id: str) -> None:
+        self.closed.append((agent_id, conv_id))
+
+
+class _TextTurnSession:
+    def __init__(self, text: str = "durable final") -> None:
+        self.text = text
+        self.send_calls = 0
+
+    async def send(self, *, task_id: str, text: str, attachments=None):
+        self.send_calls += 1
+        turn_id = f"provider-{self.send_calls}"
+        yield TurnStartedEvent(turn_id=turn_id, task_id=task_id)
+        yield PartStartedEvent(
+            turn_id=turn_id,
+            task_id=task_id,
+            message_id=f"message-{self.send_calls}",
+            part_id=f"part-{self.send_calls}",
+            part=TextPayload(body=[]),
+        )
+        yield PartDeltaEvent(
+            message_id=f"message-{self.send_calls}",
+            part_id=f"part-{self.send_calls}",
+            delta={"text": self.text},
+        )
+        yield PartCompletedEvent(
+            message_id=f"message-{self.send_calls}",
+            part_id=f"part-{self.send_calls}",
+            part=TextPayload(body=[TextBlock(c=self.text)]),
+        )
+        yield TurnCompletedEvent(turn_id=turn_id, task_id=task_id)
+
+
+async def _install_turn_test_runtime(monkeypatch, session: Any) -> _TurnTestPool:
+    pool = _TurnTestPool(session)
+
+    async def fake_create(_conv_id: str) -> _TurnTestSandbox:
+        return _TurnTestSandbox()
+
+    monkeypatch.setattr(ws_module, "get_pool", lambda: pool)
+    monkeypatch.setattr(ws_module.Sandbox, "create", fake_create)
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_clean_turn_keeps_live_projection_until_final_text_is_durable(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    agent_id = await _seed_adapter_agent(sessions, conv_id)
+    session = _TextTurnSession("persist-before-idle")
+    await _install_turn_test_runtime(monkeypatch, session)
+
+    persist_entered = asyncio.Event()
+    release_persist = asyncio.Event()
+    original_append = storage_repo.append_message
+
+    async def gated_append(db, **kwargs):
+        payload = kwargs.get("payload") or {}
+        if kwargs.get("sender_id") == agent_id and payload.get("kind") == "text":
+            persist_entered.set()
+            await release_persist.wait()
+        return await original_append(db, **kwargs)
+
+    monkeypatch.setattr(storage_repo, "append_message", gated_append)
+
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.send_user(
+            text="produce one final",
+            msg_id="user-final-order",
+            members=["you", agent_id],
+        )
+        await asyncio.wait_for(persist_entered.wait(), timeout=2.0)
+        await _eventually(lambda: bool(_chunks(ws, "text-delta")))
+
+        # The adapter stream has ended and final persistence is deliberately
+        # blocked.  Refresh must still receive both active phase and accumulated
+        # text; idle cannot be published yet.
+        assert not any(
+            chunk["data"]["status"] == "idle"
+            for chunk in _chunks(ws, "data-agent-status")
+        )
+        resume_frames = routes._live_resume_frames(conv_id)
+        assert any('"type": "data-agent-status"' in frame for frame in resume_frames)
+        assert any("persist-before-idle" in frame for frame in resume_frames)
+
+        async with sessions() as db:
+            before = (
+                await db.execute(
+                    select(MessageRow).where(
+                        MessageRow.conv_id == conv_id,
+                        MessageRow.sender_id == agent_id,
+                    )
+                )
+            ).scalars().all()
+        assert not any(row.payload.get("kind") == "text" for row in before)
+
+        release_persist.set()
+        await _eventually(
+            lambda: any(
+                chunk["data"]["status"] == "idle"
+                for chunk in _chunks(ws, "data-agent-status")
+            )
+        )
+        async with sessions() as db:
+            after = (
+                await db.execute(
+                    select(MessageRow).where(
+                        MessageRow.conv_id == conv_id,
+                        MessageRow.sender_id == agent_id,
+                    )
+                )
+            ).scalars().all()
+        assert any(
+            row.payload.get("kind") == "text"
+            and row.payload["body"][0]["c"] == "persist-before-idle"
+            for row in after
+        )
+        assert routes._live_resume_frames(conv_id) == []
+    finally:
+        release_persist.set()
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_immediate_nonretryable_terminal_error_runs_adapter_once(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    agent_id = await _seed_adapter_agent(sessions, conv_id)
+
+    class TerminalErrorSession:
+        def __init__(self) -> None:
+            self.send_calls = 0
+
+        async def send(self, *, task_id: str, text: str, attachments=None):
+            self.send_calls += 1
+            yield TurnStartedEvent(turn_id="provider-failed", task_id=task_id)
+            yield TurnFailedEvent(
+                turn_id="provider-failed",
+                task_id=task_id,
+                error={
+                    "message": "fatal authentication configuration",
+                    "retryable": False,
+                },
+            )
+
+    session = TerminalErrorSession()
+    pool = await _install_turn_test_runtime(monkeypatch, session)
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.send_user(
+            text="must not replay",
+            msg_id="user-terminal-error",
+            members=["you", agent_id],
+        )
+        await _eventually(
+            lambda: any(
+                chunk["data"]["status"] == "idle"
+                for chunk in _chunks(ws, "data-agent-status")
+            )
+        )
+        assert session.send_calls == 1
+        # One close is the failed-turn context eviction.  The old empty-stream
+        # path added another close and called send() a second time.
+        assert pool.closed == [(agent_id, conv_id)]
+
+        async with sessions() as db:
+            rows = (
+                await db.execute(
+                    select(MessageRow).where(MessageRow.conv_id == conv_id)
+                )
+            ).scalars().all()
+        errors = [row for row in rows if row.payload.get("kind") == "error"]
+        assert len(errors) == 1
+        assert errors[0].payload["message"] == "fatal authentication configuration"
+    finally:
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_retry_notice_and_phase_are_written_to_live_resume(
+    ws_env, monkeypatch
+) -> None:
+    conv_id, sessions = ws_env
+    agent_id = await _seed_adapter_agent(sessions, conv_id)
+
+    class RetryThenTextSession(_TextTurnSession):
+        async def send(self, *, task_id: str, text: str, attachments=None):
+            self.send_calls += 1
+            if self.send_calls == 1:
+                raise RuntimeError("stale harness session")
+            # Base implementation owns the successful-attempt increment.
+            self.send_calls -= 1
+            async for event in super().send(
+                task_id=task_id, text=text, attachments=attachments
+            ):
+                yield event
+
+    session = RetryThenTextSession("recovered")
+    await _install_turn_test_runtime(monkeypatch, session)
+    monkeypatch.setattr(ws_module, "_TURN_RETRIES", 1)
+    monkeypatch.setattr(ws_module, "_RETRY_BACKOFF", (0.15,))
+
+    retry_notes: list[str] = []
+    statuses: list[tuple[str, dict | None]] = []
+    retry_recorded = asyncio.Event()
+    original_note_retry = ws_module._live_note_retry_notice
+    original_note_status = ws_module._live_note_status
+
+    def note_retry(conv: str, agent: str, notice_id: str, message: str) -> None:
+        retry_notes.append(message)
+        original_note_retry(conv, agent, notice_id, message)
+        retry_recorded.set()
+
+    def note_status(
+        conv: str, agent: str, status: str, extra: dict | None = None
+    ) -> None:
+        statuses.append((status, extra))
+        original_note_status(conv, agent, status, extra)
+
+    monkeypatch.setattr(ws_module, "_live_note_retry_notice", note_retry)
+    monkeypatch.setattr(ws_module, "_live_note_status", note_status)
+
+    ws = ScriptedWebSocket()
+    handler = asyncio.create_task(ws_module.ws_conv(ws, conv_id))
+    try:
+        await ws.send_user(
+            text="recover once",
+            msg_id="user-live-retry",
+            members=["you", agent_id],
+        )
+        await asyncio.wait_for(retry_recorded.wait(), timeout=2.0)
+        retry_resume = routes._live_resume_frames(conv_id)
+        assert any("自动重试中(1/1)" in frame for frame in retry_resume)
+        assert any('"status": "streaming"' in frame for frame in retry_resume)
+        await _eventually(
+            lambda: any(
+                chunk["data"]["status"] == "idle"
+                for chunk in _chunks(ws, "data-agent-status")
+            )
+        )
+        assert session.send_calls == 2
+        assert retry_notes == ["⏳ 无响应,自动重试中(1/1)"]
+        assert any(status == "starting" for status, _ in statuses)
+        assert any(status == "streaming" for status, _ in statuses)
+        assert any(
+            status == "streaming" and extra and extra.get("phase") == "replying"
+            for status, extra in statuses
+        )
+        assert statuses[-1][0] == "idle"
+        assert routes._live_resume_frames(conv_id) == []
+    finally:
+        await ws.disconnect()
+        await asyncio.wait_for(handler, timeout=2.0)
 
 
 @pytest.mark.asyncio

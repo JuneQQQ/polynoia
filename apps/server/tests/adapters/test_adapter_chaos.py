@@ -431,6 +431,7 @@ async def pool_db(monkeypatch, tmp_path: Path):
     )
     async with session_maker() as db:
         await storage_repo.upsert_agent(db, contact)
+        await storage_repo.add_onboarded_adapter(db, "claudeCode")
         await db.commit()
     try:
         yield contact.id

@@ -30,7 +30,7 @@ from polynoia.adapters.base import (
 from polynoia.adapters.pool import AdapterPool
 from polynoia.domain.entities import Agent, AgentSetup
 from polynoia.storage.db import SessionLocal, init_db
-from polynoia.storage.repo import upsert_agent
+from polynoia.storage.repo import add_onboarded_adapter, upsert_agent
 
 
 class _FakeSession:
@@ -114,6 +114,7 @@ async def db_with_agent(monkeypatch, tmp_path):
     )
     async with SessionLocal() as session:
         await upsert_agent(session, contact)
+        await add_onboarded_adapter(session, "claudeCode")
         await session.commit()
     yield contact.id
 

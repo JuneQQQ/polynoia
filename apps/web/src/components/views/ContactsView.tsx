@@ -18,6 +18,8 @@ const ADAPTER_LABEL: Record<string, string> = {
 	claudeCode: "Claude Code",
 	codex: "Codex",
 	opencoder: "OpenCode",
+	qwenCode: "Qwen Code",
+	deepseek: "DeepSeek Harness",
 };
 
 export function ContactsView() {

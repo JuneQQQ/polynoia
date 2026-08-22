@@ -144,15 +144,13 @@ Orchestrator 是一台状态机,不是黑盒。这是调研得出的结论:概�
 
 ### 5.4 上下文与记忆系统
 
-上下文由服务端完全自管(ADR-002),不让 LLM 自己管理自己的上下文——这样行为可解释、可测试,隐私规则也能强制执行。上下文组装成五层,预算约 60k token(动态公式见 ADR-012:`budget = max(30k, max_context − 35k)`):
+完整历史由 Polynoia Conversation Stream 持久化,当前模型上下文由有状态 Harness Session 管理(ADR-012)。Session 创建时注入一次身份、项目规则与恢复快照;之后只追加本轮输入和该 Agent 尚未看过的外部事实:
 
-| 层 | 内容 | 预算 |
+| 层 | 内容 | 投递 |
 |---|---|---|
-| L1 Identity | Agent 身份 + 人格 + 平台规则 | 2k(Hard) |
-| L2 Project Briefs | 当前 workspace 详情,其他缩略 | 3k |
-| L3 Activity Ledger | 跨 conv 事件(文本 / 代码 commit / 工具摘要),仅含本 Agent 参与的 conv | 15k |
-| L4 Conv History | 当前对话滚动窗口(P0 截断 30 条,P1 摘要压缩) | 35k |
-| L5 User Turn | 本轮输入 + 共享记忆注入 | ~5k |
+| Bootstrap | Agent 身份、项目、工具规则、必要恢复快照 | 每个 Session 一次 |
+| Canonical Delta | 未见过的 user / teammate / task 事实 | 每条 seq 一次 |
+| User Turn | 本轮新增输入 | 每轮一次 |
 
 隐私规则很简单:Agent 不在某个对话里,就完全看不到那个对话的文本;但共享 workspace 的代码改动对全体成员可见,就像真实团队里人人能看 git log。
 

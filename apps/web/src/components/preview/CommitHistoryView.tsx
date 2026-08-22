@@ -12,8 +12,7 @@
  *   - PROVENANCE: the canonical branch ref `agent/<id>/conv-<id>` carried in
  *     merge subjects links a commit back to the conversation that produced it
  *     (「在对话中查看」).
- *   - ACTIONS: copy sha · 回到这里 (restore-preview → ConfirmDialog → restore)
- *     · 丢弃工作区改动.
+ *   - ACTIONS: copy sha and jump to the originating conversation.
  *
  * Diff stack unchanged: lineDiffUnified() → <DiffView>, lazy LCS per open card,
  * content-visibility against big-commit jank. Narrow diff columns (<720px)
@@ -35,7 +34,6 @@ import {
 	MessageSquareText,
 	Rows3,
 	Search,
-	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -55,7 +53,6 @@ import {
 import { type Lang, t } from "../../lib/i18n";
 import type { Agent } from "../../lib/types";
 import { useStore } from "../../store";
-import { ConfirmDialog } from "../ConfirmDialog";
 import { inferLang } from "./diffLang";
 import { lineDiffUnified } from "./diffUnified";
 
@@ -101,9 +98,8 @@ function prettySubject(s: string, lang: Lang): string {
 	if (s.startsWith("polynoia: resolve+merge "))
 		return t("commitResolveAndMerge", lang);
 	if (s.startsWith("polynoia: capture")) return t("commitCapture", lang);
-	const ue = /^polynoia: (?:revert|apply) diff (.+)$/.exec(s);
-	if (ue)
-		return `${s.startsWith("polynoia: revert") ? t("revert", lang) : t("apply", lang)} ${ue[1].split("/").pop()}`;
+	const applied = /^polynoia: apply diff (.+)$/.exec(s);
+	if (applied) return `${t("apply", lang)} ${applied[1].split("/").pop()}`;
 	const u = /^polynoia: user edit (.+)$/.exec(s);
 	if (u) return `用户编辑 ${u[1].split("/").pop()}`;
 	return stripStatSuffix(s.replace(/^polynoia:\s*/, ""));
@@ -715,7 +711,6 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 	const filesTick = useStore((s) => s.workspaceFilesTick);
 	const split = useStore((s) => s.diffSplit);
 	const setSplit = useStore((s) => s.setDiffSplit);
-	const bumpWorkspaceFiles = useStore((s) => s.bumpWorkspaceFiles);
 
 	const [commits, setCommits] = useState<CommitMeta[] | null>(null);
 	const [hasMore, setHasMore] = useState(false);
@@ -729,16 +724,7 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 	const [graphMode, setGraphMode] = useState(false);
 	const [filterAgent, setFilterAgent] = useState<string | null>(null);
 	const [query, setQuery] = useState("");
-	// restore / discard confirmation state
-	const [restoreAsk, setRestoreAsk] = useState<{
-		sha: string;
-		short: string;
-		commits: number;
-		files: number;
-		authors: string[];
-	} | null>(null);
-	const [discardAsk, setDiscardAsk] = useState(false);
-	const [actionBusy, setActionBusy] = useState(false);
+	// Read-only by design: workspace revert exists only on user messages.
 	// Narrow diff column forces unified mode (split is unreadable squeezed).
 	// CALLBACK ref, not useEffect+useRef: the detail pane only mounts AFTER the
 	// commits load (the `commits===null` branch returns a loader with no pane),
@@ -949,65 +935,6 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 		}
 	};
 
-	const askRestore = async (c: CommitMeta) => {
-		if (actionBusy) return;
-		setActionBusy(true);
-		try {
-			const p = await api.restorePreview(workspaceId, c.sha);
-			if (!p.ok) {
-				window.alert(p.error || t("cannotPreviewRestore", lang));
-				return;
-			}
-			if (p.blocked) {
-				window.alert(t("agentRunning", lang));
-				return;
-			}
-			setRestoreAsk({
-				sha: c.sha,
-				short: c.short,
-				commits: p.commits ?? 0,
-				files: p.files?.length ?? 0,
-				authors: (p.authors ?? []).map(
-					(a: string) =>
-						findAgent(agents, a)?.name ??
-						(a === "polynoia-agent" ? t("you", lang) : a.slice(-4)),
-				),
-			});
-		} catch (e) {
-			window.alert(`预览失败:${e instanceof Error ? e.message : e}`);
-		} finally {
-			setActionBusy(false);
-		}
-	};
-
-	const doRestore = async () => {
-		if (!restoreAsk) return;
-		const sha = restoreAsk.sha;
-		setRestoreAsk(null);
-		setActionBusy(true);
-		try {
-			await api.restoreWorkspace(workspaceId, sha);
-			bumpWorkspaceFiles(); // filesTick → this view + file tree reload
-		} catch (e) {
-			window.alert(`回退失败:${e instanceof Error ? e.message : e}`);
-		} finally {
-			setActionBusy(false);
-		}
-	};
-
-	const doDiscard = async () => {
-		setDiscardAsk(false);
-		setActionBusy(true);
-		try {
-			await api.workspaceDiscardWorking(workspaceId);
-			bumpWorkspaceFiles();
-		} catch (e) {
-			window.alert(`丢弃失败:${e instanceof Error ? e.message : e}`);
-		} finally {
-			setActionBusy(false);
-		}
-	};
-
 	if (commits === null) {
 		return (
 			<div className="h-full grid place-items-center text-[12px] text-[var(--color-fg-3)] bg-[var(--color-surface)]">
@@ -1171,18 +1098,6 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 								</span>
 							)}
 							<StatChips adds={totals.adds} dels={totals.dels} />
-							{workingCount > 0 && (
-								<button
-									type="button"
-									disabled={actionBusy}
-									onClick={() => setDiscardAsk(true)}
-									className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40"
-									title={t("discardAllChangesTitle", lang)}
-								>
-									<Trash2 size={11} />
-									{t("discardChanges", lang)}
-								</button>
-							)}
 						</>
 					) : selectedCommit ? (
 						<>
@@ -1215,18 +1130,6 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 								>
 									<MessageSquareText size={11} />
 									{t("viewInConv", lang)}
-								</button>
-							)}
-							{mainChain.has(selectedCommit.sha) && (
-								<button
-									type="button"
-									disabled={actionBusy}
-									onClick={() => askRestore(selectedCommit)}
-									className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40"
-									title={t("restoreToCommitTitle", lang)}
-								>
-									<History size={11} />
-									{t("restoreHere", lang)}
 								</button>
 							)}
 						</>
@@ -1319,32 +1222,6 @@ export function CommitHistoryView({ workspaceId }: { workspaceId: string }) {
 				</div>
 			</div>
 
-			{restoreAsk && (
-				<ConfirmDialog
-					title={`回到 ${restoreAsk.short}?`}
-					body={`将把工作区 main 回退到该提交,撤销 ${restoreAsk.commits} 个提交、涉及 ${restoreAsk.files} 个文件${
-						restoreAsk.authors.length
-							? `(作者:${restoreAsk.authors.join("、")})`
-							: ""
-					}。\n回退前会记录撤销点,但被撤销的提交将从历史中移出。`}
-					confirmLabel={t("restore2", lang)}
-					cancelLabel={t("cancel", lang)}
-					danger
-					onConfirm={doRestore}
-					onCancel={() => setRestoreAsk(null)}
-				/>
-			)}
-			{discardAsk && (
-				<ConfirmDialog
-					title={t("discardChangesConfirmTitle", lang)}
-					body={`将丢弃工作区根目录的全部未提交改动(${workingCount} 个文件):已跟踪文件还原,新增未跟踪文件删除。该操作不可撤销;各 agent 工作分支不受影响。`}
-					confirmLabel={t("discard", lang)}
-					cancelLabel={t("cancel", lang)}
-					danger
-					onConfirm={doDiscard}
-					onCancel={() => setDiscardAsk(false)}
-				/>
-			)}
 		</div>
 	);
 }

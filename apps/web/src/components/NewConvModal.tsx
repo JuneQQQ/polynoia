@@ -518,6 +518,7 @@ function GroupTab({
 								const a = agents.find((x) => x.id === id);
 								if (!a) return null;
 								const isOrch = orchestratorId === id;
+								const canOrchestrate = a.setup?.adapter_id !== "deepseek";
 								return (
 									<div key={id} className="flex items-center gap-2">
 										<span
@@ -545,14 +546,21 @@ function GroupTab({
 										/>
 										<button
 											type="button"
-											onClick={() => setOrchestratorId(isOrch ? null : id)}
-											aria-pressed={isOrch}
-											title={
-												isOrch
-													? t("isOrchestrator", lang)
-													: t("setAsOrchestrator", lang)
+											onClick={() =>
+												canOrchestrate && setOrchestratorId(isOrch ? null : id)
 											}
-											className={`inline-flex items-center gap-1 text-[10.5px] px-2 py-1 rounded-md flex-shrink-0 transition-all ${
+											aria-pressed={isOrch}
+											disabled={!canOrchestrate}
+											title={
+												!canOrchestrate
+													? lang === "zh"
+														? "该 Harness 暂无 dispatch，不能担任协调器"
+														: "This Harness has no dispatch tool and cannot orchestrate"
+													: isOrch
+														? t("isOrchestrator", lang)
+														: t("setAsOrchestrator", lang)
+											}
+											className={`inline-flex items-center gap-1 text-[10.5px] px-2 py-1 rounded-md flex-shrink-0 transition-all disabled:cursor-not-allowed disabled:opacity-35 ${
 												isOrch
 													? "bg-[var(--color-accent)] text-white font-medium shadow-sm"
 													: "border border-[var(--color-line)] text-[var(--color-fg-3)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"

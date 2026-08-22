@@ -1,4 +1,5 @@
 """Storage repo — conversations entity functions (split from the former monolithic repo.py)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,12 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from polynoia.domain.entities import Conversation, Pin, new_ulid
 from polynoia.storage.models import (
     ConflictRow,
+    ConversationEventRow,
     ConversationRow,
     ConvMemoryRow,
+    HarnessSessionRow,
     MessageRow,
     PendingAccessRow,
     PendingEditRow,
     PinRow,
+    PolynoiaTurnRow,
     ProcessRunRow,
 )
 
@@ -59,6 +63,7 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
         MessageRow,
         PinRow,
     )
+
     for tbl in (
         MessageRow,
         PinRow,
@@ -67,6 +72,9 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
         PendingEditRow,
         PendingAccessRow,
         ConvMemoryRow,
+        ConversationEventRow,
+        PolynoiaTurnRow,
+        HarnessSessionRow,
     ):
         await session.execute(tbl.__table__.delete().where(tbl.conv_id == conv_id))
     await session.delete(row)
@@ -99,8 +107,18 @@ async def clear_conversation_messages(session: AsyncSession, conv_id: str) -> in
     await session.execute(PinRow.__table__.delete().where(PinRow.conv_id == conv_id))
     # Diff / conflict-loop state — else a re-run inherits old conflict + pending cards.
     await session.execute(ConflictRow.__table__.delete().where(ConflictRow.conv_id == conv_id))
-    await session.execute(PendingEditRow.__table__.delete().where(PendingEditRow.conv_id == conv_id))
-    await session.execute(PendingAccessRow.__table__.delete().where(PendingAccessRow.conv_id == conv_id))
+    await session.execute(
+        PendingEditRow.__table__.delete().where(PendingEditRow.conv_id == conv_id)
+    )
+    await session.execute(
+        PendingAccessRow.__table__.delete().where(PendingAccessRow.conv_id == conv_id)
+    )
+    await session.execute(
+        ConversationEventRow.__table__.delete().where(ConversationEventRow.conv_id == conv_id)
+    )
+    await session.execute(
+        PolynoiaTurnRow.__table__.delete().where(PolynoiaTurnRow.conv_id == conv_id)
+    )
     await session.flush()
     return int(count or 0)
 
@@ -126,9 +144,8 @@ async def list_conversations(
         # member that is a prefix of another ("agentX" vs "agentXY") can't false-
         # hit. Mirrors the q-search JSON-cast-LIKE pattern (SQLite JSON1 unassumed).
         from sqlalchemy import func
-        stmt = stmt.where(
-            func.cast(ConversationRow.members, String).like(f'%"{member}"%')
-        )
+
+        stmt = stmt.where(func.cast(ConversationRow.members, String).like(f'%"{member}"%'))
     if pinned is not None:
         stmt = stmt.where(ConversationRow.pinned == pinned)
     if unread_only:
@@ -140,14 +157,14 @@ async def list_conversations(
         like = f"%{q.lower()}%"
         # Subquery: conv_ids with at least one matching message
         from sqlalchemy import func
+
         msg_hit_subq = (
             select(MessageRow.conv_id)
             .where(func.lower(func.cast(MessageRow.payload, String)).like(like))
             .scalar_subquery()
         )
         stmt = stmt.where(
-            func.lower(ConversationRow.title).like(like)
-            | ConversationRow.id.in_(msg_hit_subq)
+            func.lower(ConversationRow.title).like(like) | ConversationRow.id.in_(msg_hit_subq)
         )
     # Order is STABLE while browsing: pinned, then real activity (last MESSAGE
     # time), then creation order. Deliberately NOT updated_at — that bumps on
@@ -170,24 +187,31 @@ async def get_conversation(session: AsyncSession, conv_id: str) -> Conversation 
 async def create_conversation(session: AsyncSession, c: Conversation) -> Conversation:
     if not c.id:
         c.id = new_ulid()
-    session.add(ConversationRow(
-        id=c.id, workspace_id=c.workspace_id, title=c.title, members=c.members,
-        direct=c.direct, group=c.group, orchestrator_profile=c.orchestrator_profile,
-        member_roles=c.member_roles or {},
-        orchestrator_member_id=c.orchestrator_member_id,
-        pinned=c.pinned, archived=c.archived, unread=c.unread,
-        draft_text=c.draft_text or "",
-        draft_attachments=c.draft_attachments or [],
-        last_message_at=c.last_message_at,
-        merge_mode=c.merge_mode,
-    ))
+    session.add(
+        ConversationRow(
+            id=c.id,
+            workspace_id=c.workspace_id,
+            title=c.title,
+            members=c.members,
+            direct=c.direct,
+            group=c.group,
+            orchestrator_profile=c.orchestrator_profile,
+            member_roles=c.member_roles or {},
+            orchestrator_member_id=c.orchestrator_member_id,
+            pinned=c.pinned,
+            archived=c.archived,
+            unread=c.unread,
+            draft_text=c.draft_text or "",
+            draft_attachments=c.draft_attachments or [],
+            last_message_at=c.last_message_at,
+            merge_mode=c.merge_mode,
+        )
+    )
     await session.flush()
     return c
 
 
-async def set_workspace_id(
-    session: AsyncSession, conv_id: str, workspace_id: str | None
-) -> bool:
+async def set_workspace_id(session: AsyncSession, conv_id: str, workspace_id: str | None) -> bool:
     """Attach (``workspace_id`` set) or detach (``None``) a project on a conv.
 
     The IA model: a conversation is a plain thread by default; a workspace/project
@@ -203,21 +227,15 @@ async def set_workspace_id(
     return True
 
 
-async def set_archived(
-    session: AsyncSession, conv_id: str, archived: bool
-) -> None:
+async def set_archived(session: AsyncSession, conv_id: str, archived: bool) -> None:
     await session.execute(
-        update(ConversationRow)
-        .where(ConversationRow.id == conv_id)
-        .values(archived=archived)
+        update(ConversationRow).where(ConversationRow.id == conv_id).values(archived=archived)
     )
 
 
 async def set_pinned(session: AsyncSession, conv_id: str, pinned: bool) -> None:
     await session.execute(
-        update(ConversationRow)
-        .where(ConversationRow.id == conv_id)
-        .values(pinned=pinned)
+        update(ConversationRow).where(ConversationRow.id == conv_id).values(pinned=pinned)
     )
 
 
@@ -231,9 +249,7 @@ async def increment_unread(session: AsyncSession, conv_id: str, by: int = 1) -> 
 
 async def reset_unread(session: AsyncSession, conv_id: str) -> None:
     await session.execute(
-        update(ConversationRow)
-        .where(ConversationRow.id == conv_id)
-        .values(unread=0)
+        update(ConversationRow).where(ConversationRow.id == conv_id).values(unread=0)
     )
 
 
@@ -267,9 +283,7 @@ async def set_draft_attachments(
     return True
 
 
-async def set_merge_mode(
-    session: AsyncSession, conv_id: str, mode: str
-) -> bool:
+async def set_merge_mode(session: AsyncSession, conv_id: str, mode: str) -> bool:
     """Set merge_mode for one conv. Manual mode is retired; only auto remains."""
     if mode != "auto":
         raise ValueError(f"invalid merge_mode {mode!r}")
@@ -369,8 +383,14 @@ async def list_pins(session: AsyncSession, conv_id: str) -> list[Pin]:
 async def add_pin(session: AsyncSession, p: Pin) -> Pin:
     if not p.id:
         p.id = new_ulid()
-    session.add(PinRow(
-        id=p.id, conv_id=p.conv_id, kind=p.kind, label=p.label, ref=p.ref,
-    ))
+    session.add(
+        PinRow(
+            id=p.id,
+            conv_id=p.conv_id,
+            kind=p.kind,
+            label=p.label,
+            ref=p.ref,
+        )
+    )
     await session.flush()
     return p

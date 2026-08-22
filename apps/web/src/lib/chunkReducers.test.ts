@@ -119,6 +119,24 @@ describe("mergeTerminalPayload", () => {
 		};
 		expect(mergeTerminalPayload(running, fresh)).toBe(fresh);
 	});
+	it("accepts a background-process heartbeat after an earlier stopped snapshot", () => {
+		const stoppedBackground: MessagePayload = {
+			kind: "terminal",
+			command: "vite",
+			output: "listening",
+			running: false,
+			mode: "background",
+			exit_code: -1,
+		};
+		const heartbeat: MessagePayload = {
+			kind: "terminal",
+			command: "vite",
+			output: "listening",
+			running: true,
+			mode: "background",
+		};
+		expect(mergeTerminalPayload(stoppedBackground, heartbeat)).toBe(heartbeat);
+	});
 });
 
 describe("flipStuckCardsOnTurnEnd", () => {
@@ -167,8 +185,8 @@ describe("flipStuckCardsOnTurnEnd", () => {
 		],
 	]);
 
-	it("flips this agent's stuck cards to completed (non-error)", () => {
-		const patched = flipStuckCardsOnTurnEnd(order, byId, "a", false);
+	it("flips this agent's stuck blocking cards to completed on idle", () => {
+		const patched = flipStuckCardsOnTurnEnd(order, byId, "a", "idle");
 		expect(patched).not.toBeNull();
 		expect((patched!.get("m1")!.payload as { state: string }).state).toBe(
 			"completed",
@@ -188,14 +206,49 @@ describe("flipStuckCardsOnTurnEnd", () => {
 		);
 	});
 
-	it("uses error state + exit_code 1 on error turns", () => {
-		const patched = flipStuckCardsOnTurnEnd(order, byId, "a", true);
+	it("uses error state + non-zero exit code on error turns", () => {
+		const patched = flipStuckCardsOnTurnEnd(order, byId, "a", "error");
 		expect((patched!.get("m1")!.payload as { state: string }).state).toBe(
 			"error",
 		);
 		expect(
+			(patched!.get("m1")!.payload as { is_error: boolean }).is_error,
+		).toBe(true);
+		expect(
 			(patched!.get("m2")!.payload as { exit_code: number }).exit_code,
 		).toBe(1);
+	});
+
+	it("never paints an aborted running card as completed / exit 0", () => {
+		const patched = flipStuckCardsOnTurnEnd(order, byId, "a", "aborted");
+		expect((patched!.get("m1")!.payload as { state: string }).state).toBe(
+			"error",
+		);
+		const terminal = patched!.get("m2")!.payload as {
+			running: boolean;
+			exit_code: number;
+		};
+		expect(terminal.running).toBe(false);
+		expect(terminal.exit_code).not.toBe(0);
+	});
+
+	it("leaves background terminals running until their process lifecycle event", () => {
+		const background = new Map<string, Message>([
+			[
+				"bg",
+				msg("bg", "a", {
+					kind: "terminal",
+					command: "npm run dev",
+					output: "listening",
+					running: true,
+					mode: "background",
+				}),
+			],
+		]);
+		expect(flipStuckCardsOnTurnEnd(["bg"], background, "a", "idle")).toBeNull();
+		expect(
+			(background.get("bg")!.payload as { running: boolean }).running,
+		).toBe(true);
 	});
 
 	it("returns null when nothing is stuck (no needless re-render)", () => {
@@ -211,7 +264,7 @@ describe("flipStuckCardsOnTurnEnd", () => {
 				}),
 			],
 		]);
-		expect(flipStuckCardsOnTurnEnd(["x"], clean, "a", false)).toBeNull();
+		expect(flipStuckCardsOnTurnEnd(["x"], clean, "a", "idle")).toBeNull();
 	});
 });
 

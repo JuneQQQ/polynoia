@@ -416,4 +416,20 @@ describe("streaming chunk-order chaos", () => {
 		expect(conv?.messageOrder).toEqual(["term-2"]);
 		assertConsistent("c");
 	});
+
+	it("(7) stream resume preserves the durable message and turn identity", () => {
+		s().applyChunkToConv("resume-conv", {
+			kind: "stream-resume",
+			senderId: "agent",
+			messageId: "provider-message-1",
+			turnId: "polynoia-turn-1",
+			parts: [{ id: "part-1", kind: "text", text: "restored" }],
+		});
+		const message = s()
+			.convs.get("resume-conv")
+			?.msgById.get("provider-message-1");
+		expect(message?.turn_id).toBe("polynoia-turn-1");
+		expect(bodyText(message)).toBe("restored");
+		assertConsistent("resume-conv");
+	});
 });

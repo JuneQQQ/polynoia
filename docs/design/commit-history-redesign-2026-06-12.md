@@ -97,7 +97,7 @@ split/unified、懒 LCS + content-visibility 性能功夫都在)。但 Polynoia 
 |----|------|------|
 | **P0 修复** | 挤压(自动收面板+窄屏强制 unified)· subject 去统计后缀 · 删列表 main 徽章 · 日期组合并 · 删除联系人灰名片 · copy sha · 加载更多 | 半天 |
 | **P1 叙事** | agent 过滤条 · 回合折叠卡 · 列表显示 merge 分隔行 · 树模式 agent 配色 | 1 天 |
-| **P2 闭环** | 「在对话中查看」回链 · 「回到这里」(restore-preview→ConfirmDialog→restore) · 工作区改动丢弃 | 1 天 |
+| **P2 闭环** | 「在对话中查看」回链；提交历史保持只读 | 1 天 |
 
 每片独立可交付,P0 不动数据结构,P1/P2 也零后端 schema 改动(全部复用现有端点)。
 
@@ -106,7 +106,7 @@ split/unified、懒 LCS + content-visibility 性能功夫都在)。但 Polynoia 
 P0/P1/P2 一次性落地并实测通过(cua-driver/Playwright 驱动真实多 agent 历史)。
 
 - **新文件**:`apps/web/src/lib/commitStory.ts`(纯逻辑:`stripStatSuffix` / `parseConvFromText` / `parseAgentFromText` / `firstParentChain` / `buildTimeline` 回合折叠 / `groupByDay` 合并)+ `commitStory.test.ts`(9 测试全绿)。
-- **重写**:`CommitHistoryView.tsx` —— 回合卡(单作者分支+merge 折叠,可展开)、agent 头像过滤条 + 搜索、merge 细分隔行、删除联系人灰名片、copy-sha、加载更多、详情头「在对话中查看」回链 + 「回到这里」(restore-preview→ConfirmDialog→restore)、工作区改动「丢弃」、窄列(<720px)强制 unified、graph lane 色=agent 色(main 恒绿)。
-- **后端**:`POST /api/workspaces/{id}/discard-working`(`Sandbox.discard_working_changes`,merge-lock 守护、拒绝半合并、保 ignored/.polynoia/worktree)+ `test_discard_working.py`(3 测试)。`api.ts: workspaceDiscardWorking`;`store.openCommitsTab` 自动收产物面板。
+- **重写**:`CommitHistoryView.tsx` —— 回合卡(单作者分支+merge 折叠,可展开)、agent 头像过滤条 + 搜索、merge 细分隔行、删除联系人灰名片、copy-sha、加载更多、详情头「在对话中查看」回链、窄列(<720px)强制 unified、graph lane 色=agent 色(main 恒绿)。
+- **约束更新(2026-08-20)**:任意提交 restore 与工作区 discard 已删除；工作区回退只能从 canonical `user/message` 发起。
 - **provenance 依赖**:回链要求 merge 提交消息含 `agent/<id>/conv-<id>`(沙箱合并已是此格式)。旧式无标记的提交不显示「在对话中查看」(优雅降级)。
 - **门禁**:前端 tsc 干净 / vitest 182 passed(+9 commitStory;仅 2 个既有 M3 CJK 红)/ build 绿 / biome 我的文件 0 lint;后端 513 passed(+3 discard;1 个既有 keychain 环境红)。所有改动未 commit。

@@ -6,6 +6,7 @@ import json
 
 from polynoia.adapters.endpoint_config import resolve_endpoint
 from polynoia.adapters.opencode import _opencode_config_content
+from polynoia.api.onboarding import ADAPTER_CANDIDATES, credential_state
 from polynoia.domain.entities import AgentSetup
 from polynoia.storage.repo.agents import _setup_for_storage
 
@@ -61,7 +62,6 @@ def test_api_key_is_redacted_from_api_model_but_persisted_for_storage():
         "adapter_id": None,
         "model": None,
         "api_base_url": "https://api.example/v1",
-        "max_context_tokens": None,
         "api_key": "secret",
     }
 
@@ -84,3 +84,55 @@ def test_opencode_endpoint_is_written_to_the_selected_model_provider():
             }
         }
     }
+
+
+def test_qwen_and_deepseek_endpoint_mappings(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "qwen-env-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://qwen.example/v1")
+    qwen = resolve_endpoint("qwenCode", AgentSetup())
+    assert qwen.as_env("qwenCode") == {
+        "POLYNOIA_LLM_API_KEY": "qwen-env-key",
+        "POLYNOIA_LLM_API_BASE_URL": "https://qwen.example/v1",
+    }
+
+    deepseek = resolve_endpoint(
+        "deepseek",
+        AgentSetup(api_key="deepseek-key", api_base_url="https://deepseek.example/v1"),
+    )
+    assert deepseek.as_env("deepseek") == {
+        "DEEPSEEK_API_KEY": "deepseek-key",
+        "DEEPSEEK_BASE_URL": "https://deepseek.example/v1",
+    }
+
+
+def test_qwen_settings_file_alone_is_not_authentication(monkeypatch):
+    qwen = next(item for item in ADAPTER_CANDIDATES if item["id"] == "qwenCode")
+    assert [path.name for path in qwen["auth_paths"]] == ["oauth_creds.json"]
+    monkeypatch.setattr("polynoia.api.onboarding.settings.openai_api_key", None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setitem(qwen, "auth_paths", [])
+
+    assert credential_state("qwenCode")["credential_ready"] is False
+
+    monkeypatch.setenv("OPENAI_API_KEY", "write-only-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://qwen.example/v1")
+    state = credential_state("qwenCode")
+    assert state["credential_ready"] is True
+    assert state["credential_source"] == "server-endpoint"
+
+
+def test_qwen_endpoint_sources_are_not_mixed(monkeypatch):
+    from polynoia.adapters import endpoint_config
+
+    monkeypatch.setattr(endpoint_config.settings, "openai_api_key", "global-key")
+    monkeypatch.setattr(endpoint_config.settings, "openai_api_base_url", None)
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example/v1")
+
+    endpoint = resolve_endpoint(
+        "qwenCode",
+        AgentSetup(api_key="contact-key", api_base_url=None),
+    )
+
+    assert endpoint.api_key == "env-key"
+    assert endpoint.api_base_url == "https://env.example/v1"

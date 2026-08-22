@@ -67,7 +67,6 @@ async def build_project_briefs_layer(
     return ContextLayer.make(
         kind="project_brief",
         content="\n".join(lines),
-        priority=70,
         meta={
             "agent_id": agent_id,
             "workspace_count": str(len(relevant)),

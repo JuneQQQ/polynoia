@@ -800,6 +800,7 @@ class CodexSession:
         allow: bool,
         updated_input: dict[str, Any] | None = None,
         reason: str | None = None,
+        option_id: str | None = None,
     ) -> None:
         # P0 stub: --dangerously-bypass-approvals-and-sandbox auto-allows.
         return

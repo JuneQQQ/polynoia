@@ -1,5 +1,6 @@
 """Polynoia FastAPI app entry."""
 
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,7 +17,6 @@ from polynoia.api.terminal import router as terminal_router
 from polynoia.api.workspace_files import router as workspace_files_router
 from polynoia.api.workspaces_routes import router as workspaces_router
 from polynoia.api.ws_conv import ws_router
-from polynoia.settings import settings
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import SessionLocal, dispose_engine
 from polynoia.storage.repo import (
@@ -148,6 +148,11 @@ async def lifespan(_app: FastAPI):
     yield
     # Shutdown
     _sweeper_task.cancel()
+    with contextlib.suppress(_asyncio.CancelledError):
+        await _sweeper_task
+    from polynoia.adapters.pool import get_pool
+
+    await get_pool().suspend_all()
     await dispose_engine()
 
 

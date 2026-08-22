@@ -95,6 +95,11 @@ beforeEach(() => {
 			setItem: (key: string, value: string) => memoryStorage.set(key, value),
 			removeItem: (key: string) => memoryStorage.delete(key),
 		},
+		sessionStorage: {
+			getItem: (key: string) => memoryStorage.get(key) ?? null,
+			setItem: (key: string, value: string) => memoryStorage.set(key, value),
+			removeItem: (key: string) => memoryStorage.delete(key),
+		},
 		matchMedia: () => ({ matches: false }),
 		navigator: { userAgent: "vitest" },
 	};
@@ -233,6 +238,40 @@ describe("ConvWebSocket delivery outbox", () => {
 		expect(userIds(secondSocket)).toEqual(["m1", "m3"]);
 		expect(p1).toBeInstanceOf(Promise);
 		expect(p3).toBeInstanceOf(Promise);
+	});
+
+	it("restores an unacknowledged stable message after a full page reload", async () => {
+		const firstClient = new ConvWebSocket("conv-reload-outbox");
+		const firstConnecting = firstClient.connect();
+		const firstSocket = socketAt(0);
+		firstSocket.open();
+		await firstConnecting;
+		firstClient.sendUserMessage(
+			"survive reload",
+			["a"],
+			undefined,
+			"m-reload-outbox",
+		);
+		expect(userIds(firstSocket)).toEqual(["m-reload-outbox"]);
+		expect(
+			memoryStorage.get("polynoia:pending-outbox:conv-reload-outbox"),
+		).toContain("m-reload-outbox");
+
+		// A real reload destroys all module-level coordinators but preserves the
+		// tab's sessionStorage.  The replacement client must replay the exact frame.
+		firstClient.close();
+		ConvWebSocket.resetSharedStateForTests();
+		const replayClient = new ConvWebSocket("conv-reload-outbox");
+		const replayConnecting = replayClient.connect();
+		const replaySocket = socketAt(1);
+		replaySocket.open();
+		await replayConnecting;
+		expect(userIds(replaySocket)).toEqual(["m-reload-outbox"]);
+
+		replaySocket.receive(ack("m-reload-outbox", true));
+		expect(
+			memoryStorage.get("polynoia:pending-outbox:conv-reload-outbox"),
+		).toBeUndefined();
 	});
 
 	it("retains a pending frame when WebSocket.send throws", async () => {
@@ -1563,7 +1602,7 @@ describe("ConvWebSocket delivery outbox", () => {
 		});
 	});
 
-	it("keeps no-id and regeneration sends outside the outbox", async () => {
+	it("keeps no-id sends and turn retries outside the user-message outbox", async () => {
 		const client = new ConvWebSocket("conv-1");
 		expect(client.sendUserMessage("offline", ["a"])).toBeUndefined();
 		const connecting = client.connect();
@@ -1572,12 +1611,12 @@ describe("ConvWebSocket delivery outbox", () => {
 		await connecting;
 
 		expect(client.sendUserMessage("ordinary", ["a"])).toBeUndefined();
+		expect(client.retryTurn("turn-original")).toBe(true);
+		expect(userIds(socket)).toEqual([""]);
 		expect(
-			client.sendUserMessage("regenerate", ["a"], undefined, "regen-id", {
-				regenerate: true,
-			}),
-		).toBeUndefined();
-		expect(userIds(socket)).toEqual(["", "regen-id"]);
+			parsedFrames(socket).find((frame) => frame.kind === "retry_turn")
+				?.turn_id,
+		).toBe("turn-original");
 
 		const replacement = await replaceSocket(client, socket);
 		expect(userIds(replacement)).toEqual([]);

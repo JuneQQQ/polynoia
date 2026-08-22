@@ -50,5 +50,5 @@ apps/server/.venv/bin/python scripts/testkit/soak.py \
 ## 扩展方向(待办)
 
 - 多模型扫描脚本(同用例 × 模型清单,出对比矩阵)
-- 失败轨迹取证:benchmark 失败时自动导出该 conv 的 turn_events 切片
+- 失败轨迹取证:benchmark 失败时自动导出该 conv 的 Conversation Stream 切片
 - harness 消融:同模型开/关某 harness 组件(共享记忆/工具门禁)对比分数

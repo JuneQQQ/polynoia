@@ -4,8 +4,6 @@ import {
 	ChevronRight,
 	Diff as DiffIcon,
 	Loader2,
-	RotateCcw,
-	Undo2,
 } from "lucide-react";
 import { useState } from "react";
 import { api } from "../../lib/api";
@@ -14,21 +12,10 @@ import type { DiffPayload } from "../../lib/types";
 import { useStore } from "../../store";
 import { useConvScope } from "./_context";
 
-// `git apply --reverse` can't land once the file diverged from this card's
-// captured diff (e.g. after a conflict union-merge shifted the surrounding
-// lines). Detect that specific failure so we can guide to the commit-history
-// restore instead of leaking the raw git error.
-const REVERT_DIVERGED =
-	/does not apply|patch failed|--reverse failed|with conflicts/i;
-
 export function DiffPart({
 	payload,
-	inBatch,
 }: {
 	payload: DiffPayload;
-	/** Rendered inside a multi-file burst-changes summary — warn that
-	 * reverting just this one file may leave the batch inconsistent. */
-	inBatch?: boolean;
 }) {
 	const lang = useStore((s) => s.lang);
 	// A `commit_sha` means an agent ALREADY made + committed this edit (a
@@ -42,7 +29,6 @@ export function DiffPart({
 	const [err, setErr] = useState<string | null>(null);
 	const [appliedSha, setAppliedSha] = useState<string | null>(null);
 	const scope = useConvScope();
-	const canRevertHunk = payload.hunks.length > 1;
 
 	const apply = async () => {
 		if (!scope) {
@@ -70,57 +56,6 @@ export function DiffPart({
 			setErr(String(e));
 		} finally {
 			setBusy(false);
-		}
-	};
-
-	const [reverted, setReverted] = useState(false);
-	const [revertSha, setRevertSha] = useState<string | null>(null);
-	const [revBusy, setRevBusy] = useState(false);
-	const [confirmRevert, setConfirmRevert] = useState(false);
-	// Set when reverse-apply can't land because the file moved on (conflict
-	// merge etc.) — switches the card from a doomed 撤销 to a commit-history CTA.
-	const [divergedRevert, setDivergedRevert] = useState(false);
-
-	// Commit-first revert: reverse-apply the diff (whole file or one hunk) as a
-	// NEW commit. Fails if the file changed since (surfaced as an error).
-	const revert = async (hunks?: DiffPayload["hunks"]) => {
-		if (!scope) {
-			setErr(t("cannotLocateConversationContext", lang));
-			return;
-		}
-		setRevBusy(true);
-		setErr(null);
-		try {
-			const res = await api.applyDiff({
-				conv_id: scope.convId,
-				file: payload.file,
-				reverse: true,
-				// Target THIS agent's worktree — that's where the edit lives.
-				agent_id: payload.agent_id ?? undefined,
-				hunks: (hunks ?? payload.hunks).map((h) => ({
-					header: h.header,
-					lines: h.lines as Array<[string, number, string]>,
-				})),
-			});
-			if (res.ok && res.note !== "no-op" && res.sha) {
-				setReverted(true);
-				setRevertSha(res.sha);
-			} else if (res.ok) {
-				// reverse-applied to a no-op — nothing was committed (the file is
-				// already in this state, or changed since). Don't claim "已撤销".
-				setErr(t("noChangesToRevert", lang));
-			} else if (REVERT_DIVERGED.test(res.error || "")) {
-				// File moved on since this card (e.g. a conflict union-merge) → the
-				// patch can't reverse-apply. Drop the raw git error; the correct undo
-				// for an already-merged edit is the commit-history restore.
-				setDivergedRevert(true);
-			} else {
-				setErr(res.error || t("revertFailed", lang));
-			}
-		} catch (e) {
-			setErr(String(e));
-		} finally {
-			setRevBusy(false);
 		}
 	};
 
@@ -201,20 +136,6 @@ export function DiffPart({
 							<div key={hi}>
 								<div className="flex min-w-full w-max items-center gap-2 px-3 py-1 bg-[var(--color-surface-2)] text-[var(--color-fg-4)] text-[10.5px]">
 									<span className="flex-1 truncate">{h.header}</span>
-									{committed &&
-										canRevertHunk &&
-										!reverted &&
-										!divergedRevert && (
-											<button
-												type="button"
-												onClick={() => revert([h])}
-												disabled={revBusy}
-												title={t("revertThisHunk", lang)}
-												className="inline-flex items-center gap-0.5 px-1 rounded text-[var(--color-fg-3)] hover:text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40 disabled:opacity-40"
-											>
-												<Undo2 size={10} /> {t("revert", lang)}
-											</button>
-										)}
 								</div>
 								{h.lines.map(([kind, no, tx], li) => {
 									const bg =
@@ -247,107 +168,30 @@ export function DiffPart({
 					{/* Actions */}
 					<div className="flex items-center gap-1 px-3 py-2 border-t border-[var(--color-line)] bg-[var(--color-surface-2)]">
 						{committed ? (
-							// Proactive card: the edit is already committed on the agent's
-							// branch. "撤销" reverse-applies it as a new commit (commit-first).
-							reverted ? (
-								<span
-									className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
-									style={{
-										background: "var(--color-amber-soft)",
-										color: "var(--color-amber)",
-									}}
-								>
-									<Undo2 size={11} /> {t("reverted", lang)}
-									{revertSha && (
-										<span className="ml-1 font-mono opacity-70">
-											{revertSha}
-										</span>
-									)}
-								</span>
-							) : divergedRevert ? (
-								<span
-									className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
-									style={{
-										background: "var(--color-green-soft)",
-										color: "var(--color-green)",
-									}}
-								>
-									<Check size={11} /> {t("committed", lang)}
-								</span>
-							) : (
-								<>
-									<span
-										className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
-										style={{
-											background: "var(--color-green-soft)",
-											color: "var(--color-green)",
-										}}
-									>
-										<Check size={11} /> {t("committed", lang)}
-									</span>
-									{confirmRevert ? (
-										<button
-											type="button"
-											onClick={() => {
-												setConfirmRevert(false);
-												revert();
-											}}
-											disabled={revBusy}
-											title={t("confirmRevertEntireChange", lang)}
-											className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium bg-[var(--color-red)] text-white hover:opacity-90 transition disabled:opacity-50"
-										>
-											{revBusy ? (
-												<Loader2 size={11} className="animate-spin" />
-											) : (
-												<Undo2 size={11} />
-											)}
-											{t("confirmRevert", lang)}
-										</button>
-									) : (
-										<button
-											type="button"
-											onClick={() => setConfirmRevert(true)}
-											title={
-												inBatch
-													? t("revertOnlyThisFile", lang)
-													: t("revertEntireChange", lang)
-											}
-											className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium hover:bg-[var(--color-line)] transition"
-										>
-											<Undo2 size={11} /> {t("revert", lang)}
-										</button>
-									)}
-								</>
-							)
+							<span
+								className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
+								style={{
+									background: "var(--color-green-soft)",
+									color: "var(--color-green)",
+								}}
+							>
+								<Check size={11} /> {t("committed", lang)}
+							</span>
 						) : applied ? (
-							<>
-								<span
-									className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
-									style={{
-										background: "var(--color-green-soft)",
-										color: "var(--color-green)",
-									}}
-								>
-									<Check size={11} /> {t("applied", lang)}
-									{appliedSha && (
-										<span className="ml-1 font-mono opacity-70">
-											{appliedSha}
-										</span>
-									)}
-								</span>
-								<button
-									type="button"
-									onClick={() => {
-										setApplied(false);
-										setAppliedSha(null);
-										setErr(null);
-									}}
-									className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium hover:bg-[var(--color-line)] transition"
-									title={t("resetStateWarning", lang)}
-								>
-									<RotateCcw size={11} /> {t("reset", lang)}
-								</button>
-							</>
+							<span
+								className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded font-medium"
+								style={{
+									background: "var(--color-green-soft)",
+									color: "var(--color-green)",
+								}}
+							>
+								<Check size={11} /> {t("applied", lang)}
+								{appliedSha && (
+									<span className="ml-1 font-mono opacity-70">
+										{appliedSha}
+									</span>
+								)}
+							</span>
 						) : (
 							<button
 								type="button"
@@ -362,18 +206,6 @@ export function DiffPart({
 								)}
 								{busy ? t("applying", lang) : t("apply", lang)}
 							</button>
-						)}
-						{divergedRevert && (
-							<span
-								className="text-[10.5px] px-2 py-1 rounded"
-								style={{
-									background: "var(--color-amber-soft)",
-									color: "var(--color-amber)",
-								}}
-								title={t("divergedRevertExplanation", lang)}
-							>
-								{t("overwrittenByLaterChanges", lang)}
-							</span>
 						)}
 						{err && (
 							<span

@@ -35,8 +35,8 @@ from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import (
     MESSAGE_ID_MAX_LENGTH,
     AgentRow,
+    ConversationEventRow,
     MessageRow,
-    WorkspaceRow,
 )
 from polynoia.transport.ui_message_chunk import encode_polynoia_card
 
@@ -52,7 +52,7 @@ _MENTION_RE = re.compile(
     r"@([A-Za-z一-鿿㐀-䶿]"  # first char: letter or CJK
     r"[\w一-鿿㐀-䶿_-]{0,63})"  # rest: word chars / CJK / -_
 )
-_ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
+_ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex", "qwenCode", "deepseek"})
 # Bounds a single linear @mention relay. Kept tight (was 5): in practice a depth
 # of 5 let post-work "收到 / 已就位 / 感谢" acknowledgements ping-pong between the
 # orchestrator and workers for several rounds of pure noise before cutting. 3
@@ -61,9 +61,7 @@ _ADAPTER_AGENTS_SET = frozenset({"claudeCode", "opencoder", "codex"})
 _MAX_MENTION_CHAIN_DEPTH = 3
 
 
-def _is_bare_ack_bounce(
-    *, target: str, parent_agent_id: str | None, turn_did_work: bool
-) -> bool:
+def _is_bare_ack_bounce(*, target: str, parent_agent_id: str | None, turn_did_work: bool) -> bool:
     """Should we SUPPRESS spawning ``target`` because this is a content-free ack?
 
     A turn that did no real work — no tool call and no code edit, just thinking
@@ -83,11 +81,7 @@ def _is_bare_ack_bounce(
     @mention, so a discussion contribution that merely @acks its pinger SHOULD
     be suppressed here too.
     """
-    return (
-        not turn_did_work
-        and parent_agent_id is not None
-        and target == parent_agent_id
-    )
+    return not turn_did_work and parent_agent_id is not None and target == parent_agent_id
 
 
 # Agent↔agent discussion (free-form @mention back-and-forth) convergence caps.
@@ -180,7 +174,8 @@ def open_ask_ids(conv_id: str) -> set[str]:
     raised a NEW blocking ask during its turn.
     """
     return {
-        aid for aid, cid in list(_ask_conv.items())
+        aid
+        for aid, cid in list(_ask_conv.items())
         if cid == conv_id and _pending_asks.get(aid) is None
     }
 
@@ -212,11 +207,15 @@ def orphan_conv_asks(conv_id: str, *, keep: set[str]) -> list[str]:
 # `emit` broadcasts to all current connections) keeps receiving the live stream.
 # Only an explicit `abort` command cancels a task. Pruned when a conv goes fully
 # idle with no connections (see ws_conv finally).
-_conv_agent_tasks: dict[
-    str, dict[str, asyncio.Task]
-] = RUNTIME.agent_tasks  # conv_id → agent_id → task (abort/status handle)
-_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = RUNTIME.agent_locks  # conv_id → agent_id → lock
-_conv_bursts: dict[str, dict[str, dict]] = RUNTIME.bursts  # conv_id → tp_id → burst reg 🔴 CHARTER §2
+_conv_agent_tasks: dict[str, dict[str, asyncio.Task]] = (
+    RUNTIME.agent_tasks
+)  # conv_id → agent_id → task (abort/status handle)
+_conv_agent_locks: dict[str, dict[str, asyncio.Lock]] = (
+    RUNTIME.agent_locks
+)  # conv_id → agent_id → lock
+_conv_bursts: dict[str, dict[str, dict]] = (
+    RUNTIME.bursts
+)  # conv_id → tp_id → burst reg 🔴 CHARTER §2
 
 
 class _DrainResult(NamedTuple):
@@ -250,10 +249,12 @@ _conv_inflight: dict[str, set[asyncio.Task]] = RUNTIME.inflight  # conv_id → {
 # mistaken for a hung model and killed mid-command (that abort closed the MCP
 # session → "Connection closed" on the next call).
 _conv_tool_activity: dict[str, float] = RUNTIME.tool_activity
-# In-flight background dispatchers (currently regeneration, which intentionally
+# In-flight background dispatchers (currently turn retry, which intentionally
 # stays outside ordinary durable ingress). Strong refs also keep prune from
 # orphaning the agent task registry before a dispatcher registers its turn.
-_conv_dispatchers: dict[str, set[asyncio.Task]] = RUNTIME.dispatchers  # conv_id → {dispatcher tasks}
+_conv_dispatchers: dict[str, set[asyncio.Task]] = (
+    RUNTIME.dispatchers
+)  # conv_id → {dispatcher tasks}
 
 # Live-stream accumulator for refresh-safe resume. While an agent streams, we
 # keep its in-flight message_id + ordered text/reasoning parts here so a client
@@ -263,7 +264,8 @@ _conv_dispatchers: dict[str, set[asyncio.Task]] = RUNTIME.dispatchers  # conv_id
 # refresh). The same record also carries transient UI state that is intentionally
 # not persisted in DB (agent-status + retry notice), so a refresh does not make
 # an active lane look idle. Structure:
-# conv_id → agent_id → {message_id, parts:[{id,kind,text}], status, retry_notice}.
+# conv_id → agent_id → {message_id, parts, status, retry_notice,
+#                       harness_permissions}.
 # Cleared per-agent on terminal status (idle/aborted/error). Module-level so it
 # survives a disconnect, like the other conv execution state.
 _conv_live: dict[str, dict[str, dict]] = RUNTIME.live
@@ -274,20 +276,22 @@ def _live_entry(conv_id: str, agent_id: str) -> dict:
         agent_id,
         {
             "message_id": None,
+            "turn_id": None,
             "parts": [],
             "status": None,
             "retry_notice": None,
+            "harness_permissions": {},
         },
     )
 
 
 def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
-    """Cheap tap on the outbound chunk stream → accumulate text/reasoning parts
-    for stream-resume. Only parses the text/reasoning frames; everything else is
-    ignored (no JSON parse on the hot path for non-text frames)."""
-    if not (
-        frame.startswith('data: {"type":"text-') or frame.startswith('data: {"type":"reasoning-')
-    ):
+    """Accumulate reconnect-safe streaming and blocking Harness state."""
+    is_stream_part = frame.startswith('data: {"type":"text-') or frame.startswith(
+        'data: {"type":"reasoning-'
+    )
+    is_harness_permission = frame.startswith('data: {"type":"data-harness-permission"')
+    if not (is_stream_part or is_harness_permission):
         return
     try:
         obj = json.loads(frame[len("data: ") :])
@@ -295,16 +299,22 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
         return
     t = obj.get("type")
     entry = _live_entry(conv_id, agent_id)
-    if t in ("text-start", "reasoning-start"):
+    if t == "data-harness-permission":
+        permission = obj.get("data")
+        if isinstance(permission, dict) and permission.get("id"):
+            entry["harness_permissions"][permission["id"]] = permission
+    elif t in ("text-start", "reasoning-start"):
         kind = "reasoning" if t == "reasoning-start" else "text"
         pid = obj.get("id")
         if pid and not any(p["id"] == pid for p in entry["parts"]):
-            entry["parts"].append({
-                "id": pid,
-                "kind": kind,
-                "text": "",
-                "discussion_id": obj.get("discussion_id"),
-            })
+            entry["parts"].append(
+                {
+                    "id": pid,
+                    "kind": kind,
+                    "text": "",
+                    "discussion_id": obj.get("discussion_id"),
+                }
+            )
     elif t in ("text-delta", "reasoning-delta"):
         pid = obj.get("id")
         for p in entry["parts"]:
@@ -325,8 +335,16 @@ def _live_note_chunk(conv_id: str, agent_id: str, frame: str) -> None:
             ]
 
 
-def _live_set_message_id(conv_id: str, agent_id: str, message_id: str) -> None:
-    _live_entry(conv_id, agent_id)["message_id"] = message_id
+def _live_set_message_id(
+    conv_id: str,
+    agent_id: str,
+    message_id: str,
+    turn_id: str | None = None,
+) -> None:
+    entry = _live_entry(conv_id, agent_id)
+    entry["message_id"] = message_id
+    if turn_id:
+        entry["turn_id"] = turn_id
 
 
 def _live_note_status(conv_id: str, agent_id: str, status: str, extra: dict | None = None) -> None:
@@ -389,6 +407,14 @@ def _live_resume_frames(conv_id: str) -> list[str]:
                 "sender_id": retry_notice["sender_id"],
             }
             frames.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        for permission_id, permission in entry.get("harness_permissions", {}).items():
+            payload = {
+                "type": "data-harness-permission",
+                "id": permission_id,
+                "data": permission,
+                "sender_id": agent_id,
+            }
+            frames.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
         if not entry.get("parts"):
             continue
         payload = {
@@ -396,6 +422,7 @@ def _live_resume_frames(conv_id: str) -> list[str]:
             "data": {
                 "agent_id": agent_id,
                 "message_id": entry.get("message_id"),
+                "turn_id": entry.get("turn_id"),
                 "parts": entry["parts"],
             },
         }
@@ -613,10 +640,11 @@ async def update_workspace(ws_id: str, body: dict):
         from polynoia.adapters.pool import get_pool
 
         pool = get_pool()
-        for conv_id, nid, payload, present in notices:
-            for aid in present:
-                with contextlib.suppress(Exception):
-                    await pool.close_session(aid, conv_id)
+        for conv_id, nid, payload, _present in notices:
+            # Every member's bootstrap roster/role changed, not only the
+            # removed contacts' sessions.
+            with contextlib.suppress(Exception):
+                await pool.close_sessions_for_conv(conv_id)
             with contextlib.suppress(Exception):
                 frame = (
                     'data: {"type":"data-text","id":'
@@ -665,9 +693,7 @@ async def create_conversation_endpoint(body: dict):
     # is not a conversation (it's the "群聊 · 0 Agent" degenerate row). Reject it
     # here so neither a DM nor a group can be created empty.
     if not any(m != "you" for m in members):
-        raise HTTPException(
-            status_code=400, detail="conversation needs at least one agent member"
-        )
+        raise HTTPException(status_code=400, detail="conversation needs at least one agent member")
     direct = bool(body.get("direct")) or len(members) == 2
     member_roles = body.get("member_roles") or {}
     if not isinstance(member_roles, dict):
@@ -710,6 +736,28 @@ async def create_conversation_endpoint(body: dict):
         merge_mode="auto",
     )
     async with SessionLocal() as session:
+        if not direct and orchestrator_member_id:
+            candidate = next(
+                (
+                    row
+                    for row in await storage_repo.list_agents(session)
+                    if row.id == orchestrator_member_id
+                ),
+                None,
+            )
+            adapter_id = (
+                candidate.setup.adapter_id
+                if candidate is not None and candidate.setup is not None
+                else None
+            )
+            if adapter_id == "deepseek":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "该 Harness 当前只接入原生 ACP 工具，不能作为群聊协调器；"
+                        "请选择 Claude Code、Codex 或 OpenCode"
+                    ),
+                )
         await storage_repo.create_conversation(session, conv)
         await session.commit()
         return conv.model_dump(mode="json")
@@ -747,9 +795,7 @@ async def list_conversations(
         )
         # Newest-message preview per conv (微信/Slack-style sidebar subtitle),
         # in ONE batched query so the list stays O(1) regardless of conv count.
-        previews = await storage_repo.latest_message_previews(
-            session, [r.id for r in rows]
-        )
+        previews = await storage_repo.latest_message_previews(session, [r.id for r in rows])
         out = []
         for r in rows:
             item = r.model_dump(mode="json")
@@ -888,6 +934,7 @@ async def _kill_conv_process_runs(conv_id: str) -> int:
 async def delete_conv(conv_id: str):
     """Hard-delete a conversation + its messages and pins."""
     await _kill_conv_process_runs(conv_id)  # don't leak this conv's bg servers
+    await get_pool().close_sessions_for_conv(conv_id)
     async with SessionLocal() as session:
         ok = await storage_repo.delete_conversation(session, conv_id)
         await session.commit()
@@ -903,6 +950,7 @@ async def clear_conv(conv_id: str):
     message list immediately.
     """
     await _kill_conv_process_runs(conv_id)  # bg servers tied to wiped cards
+    await get_pool().close_sessions_for_conv(conv_id)
     async with SessionLocal() as session:
         removed = await storage_repo.clear_conversation_messages(session, conv_id)
         await storage_repo.reset_unread(session, conv_id)
@@ -914,72 +962,10 @@ async def clear_conv(conv_id: str):
     return {"ok": True, "removed": removed}
 
 
-@router.delete("/api/conversations/{conv_id}/messages/{msg_id}")
-async def delete_conv_message(conv_id: str, msg_id: str, silent: bool = False):
-    """Delete one agent message from a conversation.
-
-    Used by "regenerate": the old agent output is replaced by a fresh turn,
-    while the triggering user message remains in history. User-authored
-    messages are refused so this endpoint cannot silently erase the prompt.
-    """
-    if _conv_has_running_agent(conv_id):
-        raise HTTPException(409, "an agent is still running — finish or cancel it first")
-    async with SessionLocal() as session:
-        row = await session.get(MessageRow, msg_id)
-        if row is None or row.conv_id != conv_id:
-            raise HTTPException(404, "message not in this conversation")
-        if row.sender_id == "you":
-            raise HTTPException(400, "cannot delete user messages")
-        ok = await storage_repo.delete_message(session, msg_id)
-        await session.commit()
-    if ok and not silent:
-        await _broadcast_to_conv(
-            conv_id,
-            'data: {"type":"data-message-removed","data":{"id":'
-            + json.dumps(msg_id)
-            + "}}\n\n",
-        )
-    return {"ok": ok}
-
-
-@router.patch("/api/conversations/{conv_id}/messages/{msg_id}")
-async def update_conv_message(conv_id: str, msg_id: str, body: dict):
-    """Update one user text message in-place.
-
-    Used by inline edit/resend. Only user-authored text is editable here; agent
-    outputs must be regenerated instead of manually rewritten.
-    """
-    text = str(body.get("text") or "").strip()
-    if not text:
-        raise HTTPException(400, "text required")
-    if _conv_has_running_agent(conv_id):
-        raise HTTPException(409, "an agent is still running — finish or cancel it first")
-    payload = {"kind": "text", "body": [{"t": "p", "c": text}]}
-    async with SessionLocal() as session:
-        row = await session.get(MessageRow, msg_id)
-        if row is None or row.conv_id != conv_id:
-            raise HTTPException(404, "message not in this conversation")
-        if row.sender_id != "you":
-            raise HTTPException(400, "only user messages are editable")
-        await storage_repo.update_message_payload(session, msg_id, payload)
-        await session.commit()
-    await _broadcast_to_conv(
-        conv_id,
-        'data: {"type":"data-message-updated","data":{"id":'
-        + json.dumps(msg_id)
-        + ',"payload":'
-        + json.dumps(payload, ensure_ascii=False)
-        + "}}\n\n",
-    )
-    return {"ok": True}
-
-
 _INTERRUPTED_WRITE_OUTPUT = "⚠️ 连接已中断,该写入可能未完成"
 
 
-@router.patch(
-    "/api/conversations/{conv_id}/messages/{msg_id}/interrupt-stuck-write"
-)
+@router.patch("/api/conversations/{conv_id}/messages/{msg_id}/interrupt-stuck-write")
 async def interrupt_stuck_write_message(conv_id: str, msg_id: str):
     """Retire one orphaned write/edit tool card after reconnect recovery.
 
@@ -1003,9 +989,7 @@ async def interrupt_stuck_write_message(conv_id: str, msg_id: str):
                 else:
                     row = (
                         await session.execute(
-                            select(MessageRow)
-                            .where(MessageRow.id == msg_id)
-                            .with_for_update()
+                            select(MessageRow).where(MessageRow.id == msg_id).with_for_update()
                         )
                     ).scalar_one_or_none()
                 if row is None or row.conv_id != conv_id:
@@ -1014,9 +998,7 @@ async def interrupt_stuck_write_message(conv_id: str, msg_id: str):
                 if not isinstance(payload, dict) or payload.get("kind") != "tool-call":
                     raise HTTPException(400, "message is not a tool-call card")
                 tool_name = str(payload.get("name") or "").lower()
-                if not any(
-                    token in tool_name for token in ("write", "edit", "apply_patch")
-                ):
+                if not any(token in tool_name for token in ("write", "edit", "apply_patch")):
                     raise HTTPException(400, "tool-call is not a write/edit operation")
 
                 already_interrupted = (
@@ -1035,9 +1017,7 @@ async def interrupt_stuck_write_message(conv_id: str, msg_id: str):
                     "is_error": True,
                     "output_text": _INTERRUPTED_WRITE_OUTPUT,
                 }
-                await storage_repo.update_message_payload(
-                    session, msg_id, next_payload
-                )
+                await storage_repo.update_message_payload(session, msg_id, next_payload)
                 await session.commit()
 
             frame = {
@@ -1201,9 +1181,7 @@ async def continue_discussion(conv_id: str, body: dict):
         raise HTTPException(status_code=400, detail="participants must be a list")
     reg["continue"] = {
         "prompt": prompt,
-        "participants": [
-            str(p).strip() for p in (participants or []) if str(p).strip()
-        ],
+        "participants": [str(p).strip() for p in (participants or []) if str(p).strip()],
         "author_agent_id": str(body.get("author_agent_id") or "").strip(),
     }
     return {
@@ -1224,6 +1202,9 @@ async def register_ask(conv_id: str, body: dict):
     """
     ask_id = f"ask-{uuid.uuid4().hex[:10]}"
     agent_id = (body.get("agent_id") or "").strip()
+    turn_id = _conv_agent_turn.get(f"{conv_id}:{agent_id}")
+    if not agent_id or not turn_id:
+        raise HTTPException(status_code=409, detail="ask_user requires an active Polynoia turn")
     questions = body.get("questions") or []
     title = (body.get("title") or "").strip()
     _pending_asks[ask_id] = None
@@ -1260,6 +1241,7 @@ async def register_ask(conv_id: str, body: dict):
                     "blocking_tool": True,
                 },
                 msg_id=ask_id,
+                turn_id=turn_id,
             )
             await _db.commit()
     return {"ask_id": ask_id}
@@ -1283,12 +1265,8 @@ async def poll_ask(conv_id: str, ask_id: str):
                 answer = _pending_asks.pop(ask_id)
                 _ask_conv.pop(ask_id, None)
                 async with SessionLocal() as db:
-                    answer_row = await db.get(
-                        MessageRow, _ask_answer_message_id(ask_id)
-                    )
-                    if answer_row is not None and isinstance(
-                        answer_row.payload, dict
-                    ):
+                    answer_row = await db.get(MessageRow, _ask_answer_message_id(ask_id))
+                    if answer_row is not None and isinstance(answer_row.payload, dict):
                         answer_row.payload = {
                             **answer_row.payload,
                             "_ask_answer_polled": True,
@@ -1306,11 +1284,7 @@ async def poll_ask(conv_id: str, ask_id: str):
                 payload = row.payload if row is not None else None
                 body = payload.get("body") if isinstance(payload, dict) else None
                 first_block = body[0] if isinstance(body, list) and body else None
-                answer = (
-                    first_block.get("c")
-                    if isinstance(first_block, dict)
-                    else None
-                )
+                answer = first_block.get("c") if isinstance(first_block, dict) else None
                 if (
                     row is not None
                     and row.conv_id == conv_id
@@ -1375,20 +1349,12 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
                 if prior_answer is not None:
                     prior_payload = prior_answer.payload
                     prior_body = (
-                        prior_payload.get("body")
-                        if isinstance(prior_payload, dict)
-                        else None
+                        prior_payload.get("body") if isinstance(prior_payload, dict) else None
                     )
                     prior_block = (
-                        prior_body[0]
-                        if isinstance(prior_body, list) and prior_body
-                        else None
+                        prior_body[0] if isinstance(prior_body, list) and prior_body else None
                     )
-                    prior_text = (
-                        prior_block.get("c")
-                        if isinstance(prior_block, dict)
-                        else None
-                    )
+                    prior_text = prior_block.get("c") if isinstance(prior_block, dict) else None
                     if prior_answer.conv_id != conv_id:
                         raise HTTPException(status_code=404, detail="ask not found")
                     if (
@@ -1398,17 +1364,9 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
                         or prior_text != answer
                         or prior_answer.in_reply_to != ask_id
                     ):
-                        raise HTTPException(
-                            status_code=409, detail="ask_answer_conflict"
-                        )
-                    live_owner = (
-                        _ask_conv.get(ask_id) == conv_id
-                        and ask_id in _pending_asks
-                    )
-                    if (
-                        not live_owner
-                        and prior_payload.get("_ask_answer_polled") is not True
-                    ):
+                        raise HTTPException(status_code=409, detail="ask_answer_conflict")
+                    live_owner = _ask_conv.get(ask_id) == conv_id and ask_id in _pending_asks
+                    if not live_owner and prior_payload.get("_ask_answer_polled") is not True:
                         # The durable answer committed, but its live poller vanished
                         # before poll_ask could hand it off (restart/cancellation).
                         # Convert it to the normal orphan recovery path: stamp the
@@ -1437,27 +1395,41 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
                         _pending_asks[ask_id] = answer
                     return {"ok": True, "orphaned": False}
 
-                live = (
-                    _ask_conv.get(ask_id) == conv_id
-                    and ask_id in _pending_asks
-                )
+                live = _ask_conv.get(ask_id) == conv_id and ask_id in _pending_asks
                 if live and _pending_asks[ask_id] is not None:
                     if _pending_asks[ask_id] != answer:
-                        raise HTTPException(
-                            status_code=409, detail="ask_answer_conflict"
-                        )
+                        raise HTTPException(status_code=409, detail="ask_answer_conflict")
                     return {"ok": True, "orphaned": False}
 
                 if live:
-                    await storage_repo.append_message_once(
+                    card = await db.get(MessageRow, ask_id)
+                    if card is None or card.conv_id != conv_id:
+                        raise HTTPException(status_code=404, detail="ask not found")
+                    answer_turn_id = card.turn_id
+                    if not answer_turn_id:
+                        raise HTTPException(status_code=409, detail="ask has no Polynoia turn")
+                    answer_code_sha = await _workspace_head_for_conv(conv_id)
+                    _, inserted = await storage_repo.append_message_once(
                         db,
                         conv_id=conv_id,
                         sender_id="you",
                         payload=answer_payload,
                         msg_id=answer_msg_id,
                         in_reply_to=ask_id,
+                        code_sha=answer_code_sha,
+                        turn_id=answer_turn_id,
                     )
                     await db.commit()
+                    if inserted:
+                        await storage_repo.record_conversation_event(
+                            conv_id=conv_id,
+                            event_type="user/message",
+                            turn_id=answer_turn_id,
+                            actor_id="you",
+                            message_id=answer_msg_id,
+                            commit_sha=answer_code_sha,
+                            payload={"text": answer, "in_reply_to": ask_id},
+                        )
                     # Publish to the poller only after its durable history row commits.
                     _pending_asks[ask_id] = answer
                     return {"ok": True, "orphaned": False}
@@ -1475,9 +1447,7 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
                     raise HTTPException(status_code=404, detail="ask not found")
                 if card.payload.get("answered") or "answer" in card.payload:
                     if card.payload.get("answer") != answer:
-                        raise HTTPException(
-                            status_code=409, detail="ask_answer_conflict"
-                        )
+                        raise HTTPException(status_code=409, detail="ask_answer_conflict")
                     return {"ok": True, "orphaned": True}
                 card.payload = {
                     **card.payload,
@@ -1778,12 +1748,13 @@ async def apply_diff(body: dict):
         sha: short commit sha (on success)
         error: string (on failure)
     """
+    allowed_fields = {"conv_id", "file", "hunks", "message_id"}
+    unknown_fields = sorted(set(body) - allowed_fields)
+    if unknown_fields:
+        return {"ok": False, "error": f"unknown fields: {', '.join(unknown_fields)}"}
     conv_id = body.get("conv_id")
     file_path = body.get("file")
     raw_hunks = body.get("hunks") or []
-    # reverse=True → `git apply --reverse`: undo an already-committed edit
-    # (commit-first revert for the proactive diff card's 撤销 action).
-    reverse = bool(body.get("reverse"))
     if not conv_id or not file_path or not raw_hunks:
         return {"ok": False, "error": "conv_id + file + hunks required"}
 
@@ -1798,48 +1769,16 @@ async def apply_diff(body: dict):
         return {"ok": False, "error": "conversation not found"}
 
     if conv.workspace_id:
-        if reverse:
-            # 撤销 must land on workspace `main` (the root) — that's the tree the
-            # user sees in the file tree / preview. Reverting on an agent's
-            # worktree branch would NOT reflect in main (worker branches aren't
-            # synced back), so the user would see "nothing happened".
-            sandbox = Sandbox.open_workspace_if_exists(conv.workspace_id)
-            if sandbox is None:
-                return {"ok": False, "error": "workspace not bootstrapped"}
-        else:
-            # A proposed diff (forward apply) lands on the orchestrator's review
-            # worktree (or `you`) — the user's review surface.
-            review_agent = conv.orchestrator_member_id or "you"
-            sandbox = await Sandbox.create_workspace_sandbox(
-                workspace_id=conv.workspace_id,
-                conv_id=conv_id,
-                agent_id=review_agent,
-            )
+        # A proposed diff (forward apply) lands on the orchestrator's review
+        # worktree (or `you`) — the user's review surface.
+        review_agent = conv.orchestrator_member_id or "you"
+        sandbox = await Sandbox.create_workspace_sandbox(
+            workspace_id=conv.workspace_id,
+            conv_id=conv_id,
+            agent_id=review_agent,
+        )
     else:
         sandbox = await Sandbox.create(conv_id)
-
-    def _is_create_file_diff(hunks: list[dict]) -> bool:
-        """Best-effort detection for write-created files.
-
-        Diff cards currently carry hunks but not git's `new file mode` header.
-        A pure creation has old-range `-0,0` and only added lines. Reversing
-        such a patch with a synthetic `--- a/file` header leaves an empty file;
-        for the card's 撤销 semantics we remove that file from main.
-        """
-        if not hunks:
-            return False
-        for h in hunks:
-            header = h.get("header") or ""
-            if not re.match(r"^@@ -0,0 \+\d+(?:,\d+)? @@", header):
-                return False
-            for line in h.get("lines") or []:
-                if not isinstance(line, list) or len(line) < 3:
-                    continue
-                if line[0] != "add":
-                    return False
-        return True
-
-    create_file_diff = _is_create_file_diff(raw_hunks)
 
     # Reconstruct unified diff. Each hunk header from the payload is already
     # in `@@ -a,b +c,d @@` shape; just sandwich body lines with +/-/space.
@@ -1885,19 +1824,10 @@ async def apply_diff(body: dict):
         # We deliberately do NOT pass --inaccurate-eof: it would fix that case but
         # STRIPS the trailing newline on normal files (verified) — a worse bug.
         rc, _out, err = await sandbox._run(
-            ["git", "apply", "--whitespace=fix", *(["--reverse"] if reverse else []), patch_path]
+            ["git", "apply", "--whitespace=fix", patch_path]
         )
         if rc != 0:
-            verb = "git apply --reverse" if reverse else "git apply"
-            return {"ok": False, "error": f"{verb} failed: {err.strip()[:300]}"}
-        if reverse and create_file_diff:
-            target = (sandbox.root / file_path).resolve()
-            try:
-                target.relative_to(sandbox.root.resolve())
-            except ValueError:
-                return {"ok": False, "error": "path escapes workspace root"}
-            if target.exists() and target.is_file():
-                target.unlink()
+            return {"ok": False, "error": f"git apply failed: {err.strip()[:300]}"}
         # Stage + commit
         rc, _out, err = await sandbox._run(["git", "add", "-A", file_path])
         if rc != 0:
@@ -1908,7 +1838,7 @@ async def apply_diff(body: dict):
                 "commit",
                 "-q",
                 "-m",
-                f"polynoia: {'revert' if reverse else 'apply'} diff {file_path}",
+                f"polynoia: apply diff {file_path}",
             ]
         )
         if rc != 0:
@@ -1917,10 +1847,22 @@ async def apply_diff(body: dict):
                 return {"ok": True, "sha": "", "note": "no-op"}
             return {"ok": False, "error": f"git commit failed: {err.strip()[:200]}"}
         rc, sha, _err = await sandbox._run(["git", "rev-parse", "--short", "HEAD"])
-        # Nudge the code tab / file tree to refetch so the applied/reverted file
-        # content shows immediately (esp. a 撤销 landing on main).
+        sha_value = sha.strip() if rc == 0 else ""
+        if sha_value and conv.workspace_id:
+            _apply_actor = conv.orchestrator_member_id or "you"
+            await storage_repo.record_workspace_event(
+                workspace_id=conv.workspace_id,
+                event_type="commit",
+                commit_sha=sha_value,
+                conv_id=conv_id,
+                turn_id=_conv_agent_turn.get(f"{conv_id}:{_apply_actor}"),
+                actor_id=_apply_actor,
+                message_id=body.get("message_id"),
+                payload={"path": file_path, "source": "diff_apply"},
+            )
+        # Nudge the code tab / file tree to refetch so applied content shows.
         await _broadcast_to_conv(conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n')
-        return {"ok": True, "sha": (sha.strip() if rc == 0 else "")}
+        return {"ok": True, "sha": sha_value}
     finally:
         if acquired:
             lock.release()
@@ -1994,10 +1936,9 @@ async def create_message(body: dict):
         if value is not None and len(value) > MESSAGE_ID_MAX_LENGTH:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"{field} must be at most {MESSAGE_ID_MAX_LENGTH} characters"
-                ),
+                detail=(f"{field} must be at most {MESSAGE_ID_MAX_LENGTH} characters"),
             )
+
     async def append_attempt() -> str:
         async with SessionLocal() as session:
             if msg_id:
@@ -2105,7 +2046,6 @@ async def post_diff_card(conv_id: str, body: dict):
         "hunks": hunks[:max_hunks],
         "applied": True,
         "commit_sha": body.get("commit_sha"),
-        "agent_id": body.get("agent_id") or sender_id,
         # Group with the rest of the emitting agent's current turn (ADR-024).
         "turn_id": _conv_agent_turn.get(ctx_key),
     }
@@ -2139,7 +2079,23 @@ async def post_terminal_card(conv_id: str, body: dict):
     sender_id = body.get("sender_id") or "you"
     _MAX = 16000
     output = str(body.get("output") or "")
-    truncated = len(output) > _MAX
+    # The MCP producer already keeps a bounded tail, so ``len(output)`` alone
+    # cannot tell whether bytes were discarded upstream.  Preserve its explicit
+    # truth bit instead of silently presenting a 16K tail as complete output.
+    truncated = bool(body.get("truncated")) or len(output) > _MAX
+    output_bytes_raw = body.get("output_bytes")
+    output_bytes = (
+        max(0, int(output_bytes_raw))
+        if isinstance(output_bytes_raw, (int, float))
+        else len(output.encode("utf-8"))
+    )
+    spill_files = [
+        str(path)
+        for path in (body.get("spill_files") or [])
+        if isinstance(path, str)
+        and path.startswith(".polynoia/tool-results/")
+        and len(path) <= 300
+    ][:2]
     exit_code = body.get("exit_code")
     mode = str(body.get("mode") or "blocking")
     if mode not in ("blocking", "background"):
@@ -2164,6 +2120,8 @@ async def post_terminal_card(conv_id: str, body: dict):
         "pgid": int(pgid) if isinstance(pgid, int) else None,
         "exit_code": int(exit_code) if isinstance(exit_code, int) else None,
         "truncated": truncated,
+        "output_bytes": output_bytes,
+        "spill_files": spill_files,
         "seq": int(seq) if isinstance(seq, int) else None,
         # Group with the rest of the emitting agent's current turn (ADR-024).
         "turn_id": _conv_agent_turn.get(ctx_key),
@@ -2195,7 +2153,12 @@ async def post_terminal_card(conv_id: str, body: dict):
             # Never shrink real output back to empty (stale-empty snapshot).
             if not payload["output"] and prev.get("output"):
                 payload["output"] = prev["output"]
-                payload["truncated"] = bool(prev.get("truncated"))
+            payload["truncated"] = bool(prev.get("truncated")) or payload["truncated"]
+            payload["output_bytes"] = max(
+                int(prev.get("output_bytes") or 0), payload["output_bytes"]
+            )
+            if not payload["spill_files"] and isinstance(prev.get("spill_files"), list):
+                payload["spill_files"] = prev["spill_files"]
         await storage_repo.upsert_message(
             session,
             conv_id=conv_id,
@@ -2203,11 +2166,7 @@ async def post_terminal_card(conv_id: str, body: dict):
             payload=payload,
             msg_id=term_id,
         )
-        status = (
-            "running"
-            if running
-            else ("exited" if payload["exit_code"] == 0 else "failed")
-        )
+        status = "running" if running else ("exited" if payload["exit_code"] == 0 else "failed")
         await storage_repo.upsert_process_run(
             session,
             process_id=process_id,
@@ -2292,8 +2251,11 @@ async def stop_process_run(process_id: str):
     if closed:
         with suppress(Exception):
             frame = encode_polynoia_card(
-                "terminal", closed, run.get("message_id"),
-                sender_id=run.get("agent_id"), sender_label=run.get("agent_id"),
+                "terminal",
+                closed,
+                run.get("message_id"),
+                sender_id=run.get("agent_id"),
+                sender_label=run.get("agent_id"),
             )
             await _broadcast_to_conv(run.get("conv_id"), frame)
     return {"ok": True, "killed": killed}
@@ -2971,6 +2933,28 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
             ok, sha, msg = False, "", f"conclude raised: {exc}"
 
         if ok:
+            await storage_repo.record_workspace_event(
+                workspace_id=row.workspace_id,
+                event_type="merge",
+                commit_sha=sha,
+                conv_id=row.conv_id,
+                turn_id=_conv_agent_turn.get(f"{row.conv_id}:{resolved_by}"),
+                actor_id=resolved_by,
+                payload={
+                    "branch": row.branch,
+                    "conflict_id": conflict_id,
+                    "resolution": "resolved",
+                },
+            )
+            await storage_repo.record_workspace_event(
+                workspace_id=row.workspace_id,
+                event_type="main_updated",
+                commit_sha=sha,
+                conv_id=row.conv_id,
+                turn_id=_conv_agent_turn.get(f"{row.conv_id}:{resolved_by}"),
+                actor_id=resolved_by,
+                payload={"reason": "conflict_resolved", "conflict_id": conflict_id},
+            )
             async with SessionLocal() as session:
                 await storage_repo.set_conflict_status(
                     session,
@@ -3052,7 +3036,7 @@ async def abandon_conflict_endpoint(conflict_id: str):
 # /api/workspaces/{ws_id}/... now live in api/workspace_files.py (its own
 # router, included in main.py). Workspace filesystem path helpers (_SKIP_DIRS /
 # _workspace_root / _resolve_safe_path / _resolve_present_path) live in
-# api/_fs_paths.py. The endpoints below (reset-sandbox / restore / rewind) stay
+# api/_fs_paths.py. The endpoints below (reset-sandbox / rewind) stay
 # here because they touch burst/merge/conv state.
 
 
@@ -3070,7 +3054,7 @@ async def _workspace_has_running_agent(
     """True if ANY conversation sharing ``workspace_id`` has a live agent.
 
     `_conv_has_running_agent` only sees the one conv it's asked about — but
-    restore / rewind reset the workspace-wide shared ``main`` (and `close_all()`
+    rewind resets the workspace-wide shared ``main`` (and `close_all()`
     every conv's pooled session + `git merge --abort` any in-flight merge). A
     conv-scoped guard therefore lets a rewind in conv A silently wipe / abort
     work that conv B is actively running on the SAME workspace. Widen the guard
@@ -3078,76 +3062,80 @@ async def _workspace_has_running_agent(
     sibling conv is busy. ``exclude_conv`` skips the conv being rewound itself
     (it carries its own conv-scoped check)."""
     async with SessionLocal() as session:
-        convs = await storage_repo.list_conversations(
-            session, workspace_id=workspace_id
-        )
+        convs = await storage_repo.list_conversations(session, workspace_id=workspace_id)
     return any(c.id != exclude_conv and _conv_has_running_agent(c.id) for c in convs)
 
 
-@router.get("/api/workspaces/{ws_id}/restore-preview")
-async def restore_preview(ws_id: str, sha: str, conv_id: str | None = None):
-    """「回到这个对话」dry-run: what reverting workspace main to ``sha`` would undo
-    (commits / files / agents). If ``conv_id`` is given and an agent is running
-    there, returns ``blocked=True`` so the UI tells the user to wait/cancel."""
-    sb = Sandbox.open_workspace_if_exists(ws_id)
-    if sb is None:
-        raise HTTPException(404, f"unknown / unmaterialized workspace: {ws_id}")
-    preview = await sb.preview_restore_main(sha)
-    blocked = bool(conv_id and _conv_has_running_agent(conv_id))
-    return {**preview, "blocked": blocked}
+async def _require_user_rewind_anchor(session, conv_id: str, message_id: str) -> MessageRow:
+    target = await session.get(MessageRow, message_id)
+    if target is None or target.conv_id != conv_id:
+        raise HTTPException(404, "message not in this conversation")
+    if (
+        target.sender_id != "you"
+        or not isinstance(target.payload, dict)
+        or target.payload.get("kind") != "text"
+    ):
+        raise HTTPException(400, "revert must be anchored to a user/message event")
+    return target
 
 
-@router.post("/api/workspaces/{ws_id}/restore")
-async def restore_workspace(ws_id: str, body: dict):
-    """「回到这个对话」: hard-reset workspace main to ``sha`` (records an undo ref
-    first). Body ``{sha, conv_id?}``. Refuses while an agent is running in
-    ``conv_id`` (would race the worktree). Evicts pooled sessions so the next
-    turn branches off the restored main. Returns ``{ok, restored, undo_sha}``."""
-    sha = (body.get("sha") or "").strip()
-    if not sha:
-        raise HTTPException(400, "sha required")
-    conv_id = body.get("conv_id")
-    async with SessionLocal() as session:
-        if await session.get(WorkspaceRow, ws_id) is None:
-            raise HTTPException(404, f"unknown workspace: {ws_id}")
-    if conv_id and _conv_has_running_agent(conv_id):
-        raise HTTPException(409, "an agent is still running — finish or cancel it first")
-    # restore hard-resets the workspace-wide shared `main`; a conv-scoped guard
-    # would let it wipe / abort work a sibling conv is running on the same
-    # workspace. Refuse while ANY sharing conv is busy.
-    if await _workspace_has_running_agent(ws_id, exclude_conv=conv_id):
-        raise HTTPException(
-            409,
-            "another conversation sharing this workspace has a running agent — "
-            "finish or cancel it first",
+async def _require_canonical_user_event(session, conv_id: str, message_id: str) -> None:
+    canonical_id = await session.scalar(
+        select(ConversationEventRow.id).where(
+            ConversationEventRow.conv_id == conv_id,
+            ConversationEventRow.event_type == "user/message",
+            ConversationEventRow.message_id == message_id,
         )
-    await get_pool().close_all()
-    sb = Sandbox.open_workspace_if_exists(ws_id)
+    )
+    if canonical_id is None:
+        raise HTTPException(409, "message has no canonical user/message event")
+
+
+@router.get("/api/conversations/{conv_id}/rewind-preview")
+async def rewind_preview(conv_id: str, from_msg_id: str):
+    """Preview one user-message-bound rewind; arbitrary SHA preview is forbidden."""
+
+    async with SessionLocal() as session:
+        conv = await storage_repo.get_conversation(session, conv_id)
+        target = await _require_user_rewind_anchor(session, conv_id, from_msg_id)
+        workspace_id = conv.workspace_id if conv else None
+        target_code_sha = target.code_sha
+        if workspace_id and target_code_sha:
+            await _require_canonical_user_event(session, conv_id, from_msg_id)
+
+    blocked = _conv_has_running_agent(conv_id)
+    if workspace_id:
+        blocked = blocked or await _workspace_has_running_agent(
+            workspace_id, exclude_conv=conv_id
+        )
+    if not workspace_id or not target_code_sha:
+        return {
+            "ok": True,
+            "code_restore": False,
+            "commits": 0,
+            "files": [],
+            "authors": [],
+            "head": "",
+            "blocked": blocked,
+        }
+    sb = Sandbox.open_workspace_if_exists(workspace_id)
     if sb is None:
         raise HTTPException(404, "workspace not materialized")
-    result = await sb.restore_main_to(sha)
-    if not result.get("ok"):
-        raise HTTPException(400, result.get("error", "restore failed"))
-    # Files changed → nudge the file tree / preview to refresh.
-    if conv_id:
-        await _broadcast_to_conv(conv_id, 'data: {"type":"data-workspace-files","data":{}}\n\n')
-    return result
+    preview = await sb.preview_restore_main(target_code_sha)
+    return {**preview, "code_restore": True, "blocked": blocked}
 
 
 @router.post("/api/conversations/{conv_id}/rewind")
 async def rewind_conversation(conv_id: str, body: dict):
     """「从此处重来」: delete ``from_msg_id`` + every later message in this conv,
     AND (if the conv has a workspace) reset workspace main to that message's
-    ``code_sha``. Body ``{from_msg_id}``. Differs from
-    `/api/workspaces/{ws}/restore` which only touches code — rewind ALSO
-    drops the chat timeline forward so the user can re-send.
+    ``code_sha``. Body ``{from_msg_id}``; no arbitrary-SHA restore endpoint exists.
 
     Refuses while an agent is running here (would race the worktree AND
     delete its in-flight reply). Broadcasts ``data-conv-rewound`` so other
     open tabs drop the deleted messages without a manual refresh.
 
-    Returns ``{ok, deleted, restored?, undo_sha?}``. ``restored`` /
-    ``undo_sha`` are only present when a workspace restore happened.
+    Returns ``{ok, deleted, restored?}``.
     """
     from_msg_id = (body.get("from_msg_id") or "").strip()
     if not from_msg_id:
@@ -3157,12 +3145,12 @@ async def rewind_conversation(conv_id: str, body: dict):
 
     async with SessionLocal() as session:
         conv = await storage_repo.get_conversation(session, conv_id)
-        target = await session.get(MessageRow, from_msg_id)
-        if target is None or target.conv_id != conv_id:
-            raise HTTPException(404, "message not in this conversation")
+        target = await _require_user_rewind_anchor(session, conv_id, from_msg_id)
         target_code_sha = target.code_sha
         target_created_at = target.created_at
         workspace_id = conv.workspace_id if conv is not None else None
+        if workspace_id and target_code_sha:
+            await _require_canonical_user_event(session, conv_id, from_msg_id)
 
     # The code-reset path below hard-resets the workspace-wide shared `main`
     # (and close_all()s every conv's session). The conv-scoped guard above only
@@ -3182,7 +3170,6 @@ async def rewind_conversation(conv_id: str, body: dict):
         )
 
     restored: str | None = None
-    undo_sha: str | None = None
     # ALWAYS reset this conv's cached adapter sessions. Each agent subprocess
     # holds the full prior conversation in its OWN SDK/session memory, so a
     # post-rewind turn would still "remember" the deleted turns even though the
@@ -3206,7 +3193,25 @@ async def rewind_conversation(conv_id: str, body: dict):
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "restore failed"))
         restored = result.get("restored") or None
-        undo_sha = result.get("undo_sha") or None
+        if restored:
+            await storage_repo.record_workspace_event(
+                workspace_id=workspace_id,
+                event_type="revert",
+                commit_sha=restored,
+                conv_id=conv_id,
+                actor_id="you",
+                message_id=from_msg_id,
+                payload={"target_commit_sha": target_code_sha},
+            )
+            await storage_repo.record_workspace_event(
+                workspace_id=workspace_id,
+                event_type="main_updated",
+                commit_sha=restored,
+                conv_id=conv_id,
+                actor_id="you",
+                message_id=from_msg_id,
+                payload={"reason": "revert"},
+            )
 
     async with SessionLocal() as session:
         deleted = await storage_repo.delete_messages_from(
@@ -3222,14 +3227,15 @@ async def rewind_conversation(conv_id: str, body: dict):
         mem_deleted = 0
         if target_created_at is not None:
             mem_deleted = await storage_repo.delete_conv_memory_from(
-                session, conv_id=conv_id, from_created_at=target_created_at,
+                session,
+                conv_id=conv_id,
+                from_created_at=target_created_at,
             )
         await session.commit()
 
-    # One successful rewind is one distinct destructive operation, even when a
-    # later regenerate reuses the same boundary message id. The response and WS
-    # broadcast share this id so the initiating tab can deduplicate only its own
-    # delayed echo without suppressing a genuinely later rewind at that boundary.
+    # One successful rewind is one distinct destructive operation. The response
+    # and WS broadcast share this id so the initiating tab can deduplicate only
+    # its own delayed echo without suppressing a later rewind at that boundary.
     rewind_id = f"rewind-{uuid.uuid4().hex}"
 
     # Tell every open tab: drop messages from from_msg_id forward. Other open
@@ -3254,7 +3260,6 @@ async def rewind_conversation(conv_id: str, body: dict):
         "deleted": deleted,
         "memory_deleted": mem_deleted,
         "restored": restored,
-        "undo_sha": undo_sha,
     }
 
 
@@ -3324,6 +3329,7 @@ async def set_conv_members(conv_id: str, body: dict):
             )
         await session.commit()
         conv = await storage_repo.get_conversation(session, conv_id)
+    await get_pool().close_sessions_for_conv(conv_id)
     if bits:
         # nudge any open tabs to refresh this conv's member list
         with suppress(Exception):
@@ -3455,6 +3461,7 @@ async def _persist_and_emit_error(
     message: str,
     reason: str = "exception",
     retryable: bool = False,
+    turn_id: str | None = None,
 ) -> None:
     """Persist a turn/conversation-level failure as a first-class ``error``
     message AND push a matching ``data-error`` chunk under the SAME id.
@@ -3467,6 +3474,7 @@ async def _persist_and_emit_error(
     wrapped to swallow their own failures.
     """
     eid = f"err-{uuid.uuid4().hex[:12]}"
+    resolved_turn_id = turn_id or _conv_agent_turn.get(f"{conv_id}:{sender_id}")
     payload = {
         "kind": "error",
         "message": (message or "")[:2000],
@@ -3482,6 +3490,7 @@ async def _persist_and_emit_error(
                 sender_id=sender_id,
                 payload=payload,
                 msg_id=eid,
+                turn_id=resolved_turn_id,
             )
             await _edb.commit()
     with suppress(Exception):
@@ -3492,6 +3501,8 @@ async def _persist_and_emit_error(
             + json.dumps(eid)
             + ',"sender_id":'
             + json.dumps(sender_id)
+            + ',"turn_id":'
+            + json.dumps(resolved_turn_id)
             + "}\n\n"
         )
 
@@ -3538,10 +3549,7 @@ async def _tap_text_into(
     events: AsyncIterator[AdapterEvent],
     buffer: list[str],
     parts: dict[str, dict] | None = None,
-    on_tool_part: Callable[
-        [str, dict | None], Awaitable[bool | None]
-    ]
-    | None = None,
+    on_tool_part: Callable[[str, dict | None], Awaitable[bool | None]] | None = None,
 ) -> AsyncIterator[AdapterEvent]:
     """Pass-through async iterator that side-effects every text bit into
     ``buffer`` so the caller can reassemble the full agent response after the
@@ -3645,9 +3653,7 @@ async def _tap_text_into(
                                 _rtxt += _c
                             elif isinstance(_c, list):
                                 _rtxt += "".join(
-                                    seg.get("text", "")
-                                    for seg in _c
-                                    if isinstance(seg, dict)
+                                    seg.get("text", "") for seg in _c if isinstance(seg, dict)
                                 )
                         if not _rtxt.strip():
                             yield ev
@@ -3802,15 +3808,9 @@ _LEAKED_PARAM_RE = re.compile(
     r"<parameter\s+name=\"(?P<name>[^\"]+)\"\s*>(?P<val>.*?)</parameter>",
     re.DOTALL,
 )
-_LEAKED_WRAP_RE = re.compile(
-    r"</?(?:invoke|function_calls)\b[^>]*>", re.IGNORECASE
-)
-_RAW_TOOL_PROTOCOL_MARKER_RE = re.compile(
-    r"<(?:tool_call|tool_result|tool_response)>"
-)
-_RAW_TOOL_PROTOCOL_CLOSE_RE = re.compile(
-    r"</(?:tool_call|tool_result|tool_response)>"
-)
+_LEAKED_WRAP_RE = re.compile(r"</?(?:invoke|function_calls)\b[^>]*>", re.IGNORECASE)
+_RAW_TOOL_PROTOCOL_MARKER_RE = re.compile(r"<(?:tool_call|tool_result|tool_response)>")
+_RAW_TOOL_PROTOCOL_CLOSE_RE = re.compile(r"</(?:tool_call|tool_result|tool_response)>")
 RAW_TOOL_PROTOCOL_NOTICE = (
     "> 工具调用格式错误:模型把工具协议输出到了正文,系统已隐藏该协议内容。"
     "正确方式是调用平台注入的真实工具 schema,不要打印 tool_call / "
@@ -3904,7 +3904,7 @@ def _recover_raw_tool_protocol(text: str) -> tuple[str, list[dict]]:
         m = _RAW_TOOL_PROTOCOL_MARKER_RE.search(text, cursor)
         if not m:
             break
-        out.append(text[cursor:m.start()])
+        out.append(text[cursor : m.start()])
         i = m.end()
         while i < len(text) and text[i].isspace():
             i += 1
@@ -3934,9 +3934,7 @@ def _recover_raw_tool_protocol(text: str) -> tuple[str, list[dict]]:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if hidden:
         cleaned = (
-            f"{cleaned}\n\n{RAW_TOOL_PROTOCOL_NOTICE}"
-            if cleaned
-            else RAW_TOOL_PROTOCOL_NOTICE
+            f"{cleaned}\n\n{RAW_TOOL_PROTOCOL_NOTICE}" if cleaned else RAW_TOOL_PROTOCOL_NOTICE
         )
     return cleaned, recovered
 

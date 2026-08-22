@@ -12,13 +12,13 @@ Validates the visibility model:
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from polynoia.context import build_context_for_turn
+import polynoia.storage.db as db_module
+from polynoia.context import build_context_for_turn, build_session_bootstrap
 from polynoia.domain.entities import (
     Agent,
     AgentSetup,
@@ -27,7 +27,6 @@ from polynoia.domain.entities import (
     Workspace,
     new_ulid,
 )
-import polynoia.storage.db as db_module
 from polynoia.storage.models import MessageRow
 from polynoia.storage.repo import (
     append_message,
@@ -154,6 +153,49 @@ async def test_identity_layer_always_present(clean_db) -> None:
     assert "你是 孤独 Agent" in prompt  # persona injected via system_prompt
     assert "# 当前用户消息" in prompt
     assert "你好" in prompt
+
+
+@pytest.mark.asyncio
+async def test_session_bootstrap_excludes_current_and_future_messages(clean_db) -> None:
+    """A fresh stateful session gets history only through trigger-1.
+
+    WS persists user messages before agent-lock acquisition, so a later queued
+    message may already exist when the first session is created.
+    """
+
+    a = await _seed_agent("增量 Agent")
+    conv = await _seed_conv("增量会话", members=["you", a.id], direct=True)
+    base = datetime.utcnow()
+    older_id, trigger_id, future_id = (new_ulid(), new_ulid(), new_ulid())
+    async with db_module.SessionLocal() as session:
+        for mid, text, offset in (
+            (older_id, "旧事实", 0),
+            (trigger_id, "当前消息只应由 prompt 发送一次", 1),
+            (future_id, "排队中的未来消息", 2),
+        ):
+            session.add(
+                MessageRow(
+                    id=mid,
+                    conv_id=conv.id,
+                    sender_id="you",
+                    payload={"kind": "text", "body": [{"t": "p", "c": text}]},
+                    created_at=base + timedelta(seconds=offset),
+                )
+            )
+        await session.commit()
+
+    async with db_module.SessionLocal() as db:
+        bootstrap = await build_session_bootstrap(
+            db,
+            agent_id=a.id,
+            conv_id=conv.id,
+            exclude_message_id=trigger_id,
+        )
+
+    assert "旧事实" in bootstrap
+    assert "当前消息只应由 prompt 发送一次" not in bootstrap
+    assert "排队中的未来消息" not in bootstrap
+    assert "# 当前用户消息" not in bootstrap
 
 
 @pytest.mark.asyncio

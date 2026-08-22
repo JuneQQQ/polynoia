@@ -114,6 +114,7 @@ class FinishStepChunk(BaseModel):
 class ErrorChunk(BaseModel):
     type: Literal["error"] = "error"
     error_text: str
+    retryable: bool = True
 
 
 # ── Helpers ────────────────────────────────────────────────────

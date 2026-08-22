@@ -6,7 +6,7 @@ Extracted from the ``api/routes.py`` monolith following the
 ``main.py`` includes. This is the project-lifecycle surface (create/adopt a
 workspace, materialize its git, tear it down). It holds NO burst/merge/conflict
 state and does NOT touch the WS broadcast or ``_conv_*`` dispatch globals —
-those endpoints that DO (PATCH workspace member-cascade, restore/restore-preview)
+those endpoints that DO (PATCH workspace member-cascade and conversation rewind)
 stay in ``routes.py``.
 """
 

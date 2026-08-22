@@ -78,6 +78,12 @@ def _agent_subprocess_path() -> str:
     return os.pathsep.join(parts)
 
 
+def agent_subprocess_path() -> str:
+    """Public PATH resolver shared by detection and runtime launch."""
+
+    return _agent_subprocess_path()
+
+
 # LLM-endpoint auth/config keys that are NOT secrets to hide from the agent —
 # they're the egress + identity config the spawned CLI MUST have to reach its
 # backend. Same rationale as the proxy passthrough in env_for_agent. Passed
@@ -146,9 +152,7 @@ def _claude_settings_env() -> dict[str, str]:
     if not isinstance(block, dict):
         return {}
     return {
-        str(k): str(v)
-        for k, v in block.items()
-        if v is not None and _is_settings_auth_key(str(k))
+        str(k): str(v) for k, v in block.items() if v is not None and _is_settings_auth_key(str(k))
     }
 
 
@@ -494,8 +498,7 @@ class Sandbox:
 
         if worktree_dir.exists():
             registered = any(
-                path.resolve() == worktree_dir.resolve()
-                for path in registered_paths.values()
+                path.resolve() == worktree_dir.resolve() for path in registered_paths.values()
             )
             if not registered:
                 # Orphan — sidestep it so the worktree-add path below can
@@ -610,9 +613,7 @@ class Sandbox:
         if not (ws_root / ".git").exists():
             return False
         scratch = cls(root=ws_root, conv_id=f"_workspace_{workspace_id}")
-        rc, listing, _err = await scratch._run(
-            ["git", "worktree", "list", "--porcelain"]
-        )
+        rc, listing, _err = await scratch._run(["git", "worktree", "list", "--porcelain"])
         if rc != 0:
             return False
         worktree_dir: Path | None = None
@@ -749,7 +750,7 @@ class Sandbox:
         """「回到这个对话」: hard-reset workspace main to ``sha`` (Cursor-checkpoint
         style). Records an undo ref at the pre-restore HEAD first (safety net), so
         the caller can offer 撤销. Guarded by the workspace merge lock; aborts any
-        half-merge first so main is clean. Returns ``{ok, restored, undo_sha}``.
+        half-merge first so main is clean. Returns ``{ok, restored}``.
         DESTRUCTIVE to main's history pointer (commits become unreachable but the
         undo ref keeps the old tip alive)."""
         if self.workspace_root is None or self.workspace_id is None:
@@ -763,43 +764,18 @@ class Sandbox:
             if rc != 0:
                 return {"ok": False, "error": f"unknown commit: {sha}"}
             # Full pre-restore HEAD sha → undo ref (safety net).
-            _rc, undo_sha, _ = await self._workspace_run(
+            _rc, previous_sha, _ = await self._workspace_run(
                 ["git", "rev-parse", integration_branch_for(self.workspace_id)]
             )
-            undo_sha = undo_sha.strip()
+            previous_sha = previous_sha.strip()
             ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-            await self._workspace_run(["git", "update-ref", f"refs/polynoia/undo/{ts}", undo_sha])
+            await self._workspace_run(
+                ["git", "update-ref", f"refs/polynoia/undo/{ts}", previous_sha]
+            )
             rc2, _o2, err2 = await self._workspace_run(["git", "reset", "--hard", sha])
             if rc2 != 0:
                 return {"ok": False, "error": err2 or "reset failed"}
-            return {
-                "ok": True,
-                "restored": await self.main_head_sha() or "",
-                "undo_sha": undo_sha,
-            }
-
-    async def discard_working_changes(self) -> dict:
-        """「丢弃工作区改动」: drop UNCOMMITTED changes at the workspace ROOT only.
-
-        tracked modifications → ``git checkout -- .``; untracked files →
-        ``git clean -fd`` (no ``-x``: ignored paths — .polynoia/, node_modules,
-        .venv — are untouched). Agent worktrees are NOT touched. Runs under the
-        workspace merge lock and refuses mid-merge (per the CHARTER invariant,
-        check MERGE_HEAD first rather than blindly aborting someone's merge).
-        """
-        if self.workspace_root is None or self.workspace_id is None:
-            return {"ok": False, "error": "not a workspace"}
-        async with workspace_merge_lock(self.workspace_id):
-            rc_m, _o, _e = await self._workspace_run(
-                ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
-            )
-            if rc_m == 0:
-                return {"ok": False, "error": "merge in progress"}
-            rc1, _o1, err1 = await self._workspace_run(["git", "checkout", "--", "."])
-            rc2, _o2, err2 = await self._workspace_run(["git", "clean", "-fd"])
-            if rc1 != 0 or rc2 != 0:
-                return {"ok": False, "error": (err1 or err2 or "discard failed").strip()}
-            return {"ok": True}
+            return {"ok": True, "restored": await self.main_head_sha() or ""}
 
     @classmethod
     def open_workspace_if_exists(cls, workspace_id: str) -> "Sandbox | None":
@@ -1101,8 +1077,12 @@ class Sandbox:
                 [
                     "config.toml",
                     "auth.json",
-                    "sessions",
                 ],
+            ),
+            # Qwen Code ACP runtime settings / OAuth state.
+            home / ".qwen": (
+                ".qwen",
+                ["settings.json", "oauth_creds.json"],
             ),
         }
         if _IS_WINDOWS:
@@ -1309,7 +1289,10 @@ class Sandbox:
         return sorted(branches)
 
     async def commit_pending_worktrees(
-        self, conv_id: str, only_agents: set[str] | None = None
+        self,
+        conv_id: str,
+        only_agents: set[str] | None = None,
+        turn_ids: dict[str, str] | None = None,
     ) -> int:
         """Commit any uncommitted changes in this conv's agent worktrees.
 
@@ -1344,12 +1327,27 @@ class Sandbox:
                     # branch = agent/<agent_id>/conv-<conv_id>
                     agent_of = branch.split("/")[1] if "/" in branch else ""
                     if only_agents is None or agent_of in only_agents:
-                        if await self._commit_worktree_pending(cur_path, branch):
+                        commit_sha = await self._commit_worktree_pending(cur_path, branch)
+                        if commit_sha:
                             committed += 1
+                            from polynoia.storage import repo as storage_repo
+
+                            await storage_repo.record_workspace_event(
+                                workspace_id=self.workspace_id,
+                                event_type="commit",
+                                commit_sha=commit_sha,
+                                conv_id=conv_id,
+                                turn_id=(turn_ids or {}).get(agent_of),
+                                actor_id=agent_of,
+                                payload={
+                                    "branch": branch,
+                                    "message": "capture uncommitted worktree changes",
+                                },
+                            )
                 cur_path = None
         return committed
 
-    async def _commit_worktree_pending(self, worktree_path: str, branch: str) -> bool:
+    async def _commit_worktree_pending(self, worktree_path: str, branch: str) -> str | None:
         """`git add -A && git commit` in one worktree if it has changes."""
 
         async def _run(cmd: list[str]) -> tuple[int, str, str]:
@@ -1373,7 +1371,7 @@ class Sandbox:
 
         _rc, status, _ = await _run(["git", "status", "--porcelain"])
         if not status.strip():
-            return False  # nothing pending
+            return None  # nothing pending
         await _run(["git", "add", "-A"])
         # Derive the agent id from the branch for the commit author.
         agent_id = branch.split("/")[1] if "/" in branch else "agent"
@@ -1389,7 +1387,10 @@ class Sandbox:
                 "polynoia: capture uncommitted worktree changes",
             ]
         )
-        return rc == 0
+        if rc != 0:
+            return None
+        rc_h, sha, _ = await _run(["git", "rev-parse", "HEAD"])
+        return sha.strip() if rc_h == 0 and sha.strip() else None
 
     async def branch_ahead_of_main(self, branch: str) -> int:
         """Return how many commits ``branch`` is ahead of ``main`` (0 = no
@@ -2184,13 +2185,13 @@ class Sandbox:
 
         scope, relative = native_skill_layout(adapter_id)
         base = (
-            self.credentials_home
-            if scope == "credentials"
-            else self.agent_runtime_home(adapter_id)
+            self.credentials_home if scope == "credentials" else self.agent_runtime_home(adapter_id)
         )
         return base / relative
 
-    async def place_skill_packages(self, names: list[str], adapter_id: str = "claudeCode") -> list[str]:
+    async def place_skill_packages(
+        self, names: list[str], adapter_id: str = "claudeCode"
+    ) -> list[str]:
         """Refresh complete bound packages in an adapter's native Skill path.
 
         Returns the canonical names that were placed. Unknown packages are
@@ -2458,9 +2459,7 @@ class Sandbox:
             if self.branch is None or self.workspace_id is None:
                 return
             async with _workspace_setup_lock(self.workspace_id):
-                await self._workspace_run(
-                    ["git", "worktree", "remove", "--force", str(self.root)]
-                )
+                await self._workspace_run(["git", "worktree", "remove", "--force", str(self.root)])
                 await self._workspace_run(["git", "worktree", "prune"])
             return
         if self.root.exists():

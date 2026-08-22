@@ -6,7 +6,7 @@ older portions via a cheap LLM call.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from polynoia.context._types import ContextLayer
@@ -21,6 +21,7 @@ async def build_conv_history_layer(
     conv_id: str,
     *,
     window: int = 100,
+    exclude_message_id: str | None = None,
 ) -> ContextLayer | None:
     """Build L7 — current conv last `window` messages, oldest→newest order.
 
@@ -28,10 +29,28 @@ async def build_conv_history_layer(
     cross-conv ledger. Per-message body is still capped + the whole layer is
     trimmed to the token budget downstream, so a large window degrades
     gracefully rather than blowing the prompt."""
+    conditions = [MessageRow.conv_id == conv_id]
+    if exclude_message_id:
+        anchor = await db.get(MessageRow, exclude_message_id)
+        if anchor is not None and anchor.conv_id == conv_id:
+            # Snapshot strictly before the triggering message. Merely excluding
+            # its id is insufficient: another socket can persist a later queued
+            # message before this agent acquires its turn lock.
+            conditions.append(
+                or_(
+                    MessageRow.created_at < anchor.created_at,
+                    and_(
+                        MessageRow.created_at == anchor.created_at,
+                        MessageRow.id < anchor.id,
+                    ),
+                )
+            )
+        else:
+            conditions.append(MessageRow.id != exclude_message_id)
     q = await db.execute(
         select(MessageRow)
-        .where(MessageRow.conv_id == conv_id)
-        .order_by(MessageRow.created_at.desc())
+        .where(*conditions)
+        .order_by(MessageRow.created_at.desc(), MessageRow.id.desc())
         .limit(window)
     )
     msgs = list(reversed(q.scalars().all()))
@@ -39,9 +58,7 @@ async def build_conv_history_layer(
         return None
 
     sender_ids = {m.sender_id for m in msgs}
-    agents_q = await db.execute(
-        select(AgentRow).where(AgentRow.id.in_(sender_ids))
-    )
+    agents_q = await db.execute(select(AgentRow).where(AgentRow.id.in_(sender_ids)))
     senders_by_id = {a.id: a for a in agents_q.scalars().all()}
 
     def _sender_label(sender_id: str) -> str:
@@ -68,7 +85,6 @@ async def build_conv_history_layer(
     return ContextLayer.make(
         kind="history",
         content="\n".join(lines),
-        priority=60,
         meta={
             "agent_id": agent_id,
             "conv_id": conv_id,

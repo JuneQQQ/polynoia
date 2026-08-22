@@ -9,8 +9,8 @@
  * 重试 re-pulls seed (re-checks the server) and fires `polynoia:reconnect`, which
  * ChatPane handles to kick the live socket immediately.
  */
-import { Loader2, RefreshCw, WifiOff } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { CheckCircle2, Loader2, RefreshCw, WifiOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { t } from "../lib/i18n";
 import { useStore } from "../store";
 
@@ -19,23 +19,56 @@ export function ConnectionBanner() {
 	const status = useStore((s) => s.connectionStatus);
 	const reloadSeed = useStore((s) => s.reloadSeed);
 	const [retrying, setRetrying] = useState(false);
+	const [showConnecting, setShowConnecting] = useState(false);
+	const [recovered, setRecovered] = useState(false);
+	const previousStatus = useRef(status);
 	const ref = useRef<HTMLOutputElement>(null);
 	const degraded = status !== "online" && status !== "connecting";
+	const visible = degraded || showConnecting || recovered;
 
-	useLayoutEffect(() => {
+	useEffect(() => {
+		if (status !== "connecting") {
+			setShowConnecting(false);
+			return;
+		}
+		const timer = window.setTimeout(() => setShowConnecting(true), 1500);
+		return () => window.clearTimeout(timer);
+	}, [status]);
+
+	useEffect(() => {
+		const previous = previousStatus.current;
+		previousStatus.current = status;
+		if (
+			status === "online" &&
+			(previous === "reconnecting" || previous === "offline")
+		) {
+			setRecovered(true);
+			const timer = window.setTimeout(() => setRecovered(false), 1800);
+			return () => window.clearTimeout(timer);
+		}
+		if (status !== "online") setRecovered(false);
+	}, [status]);
+
+	useEffect(() => {
 		const root = document.documentElement;
 		const h =
-			degraded && ref.current
+			visible && ref.current
 				? Math.ceil(ref.current.getBoundingClientRect().bottom)
 				: 0;
 		root.style.setProperty("--conn-h", `${h}px`);
 		return () => root.style.setProperty("--conn-h", "0px");
-	}, [degraded, status, retrying]);
+	}, [visible]);
 
-	// Only intrude when the link is actually degraded.
-	if (!degraded) return null;
+	// Initial handshakes stay quiet for 1.5s, then become explicit. A recovered
+	// link gets a short confirmation so users know the gap was healed.
+	if (!visible) return null;
 	const offline = status === "offline";
-	const tone = offline ? "var(--color-red)" : "var(--color-accent)";
+	const connecting = status === "connecting";
+	const tone = recovered
+		? "var(--color-green)"
+		: offline
+			? "var(--color-red)"
+			: "var(--color-accent)";
 
 	const retry = async () => {
 		if (retrying) return;
@@ -59,9 +92,11 @@ export function ConnectionBanner() {
 				paddingTop: "0.375rem",
 				paddingBottom: "0.375rem",
 				borderColor: tone,
-				background: offline
-					? "var(--color-red-soft)"
-					: "var(--color-accent-soft)",
+				background: recovered
+					? "var(--color-green-soft)"
+					: offline
+						? "var(--color-red-soft)"
+						: "var(--color-accent-soft)",
 			}}
 		>
 			<span
@@ -73,30 +108,46 @@ export function ConnectionBanner() {
 				className="inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.18em] font-medium flex-shrink-0"
 				style={{ color: tone }}
 			>
-				{offline ? (
+				{recovered ? (
+					<CheckCircle2 size={12} />
+				) : offline ? (
 					<WifiOff size={12} />
 				) : (
 					<Loader2 size={11} className="animate-spin" />
 				)}
-				{offline ? t("cannotReachServer", lang) : t("reconnecting2", lang)}
+				{recovered
+					? t("connectionRestored", lang)
+					: offline
+						? t("cannotReachServer", lang)
+						: connecting
+							? t("connecting", lang)
+							: t("reconnecting2", lang)}
 			</span>
 			<span className="hidden sm:inline text-[11.5px] text-[var(--color-fg-3)] truncate">
-				{offline ? t("offlineHelpText", lang) : t("reconnectingHelpText", lang)}
+				{recovered
+					? t("connectionRestoredHelp", lang)
+					: offline
+						? t("offlineHelpText", lang)
+						: connecting
+							? t("connecting", lang)
+							: t("reconnectingHelpText", lang)}
 			</span>
-			<button
-				type="button"
-				onClick={retry}
-				disabled={retrying}
-				className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded border transition disabled:opacity-50 flex-shrink-0 hover:opacity-80"
-				style={{ borderColor: tone, color: tone }}
-			>
-				{retrying ? (
-					<Loader2 size={11} className="animate-spin" />
-				) : (
-					<RefreshCw size={11} />
-				)}
-				{t("retryButton", lang)}
-			</button>
+			{!recovered && !connecting && (
+				<button
+					type="button"
+					onClick={retry}
+					disabled={retrying}
+					className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded border transition disabled:opacity-50 flex-shrink-0 hover:opacity-80"
+					style={{ borderColor: tone, color: tone }}
+				>
+					{retrying ? (
+						<Loader2 size={11} className="animate-spin" />
+					) : (
+						<RefreshCw size={11} />
+					)}
+					{t("retryButton", lang)}
+				</button>
+			)}
 		</output>
 	);
 }

@@ -123,7 +123,7 @@ async def drive_turn(base: str, conv_id: str, member_id: str, text: str, timeout
                 convs = req(base, "GET", "/api/conversations")
                 conv = next((c for c in convs if c["id"] == conv_id), None)
                 running = bool(conv and conv.get("running_agents"))
-                ev = req(base, "GET", f"/api/conversations/{conv_id}/events?after={last_event_seq}&limit=50")
+                ev = req(base, "GET", f"/api/conversations/{conv_id}/stream?after={last_event_seq}&limit=50")
                 if ev["next"] != last_event_seq:
                     last_event_seq = ev["next"]
                     last_change = time.monotonic()

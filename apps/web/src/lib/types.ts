@@ -81,9 +81,6 @@ export type DiffPayload = {
 	/** Set when this card is an edit an agent ALREADY made + committed
 	 * (proactive card) rather than a not-yet-applied proposal. */
 	commit_sha?: string | null;
-	/** Editing agent (worker ULID) for a proactive card — used to target the
-	 * right worktree on 撤销 (the edit lives on this agent's branch). */
-	agent_id?: string | null;
 };
 
 export type WebPayload = {
@@ -169,6 +166,8 @@ export type TerminalPayload = {
 	pgid?: number | null;
 	exit_code?: number | null;
 	truncated?: boolean;
+	output_bytes?: number;
+	spill_files?: string[];
 };
 
 export type ApiPayload = {
@@ -200,6 +199,7 @@ export type ToolCallPayload = {
 	duration_ms?: number | null;
 	summary?: string | null;
 	input_preview?: string | null;
+	execution_surface?: "polynoia-mcp" | "harness-native" | null;
 };
 
 export type AskQuestion = {
@@ -354,9 +354,6 @@ export type Message = {
 	in_reply_to?: ULID | null;
 	/** User can pin individual messages (separate from workspace-level Pin). */
 	pinned?: boolean;
-	/** Workspace main HEAD sha at this message's creation (workspace convs only).
-	 * Drives「回到这个对话」code restore. Null = DM / no workspace. */
-	code_sha?: string | null;
 	/** Per-turn grouping id (one per run_adapter_turn). Lets the renderer keep a
 	 * turn's parts contiguous even when concurrent agents' parts interleave by
 	 * arrival — see ADR-024. Null for pre-turn_id rows. */
@@ -384,15 +381,14 @@ export type AgentSetup = {
 	auth_kinds?: string[];
 	base_model?: string | null;
 	docs?: string | null;
-	/** Which adapter backs this contact (claudeCode / codex / opencoder). */
+	/** Which harness adapter backs this contact. */
 	adapter_id?: string | null;
 	/** Backend model id, e.g. "claude-sonnet-4-6" or "anthropic/claude-opus-4-7". */
 	model?: string | null;
 	/** Optional per-contact HTTP endpoint. The API key is write-only and is never returned. */
 	api_base_url?: string | null;
-	/** User-set model context-window ceiling, in tokens. When null, server
-	 * falls back to KNOWN_MODEL_CONTEXT table. See ADR-012. */
-	max_context_tokens?: number | null;
+	has_api_key?: boolean;
+	use_host_credentials_unverified?: boolean;
 };
 
 export type Agent = {

@@ -515,6 +515,8 @@ const ADAPTER_LABEL: Record<string, string> = {
 	claudeCode: "Claude Code",
 	codex: "Codex",
 	opencoder: "OpenCode",
+	qwenCode: "Qwen Code",
+	deepseek: "DeepSeek Harness",
 };
 
 function summarizePayload(payload: unknown, lang: Lang): string {

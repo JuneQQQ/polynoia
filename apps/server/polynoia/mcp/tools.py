@@ -10,6 +10,7 @@ Read-class tools (read/grep/glob) and bash are read-mostly and don't commit.
 Multi-agent delegation is `dispatch` (parallel burst) / `discuss` (round-table),
 NOT a synchronous call.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -65,6 +66,7 @@ async def _require_edit_approval(
     if not approved:
         return {"error": "rejected by user", "kind": "rejected"}
     return None
+
 
 # ── Context ────────────────────────────────────────────────────
 
@@ -179,9 +181,7 @@ class ToolContext:
                 return resolved
             except ValueError:
                 continue
-        raise PermissionError(
-            f"path {path!r} resolves outside sandbox/workspace"
-        )
+        raise PermissionError(f"path {path!r} resolves outside sandbox/workspace")
 
     async def git_commit(self, *, turn_id: str | None, message_suffix: str) -> str | None:
         """Stage all changes and commit with this agent's identity.
@@ -212,20 +212,46 @@ class ToolContext:
         # turns that predate turn_agent_id.
         who = self.turn_agent_id or self.agent_id
         author = f"{who} <{who}@polynoia.local>"
-        rc, _, err = await self._run_in_sandbox([
-            "git", "commit", "-q", "--author", author, "-m", msg,
-        ])
+        rc, _, err = await self._run_in_sandbox(
+            [
+                "git",
+                "commit",
+                "-q",
+                "--author",
+                author,
+                "-m",
+                msg,
+            ]
+        )
         if rc != 0:
             raise RuntimeError(f"git commit failed: {err}")
         # Read back the SHA + audit-log it
         rc, sha, _ = await self._run_in_sandbox(["git", "rev-parse", "HEAD"])
         sha_str = sha.strip() if rc == 0 else None
         if sha_str:
-            self.append_audit("commit", {
-                "sha": sha_str,
-                "turn_id": turn_id,
-                "message_suffix": message_suffix,
-            })
+            self.append_audit(
+                "commit",
+                {
+                    "sha": sha_str,
+                    "turn_id": turn_id,
+                    "message_suffix": message_suffix,
+                },
+            )
+            if self.sandbox.workspace_id:
+                from polynoia.storage import repo as storage_repo
+
+                await storage_repo.record_workspace_event(
+                    workspace_id=self.sandbox.workspace_id,
+                    event_type="commit",
+                    commit_sha=sha_str,
+                    conv_id=self.conv_id,
+                    turn_id=turn_id,
+                    actor_id=who,
+                    payload={
+                        "branch": f"agent/{who}/conv-{self.conv_id}",
+                        "message": message_suffix,
+                    },
+                )
         return sha_str
 
     async def _run_in_sandbox(self, cmd: list[str]) -> tuple[int, str, str]:
@@ -303,8 +329,16 @@ class _ReadTool(_ToolBase):
                 "type": "string",
                 "description": "Path to file (relative to sandbox root, or absolute within sandbox)",
             },
-            "offset": {"type": "integer", "minimum": 1, "description": "1-indexed line to start at"},
-            "limit": {"type": "integer", "minimum": 1, "description": "Max lines to return (default 2000)"},
+            "offset": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-indexed line to start at",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Max lines to return (default 2000)",
+            },
         },
         "required": ["path"],
     }
@@ -368,8 +402,8 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
 # Read-window output bounds (large-file safety): cap each returned line and the
 # total returned body so one read can't blow the context budget; the agent pages
 # the rest via the next_offset cursor.
-_MAX_READ_LINE_CHARS = 2000   # truncate any single line past this
-_MAX_READ_BYTES = 50_000      # cap total returned content per read
+_MAX_READ_LINE_CHARS = 2000  # truncate any single line past this
+_MAX_READ_BYTES = 50_000  # cap total returned content per read
 
 
 class _WriteTool(_ToolBase):
@@ -512,15 +546,16 @@ class _EditTool(_ToolBase):
                 replacements = n
             elif n == 1:
                 first_idx = occ[0]
-                new_content = old[:first_idx] + new_string + old[first_idx + len(old_string):]
+                new_content = old[:first_idx] + new_string + old[first_idx + len(old_string) :]
                 replacements = 1
             elif near_line is not None:
                 # Tie-breaker (NOT a relaxation of safety): match still required;
                 # among the N matches, edit the ONE on the line closest to near_line.
                 def _line_of(idx: int) -> int:
                     return old.count("\n", 0, idx) + 1
+
                 first_idx = min(occ, key=lambda i: abs(_line_of(i) - int(near_line)))
-                new_content = old[:first_idx] + new_string + old[first_idx + len(old_string):]
+                new_content = old[:first_idx] + new_string + old[first_idx + len(old_string) :]
                 replacements = 1
             else:
                 lines = sorted(old.count("\n", 0, i) + 1 for i in occ)
@@ -538,9 +573,7 @@ class _EditTool(_ToolBase):
                 }
             path.write_text(new_content, encoding="utf-8")
             rel = str(path.relative_to(ctx.sandbox.root))
-            sha = await ctx.git_commit(
-                turn_id=args.get("turn_id"), message_suffix=f"edit {rel}"
-            )
+            sha = await ctx.git_commit(turn_id=args.get("turn_id"), message_suffix=f"edit {rel}")
             # Diff is computed on FULL old vs FULL new (so the card's +/- counts
             # match write's), but only the small splice crossed the wire.
             diff_text, adds, dels = _compute_unified_diff(old, new_content, rel)
@@ -573,7 +606,10 @@ _BASH_DENY: list[tuple[re.Pattern[str], str]] = [
     # `kill` whose TARGET (last arg) is a negative number → -1 = every process,
     # -<pgid> = a whole group. `kill -1 1234` (SIGHUP to a pid) stays allowed
     # because the last token there is positive.
-    (re.compile(r"\bkill\b[^|;&\n]*\s-\d+\s*(?:$|[|;&\n])"), "kill of -1 / a process group (broadcast)"),
+    (
+        re.compile(r"\bkill\b[^|;&\n]*\s-\d+\s*(?:$|[|;&\n])"),
+        "kill of -1 / a process group (broadcast)",
+    ),
 ]
 
 
@@ -590,6 +626,38 @@ def _bash_safety_block(cmd: str) -> str | None:
 _LISTEN_PORT_RE = re.compile(r":(\d+)\s*\(LISTEN\)")
 
 
+@dataclass
+class _BoundedStreamCapture:
+    """Keep a bounded head/tail in memory while counting the full stream.
+
+    Bash output is an arbitrary byte stream, not a line protocol.  Using
+    ``StreamReader.readline()`` for a large no-newline payload raises a limit
+    error and stops draining the child pipe, which can deadlock both the child
+    and ``proc.wait()``.  Fixed-size reads feed this bounded capture while the
+    complete bytes are spooled separately under ``.polynoia/tool-results``.
+    """
+
+    tail_limit: int
+    head_limit: int = 1024
+    head: str = ""
+    tail: str = ""
+    total_bytes: int = 0
+    total_chars: int = 0
+
+    def append(self, raw: bytes) -> str:
+        text = raw.decode("utf-8", "replace")
+        self.total_bytes += len(raw)
+        self.total_chars += len(text)
+        if len(self.head) < self.head_limit:
+            self.head += text[: self.head_limit - len(self.head)]
+        self.tail = (self.tail + text)[-self.tail_limit :]
+        return text
+
+    @property
+    def truncated(self) -> bool:
+        return self.total_chars > len(self.tail)
+
+
 async def _pgid_listening_ports(pgid: int) -> list[int]:
     """Listening TCP ports held by ANY process in `pgid` — the most reliable
     "this is a long-running server" signal (uvicorn / vite / next dev / …). Used
@@ -598,7 +666,13 @@ async def _pgid_listening_ports(pgid: int) -> list[int]:
     unavailable or errors, so detection failure just falls back to plain waiting."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "lsof", "-nP", "-a", "-g", str(pgid), "-iTCP", "-sTCP:LISTEN",
+            "lsof",
+            "-nP",
+            "-a",
+            "-g",
+            str(pgid),
+            "-iTCP",
+            "-sTCP:LISTEN",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -634,7 +708,7 @@ class _BashTool(_ToolBase):
         "Do NOT use pkill/killall or `kill -1` / `kill -<pgid>` — the sandbox "
         "shares the host process space, so name-pattern/broadcast kills hit the "
         "host (they're blocked). To stop something you started, save its PID "
-        "(`mycmd & PID=$!`) and `kill \"$PID\"`.\n\n"
+        '(`mycmd & PID=$!`) and `kill "$PID"`.\n\n'
         "Just run the command — you do NOT decide blocking vs background. A "
         "persistent server (`npm run dev -- --host 0.0.0.0`, `pnpm dev`, "
         "`uvicorn ...`, a watcher) is detected automatically the moment it binds a "
@@ -708,24 +782,63 @@ class _BashTool(_ToolBase):
         except ProcessLookupError:
             pgid = proc.pid
 
-        out_parts: list[str] = []
-        err_parts: list[str] = []
-        combined: list[str] = []  # interleaved stdout+stderr → live terminal card
+        # Keep only bounded head/tail windows in memory.  Full stdout/stderr are
+        # streamed to ignored Polynoia-internal files so a model can inspect a
+        # large result deliberately without putting megabytes on ACP/WebSocket.
+        out_capture = _BoundedStreamCapture(tail_limit=4096)
+        err_capture = _BoundedStreamCapture(tail_limit=4096)
+        combined_capture = _BoundedStreamCapture(tail_limit=16000)
+        spill_dir = ctx.sandbox.root / ".polynoia" / "tool-results"
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = spill_dir / f"bash-{term_id}.stdout.log"
+        stderr_path = spill_dir / f"bash-{term_id}.stderr.log"
+        stdout_file = stdout_path.open("wb")
+        stderr_file = stderr_path.open("wb")
+        spools_closed = False
         lock = asyncio.Lock()
         dirty = asyncio.Event()
 
-        async def _pump(stream: asyncio.StreamReader | None, sink: list[str]) -> None:
+        def _spill_files() -> list[str]:
+            files: list[str] = []
+            if out_capture.truncated:
+                files.append(str(stdout_path.relative_to(ctx.sandbox.root)))
+            if err_capture.truncated:
+                files.append(str(stderr_path.relative_to(ctx.sandbox.root)))
+            return files
+
+        def _close_spools() -> None:
+            nonlocal spools_closed
+            if spools_closed:
+                return
+            spools_closed = True
+            for handle in (stdout_file, stderr_file):
+                with contextlib.suppress(Exception):
+                    handle.flush()
+                    handle.close()
+            # Small results stay inline and do not need permanent side files.
+            if not out_capture.truncated:
+                with contextlib.suppress(FileNotFoundError):
+                    stdout_path.unlink()
+            if not err_capture.truncated:
+                with contextlib.suppress(FileNotFoundError):
+                    stderr_path.unlink()
+
+        async def _pump(
+            stream: asyncio.StreamReader | None,
+            capture: _BoundedStreamCapture,
+            spool,
+        ) -> None:
             nonlocal last_activity
             if stream is None:
                 return
             while True:
-                line = await stream.readline()
-                if not line:
+                raw = await stream.read(64 * 1024)
+                if not raw:
                     break
-                text = line.decode("utf-8", "replace")
                 async with lock:
-                    sink.append(text)
-                    combined.append(text)
+                    capture.append(raw)
+                    combined_capture.append(raw)
+                    spool.write(raw)
                 last_activity = loop.time()  # output → reset the idle clock
                 dirty.set()
 
@@ -737,16 +850,14 @@ class _BashTool(_ToolBase):
         # 运行中 with empty output in long multi-agent runs.
         seq_counter = {"v": 0}
 
-        async def _post_card(
-            *, running: bool, exit_code: int | None, final: bool = False
-        ) -> None:
+        async def _post_card(*, running: bool, exit_code: int | None, final: bool = False) -> None:
             # Best-effort live terminal card. NEVER fail the tool on a UI post —
             # except the FINAL snapshot, which is retried (it's the only thing
             # that closes the card live; losing it strands the UI at 运行中).
             if not base:
                 return
             async with lock:
-                output = "".join(combined)[-16000:]
+                output = combined_capture.tail
             seq_counter["v"] += 1
             body = {
                 "term_id": term_id,
@@ -754,6 +865,9 @@ class _BashTool(_ToolBase):
                 "command": cmd,
                 "sender_id": sender_id,
                 "output": output,
+                "truncated": combined_capture.truncated,
+                "output_bytes": combined_capture.total_bytes,
+                "spill_files": _spill_files(),
                 "running": running,
                 "mode": "background" if bg else "blocking",
                 "label": label,
@@ -795,8 +909,8 @@ class _BashTool(_ToolBase):
         # Card appears immediately (empty + running), then updates live.
         await _post_card(running=True, exit_code=None)
         pumps = [
-            asyncio.create_task(_pump(proc.stdout, out_parts)),
-            asyncio.create_task(_pump(proc.stderr, err_parts)),
+            asyncio.create_task(_pump(proc.stdout, out_capture, stdout_file)),
+            asyncio.create_task(_pump(proc.stderr, err_capture, stderr_file)),
         ]
         throttle = asyncio.create_task(_throttle())
 
@@ -813,6 +927,7 @@ class _BashTool(_ToolBase):
                     await _post_card(running=True, exit_code=None)
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+                _close_spools()
             except asyncio.CancelledError:
                 # Detached server outlives the MCP session — leave the card
                 # running=true (truthful); the process panel manages it from here.
@@ -824,9 +939,7 @@ class _BashTool(_ToolBase):
                     await throttle
                 if proc.returncode is not None:
                     await asyncio.shield(
-                        _post_card(
-                            running=False, exit_code=proc.returncode, final=True
-                        )
+                        _post_card(running=False, exit_code=proc.returncode, final=True)
                     )
 
         def _kill_tree() -> None:
@@ -842,13 +955,11 @@ class _BashTool(_ToolBase):
         promoted_ports: list[int] = []
         wait_task = asyncio.ensure_future(proc.wait())
         _HEARTBEAT = 5.0  # while quiet, refresh the card / show liveness this often
-        _GRACE_S = 8.0    # blocking grace before a server is auto-promoted to bg
+        _GRACE_S = 8.0  # blocking grace before a server is auto-promoted to bg
         started = loop.time()
         try:
             while True:
-                done, _ = await asyncio.wait(
-                    {wait_task}, timeout=min(timeout, _HEARTBEAT)
-                )
+                done, _ = await asyncio.wait({wait_task}, timeout=min(timeout, _HEARTBEAT))
                 if wait_task in done:
                     break  # process finished on its own
                 now = loop.time()
@@ -882,13 +993,16 @@ class _BashTool(_ToolBase):
                 await _post_card(running=True, exit_code=None)
         except asyncio.CancelledError:
             _kill_tree()  # don't orphan the tree if the turn is aborted
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(asyncio.shield(wait_task), timeout=5)
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+            _close_spools()
             # The tree was just SIGKILLed → running=False is TRUTHFUL here. Post
             # it shielded so the card doesn't strand at 运行中 when a turn is
             # aborted / the 30-min backstop fires mid-command.
             with contextlib.suppress(BaseException):
-                await asyncio.shield(
-                    _post_card(running=False, exit_code=-1, final=True)
-                )
+                await asyncio.shield(_post_card(running=False, exit_code=-1, final=True))
             raise
 
         if promoted:
@@ -921,6 +1035,7 @@ class _BashTool(_ToolBase):
 
         with contextlib.suppress(Exception):
             await asyncio.wait_for(asyncio.gather(*pumps), timeout=5)
+        _close_spools()
         throttle.cancel()
         with contextlib.suppress(Exception):
             await throttle
@@ -928,26 +1043,39 @@ class _BashTool(_ToolBase):
         exit_code = proc.returncode if proc.returncode is not None else -1
         # Final card snapshot — running=False so the card stops pulsing. final=True
         # → retried with backoff; this is the only live close signal for the card.
-        await _post_card(
-            running=False, exit_code=(None if timed_out else exit_code), final=True
-        )
+        await _post_card(running=False, exit_code=(None if timed_out else exit_code), final=True)
 
-        out = "".join(out_parts)
-        err = "".join(err_parts)
+        stdout_file_rel = (
+            str(stdout_path.relative_to(ctx.sandbox.root)) if out_capture.truncated else None
+        )
+        stderr_file_rel = (
+            str(stderr_path.relative_to(ctx.sandbox.root)) if err_capture.truncated else None
+        )
+        common_result = {
+            "stdout": out_capture.tail,
+            "stderr": err_capture.tail,
+            "stdout_bytes": out_capture.total_bytes,
+            "stderr_bytes": err_capture.total_bytes,
+            "stdout_truncated": out_capture.truncated,
+            "stderr_truncated": err_capture.truncated,
+            "stdout_head": out_capture.head if out_capture.truncated else None,
+            "stderr_head": err_capture.head if err_capture.truncated else None,
+            "stdout_file": stdout_file_rel,
+            "stderr_file": stderr_file_rel,
+        }
         if timed_out:
             return {
                 "kind": "timeout",
+                "timed_out": True,
                 "command": cmd,
                 "timeout_s": timeout,
-                "stdout": out[-4096:],
-                "stderr": err[-4096:],
+                **common_result,
             }
         return {
             "kind": "completed",
             "command": cmd,
             "exit_code": exit_code or 0,
-            "stdout": out[-4096:],
-            "stderr": err[-4096:],
+            **common_result,
         }
 
 
@@ -997,7 +1125,7 @@ class _RunBackgroundTool(_ToolBase):
         rel_log = str(log.relative_to(ctx.sandbox.root))
         # Wrap so the log ends with an exit marker `wait` can detect even though the
         # job is detached (we can't waitpid a process in its own session).
-        wrapped = f"( {cmd} ) > {log!s} 2>&1; echo \"{_BG_EXIT_MARK}$?\" >> {log!s}"
+        wrapped = f'( {cmd} ) > {log!s} 2>&1; echo "{_BG_EXIT_MARK}$?" >> {log!s}'
         proc = await asyncio.create_subprocess_shell(
             wrapped,
             cwd=str(ctx.sandbox.root),
@@ -1012,7 +1140,7 @@ class _RunBackgroundTool(_ToolBase):
             "job_id": job_id,
             "pid": proc.pid,
             "log": rel_log,
-            "hint": f"用 wait(job_id=\"{job_id}\") 等它结束(或继续干别的)。",
+            "hint": f'用 wait(job_id="{job_id}") 等它结束(或继续干别的)。',
         }
 
 
@@ -1059,7 +1187,7 @@ class _WaitTool(_ToolBase):
                 text = ""
             mark = text.rfind(_BG_EXIT_MARK)
             if mark >= 0:
-                code_str = text[mark + len(_BG_EXIT_MARK):].splitlines()[0].strip()
+                code_str = text[mark + len(_BG_EXIT_MARK) :].splitlines()[0].strip()
                 with contextlib.suppress(ValueError):
                     _BG_JOBS.pop(job_id, None)
                     return {
@@ -1081,7 +1209,9 @@ class _WaitTool(_ToolBase):
 class _GrepTool(_ToolBase):
     name = "grep"
     is_concurrent_safe = True  # read-only filesystem scan
-    description = "Recursive grep within sandbox using ripgrep semantics. Returns matches with file:line."
+    description = (
+        "Recursive grep within sandbox using ripgrep semantics. Returns matches with file:line."
+    )
     input_schema: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
@@ -1177,9 +1307,7 @@ async def _callback_server(
     last_err = ""
     for attempt in range(attempts):
         try:
-            async with httpx.AsyncClient(
-                base_url=base, timeout=30.0, trust_env=False
-            ) as client:
+            async with httpx.AsyncClient(base_url=base, timeout=30.0, trust_env=False) as client:
                 r = await client.request(method, path, json=json, params=params)
             if r.status_code == 200:
                 return r.json()
@@ -1199,13 +1327,15 @@ async def _callback_server(
 
 def _compute_unified_diff(old: str, new: str, rel_path: str) -> tuple[str, int, int]:
     """Unified-diff text + (additions, deletions) for ``old`` → ``new``."""
-    diff_lines = list(difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
-        fromfile=f"a/{rel_path}",
-        tofile=f"b/{rel_path}",
-        n=3,
-    ))
+    diff_lines = list(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"a/{rel_path}",
+            tofile=f"b/{rel_path}",
+            n=3,
+        )
+    )
     additions = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
     deletions = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
     return "".join(diff_lines), additions, deletions
@@ -1226,15 +1356,14 @@ async def _emit_diff_card(
     """
     if not diff_text.strip():
         return
-    # Attribute to the WORKER ULID (turn_agent_id), not the static adapter id —
-    # so the card folds into this agent's burst lane and 撤销 targets its branch.
+    # Attribute to the WORKER ULID (turn_agent_id), not the static adapter id,
+    # so the card folds into this agent's burst lane.
     worker = ctx.turn_agent_id or ctx.agent_id
     try:
         await _callback_server(
             f"/api/conversations/{ctx.conv_id}/diff-card",
             json={
                 "sender_id": worker,
-                "agent_id": worker,
                 "file": rel_path,
                 "additions": additions,
                 "deletions": deletions,
@@ -1282,7 +1411,7 @@ class _DispatchTool(_ToolBase):
         "⚠️ FORMAT — write `note` and `contract` as PLAIN PROSE. Describe "
         "interfaces in words, e.g. `fields: from, to, amount (int); route "
         "POST /settle`. Do NOT paste literal JSON objects with double-quoted "
-        "keys like {\"from\": str} into them — those embedded quotes corrupt "
+        'keys like {"from": str} into them — those embedded quotes corrupt '
         "THIS tool call's own JSON and it gets rejected (you'll see "
         "'tasks is a required property'). Keep quotes out of note/contract."
     )
@@ -1321,7 +1450,10 @@ class _DispatchTool(_ToolBase):
                     "properties": {
                         "agent": {"type": "string", "description": "Teammate display name"},
                         "label": {"type": "string", "description": "≤20-char UI label"},
-                        "note": {"type": "string", "description": "Complete self-contained prompt, PLAIN PROSE. Describe shapes in words (from/to/amount: int) — do NOT embed {\"...\"} JSON literals; the quotes break this call."},
+                        "note": {
+                            "type": "string",
+                            "description": 'Complete self-contained prompt, PLAIN PROSE. Describe shapes in words (from/to/amount: int) — do NOT embed {"..."} JSON literals; the quotes break this call.',
+                        },
                     },
                     "required": ["agent", "note"],
                 },
@@ -1345,11 +1477,15 @@ class _DispatchTool(_ToolBase):
         tasks = args.get("tasks") or []
         if not isinstance(tasks, list) or not tasks:
             return {"kind": "error", "error": "tasks must be a non-empty array of {agent, note}"}
-        ctx.append_audit("agent.dispatch", {
-            "caller": ctx.agent_id,
-            "count": len(tasks),
-            "agents": [t.get("agent") for t in tasks if isinstance(t, dict)],
-        })
+        caller = ctx.turn_agent_id or ctx.agent_id
+        ctx.append_audit(
+            "agent.dispatch",
+            {
+                "caller": caller,
+                "count": len(tasks),
+                "agents": [t.get("agent") for t in tasks if isinstance(t, dict)],
+            },
+        )
         return await _callback_server(
             f"/api/conversations/{ctx.conv_id}/dispatch",
             json={
@@ -1362,7 +1498,7 @@ class _DispatchTool(_ToolBase):
                 # Carry the dispatcher identity explicitly so the drain attributes
                 # the batch to whoever actually called this tool — not to whichever
                 # agent's turn happens to drain the per-conv queue (ADR-014).
-                "author_agent_id": ctx.agent_id,
+                "author_agent_id": caller,
             },
             label="dispatch",
         )
@@ -1407,16 +1543,20 @@ class _DiscussTool(_ToolBase):
             return {"kind": "error", "error": "topic is required"}
         if not isinstance(participants, list) or len(participants) < 2:
             return {"kind": "error", "error": "participants must list ≥2 teammates"}
-        ctx.append_audit("agent.discuss", {
-            "caller": ctx.agent_id,
-            "participants": [p for p in participants if isinstance(p, str)],
-        })
+        caller = ctx.turn_agent_id or ctx.agent_id
+        ctx.append_audit(
+            "agent.discuss",
+            {
+                "caller": caller,
+                "participants": [p for p in participants if isinstance(p, str)],
+            },
+        )
         return await _callback_server(
             f"/api/conversations/{ctx.conv_id}/discuss",
             json={
                 "topic": topic,
                 "participants": participants,
-                "author_agent_id": ctx.agent_id,
+                "author_agent_id": caller,
             },
             label="discuss",
         )
@@ -1464,16 +1604,20 @@ class _ContinueDiscussionTool(_ToolBase):
             return {"kind": "error", "error": "prompt is required"}
         if not isinstance(participants, list):
             return {"kind": "error", "error": "participants must be a list"}
-        ctx.append_audit("agent.continue_discussion", {
-            "caller": ctx.agent_id,
-            "participants": [p for p in participants if isinstance(p, str)],
-        })
+        caller = ctx.turn_agent_id or ctx.agent_id
+        ctx.append_audit(
+            "agent.continue_discussion",
+            {
+                "caller": caller,
+                "participants": [p for p in participants if isinstance(p, str)],
+            },
+        )
         return await _callback_server(
             f"/api/conversations/{ctx.conv_id}/discussion/continue",
             json={
                 "prompt": prompt,
                 "participants": participants,
-                "author_agent_id": ctx.agent_id,
+                "author_agent_id": caller,
             },
             label="continue_discussion",
         )
@@ -1550,7 +1694,8 @@ class _RecallTool(_ToolBase):
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         kind = (args.get("kind") or "").strip()
-        ctx.append_audit("memory.recall", {"author": ctx.agent_id, "kind": kind or "all"})
+        author = ctx.turn_agent_id or ctx.agent_id
+        ctx.append_audit("memory.recall", {"author": author, "kind": kind or "all"})
         return await _callback_server(
             f"/api/conversations/{ctx.conv_id}/memory",
             method="GET",
@@ -1599,11 +1744,12 @@ class _ReportTool(_ToolBase):
         if not deliverables:
             return {"kind": "error", "error": "deliverables must be a non-empty string"}
         status = (args.get("status") or "ok").strip()
-        ctx.append_audit("handoff.report", {"author": ctx.agent_id, "status": status})
+        author = ctx.turn_agent_id or ctx.agent_id
+        ctx.append_audit("handoff.report", {"author": author, "status": status})
         return await _callback_server(
             f"/api/conversations/{ctx.conv_id}/report",
             json={
-                "author_agent_id": ctx.agent_id,
+                "author_agent_id": author,
                 "status": status,
                 "deliverables": deliverables,
                 "contract_ok": bool(args.get("contract_ok", False)),
@@ -1615,6 +1761,7 @@ class _ReportTool(_ToolBase):
 
 def _short_id() -> str:
     import uuid
+
     return uuid.uuid4().hex[:12]
 
 
@@ -1674,7 +1821,11 @@ class _AskUserTool(_ToolBase):
             return {"kind": "error", "error": "questions must be a non-empty array"}
         reg = await _callback_server(
             f"/api/conversations/{ctx.conv_id}/ask",
-            json={"agent_id": ctx.turn_agent_id or ctx.agent_id, "title": args.get("title", ""), "questions": questions},
+            json={
+                "agent_id": ctx.turn_agent_id or ctx.agent_id,
+                "title": args.get("title", ""),
+                "questions": questions,
+            },
             label="ask_user",
         )
         ask_id = reg.get("ask_id")
@@ -1690,7 +1841,8 @@ class _AskUserTool(_ToolBase):
             await asyncio.sleep(2)
             poll = await _callback_server(
                 f"/api/conversations/{ctx.conv_id}/ask/{ask_id}",
-                method="GET", label="ask_user",
+                method="GET",
+                label="ask_user",
             )
             if poll.get("answered"):
                 return {"kind": "answered", "answer": poll.get("answer", "")}
@@ -1728,10 +1880,14 @@ class _RequestProjectAccessTool(_ToolBase):
         ctx.append_audit("tool.request_project_access", {"reason": reason[:120]})
         try:
             async with httpx.AsyncClient(base_url=base, timeout=70.0, trust_env=False) as client:
-                r = await client.post("/api/pending-access", json={
-                    "conv_id": ctx.conv_id,
-                    "agent_id": ctx.turn_agent_id or ctx.agent_id, "reason": reason,
-                })
+                r = await client.post(
+                    "/api/pending-access",
+                    json={
+                        "conv_id": ctx.conv_id,
+                        "agent_id": ctx.turn_agent_id or ctx.agent_id,
+                        "reason": reason,
+                    },
+                )
                 if r.status_code != 200:
                     return {"kind": "error", "error": f"create failed {r.status_code}"}
                 pid = r.json().get("id")
@@ -1743,15 +1899,19 @@ class _RequestProjectAccessTool(_ToolBase):
                 # while the user decides. They can abort from the UI to bail.
                 while True:
                     r = await client.get(
-                        f"/api/pending-access/{pid}/wait", params={"timeout": 60},
+                        f"/api/pending-access/{pid}/wait",
+                        params={"timeout": 60},
                     )
                     if r.status_code != 200:
                         return {"kind": "error", "error": "wait poll failed"}
                     row = r.json()
                     st = row.get("status")
                     if st == "accepted":
-                        return {"kind": "granted", "workspace_id": row.get("workspace_id"),
-                                "note": "项目已授权,但要在你的下一轮才会挂载——请用户把任务再发一次。"}
+                        return {
+                            "kind": "granted",
+                            "workspace_id": row.get("workspace_id"),
+                            "note": "项目已授权,但要在你的下一轮才会挂载——请用户把任务再发一次。",
+                        }
                     if st in ("rejected", "timeout"):
                         return {"kind": "denied"}
         except (httpx.RequestError, httpx.HTTPError) as e:
@@ -1790,14 +1950,14 @@ class _PresentTool(_ToolBase):
         "clickable deliverable panel.\n\n"
         "Few-shot examples:\n"
         "  · Static file: after writing + reading `index.html`, call "
-        "`present(paths=[\"index.html\"], message=\"页面已完成\")`.\n"
+        '`present(paths=["index.html"], message="页面已完成")`.\n'
         "  · Preview URL: after a server prints `http://127.0.0.1:8770/index.html`, "
-        "call `present(links=[{\"url\":\"http://127.0.0.1:8770/index.html\","
-        "\"label\":\"打开预览\",\"kind\":\"web\"}], message=\"预览已就绪\")`.\n"
+        'call `present(links=[{"url":"http://127.0.0.1:8770/index.html",'
+        '"label":"打开预览","kind":"web"}], message="预览已就绪")`.\n'
         "  · Full-stack local app: after Vite/FastAPI are running, call "
-        "`present(links=[{\"url\":\"http://127.0.0.1:7788/\","
-        "\"label\":\"打开前端\",\"kind\":\"web\"},{\"url\":\"http://127.0.0.1:8000/docs\","
-        "\"label\":\"查看 API\",\"kind\":\"api\"}], message=\"前后端已启动\")`.\n"
+        '`present(links=[{"url":"http://127.0.0.1:7788/",'
+        '"label":"打开前端","kind":"web"},{"url":"http://127.0.0.1:8000/docs",'
+        '"label":"查看 API","kind":"api"}], message="前后端已启动")`.\n'
         "This tool is for solo/direct agents and group orchestrators. Regular "
         "group members do not receive it; they should `report` produced files so "
         "the coordinator can validate the main result and present once."
@@ -1821,15 +1981,27 @@ class _PresentTool(_ToolBase):
                 "items": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "The link target (http(s) URL or absolute /api/... path)"},
-                        "label": {"type": "string", "description": "Human label, e.g. '预览(临时 30 分钟)' or 'source.zip'"},
+                        "url": {
+                            "type": "string",
+                            "description": "The link target (http(s) URL or absolute /api/... path)",
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "Human label, e.g. '预览(临时 30 分钟)' or 'source.zip'",
+                        },
                         "kind": {
                             "type": "string",
                             "enum": ["web", "download"],
                             "description": "web = clickable, opens new tab; download = triggers file download",
                         },
-                        "bytes": {"type": "integer", "description": "Download size in bytes, when known"},
-                        "note": {"type": "string", "description": "Short hint, e.g. 'container · port 8080'"},
+                        "bytes": {
+                            "type": "integer",
+                            "description": "Download size in bytes, when known",
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": "Short hint, e.g. 'container · port 8080'",
+                        },
                     },
                     "required": ["url"],
                 },
@@ -1880,7 +2052,8 @@ class _PresentTool(_ToolBase):
         # Verify each file exists in this agent's sandbox before showing.
         if rels:
             missing = [
-                r for r in rels
+                r
+                for r in rels
                 if not (ctx._resolve_read(r).exists() and not ctx._resolve_read(r).is_dir())
             ]
             if missing:
@@ -1898,20 +2071,21 @@ class _PresentTool(_ToolBase):
         if not base:
             return {"presented": False, "note": "no API base (standalone run)"}
         try:
-            async with httpx.AsyncClient(
-                base_url=base, timeout=30.0, trust_env=False
-            ) as client:
-                r = await client.post("/api/present", json={
-                    "conv_id": ctx.conv_id,
-                    # turn_agent_id = the CONTACT's ULID (not the static adapter id
-                    # "claudeCode") so the file card attributes to 顾屿 etc., not a
-                    # generic "Agent / BOT".
-                    "agent_id": ctx.turn_agent_id or ctx.agent_id,
-                    "ws": ws_id,
-                    "paths": rels,
-                    "links": links,
-                    "message": args.get("message") or args.get("caption"),
-                })
+            async with httpx.AsyncClient(base_url=base, timeout=30.0, trust_env=False) as client:
+                r = await client.post(
+                    "/api/present",
+                    json={
+                        "conv_id": ctx.conv_id,
+                        # turn_agent_id = the CONTACT's ULID (not the static adapter id
+                        # "claudeCode") so the file card attributes to 顾屿 etc., not a
+                        # generic "Agent / BOT".
+                        "agent_id": ctx.turn_agent_id or ctx.agent_id,
+                        "ws": ws_id,
+                        "paths": rels,
+                        "links": links,
+                        "message": args.get("message") or args.get("caption"),
+                    },
+                )
                 r.raise_for_status()
                 data = r.json()
         except (httpx.RequestError, httpx.HTTPError) as e:
@@ -1920,9 +2094,10 @@ class _PresentTool(_ToolBase):
         # post-merge summary (orchestrator-presents). The files are already
         # committed to this branch, so they merge to main and get shown there.
         if data.get("deferred"):
-            return {"presented": False, "deferred": True,
-                    "note": data.get("note"), "paths": rels}
-        ctx.append_audit("agent.present", {"paths": rels, "links": [l.get("url") for l in links], "ws": ws_id})
+            return {"presented": False, "deferred": True, "note": data.get("note"), "paths": rels}
+        ctx.append_audit(
+            "agent.present", {"paths": rels, "links": [l.get("url") for l in links], "ws": ws_id}
+        )
         return {"presented": True, "paths": rels, "links": [l.get("url") for l in links]}
 
 
@@ -2072,11 +2247,23 @@ class _ResolveConflictTool(_ToolBase):
 TOOL_REGISTRY: dict[str, _ToolBase] = {
     cls.name: cls()
     for cls in [
-        _ReadTool, _WriteTool, _EditTool, _RunBackgroundTool, _WaitTool,
-        _BashTool, _GrepTool, _GlobTool,
-        _DispatchTool, _DiscussTool, _ContinueDiscussionTool,
-        _RememberTool, _RecallTool, _ReportTool,
-        _AskUserTool, _RequestProjectAccessTool, _PresentTool,
+        _ReadTool,
+        _WriteTool,
+        _EditTool,
+        _RunBackgroundTool,
+        _WaitTool,
+        _BashTool,
+        _GrepTool,
+        _GlobTool,
+        _DispatchTool,
+        _DiscussTool,
+        _ContinueDiscussionTool,
+        _RememberTool,
+        _RecallTool,
+        _ReportTool,
+        _AskUserTool,
+        _RequestProjectAccessTool,
+        _PresentTool,
         _ResolveConflictTool,
     ]
 }
@@ -2093,13 +2280,13 @@ TOOL_REGISTRY: dict[str, _ToolBase] = {
 # roles; otherwise the UI implies a false permission model.
 #
 # ── Capability axes (atomic tool groups) ────────────────────────
-_RETRIEVE = {"read", "grep", "glob"}              # look at the sandbox — everyone
-_RECALL   = {"recall"}                            # READ shared memory — everyone
-_REMEMBER = {"remember"}                          # WRITE shared memory (ADR-014)
-_ASK      = {"ask_user"}                           # block + ask the user a question
-_MUTATE   = {"write", "edit"}                      # file-mutation: full write + targeted edit
-_SHELL    = {"bash", "run_background", "wait"}     # shell: run + background jobs
-_WORKER   = {"report", "request_project_access"}   # worker hand-off: verdict + join-project ask
+_RETRIEVE = {"read", "grep", "glob"}  # look at the sandbox — everyone
+_RECALL = {"recall"}  # READ shared memory — everyone
+_REMEMBER = {"remember"}  # WRITE shared memory (ADR-014)
+_ASK = {"ask_user"}  # block + ask the user a question
+_MUTATE = {"write", "edit"}  # file-mutation: full write + targeted edit
+_SHELL = {"bash", "run_background", "wait"}  # shell: run + background jobs
+_WORKER = {"report", "request_project_access"}  # worker hand-off: verdict + join-project ask
 # delegate to teammates. Orchestrator-only — workers don't sub-delegate.
 _ORCHESTRATE = {"dispatch", "discuss", "continue_discussion"}
 # resolve merge conflicts. Manual user side-picking is retired, so conflicts are
@@ -2120,24 +2307,24 @@ _DELIVER = {"present"}
 # the single audited write path, and delegation is dispatch/discuss not a blocking call.
 
 # ── Functional tiers (role names map onto these) ────────────────
-_TIER_ORCHESTRATOR = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _RESOLVE
+_TIER_ORCHESTRATOR = (
+    _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _ORCHESTRATE | _RESOLVE
+)
 # Solo/DM builders DO resolve their own conflicts (no orchestrator exists, manual
 # user side-picking is retired). Group WORKERS do NOT (judge-and-party) — their
 # conflict escalates to the orchestrator; _RESOLVE is subtracted from group_member.
-_TIER_BUILDER      = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE
+_TIER_BUILDER = _RETRIEVE | _RECALL | _REMEMBER | _ASK | _MUTATE | _SHELL | _WORKER | _RESOLVE
 _TIER_ORCHESTRATOR = _TIER_ORCHESTRATOR | _DELIVER
-_TIER_BUILDER      = _TIER_BUILDER | _DELIVER
+_TIER_BUILDER = _TIER_BUILDER | _DELIVER
 _TIER_GROUP_MEMBER = _TIER_BUILDER - _DELIVER - _RESOLVE
 ROLE_TOOLS: dict[str, set[str]] = {
     "orchestrator": _TIER_ORCHESTRATOR,
-    "generalist":   _TIER_BUILDER,
-    "group_member": _TIER_GROUP_MEMBER,     # runtime-only: group workers report, coordinator presents
+    "generalist": _TIER_BUILDER,
+    "group_member": _TIER_GROUP_MEMBER,  # runtime-only: group workers report, coordinator presents
 }
 
 
-def tools_for_role(
-    role: str | None, allow: set[str] | None = None
-) -> dict[str, _ToolBase]:
+def tools_for_role(role: str | None, allow: set[str] | None = None) -> dict[str, _ToolBase]:
     """Return the filtered TOOL_REGISTRY subset visible to ``role``.
 
     Empty role → generalist (back-compat for agents created before the role
@@ -2153,9 +2340,7 @@ def tools_for_role(
     elif role in ROLE_TOOLS:
         allowed = ROLE_TOOLS[role]
     else:
-        raise ValueError(
-            f"unknown tool_role {role!r}; expected one of {sorted(ROLE_TOOLS)}"
-        )
+        raise ValueError(f"unknown tool_role {role!r}; expected one of {sorted(ROLE_TOOLS)}")
     if allow:
         allowed = allowed & allow  # narrow only — never upgrade
     return {name: impl for name, impl in TOOL_REGISTRY.items() if name in allowed}

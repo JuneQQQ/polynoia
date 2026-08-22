@@ -56,14 +56,10 @@ class AgentSetup(BaseModel):
     # serialization.  The storage repository persists it explicitly; callers
     # can replace it, but can never read it back through a contact response.
     api_key: str | None = Field(default=None, exclude=True)
+    # Safe API-facing credential state. The secret itself remains excluded.
+    has_api_key: bool = False
+    use_host_credentials_unverified: bool = False
     api_base_url: str | None = None
-    # User-specified model context-window ceiling, in tokens. The contact modal
-    # requires picking a preset (128k / 200k / 256k / 1M / custom) — there is no
-    # model→context guessing table (it mis-guessed third-party / proxy models).
-    # When None (older rows / API callers that omit it), budget falls back to
-    # context.budget.DEFAULT_FALLBACK_CONTEXT (128k). Polynoia subtracts Claude
-    # Code's fixed overhead (~35k) from this to compute the L1-L5 budget. ADR-012.
-    max_context_tokens: int | None = None
 
 
 class AgentSkill(BaseModel):

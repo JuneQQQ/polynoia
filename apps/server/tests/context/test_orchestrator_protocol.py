@@ -4,6 +4,7 @@ The conv's designated orchestrator must receive the dispatch protocol in its
 prompt EVEN WHEN its persona never mentions dispatching — and non-orchestrator
 members must not.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 
 import polynoia.storage.db as db_module
 from polynoia.context import build_context_for_turn
+from polynoia.context.identity import build_identity_layer
 from polynoia.context.orchestrator import build_orchestrator_protocol_layer
 from polynoia.domain.entities import Agent, AgentSetup, Conversation, new_ulid
 from polynoia.storage.repo import create_conversation, upsert_agent
@@ -24,14 +26,18 @@ async def clean_db(monkeypatch, tmp_path: Path):
     db_url = f"sqlite+aiosqlite:///{tmp_path}/orch-test.db"
     monkeypatch.setattr("polynoia.settings.settings.db_url", db_url)
     import polynoia.storage.db as db_mod
+
     eng = create_async_engine(
-        db_url, echo=False, future=True,
+        db_url,
+        echo=False,
+        future=True,
         connect_args={"check_same_thread": False},
     )
     sm = async_sessionmaker(eng, expire_on_commit=False)
     monkeypatch.setattr(db_mod, "engine", eng)
     monkeypatch.setattr(db_mod, "SessionLocal", sm)
     from polynoia.storage import models  # noqa: F401
+
     async with eng.begin() as conn:
         await conn.run_sync(db_mod.Base.metadata.create_all)
     try:
@@ -44,8 +50,14 @@ async def _agent(name: str, tool_role: str = "generalist") -> Agent:
     # Persona deliberately NEVER mentions dispatch — the protocol must still
     # reach an orchestrator, proving it doesn't depend on the user's persona.
     a = Agent(
-        id=new_ulid(), name=name, role="t", provider="claude", handle=f"@{name}",
-        initials=name[:2], color="#000", bg="#fff",
+        id=new_ulid(),
+        name=name,
+        role="t",
+        provider="claude",
+        handle=f"@{name}",
+        initials=name[:2],
+        color="#000",
+        bg="#fff",
         system_prompt=f"你是{name},一个普通工程师,只埋头写代码,从不提派活。",
         tool_role=tool_role,
         setup=AgentSetup(adapter_id="claudeCode", model="claude-sonnet-4-6"),
@@ -80,7 +92,47 @@ def test_protocol_layer_content() -> None:
     assert "写代码" in c
     assert "用户" in c
     assert "未指定" in c
-    assert layer.hard is True
+
+
+def test_deepseek_controlled_bridge_identity_uses_polynoia_mcp_tools() -> None:
+    agent = Agent(
+        id=new_ulid(),
+        name="DeepSeek",
+        role="t",
+        provider="deepseek",
+        handle="@deepseek",
+        initials="Ds",
+        color="#000",
+        bg="#fff",
+        setup=AgentSetup(adapter_id="deepseek", model="deepseek-v4-flash"),
+    )
+
+    content = build_identity_layer(agent).content
+
+    assert "Harness 原生工具纪律" not in content
+    assert "## 交付物展示规则" in content
+    assert "写文件**一律用 `write` 工具" in content
+    assert "dispatch" in content and "present" in content
+
+
+def test_qwen_identity_uses_schema_names_not_bare_tool_aliases() -> None:
+    agent = Agent(
+        id=new_ulid(),
+        name="Qwen",
+        role="t",
+        provider="qwen",
+        handle="@qwen",
+        initials="Qw",
+        color="#000",
+        bg="#fff",
+        setup=AgentSetup(adapter_id="qwenCode", model="qwen3.6-flash"),
+    )
+
+    content = build_identity_layer(agent).content
+
+    assert "Qwen ACP 工具纪律" in content
+    assert "以本次请求里真实 tool-call schema" in content
+    assert "写文件**一律用 `write` 工具" not in content
 
 
 @pytest.mark.asyncio
@@ -90,8 +142,11 @@ async def test_orchestrator_gets_protocol_despite_custom_persona(clean_db) -> No
     w2 = await _agent("码乙")
     cid = new_ulid()
     conv = Conversation(
-        id=cid, title="g", members=["you", orch.id, w1.id, w2.id],
-        group=True, orchestrator_member_id=orch.id,
+        id=cid,
+        title="g",
+        members=["you", orch.id, w1.id, w2.id],
+        group=True,
+        orchestrator_member_id=orch.id,
     )
     async with db_module.SessionLocal() as s:
         await create_conversation(s, conv)
@@ -113,16 +168,17 @@ async def test_non_orchestrator_member_gets_no_protocol(clean_db) -> None:
     w1 = await _agent("码甲")
     cid = new_ulid()
     conv = Conversation(
-        id=cid, title="g", members=["you", orch.id, w1.id],
-        group=True, orchestrator_member_id=orch.id,
+        id=cid,
+        title="g",
+        members=["you", orch.id, w1.id],
+        group=True,
+        orchestrator_member_id=orch.id,
     )
     async with db_module.SessionLocal() as s:
         await create_conversation(s, conv)
         await s.commit()
     async with db_module.SessionLocal() as s:
-        prompt = await build_context_for_turn(
-            s, agent_id=w1.id, conv_id=cid, user_text="hi"
-        )
+        prompt = await build_context_for_turn(s, agent_id=w1.id, conv_id=cid, user_text="hi")
     assert "你是本群聊的协调器" not in prompt
     assert "你是**群聊成员**" in prompt
     assert "用 `report` 交付,不要自己 `present`" in prompt
@@ -134,16 +190,18 @@ async def test_dm_orchestrator_field_unset_no_protocol(clean_db) -> None:
     solo = await _agent("独")
     cid = new_ulid()
     conv = Conversation(
-        id=cid, title="dm", members=["you", solo.id], direct=True, group=False,
+        id=cid,
+        title="dm",
+        members=["you", solo.id],
+        direct=True,
+        group=False,
         orchestrator_member_id=solo.id,  # nonsensical for a DM, but guard on group
     )
     async with db_module.SessionLocal() as s:
         await create_conversation(s, conv)
         await s.commit()
     async with db_module.SessionLocal() as s:
-        prompt = await build_context_for_turn(
-            s, agent_id=solo.id, conv_id=cid, user_text="hi"
-        )
+        prompt = await build_context_for_turn(s, agent_id=solo.id, conv_id=cid, user_text="hi")
     assert "你是本群聊的协调器" not in prompt
     assert "你是**群聊成员**" not in prompt
     assert "你能读写文件、改代码、跑命令。" in prompt
@@ -158,7 +216,11 @@ async def test_tool_call_format_rule_survives_custom_discipline(clean_db) -> Non
         await s.commit()
     cid = new_ulid()
     conv = Conversation(
-        id=cid, title="dm", members=["you", agent.id], direct=True, group=False,
+        id=cid,
+        title="dm",
+        members=["you", agent.id],
+        direct=True,
+        group=False,
     )
     async with db_module.SessionLocal() as s:
         await create_conversation(s, conv)
@@ -174,5 +236,5 @@ async def test_tool_call_format_rule_survives_custom_discipline(clean_db) -> Non
     assert "## 交付物展示规则(平台强制)" in prompt
     assert 'present(links=[{"url":"http://127.0.0.1:8770/index.html"' in prompt
     assert 'present(links=[{"url":"http://127.0.0.1:7788/"' in prompt
-    assert 'http://127.0.0.1:8000/docs' in prompt
+    assert "http://127.0.0.1:8000/docs" in prompt
     assert "没有 present 卡片" in prompt

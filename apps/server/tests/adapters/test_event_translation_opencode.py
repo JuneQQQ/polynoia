@@ -27,9 +27,7 @@ async def _collect(gen: AsyncIterator) -> list:
 
 
 def test_opencode_config_denies_builtin_tools_and_allows_polynoia_mcp() -> None:
-    config = json.loads(
-        _opencode_config_content("opencode-go/glm5.1", ["demo-skill"])
-    )
+    config = json.loads(_opencode_config_content("opencode-go/glm5.1", ["demo-skill"]))
 
     assert config["model"] == "opencode-go/glm5.1"
     permission = config["permission"]
@@ -131,9 +129,9 @@ async def test_translate_tool_then_text(
     assert tool_initial.part_id == tool_running.part_id == tool_done.part_id
     assert tool_initial.message_id == tool_running.message_id == tool_done.message_id
 
-    # Initial tool call payload is running
+    # Preserve ACP's initial pending state until execution actually begins.
     assert isinstance(tool_initial.part, ToolCallPayload)
-    assert tool_initial.part.state == "running"
+    assert tool_initial.part.state == "pending"
     assert tool_initial.part.tool_call_id == "tc1"
 
     # In-progress update is still running but with input now set
@@ -201,8 +199,7 @@ async def test_translate_empty_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_translate_unknown_update_type_skipped() -> None:
-    # Unknown sessionUpdate variants and unrelated JSON-RPC methods should be ignored.
+async def test_translate_unknown_update_and_usage_are_preserved() -> None:
     weird = [
         {
             "jsonrpc": "2.0",
@@ -231,7 +228,15 @@ async def test_translate_unknown_update_type_skipped() -> None:
             task_id="task1",
         )
     )
-    assert events == []
+    assert [event.type for event in events] == [
+        "extension.event",
+        "session.usage",
+        "extension.event",
+    ]
+    assert events[0].name == "weird_unknown"
+    assert events[1].used == 1
+    assert events[1].size == 100
+    assert events[2].name == "some_other_method"
 
 
 @pytest.mark.asyncio

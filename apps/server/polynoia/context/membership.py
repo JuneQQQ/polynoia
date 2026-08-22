@@ -4,6 +4,7 @@ This layer is deliberately separate from rolling chat history. Add/remove-member
 events are operational facts: every later agent turn needs the current roster and
 recent join/leave context even if the old system message falls out of L7.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -53,13 +54,15 @@ async def build_membership_layer(
         suffix = f" —— {role}" if role else ""
         lines.append(f"- @{_name(aid)}{label}{suffix}")
 
-    lines.extend([
-        "",
-        "## 协作规则",
-        "- 只能 @ / dispatch 当前群成员;被移出成员不再参与后续任务。",
-        "- 历史里被移出成员的发言仍可作为背景,但不要再等待 ta 继续执行。",
-        "- 如果你是新加入成员,先按本区花名册、职责与本对话历史接续工作。",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 协作规则",
+            "- 只能 @ / dispatch 当前群成员;被移出成员不再参与后续任务。",
+            "- 历史里被移出成员的发言仍可作为背景,但不要再等待 ta 继续执行。",
+            "- 如果你是新加入成员,先按本区花名册、职责与本对话历史接续工作。",
+        ]
+    )
 
     q = await db.execute(
         select(MessageRow)
@@ -82,7 +85,6 @@ async def build_membership_layer(
     return ContextLayer.make(
         kind="membership",
         content="\n".join(lines),
-        priority=94,  # below orchestration/member hints, above pins/history
         meta={
             "agent_id": agent_id,
             "conv_id": conv.id,

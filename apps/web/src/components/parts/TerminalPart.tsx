@@ -6,7 +6,7 @@ import {
 	Loader2,
 	Terminal as TerminalIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { t } from "../../lib/i18n";
 import type { TerminalPayload } from "../../lib/types";
 import { useStore } from "../../store";
@@ -25,6 +25,7 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 	const userTouched = useRef(false);
 	const prevRunning = useRef(payload.running);
 	const bodyRef = useRef<HTMLDivElement>(null);
+	const bodyId = useId();
 
 	// Auto-open while the command is running, then auto-collapse the moment it
 	// finishes. If the user manually toggles, their choice wins.
@@ -37,6 +38,7 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 	}, [payload.running]);
 
 	// Auto-scroll to the tail as output streams in (only while expanded).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: payload.output is the stream-version signal; the DOM ref itself is stable.
 	useEffect(() => {
 		const el = bodyRef.current;
 		if (el && open) el.scrollTop = el.scrollHeight;
@@ -75,6 +77,8 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 		>
 			<button
 				type="button"
+				aria-expanded={open}
+				aria-controls={bodyId}
 				onClick={() => {
 					userTouched.current = true;
 					setOpen((v) => !v);
@@ -126,13 +130,25 @@ export function TerminalPart({ payload }: { payload: TerminalPayload }) {
 
 			{open && (
 				<div
+					id={bodyId}
 					ref={bodyRef}
 					className="font-mono text-[11px] leading-[1.55] p-2.5 max-h-[300px] overflow-y-auto whitespace-pre-wrap break-all bg-[var(--color-surface)] text-[var(--color-fg-2)] border-t border-[var(--color-line)]"
 				>
 					{payload.truncated && (
-						<div className="text-[10px] text-[var(--color-fg-4)] mb-1">
-							{t("outputTruncated", lang)}
-						</div>
+						<output className="text-[10px] text-[var(--color-fg-4)] mb-1.5 rounded bg-[var(--color-amber-soft)] px-2 py-1">
+							<div>
+								{t("outputTruncated", lang)}
+								{payload.output_bytes
+									? ` · ${(payload.output_bytes / 1024).toFixed(payload.output_bytes > 1024 * 1024 ? 1 : 0)} KB`
+									: ""}
+							</div>
+							{payload.spill_files?.length ? (
+								<div className="mt-0.5 break-all">
+									完整输出：
+									<code>{payload.spill_files.join(" · ")}</code>
+								</div>
+							) : null}
+						</output>
 					)}
 					{payload.output ? (
 						<>

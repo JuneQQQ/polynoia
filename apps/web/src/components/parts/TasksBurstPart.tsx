@@ -16,11 +16,11 @@
  */
 import { motion, useReducedMotion } from "framer-motion";
 import { Check, Loader2, Square, X } from "lucide-react";
-import { memo, useState } from "react";
+import { type KeyboardEvent, memo, useState } from "react";
 import type { BurstInfo } from "../../lib/burstClaim";
 import { type FoldPass, foldPass } from "../../lib/foldPass";
 import { t as tr } from "../../lib/i18n";
-import { isMobile } from "../../lib/platform";
+import { useMobileLayout } from "../../lib/platform";
 import type { DiffPayload, Message, TasksPayload } from "../../lib/types";
 import { useStore } from "../../store";
 import { MessageView } from "../MessageView";
@@ -55,25 +55,25 @@ function computeLaneFold(
 
 const STATE_BADGE = {
 	pending: {
-		label: "Waiting",
+		labelKey: "burstStateWaiting",
 		bg: "var(--color-surface-2)",
 		color: "var(--color-fg-3)",
 		icon: null,
 	},
 	run: {
-		label: "Running",
+		labelKey: "burstStateRunning",
 		bg: "var(--color-amber-soft)",
 		color: "var(--color-amber)",
 		icon: <Loader2 size={10} className="animate-spin" />,
 	},
 	done: {
-		label: "Done",
+		labelKey: "burstStateDone",
 		bg: "var(--color-green-soft)",
 		color: "var(--color-green)",
 		icon: <Check size={10} />,
 	},
 	failed: {
-		label: "Failed",
+		labelKey: "burstStateFailed",
 		bg: "var(--color-red-soft)",
 		color: "var(--color-red)",
 		icon: <X size={10} />,
@@ -93,8 +93,8 @@ function TasksBurstPartInner({
 }) {
 	const agents = useStore((s) => s.agents);
 	const lang = useStore((s) => s.lang);
-	const en = lang === "en";
 	const reduce = useReducedMotion();
+	const mobile = useMobileLayout();
 
 	const tasks = payload.tasks ?? [];
 	const totalCount = tasks.length;
@@ -103,26 +103,28 @@ function TasksBurstPartInner({
 	const allDone = doneCount === totalCount && totalCount > 0;
 
 	// Aggregate status pill color (localized).
-	const doneLabel = `${doneCount}/${totalCount}`;
+	const progressLabel = (
+		key: "burstProgressFailed" | "burstProgressDone" | "burstProgressRunning",
+	) =>
+		tr(key, lang)
+			.replace("{done}", String(doneCount))
+			.replace("{total}", String(totalCount))
+			.replace("{failed}", String(failedCount));
 	const aggregate: { label: string; bg: string; color: string } =
 		failedCount > 0
 			? {
-					label: en
-						? `${doneLabel} done · ${failedCount} failed`
-						: `${doneLabel} 完成 · ${failedCount} 失败`,
+					label: progressLabel("burstProgressFailed"),
 					bg: "var(--color-red-soft)",
 					color: "var(--color-red)",
 				}
 			: allDone
 				? {
-						label: en ? `${doneLabel} all done` : `${doneLabel} 全部完成`,
+						label: progressLabel("burstProgressDone"),
 						bg: "var(--color-green-soft)",
 						color: "var(--color-green)",
 					}
 				: {
-						label: en
-							? `${doneLabel} done · running`
-							: `${doneLabel} 完成 · 进行中`,
+						label: progressLabel("burstProgressRunning"),
 						bg: "var(--color-amber-soft)",
 						color: "var(--color-amber)",
 					};
@@ -135,6 +137,37 @@ function TasksBurstPartInner({
 			.values(),
 	);
 	const laneCount = laneTasks.length;
+	const [activeLaneAgent, setActiveLaneAgent] = useState(
+		() => laneTasks[0]?.agent ?? "",
+	);
+	const selectedLaneAgent = laneTasks.some((t) => t.agent === activeLaneAgent)
+		? activeLaneAgent
+		: (laneTasks[0]?.agent ?? "");
+	const visibleLaneTasks = mobile
+		? laneTasks.filter((t) => t.agent === selectedLaneAgent)
+		: laneTasks;
+	const laneDomId = (agentId: string) =>
+		`burst-${burstInfo.anchorMsgId}-${agentId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+	const selectLaneFromKeyboard = (
+		event: KeyboardEvent<HTMLButtonElement>,
+		currentIndex: number,
+	) => {
+		let nextIndex: number | null = null;
+		if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+			nextIndex = (currentIndex + 1) % laneCount;
+		} else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+			nextIndex = (currentIndex - 1 + laneCount) % laneCount;
+		} else if (event.key === "Home") nextIndex = 0;
+		else if (event.key === "End") nextIndex = laneCount - 1;
+		if (nextIndex === null) return;
+		event.preventDefault();
+		setActiveLaneAgent(laneTasks[nextIndex]?.agent ?? selectedLaneAgent);
+		const tabs =
+			event.currentTarget.parentElement?.querySelectorAll<HTMLElement>(
+				'[role="tab"]',
+			);
+		tabs?.[nextIndex]?.focus();
+	};
 
 	return (
 		// Width matches the message text column. Desktop keeps the avatar column
@@ -142,8 +175,9 @@ function TasksBurstPartInner({
 		// card has enough usable width for lanes.
 		<div
 			className={`relative my-3 border border-[var(--color-line)] rounded-xl overflow-hidden bg-[var(--color-surface)] shadow-[var(--shadow-card)] ${
-				isMobile() ? "ml-9 mr-2" : "ml-[68px] mr-6"
+				mobile ? "mx-2" : "ml-[68px] mr-6"
 			}`}
+			data-layout={mobile ? "mobile" : "desktop"}
 		>
 			{/* Accent top-rule — signals "this is orchestrator-dispatched work" */}
 			<span
@@ -152,11 +186,15 @@ function TasksBurstPartInner({
 			/>
 
 			{/* Header — editorial masthead */}
-			<div className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]">
+			<div
+				className={`flex items-center gap-3 px-4 py-2.5 border-b border-[var(--color-line)] bg-[var(--color-surface-2)] ${mobile ? "flex-wrap" : ""}`}
+			>
 				<span className="text-[9.5px] font-mono uppercase tracking-[0.24em] text-[var(--color-accent)] font-medium">
-					Parallel · Burst {burstInfo.index}
+					{tr("burstHeader", lang).replace("{index}", String(burstInfo.index))}
 				</span>
-				<span className="font-display text-[14px] text-[var(--color-fg)] truncate flex-1 tracking-wide">
+				<span
+					className={`font-display text-[14px] text-[var(--color-fg)] truncate flex-1 tracking-wide ${mobile ? "basis-1/2" : ""}`}
+				>
 					{payload.title || tr("parallelTasks", lang)}
 				</span>
 				<motion.span
@@ -184,22 +222,83 @@ function TasksBurstPartInner({
 				</details>
 			)}
 
+			{/* A phone shows one lane at a time. The wrapped segmented selector has
+			    no horizontal overflow, so every assigned agent remains reachable. */}
+			{mobile && laneCount > 1 && (
+				<div
+					role="tablist"
+					aria-label={tr("burstAgentTabs", lang)}
+					className="grid gap-1.5 p-2 border-b border-[var(--color-line)] bg-[var(--color-surface-2)]/70"
+					style={{
+						gridTemplateColumns: `repeat(${Math.min(laneCount, 3)}, minmax(0, 1fr))`,
+					}}
+				>
+					{laneTasks.map((task, taskIndex) => {
+						const agent = agents.find((a) => a.id === task.agent);
+						const state =
+							STATE_BADGE[task.state as LaneState] ?? STATE_BADGE.pending;
+						const selected = task.agent === selectedLaneAgent;
+						return (
+							<button
+								key={task.id}
+								type="button"
+								role="tab"
+								id={`${laneDomId(task.agent)}-tab`}
+								aria-selected={selected}
+								aria-controls={laneDomId(task.agent)}
+								tabIndex={selected ? 0 : -1}
+								onClick={() => setActiveLaneAgent(task.agent)}
+								onKeyDown={(event) => selectLaneFromKeyboard(event, taskIndex)}
+								className={`min-w-0 min-h-11 rounded-lg border px-2 py-1.5 text-left transition-colors ${
+									selected
+										? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-fg)]"
+										: "border-[var(--color-line)] bg-[var(--color-surface)] text-[var(--color-fg-2)]"
+								}`}
+							>
+								<span className="flex items-center gap-1.5 min-w-0">
+									<span
+										aria-hidden
+										className="size-2 shrink-0 rounded-full"
+										style={{
+											background: agent?.color ?? "var(--color-fg-3)",
+										}}
+									/>
+									<span className="truncate text-[11px] font-medium">
+										{agent?.name ?? task.agent}
+									</span>
+								</span>
+								<span
+									className="mt-0.5 block truncate text-[9px] font-mono"
+									style={{ color: state.color }}
+								>
+									{tr(state.labelKey, lang)}
+								</span>
+							</button>
+						);
+					})}
+				</div>
+			)}
+
 			{/* Lanes grid — staggered reveal left→right on mount */}
 			<motion.div
-				className="grid divide-x divide-[var(--color-line)] bg-[var(--color-surface)]"
+				className={`${mobile ? "block" : "grid divide-x"} divide-[var(--color-line)] bg-[var(--color-surface)]`}
+				data-testid="burst-lanes"
+				data-layout={mobile ? "mobile" : "desktop"}
 				style={{
-					// Lanes keep a comfortable min width (don't compress too hard); if
-					// they don't fit the text-width card, the grid scrolls horizontally
-					// INSIDE the card (slide right to reveal the rest) rather than
-					// bleeding past the card's right edge.
-					gridTemplateColumns: `repeat(${Math.max(1, laneCount)}, minmax(${isMobile() ? "240px" : "280px"}, 1fr))`,
-					overflowX: "auto",
+					// Desktop preserves the existing parallel comparison. Mobile renders
+					// one full-width lane and therefore needs no nested horizontal scroll.
+					...(mobile
+						? { width: "100%" }
+						: {
+								gridTemplateColumns: `repeat(${Math.max(1, laneCount)}, minmax(280px, 1fr))`,
+								overflowX: "auto" as const,
+							}),
 				}}
 				initial={reduce ? false : "hidden"}
 				animate="show"
 				variants={{ show: { transition: { staggerChildren: 0.08 } } }}
 			>
-				{laneTasks.map((t) => {
+				{visibleLaneTasks.map((t) => {
 					const agent = agents.find((a) => a.id === t.agent);
 					const state =
 						STATE_BADGE[t.state as LaneState] ?? STATE_BADGE.pending;
@@ -211,6 +310,15 @@ function TasksBurstPartInner({
 						<motion.div
 							key={t.id}
 							className="flex flex-col min-w-0"
+							data-testid="burst-lane"
+							data-agent-id={t.agent}
+							id={mobile ? laneDomId(t.agent) : undefined}
+							role={mobile && laneCount > 1 ? "tabpanel" : undefined}
+							aria-labelledby={
+								mobile && laneCount > 1
+									? `${laneDomId(t.agent)}-tab`
+									: undefined
+							}
 							variants={{
 								hidden: { opacity: 0, y: 10 },
 								show: {
@@ -312,7 +420,7 @@ function TasksBurstPartInner({
 									style={{ background: state.bg, color: state.color }}
 								>
 									{state.icon}
-									{state.label}
+									{tr(state.labelKey, lang)}
 								</motion.span>
 							</div>
 
@@ -340,24 +448,14 @@ function TasksBurstPartInner({
 										{t.state === "run" ? (
 											<span className="inline-flex items-center gap-1.5 not-italic text-[var(--color-fg-3)]">
 												<Loader2 size={11} className="animate-spin" />
-												{en ? "Running…" : "执行中…"}
+												{tr("burstRunningEmpty", lang)}
 											</span>
 										) : isDone ? (
-											en ? (
-												"Done · no output"
-											) : (
-												"已完成 · 无输出"
-											)
+											tr("burstDoneNoOutput", lang)
 										) : t.state === "failed" ? (
-											en ? (
-												"Failed"
-											) : (
-												"已失败"
-											)
-										) : en ? (
-											"Waiting to start…"
+											tr("burstFailedEmpty", lang)
 										) : (
-											"等待开始…"
+											tr("burstWaitingEmpty", lang)
 										)}
 									</div>
 								) : (
@@ -477,7 +575,7 @@ function BurstChangesSummary({
 			</summary>
 			<div className="flex flex-col gap-2 px-4 pb-3">
 				{diffs.map((d) => (
-					<DiffPart key={d.file} payload={d} inBatch={diffs.length > 1} />
+					<DiffPart key={d.file} payload={d} />
 				))}
 			</div>
 		</details>

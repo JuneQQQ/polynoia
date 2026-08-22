@@ -10,6 +10,7 @@ Called from app startup (``main.py:lifespan``). Behaviour:
 
 After this runs, the API endpoints serve directly from SQL.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -27,7 +28,6 @@ from polynoia.storage.repo import (
     upsert_workspace,
 )
 
-
 # Per-column SQLite patches for tables that pre-date a newer model. Each entry
 # is (table, column, full `ADD COLUMN` SQL). Idempotent: each column is
 # detected via PRAGMA table_info, applied only if missing. Keeps dev DBs
@@ -41,13 +41,16 @@ _DROP_COLUMNS: list[tuple[str, str]] = [
     ("workspaces", "member_tool_roles"),
 ]
 
+# Tables removed from the runtime model. Drop them once on startup so upgraded
+# SQLite databases do not retain stale, ever-growing compatibility storage.
+_DROP_TABLES: tuple[str, ...] = ("turn_events",)
+
 
 _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "conversations",
         "merge_mode",
-        "ALTER TABLE conversations ADD COLUMN merge_mode VARCHAR(16) "
-        "NOT NULL DEFAULT 'auto'",
+        "ALTER TABLE conversations ADD COLUMN merge_mode VARCHAR(16) NOT NULL DEFAULT 'auto'",
     ),
     (
         "conversations",
@@ -62,8 +65,7 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "workspaces",
         "default_merge_mode",
-        "ALTER TABLE workspaces ADD COLUMN default_merge_mode VARCHAR(16) "
-        "NOT NULL DEFAULT 'auto'",
+        "ALTER TABLE workspaces ADD COLUMN default_merge_mode VARCHAR(16) NOT NULL DEFAULT 'auto'",
     ),
     (
         "workspaces",
@@ -78,8 +80,7 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "messages",
         "pinned",
-        "ALTER TABLE messages ADD COLUMN pinned BOOLEAN "
-        "NOT NULL DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT 0",
     ),
     (
         "messages",
@@ -94,8 +95,7 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "agents",
         "tool_role",
-        "ALTER TABLE agents ADD COLUMN tool_role VARCHAR(16) "
-        "NOT NULL DEFAULT 'generalist'",
+        "ALTER TABLE agents ADD COLUMN tool_role VARCHAR(16) NOT NULL DEFAULT 'generalist'",
     ),
     (
         "agents",
@@ -105,8 +105,7 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
     (
         "merge_conflicts",
         "base_agents_json",
-        "ALTER TABLE merge_conflicts ADD COLUMN base_agents_json JSON "
-        "NOT NULL DEFAULT '[]'",
+        "ALTER TABLE merge_conflicts ADD COLUMN base_agents_json JSON NOT NULL DEFAULT '[]'",
     ),
 ]
 
@@ -147,9 +146,15 @@ async def _apply_column_drops() -> None:
             res = await conn.execute(text(f"PRAGMA table_info({table})"))
             cols = {row[1] for row in res.fetchall()}
             if column in cols:
-                await conn.execute(
-                    text(f"ALTER TABLE {table} DROP COLUMN {column}")
-                )
+                await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+
+
+async def _apply_table_drops() -> None:
+    """Remove tables that no longer belong to the Polynoia data model."""
+
+    async with engine.begin() as conn:
+        for table in _DROP_TABLES:
+            await conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 
 async def _reset_stuck_resolving() -> None:
@@ -163,6 +168,21 @@ async def _reset_stuck_resolving() -> None:
         if res.fetchall():
             await conn.execute(
                 text("UPDATE merge_conflicts SET status='open' WHERE status='resolving'")
+            )
+
+
+async def _reset_stuck_polynoia_turns() -> None:
+    """A process restart makes every previously-running turn terminal."""
+
+    async with engine.begin() as conn:
+        res = await conn.execute(text("PRAGMA table_info(polynoia_turns)"))
+        if res.fetchall():
+            await conn.execute(
+                text(
+                    "UPDATE polynoia_turns "
+                    "SET status='failed', ended_at=CURRENT_TIMESTAMP "
+                    "WHERE status='running'"
+                )
             )
 
 
@@ -202,8 +222,12 @@ async def bootstrap_db() -> None:
     await _apply_schema_patches()
     # Step 1b.1: drop columns the model has un-mapped (else NOT NULL bites INSERTs).
     await _apply_column_drops()
+    # Step 1b.2: remove obsolete compatibility tables after create_all.
+    await _apply_table_drops()
     # Step 1c: recover conflicts left "resolving" by a crash mid-conclude.
     await _reset_stuck_resolving()
+    # Step 1d: a dead process cannot still own a running Polynoia turn.
+    await _reset_stuck_polynoia_turns()
 
     async with SessionLocal() as session:
         # Step 2: short-circuit if any provider row exists

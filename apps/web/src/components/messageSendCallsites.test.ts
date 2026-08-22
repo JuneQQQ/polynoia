@@ -301,45 +301,35 @@ describe("real optimistic-send call sites", () => {
 		expect(replaced.current).toBe(socketB);
 	});
 
-	it("never sends a post-await regeneration through another conversation's socket", () => {
-		const sendRegeneration = (
+	it("never sends a post-await turn retry through another conversation's socket", () => {
+		const retryTurn = (
 			chatPaneModule as unknown as {
-				sendRegenerationOnCurrentSocket?: (
+				retryTurnOnCurrentSocket?: (
 					args: Record<string, unknown>,
 				) => boolean;
 			}
-		).sendRegenerationOnCurrentSocket;
-		expect(sendRegeneration).toBeTypeOf("function");
-		if (!sendRegeneration) return;
+		).retryTurnOnCurrentSocket;
+		expect(retryTurn).toBeTypeOf("function");
+		if (!retryTurn) return;
 
-		const sendUserMessage = vi.fn();
+		const retryTurnCall = vi.fn(() => true);
 		expect(
-			sendRegeneration({
+			retryTurn({
 				convId: "conv-a",
-				text: "retry A",
-				members: ["agent-a"],
-				getWs: () => ({ convId: "conv-b", sendUserMessage }),
-				options: { regenerate: true },
+				turnId: "turn-a",
+				getWs: () => ({ convId: "conv-b", retryTurn: retryTurnCall }),
 			}),
 		).toBe(false);
-		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(retryTurnCall).not.toHaveBeenCalled();
 
 		expect(
-			sendRegeneration({
+			retryTurn({
 				convId: "conv-a",
-				text: "retry A",
-				members: ["agent-a"],
-				getWs: () => ({ convId: "conv-a", sendUserMessage }),
-				options: { regenerate: true, regenerateMsgId: "answer-a" },
+				turnId: "turn-a",
+				getWs: () => ({ convId: "conv-a", retryTurn: retryTurnCall }),
 			}),
 		).toBe(true);
-		expect(sendUserMessage).toHaveBeenCalledWith(
-			"retry A",
-			["agent-a"],
-			undefined,
-			undefined,
-			{ regenerate: true, regenerateMsgId: "answer-a" },
-		);
+		expect(retryTurnCall).toHaveBeenCalledWith("turn-a");
 	});
 
 	it("ChatPane rejects a stale A socket for a B send and restores B's draft", () => {

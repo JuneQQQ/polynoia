@@ -119,7 +119,7 @@ class Hunk(BaseModel):
 
 
 class DiffPayload(BaseModel):
-    """Code diff card with apply/rollback."""
+    """Code diff card for an applied edit or forward proposal."""
 
     kind: Literal["diff"] = "diff"
     file: str
@@ -131,11 +131,8 @@ class DiffPayload(BaseModel):
     applied_at: datetime | None = None
     #: short sha of the commit this diff was recorded at — set when the card
     #: represents an edit an agent ALREADY made + committed (proactive card),
-    #: vs a not-yet-applied proposal. Drives the "已改 / 撤销" UI vs "应用".
+    #: vs a not-yet-applied proposal. Drives the "已改" vs "应用" UI.
     commit_sha: str | None = None
-    #: the editing agent (worker ULID) for a proactive card — folds the card
-    #: into that agent's burst lane AND targets the right worktree on 撤销.
-    agent_id: str | None = None
 
 
 class WebPayload(BaseModel):
@@ -277,6 +274,8 @@ class TerminalPayload(BaseModel):
     pgid: int | None = None
     exit_code: int | None = None
     truncated: bool = False
+    output_bytes: int = 0
+    spill_files: list[str] = Field(default_factory=list)
 
 
 class ApiParam(BaseModel):
@@ -337,6 +336,10 @@ class ToolCallPayload(BaseModel):
     # model is still generating the tool input — so a big `dispatch` shows its
     # args building inside the fold. Cleared once `input` is final.
     input_preview: str | None = None
+    # Lets the UI distinguish a Polynoia MCP call (which may have a separate
+    # terminal/diff card) from a Harness-native ACP call whose embedded output
+    # is the only execution evidence.
+    execution_surface: Literal["polynoia-mcp", "harness-native"] | None = None
 
 
 class ErrorPayload(BaseModel):

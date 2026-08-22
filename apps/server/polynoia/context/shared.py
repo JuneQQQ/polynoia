@@ -28,8 +28,6 @@ from polynoia.storage.repo import (
     get_conversation,
     list_agent_memory,
     list_conv_memory,
-    list_workspace_memory,
-    list_workspaces,
 )
 
 _KIND_LABEL = {"contract": "契约", "decision": "决策", "artifact": "产物"}
@@ -37,7 +35,7 @@ _KIND_LABEL = {"contract": "契约", "decision": "决策", "artifact": "产物"}
 _KIND_ORDER = {"contract": 0, "decision": 1, "artifact": 2}
 
 
-def is_project_conv(conv: "object | None") -> bool:
+def is_project_conv(conv: object | None) -> bool:
     """THE single definition of project-scope. True iff this conversation
     belongs to a workspace (a 'project'). A group conv with workspace_id=None
     is NOT a project conv (free-floating / homepage). Fail-closed: conv is
@@ -45,7 +43,7 @@ def is_project_conv(conv: "object | None") -> bool:
     return conv is not None and getattr(conv, "workspace_id", None) is not None
 
 
-def member_role_for(conv: "object | None", agent_id: str) -> str | None:
+def member_role_for(conv: object | None, agent_id: str) -> str | None:
     """Per-PROJECT role label for this agent, or None. Returns a role ONLY in a
     project conv — a role assigned on a non-project conv is ignored so it can
     never leak as a 'project role' outside the project (R2)."""
@@ -80,9 +78,7 @@ def _render_layered(rows) -> list[str]:
     return _render_entries(locked) + _render_entries(artifacts, headline_only=True)
 
 
-async def _build_agent_dm_layer(
-    db: AsyncSession, agent_id: str
-) -> ContextLayer | None:
+async def _build_agent_dm_layer(db: AsyncSession, agent_id: str) -> ContextLayer | None:
     """Agent-level memory for a project-external DM (ADR-019): the agent's own
     work across conversations + teammates' related work from its workspace(s)."""
     own = await list_agent_memory(db, agent_id, limit=40)
@@ -106,8 +102,6 @@ async def _build_agent_dm_layer(
     return ContextLayer.make(
         kind="shared_memory",
         content=body,
-        priority=55,
-        hard=False,
         meta={"scope": "agent-dm", "own": str(len(own))},
     )
 
@@ -153,8 +147,6 @@ async def build_shared_memory_layer(
     return ContextLayer.make(
         kind="shared_memory",
         content=body,
-        priority=55,  # above briefs/activity/history, below user_turn (90)
-        hard=False,
         meta={
             "conv_id": conv_id,
             "entries": str(len(rows)),

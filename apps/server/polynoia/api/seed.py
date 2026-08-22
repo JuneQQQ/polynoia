@@ -99,6 +99,24 @@ def seed_providers() -> list[Provider]:
             color="#3D7FD1",
             bg="#DCEAF8",
         ),
+        Provider(
+            id="qwen",
+            name="Qwen Code",
+            vendor="Alibaba",
+            version="ACP",
+            online=True,
+            color="#635BFF",
+            bg="#E9E7FF",
+        ),
+        Provider(
+            id="deepseek",
+            name="DeepSeek Harness",
+            vendor="DeepSeek",
+            version="ACP RC",
+            online=True,
+            color="#4D6BFE",
+            bg="#E3E9FF",
+        ),
     ]
 
 

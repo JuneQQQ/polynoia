@@ -1,7 +1,7 @@
-/** Platform detection — single source of truth for layout adaptation.
+/** Runtime platform detection + responsive layout helpers.
  *
  * The same Vite build is consumed by three runtimes:
- *   - Browser:                 normal desktop layout
+ *   - Browser:                 responsive layout (desktop or narrow/mobile)
  *   - Tauri (macOS desktop):   normal desktop layout, native window chrome
  *   - Capacitor (iOS/Android): mobile layout (single column, drawer sidebar)
  *
@@ -9,8 +9,14 @@
  *   1. `__POLYNOIA_PLATFORM__` injected at build time (Tauri / Capacitor build)
  *   2. Capacitor's runtime API (`window.Capacitor.isNativePlatform()`)
  *   3. Tauri's runtime tag (`window.__TAURI_INTERNALS__`)
- *   4. UA + viewport heuristic
+ *   4. Browser fallback
+ *
+ * Runtime and layout are intentionally separate: the runtime is stable for the
+ * life of the app, while a browser window can cross the narrow breakpoint at
+ * any time. Never cache viewport width as part of `detectPlatform()`.
  */
+
+import { useSyncExternalStore } from "react";
 
 export type Platform = "browser" | "desktop" | "mobile";
 
@@ -28,6 +34,7 @@ declare global {
 let _cached: Platform | undefined;
 
 const PLATFORM_LS_KEY = "polynoia-platform";
+export const MOBILE_LAYOUT_QUERY = "(max-width: 640px)";
 
 /** Read a `?platform=` URL override, persisted so it survives SPA navigation
  * that drops the query string. Lets a bare WebView force the layout via its load
@@ -83,17 +90,70 @@ export function detectPlatform(): Platform {
 		_cached = "desktop";
 		return _cached;
 	}
-	// 4. Viewport / UA heuristic
-	const isSmall = window.matchMedia("(max-width: 640px)").matches;
-	const isMobileUA = /Android|iPhone|iPad|iPod/i.test(
-		window.navigator.userAgent,
-	);
-	_cached = isSmall || isMobileUA ? "mobile" : "browser";
+	// 4. A web page remains the browser runtime at every viewport width. Layout
+	//    adaptation is handled separately by isMobileLayout/useMobileLayout.
+	_cached = "browser";
 	return _cached;
 }
 
+/** Current responsive layout without caching viewport state.
+ *
+ * Capacitor (or an explicit mobile override) is always mobile. Tauri stays a
+ * desktop app even when its native window is made very narrow. Only a regular
+ * browser follows the live media query.
+ */
+export function isMobileLayout(): boolean {
+	const platform = detectPlatform();
+	if (platform === "mobile") return true;
+	if (platform !== "browser" || typeof window === "undefined") return false;
+	if (typeof window.matchMedia === "function") {
+		return window.matchMedia(MOBILE_LAYOUT_QUERY).matches;
+	}
+	return window.innerWidth <= 640;
+}
+
+/** Subscribe to browser breakpoint changes. Both media-query and resize events
+ * are observed: old WebViews do not always deliver MediaQueryList `change`,
+ * while resize also covers test/browser implementations with partial APIs.
+ */
+export function subscribeMobileLayout(onChange: () => void): () => void {
+	if (typeof window === "undefined" || detectPlatform() !== "browser") {
+		return () => {};
+	}
+
+	const media =
+		typeof window.matchMedia === "function"
+			? window.matchMedia(MOBILE_LAYOUT_QUERY)
+			: null;
+	const usesModernMediaListener = typeof media?.addEventListener === "function";
+	if (usesModernMediaListener) media.addEventListener("change", onChange);
+	// Safari/WebView compatibility for the legacy MediaQueryList API. Register
+	// exactly one flavor so implementations exposing both cannot notify twice.
+	else media?.addListener?.(onChange);
+	window.addEventListener("resize", onChange, { passive: true });
+	window.addEventListener("orientationchange", onChange, { passive: true });
+
+	return () => {
+		if (usesModernMediaListener)
+			media?.removeEventListener?.("change", onChange);
+		else media?.removeListener?.(onChange);
+		window.removeEventListener("resize", onChange);
+		window.removeEventListener("orientationchange", onChange);
+	};
+}
+
+/** Reactive mobile-layout value for React components. */
+export function useMobileLayout(): boolean {
+	return useSyncExternalStore(
+		subscribeMobileLayout,
+		isMobileLayout,
+		() => false,
+	);
+}
+
+/** Back-compatible imperative layout check. Prefer useMobileLayout in React. */
 export function isMobile(): boolean {
-	return detectPlatform() === "mobile";
+	return isMobileLayout();
 }
 
 export function isDesktopApp(): boolean {

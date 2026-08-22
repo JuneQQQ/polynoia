@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import struct
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -52,6 +53,7 @@ log = logging.getLogger("polynoia.terminal")
 router = APIRouter()
 
 _READ_CHUNK = 65536
+_OUT_QUEUE_CHUNKS = 32  # <=2 MiB buffered per terminal; PTY pipe applies backpressure
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -91,12 +93,35 @@ def _spawn_shell(cwd: str) -> tuple[int, int]:
 
 def _reap(pid: int, master_fd: int) -> None:
     """Tear down the child shell + pty on disconnect (no zombies)."""
-    with contextlib.suppress(ProcessLookupError, OSError):
-        os.killpg(os.getpgid(pid), signal.SIGKILL)
-    with contextlib.suppress(ChildProcessError, OSError):
-        os.waitpid(pid, 0)
+    # Close the controlling PTY first.  Waiting while the master stays open can
+    # strand zsh in kernel exit on macOS (especially after forkpty from a
+    # multi-threaded test/server), making this synchronous cleanup hang forever.
     with contextlib.suppress(OSError):
         os.close(master_fd)
+    with contextlib.suppress(ProcessLookupError, OSError):
+        pgid = os.getpgid(pid)
+        # ``pty.fork`` normally makes the child a session/group leader, but
+        # there is a short race before that setup completes. Never broadcast a
+        # signal if the reported group is still the server/pytest group.
+        if pgid == pid and pgid != os.getpgrp():
+            os.killpg(pgid, signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError, OSError):
+        os.kill(pid, signal.SIGKILL)
+    # Never block the event loop/request teardown indefinitely.  Reap promptly
+    # in the normal case, with a bounded grace for kernels that report the child
+    # as still exiting after SIGKILL.
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            waited, _status = os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            return
+        if waited == pid:
+            return
+        if time.monotonic() >= deadline:
+            log.warning("terminal child did not reap within grace pid=%s", pid)
+            return
+        time.sleep(0.01)
 
 
 @router.websocket("/ws/workspaces/{ws_id}/terminal")
@@ -130,9 +155,31 @@ async def ws_terminal(websocket: WebSocket, ws_id: str):
 
     # pty output → queue → WebSocket. add_reader fires when the master fd has
     # bytes; a single pump task preserves ordering and gives natural backpressure.
-    out_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    out_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=_OUT_QUEUE_CHUNKS)
+    reader_active = False
+    closing = False
+
+    def _pause_reader() -> None:
+        nonlocal reader_active
+        if not reader_active:
+            return
+        with contextlib.suppress(ValueError, OSError):
+            loop.remove_reader(master_fd)
+        reader_active = False
+
+    def _resume_reader() -> None:
+        nonlocal reader_active
+        if closing or reader_active or out_queue.full():
+            return
+        loop.add_reader(master_fd, _on_readable)
+        reader_active = True
 
     def _on_readable() -> None:
+        # Stop reading before the in-memory queue overflows. The kernel PTY pipe
+        # then supplies natural backpressure until the WebSocket drains a slot.
+        if out_queue.full():
+            _pause_reader()
+            return
         try:
             data = os.read(master_fd, _READ_CHUNK)
         except BlockingIOError:
@@ -141,13 +188,16 @@ async def ws_terminal(websocket: WebSocket, ws_id: str):
             data = b""  # shell gone
         out_queue.put_nowait(data or None)  # None = EOF sentinel
         if not data:
-            loop.remove_reader(master_fd)
+            _pause_reader()
+        elif out_queue.full():
+            _pause_reader()
 
-    loop.add_reader(master_fd, _on_readable)
+    _resume_reader()
 
     async def pump_out() -> None:
         while True:
             data = await out_queue.get()
+            _resume_reader()
             if data is None:  # shell exited / fd closed
                 return
             await websocket.send_bytes(data)
@@ -179,10 +229,10 @@ async def ws_terminal(websocket: WebSocket, ws_id: str):
     except WebSocketDisconnect:
         pass
     finally:
+        closing = True
         for t in (out_task, in_task):
             t.cancel()
-        with contextlib.suppress(ValueError, OSError):
-            loop.remove_reader(master_fd)
+        _pause_reader()
         # _reap does a BLOCKING os.waitpid(pid, 0); running it inline on the
         # event loop froze the entire single-threaded uvloop (no new TCP accepts,
         # every endpoint 000s) when a killed PTY child was slow to reap. Offload

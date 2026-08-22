@@ -13,9 +13,7 @@ from polynoia.storage.models import MessageRow
 @pytest.fixture
 async def fresh_db(tmp_path, monkeypatch):
     db_path = tmp_path / "discussion-cards.db"
-    monkeypatch.setattr(
-        "polynoia.settings.settings.db_url", f"sqlite+aiosqlite:///{db_path}"
-    )
+    monkeypatch.setattr("polynoia.settings.settings.db_url", f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await bootstrap_db()
@@ -78,3 +76,33 @@ async def test_diff_and_terminal_cards_inherit_current_discussion(fresh_db):
     assert term_msg.payload["turn_id"] == "turn-a"
     assert diff_msg.payload["discussion_id"] == "disc-a"
     assert term_msg.payload["discussion_id"] == "disc-a"
+
+
+async def test_terminal_card_preserves_upstream_truncation_truth(fresh_db):
+    async with SessionLocal() as session:
+        conv_id = await _mk_conv(session)
+        await session.commit()
+
+    result = await routes.post_terminal_card(
+        conv_id,
+        {
+            "term_id": "term-truncated",
+            "sender_id": "agent-a",
+            "command": "python emit.py",
+            # Producer has already reduced the full 50KB stream to this 16KB tail.
+            "output": "Y" * 15990 + "TAIL_MARK",
+            "truncated": True,
+            "output_bytes": 50079,
+            "spill_files": [".polynoia/tool-results/bash-x.stdout.log"],
+            "running": False,
+            "exit_code": 0,
+            "seq": 2,
+        },
+    )
+    async with SessionLocal() as session:
+        row = await session.get(MessageRow, result["id"])
+
+    assert row is not None
+    assert row.payload["truncated"] is True
+    assert row.payload["output_bytes"] == 50079
+    assert row.payload["spill_files"] == [".polynoia/tool-results/bash-x.stdout.log"]

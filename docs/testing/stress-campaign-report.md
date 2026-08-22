@@ -1,5 +1,8 @@
 # 压力测试战役报告 — A2 真实并发竞争(2026-06-13)
 
+> 历史报告说明：文中的 `turn_events` 是当时的取证机制，已于
+> 2026-08-20 被 canonical Conversation / Workspace Streams 取代并删除。
+
 > 真实·多角度·高强度测试体系的第一份产出。承重区(冲突闭环 / `_merge_burst_to_main`
 > / `workspace_merge_lock`)第一次被**真实多 agent 并发**压,而非合成 git 状态。
 > 复现脚本:`scripts/testkit/contention.py`。取证:`.tmp/contention-r1-forensics.json`。

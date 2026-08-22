@@ -21,8 +21,10 @@ import re
 
 from fastapi import APIRouter, HTTPException
 
+from polynoia.adapters.pool import get_pool
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
+from polynoia.storage.models import MessageRow
 
 router = APIRouter()
 
@@ -322,10 +324,13 @@ async def pin_message(message_id: str):
     """Mark one message as pinned. Surfaces it in L3 ledger / future
     pinned-messages list. Idempotent."""
     async with SessionLocal() as session:
+        row = await session.get(MessageRow, message_id)
         ok = await storage_repo.set_message_pinned(session, message_id, True)
         if not ok:
             return {"error": "message not found"}, 404
         await session.commit()
+    if row is not None:
+        await get_pool().close_sessions_for_conv(row.conv_id)
     return {"ok": True, "pinned": True}
 
 
@@ -333,10 +338,13 @@ async def pin_message(message_id: str):
 async def unpin_message(message_id: str):
     """Remove pin from a message."""
     async with SessionLocal() as session:
+        row = await session.get(MessageRow, message_id)
         ok = await storage_repo.set_message_pinned(session, message_id, False)
         if not ok:
             return {"error": "message not found"}, 404
         await session.commit()
+    if row is not None:
+        await get_pool().close_sessions_for_conv(row.conv_id)
     return {"ok": True, "pinned": False}
 
 
@@ -385,7 +393,9 @@ async def set_conv_member_roles(conv_id: str, body: dict):
             )
         await session.commit()
         conv = await storage_repo.get_conversation(session, conv_id)
-        return conv.model_dump(mode="json") if conv else {"ok": True}
+        result = conv.model_dump(mode="json") if conv else {"ok": True}
+    await get_pool().close_sessions_for_conv(conv_id)
+    return result
 
 
 @router.patch("/api/conversations/{conv_id}/title")
@@ -441,7 +451,9 @@ async def set_conv_workspace(conv_id: str, body: dict):
         )
         await session.commit()
         conv = await storage_repo.get_conversation(session, conv_id)
-        return conv.model_dump(mode="json")
+        result = conv.model_dump(mode="json")
+    await get_pool().close_sessions_for_conv(conv_id)
+    return result
 
 
 @router.post("/api/conversations/{conv_id}/promote")
@@ -490,10 +502,12 @@ async def promote_conv_to_project(conv_id: str, body: dict | None = None):
         )
         await session.commit()
         conv = await storage_repo.get_conversation(session, conv_id)
-        return {
+        result = {
             "workspace": ws.model_dump(mode="json"),
             "conversation": conv.model_dump(mode="json"),
         }
+    await get_pool().close_sessions_for_conv(conv_id)
+    return result
 
 
 @router.patch("/api/conversations/{conv_id}/merge_mode")

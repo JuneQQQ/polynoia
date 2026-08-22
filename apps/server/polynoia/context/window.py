@@ -1,15 +1,4 @@
-"""Token budget enforcement — 2-pass with hard-layer protection.
-
-Strategy:
-    Pass 1 — reserve hard layers (L1 identity, L9 user turn). They are never
-             truncated. If their combined size already exceeds the global
-             budget, raise warning (we still emit; this is rare and the
-             upstream model has a chance of handling it).
-    Pass 2 — distribute the remaining budget to soft layers in priority
-             order. Higher-priority soft layers (L4 briefs, L7 history) get
-             their full requested cap first; lower-priority (L6 activity)
-             takes the residual. If a soft layer overflows its allocation,
-             truncate from oldest end keeping the section heading.
+"""Resource-safe text estimates for recovery snapshots.
 
 Estimator:
     chars // 3 was wildly wrong for CJK content (1 汉字 ≈ 1.5-2 tokens but
@@ -21,9 +10,6 @@ Estimator:
 """
 
 from __future__ import annotations
-
-from polynoia.context._types import ContextLayer, LayerBudget
-
 
 # ── Token estimation ────────────────────────────────────────────────
 
@@ -67,26 +53,6 @@ def estimate_tokens(text: str) -> int:
     return max(1, n // 3 + n // 8)  # ≈ n / 2.7, slightly more conservative than /3.5
 
 
-# ── Truncation primitives ───────────────────────────────────────────
-
-
-_TRUNC_MARKER = "[…older content truncated to fit budget…]"
-
-
-def _truncate_lines_top(text: str, target_tokens: int) -> str:
-    """Drop lines from the top (keeping the first heading line) until under budget."""
-    lines = text.split("\n")
-    if not lines:
-        return text
-    header = lines[0]
-    body = lines[1:]
-    while body and estimate_tokens(header + "\n" + "\n".join(body)) > target_tokens:
-        body.pop(0)
-    if not body:
-        return header
-    return header + "\n" + _TRUNC_MARKER + "\n" + "\n".join(body)
-
-
 def cap_message_body(text: str, max_tokens: int = 2_000) -> str:
     """Per-message body cap: single huge message can't blow out a single layer.
 
@@ -106,107 +72,6 @@ def cap_message_body(text: str, max_tokens: int = 2_000) -> str:
     tail = text[-target_chars // 2 :]
     return (
         f"{head}\n\n"
-        f"[…长内容已折叠 · 原长 ~{est} tokens · 仅保留首/尾各 ~{target_chars//2} 字符…]\n\n"
+        f"[…长内容已折叠 · 原长 ~{est} tokens · 仅保留首/尾各 ~{target_chars // 2} 字符…]\n\n"
         f"{tail}"
     )
-
-
-# ── 2-pass budget enforcement ──────────────────────────────────────
-
-
-def enforce_budgets(
-    layers: list[ContextLayer],
-    budget: LayerBudget | None = None,
-) -> list[ContextLayer]:
-    """Return layers fitted to per-kind caps with hard-layer protection.
-
-    Hard layers (L1 / L9) NEVER get truncated. If the global token budget
-    would be exceeded, soft layers are evicted in *priority-ascending* order
-    (lowest priority first → L6 activity goes before L7 history).
-    """
-    b = budget or LayerBudget()
-    caps: dict[str, int] = {
-        "identity": b.identity,
-        "project_brief": b.project_brief,
-        "shared_memory": b.shared_memory,
-        "activity": b.activity,
-        "history": b.history,
-        "user_turn": b.user_turn,
-    }
-
-    # ── Pass 1: reserve hard layers as-is (no truncation,no cap check) ────
-    hard_layers = [l for l in layers if l.hard]
-    soft_layers = [l for l in layers if not l.hard]
-    hard_total = sum(l.estimated_tokens for l in hard_layers)
-
-    global_budget = b.total
-    soft_budget = max(0, global_budget - hard_total)
-
-    # ── Pass 2: per-soft-kind cap enforcement (truncation from top) ─────
-    # Each soft layer gets its kind's cap as ceiling. We don't dynamically
-    # rebalance budgets across kinds here — keeps logic predictable.
-    enforced_soft: list[ContextLayer] = []
-    soft_running = 0
-
-    # Sort soft by priority DESC so high-priority claims budget first
-    sorted_soft = sorted(soft_layers, key=lambda l: -l.priority)
-    for lyr in sorted_soft:
-        kind_cap = caps.get(lyr.kind, lyr.estimated_tokens)
-        remaining_global = max(0, soft_budget - soft_running)
-        # Effective cap is the MIN of (kind cap, remaining global soft budget)
-        effective_cap = min(kind_cap, remaining_global)
-        if effective_cap <= 0:
-            # No room for this layer — drop entirely, leaving a stub marker
-            # so the agent knows something was elided.
-            stub = (
-                f"{lyr.content.splitlines()[0] if lyr.content else ''}\n"
-                "[此层因总预算耗尽被全部省略]"
-            )
-            enforced_soft.append(
-                ContextLayer(
-                    kind=lyr.kind,
-                    content=stub,
-                    estimated_tokens=estimate_tokens(stub),
-                    priority=lyr.priority,
-                    hard=False,
-                    meta={**lyr.meta, "elided": "true"},
-                )
-            )
-            continue
-        if lyr.estimated_tokens <= effective_cap:
-            enforced_soft.append(lyr)
-            soft_running += lyr.estimated_tokens
-            continue
-        trimmed = _truncate_lines_top(lyr.content, effective_cap)
-        new_layer = ContextLayer(
-            kind=lyr.kind,
-            content=trimmed,
-            estimated_tokens=estimate_tokens(trimmed),
-            priority=lyr.priority,
-            hard=False,
-            meta={**lyr.meta, "truncated": "true"},
-        )
-        enforced_soft.append(new_layer)
-        soft_running += new_layer.estimated_tokens
-
-    # ── Pass 3: restore original layer order for the final output ────
-    # (we sorted soft by priority above for budget allocation; output
-    # should follow caller's logical order: L1 → L4 → L6 → L7 → L9)
-    enforced_remaining = list(enforced_soft)
-    out: list[ContextLayer] = []
-    for orig in layers:
-        if orig.hard:
-            out.append(orig)
-            continue
-        # Find the enforced version that came from this original — match
-        # by (kind, priority, meta.agent_id) which is stable across kinds.
-        for e in enforced_remaining:
-            if (
-                e.kind == orig.kind
-                and e.priority == orig.priority
-                and e.meta.get("agent_id") == orig.meta.get("agent_id")
-            ):
-                out.append(e)
-                enforced_remaining.remove(e)
-                break
-    return out

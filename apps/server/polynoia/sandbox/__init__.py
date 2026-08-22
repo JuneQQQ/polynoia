@@ -1,6 +1,7 @@
 """Per-conversation sandbox module."""
 from polynoia.sandbox._core import (
     Sandbox,
+    agent_subprocess_path,
     integration_branch_for,
     register_workspace_location,
     workspace_merge_lock,
@@ -13,4 +14,5 @@ __all__ = [
     "register_workspace_location",
     "workspace_root_for",
     "integration_branch_for",
+    "agent_subprocess_path",
 ]

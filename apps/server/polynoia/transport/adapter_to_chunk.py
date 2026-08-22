@@ -18,15 +18,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from polynoia.adapters.base import (
-    AdapterEvent,
-    PartCompletedEvent,
-    PartDeltaEvent,
-    PartStartedEvent,
-    SessionStartedEvent,
-    TurnCompletedEvent,
-    TurnFailedEvent,
-)
+from polynoia.adapters.base import AdapterEvent
 from polynoia.transport.ui_message_chunk import (
     DataChunk,
     ErrorChunk,
@@ -127,20 +119,24 @@ async def adapter_events_to_chunks(
         if t == "part.started":
             part_kind = ev.part.kind
             if part_kind == "text":
-                yield encode_chunk(TextStartChunk(
-                    id=ev.part_id,
-                    sender_id=agent_id,
-                    sender_label=sender_label or agent_id,
-                    turn_id=turn_id,
-                ))
+                yield encode_chunk(
+                    TextStartChunk(
+                        id=ev.part_id,
+                        sender_id=agent_id,
+                        sender_label=sender_label or agent_id,
+                        turn_id=turn_id,
+                    )
+                )
                 open_text_parts.add(ev.part_id)
             elif part_kind == "reasoning":
-                yield encode_chunk(ReasoningStartChunk(
-                    id=ev.part_id,
-                    sender_id=agent_id,
-                    sender_label=sender_label or agent_id,
-                    turn_id=turn_id,
-                ))
+                yield encode_chunk(
+                    ReasoningStartChunk(
+                        id=ev.part_id,
+                        sender_id=agent_id,
+                        sender_label=sender_label or agent_id,
+                        turn_id=turn_id,
+                    )
+                )
                 open_reasoning_parts.add(ev.part_id)
             else:
                 yield encode_polynoia_card(
@@ -151,6 +147,53 @@ async def adapter_events_to_chunks(
                     sender_label=sender_label or agent_id,
                     turn_id=turn_id,
                 )
+            continue
+
+        if t == "permission.requested":
+            yield encode_chunk(
+                DataChunk(
+                    type="data-harness-permission",
+                    id=ev.permission_id,
+                    data={
+                        "id": ev.permission_id,
+                        "conv_id": conv_id,
+                        "agent_id": agent_id,
+                        "provider": ev.provider or agent_id,
+                        "tool_name": ev.tool_name,
+                        "tool_input": ev.tool_input,
+                        "title": ev.title,
+                        "description": ev.description,
+                        "options": ev.options,
+                        "status": "pending",
+                    },
+                    sender_id=agent_id,
+                    sender_label=sender_label or agent_id,
+                    turn_id=turn_id,
+                )
+            )
+            continue
+
+        if t == "plan.updated":
+            yield encode_chunk(
+                DataChunk(
+                    type="data-harness-plan",
+                    id=f"plan-{ev.task_id}",
+                    data={
+                        "task_id": ev.task_id,
+                        "entries": ev.entries,
+                        "operation": ev.operation,
+                        "provider": ev.provider or agent_id,
+                    },
+                    sender_id=agent_id,
+                    sender_label=sender_label or agent_id,
+                    turn_id=turn_id,
+                )
+            )
+            continue
+
+        if t in {"session.usage", "extension.event"}:
+            # Preserved in PAP for tracing/replay, but not rendered as chat
+            # noise. Usage is surfaced through agent status in a later pass.
             continue
 
         if t == "part.delta":
@@ -180,11 +223,13 @@ async def adapter_events_to_chunks(
                     yield encode_chunk(TextEndChunk(id=ev.part_id))
                     open_text_parts.discard(ev.part_id)
                 else:
-                    yield encode_chunk(TextStartChunk(
-                        id=ev.part_id,
-                        sender_id=agent_id,
-                        sender_label=sender_label or agent_id,
-                    ))
+                    yield encode_chunk(
+                        TextStartChunk(
+                            id=ev.part_id,
+                            sender_id=agent_id,
+                            sender_label=sender_label or agent_id,
+                        )
+                    )
                     final_text = _part_body_text(ev.part)
                     if final_text:
                         yield encode_chunk(TextDeltaChunk(id=ev.part_id, delta=final_text))
@@ -196,11 +241,13 @@ async def adapter_events_to_chunks(
                     yield encode_chunk(ReasoningEndChunk(id=ev.part_id))
                     open_reasoning_parts.discard(ev.part_id)
                 else:
-                    yield encode_chunk(ReasoningStartChunk(
-                        id=ev.part_id,
-                        sender_id=agent_id,
-                        sender_label=sender_label or agent_id,
-                    ))
+                    yield encode_chunk(
+                        ReasoningStartChunk(
+                            id=ev.part_id,
+                            sender_id=agent_id,
+                            sender_label=sender_label or agent_id,
+                        )
+                    )
                     final_text = _part_body_text(ev.part)
                     if final_text:
                         yield encode_chunk(ReasoningDeltaChunk(id=ev.part_id, delta=final_text))
@@ -231,11 +278,15 @@ async def adapter_events_to_chunks(
 
         if t == "turn.failed":
             err = ev.error.get("message") or ev.error.get("subtype") or "turn failed"
-            yield encode_chunk(ErrorChunk(error_text=str(err)))
+            yield encode_chunk(
+                ErrorChunk(
+                    error_text=str(err),
+                    retryable=bool(ev.error.get("retryable", True)),
+                )
+            )
             yield encode_chunk(FinishChunk())
             if is_final:
                 yield encode_done()
             return
 
-        # rate_limit / permission.requested / hook.triggered: P0 silently ignored
-        # (P1+:rate_limit → custom chunk;permission → tool-approval-request)
+        # rate_limit / hook.triggered are not rendered yet.

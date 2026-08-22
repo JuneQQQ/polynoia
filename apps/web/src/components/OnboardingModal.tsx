@@ -125,11 +125,16 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 
 	/** Persist an adapter's network egress + reflect it locally. */
 	const saveProxy = async (id: string, cfg: ProxyCfg) => {
-		setProxyById((cur) => ({ ...cur, [id]: cfg }));
-		await api.setAdapterProxy(id, {
-			proxy_kind: cfg.proxy_kind,
-			proxy: cfg.proxy,
-		});
+		try {
+			await api.setAdapterProxy(id, {
+				proxy_kind: cfg.proxy_kind,
+				proxy: cfg.proxy,
+			});
+			setProxyById((cur) => ({ ...cur, [id]: cfg }));
+		} catch (cause) {
+			setErr(cause instanceof Error ? cause.message : String(cause));
+			throw cause;
+		}
 	};
 
 	const enable = async (id: string) => {
@@ -276,7 +281,7 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 					)}
 
 					{probes?.map((p) => {
-						const ready = p.installed && p.authenticated;
+						const ready = p.ready ?? (p.installed && p.authenticated);
 						const isEnabled = p.enabled;
 						const isBusy = busy === p.id;
 						return (
@@ -350,8 +355,10 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 										}
 									/>
 									<StatusRow
-										label={t("loggedIn", lang)}
-										ok={p.authenticated}
+										label={
+											p.contact_endpoint ? "凭证方式" : t("loggedIn", lang)
+										}
+										ok={p.authenticated || !!p.contact_endpoint}
 										value={
 											p.authenticated && p.auth_path ? (
 												<span className="inline-flex items-center gap-1">
@@ -361,6 +368,10 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 													/>
 													<span className="font-mono">{p.auth_path}</span>
 												</span>
+											) : p.credential_source === "server-endpoint" ? (
+												"服务器环境或全局设置已配置"
+											) : p.contact_endpoint ? (
+												"下一步创建联系人时填写 API Key 和 endpoint"
 											) : (
 												t("noCredentialsDetected", lang)
 											)
@@ -369,17 +380,28 @@ export function OnboardingModal({ onClose, onAgentsChanged }: Props) {
 									{!p.installed && (
 										<Hint title="安装命令" cmd={p.install_hint} docs={p.docs} />
 									)}
-									{p.installed && !p.authenticated && (
+									{p.installed && !p.authenticated && !p.contact_endpoint && (
 										<Hint title="登录命令" cmd={p.login_cmd} docs={p.docs} />
 									)}
 									{/* Proxy is per-adapter and configurable for every provider
 									    (not only enabled ones) — each CLI may need its own egress. */}
-									<ProxyControl
-										cfg={
-											proxyById[p.id] ?? { proxy: null, proxy_kind: "system" }
-										}
-										onSave={(cfg) => saveProxy(p.id, cfg)}
-									/>
+									{p.enabled && p.id !== "deepseek" && (
+										<ProxyControl
+											cfg={
+												proxyById[p.id] ?? {
+													proxy: null,
+													proxy_kind: "system",
+												}
+											}
+											onSave={(cfg) => saveProxy(p.id, cfg)}
+										/>
+									)}
+									{p.id === "deepseek" && (
+										<div className="text-[10.5px] text-amber-600">
+											官方 RC 暂不读取代理设置；请确保 endpoint
+											可由后端主机直连。
+										</div>
+									)}
 								</div>
 							</div>
 						);

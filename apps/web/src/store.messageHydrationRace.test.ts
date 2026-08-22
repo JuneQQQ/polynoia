@@ -332,7 +332,7 @@ describe("causal REST message hydration", () => {
 		expect(s().convs.get("c")?.messageOrder).toEqual(["one"]);
 	});
 
-	it("lets direct regenerate/resend mutations invalidate an older snapshot", () => {
+	it("lets direct retry/resend mutations invalidate an older snapshot", () => {
 		s().hydrateMessages("c", [dbMessage("one"), dbMessage("two")], {
 			mode: "replace",
 			hasMore: false,

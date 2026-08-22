@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 
-from polynoia.api.routes import rewind_conversation
+from polynoia.api.routes import rewind_conversation, rewind_preview
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import Base, SessionLocal, engine
@@ -53,6 +54,45 @@ async def test_rewind_synthetic_dm_without_conversation_row(fresh_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rewind_preview_is_scoped_to_user_message(fresh_db) -> None:
+    conv_id = "preview-user-anchor"
+    async with SessionLocal() as db:
+        message_id = await storage_repo.append_message(
+            db,
+            conv_id=conv_id,
+            sender_id="you",
+            payload={"kind": "text", "body": [{"t": "p", "c": "anchor"}]},
+        )
+        await db.commit()
+
+    preview = await rewind_preview(conv_id, message_id)
+    assert preview["ok"] is True
+    assert preview["code_restore"] is False
+    assert preview["commits"] == 0
+
+
+@pytest.mark.asyncio
+async def test_rewind_rejects_agent_message_boundary(fresh_db) -> None:
+    conv_id = "agent-boundary-rejected"
+    async with SessionLocal() as db:
+        agent_message = await storage_repo.append_message(
+            db,
+            conv_id=conv_id,
+            sender_id="agent-a",
+            payload={"kind": "text", "body": [{"t": "p", "c": "answer"}]},
+        )
+        await db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await rewind_conversation(conv_id, {"from_msg_id": agent_message})
+    assert exc.value.status_code == 400
+    assert "user/message" in str(exc.value.detail)
+    with pytest.raises(HTTPException) as preview_exc:
+        await rewind_preview(conv_id, agent_message)
+    assert preview_exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_rewind_trims_conv_memory_recorded_during_rewound_turns(fresh_db) -> None:
     """Rewind must drop the curated shared-memory (ADR-014) recorded at/after the
     rewind point — else the agent still "remembers" decisions/artifacts from the
@@ -61,20 +101,30 @@ async def test_rewind_trims_conv_memory_recorded_during_rewound_turns(fresh_db) 
     conv_id = "mem-rewind"
     async with SessionLocal() as db:
         m_before = await storage_repo.add_conv_memory(
-            db, conv_id=conv_id, author_agent_id="agent-a",
-            kind="decision", content="early decision (must survive)",
+            db,
+            conv_id=conv_id,
+            author_agent_id="agent-a",
+            kind="decision",
+            content="early decision (must survive)",
         )
         first = await storage_repo.append_message(
-            db, conv_id=conv_id, sender_id="you",
+            db,
+            conv_id=conv_id,
+            sender_id="you",
             payload={"kind": "text", "body": [{"t": "p", "c": "redo from here"}]},
         )
         await storage_repo.append_message(
-            db, conv_id=conv_id, sender_id="agent-a",
+            db,
+            conv_id=conv_id,
+            sender_id="agent-a",
             payload={"kind": "text", "body": [{"t": "p", "c": "answer"}]},
         )
         m_after = await storage_repo.add_conv_memory(
-            db, conv_id=conv_id, author_agent_id="agent-a",
-            kind="artifact", content="made foo.html (must be trimmed)",
+            db,
+            conv_id=conv_id,
+            author_agent_id="agent-a",
+            kind="artifact",
+            content="made foo.html (must be trimmed)",
         )
         await db.commit()
         # Pin deterministic created_at so the boundary is unambiguous:

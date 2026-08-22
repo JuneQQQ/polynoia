@@ -19,7 +19,16 @@ def _normalize_tool_role(raw: str | None) -> str:
 
 
 def _agent_from_row(r: AgentRow) -> Agent:
-    setup = AgentSetup(**r.setup) if r.setup else None
+    if r.setup:
+        setup_data = dict(r.setup)
+        api_key = setup_data.pop("api_key", None)
+        setup = AgentSetup(
+            **setup_data,
+            api_key=api_key,
+            has_api_key=bool(api_key),
+        )
+    else:
+        setup = None
     return Agent(
         id=r.id,
         name=r.name,
@@ -48,7 +57,9 @@ def _setup_for_storage(setup: AgentSetup | None) -> dict | None:
     """Serialize setup without turning its write-only API key into API output."""
     if setup is None:
         return None
-    value = setup.model_dump()
+    value = setup.model_dump(exclude={"has_api_key"})
+    if not setup.use_host_credentials_unverified:
+        value.pop("use_host_credentials_unverified", None)
     # ``api_key`` is excluded from normal Pydantic serialization to prevent
     # accidental response leaks, so add it only on the DB write path.
     if setup.api_key is not None:

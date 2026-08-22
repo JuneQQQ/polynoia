@@ -58,9 +58,16 @@ def test_live_resume_replays_status_retry_notice_and_stream() -> None:
     routes._live_note_retry_notice(
         cid, agent, f"retry-{cid}-{agent}-d0", "⏳ 无响应,自动重试中(1/5)"
     )
-    routes._live_set_message_id(cid, agent, "msg-live")
+    routes._live_set_message_id(cid, agent, "msg-live", "turn-live")
     routes._live_note_chunk(cid, agent, 'data: {"type":"text-start","id":"p1"}\n\n')
     routes._live_note_chunk(cid, agent, 'data: {"type":"text-delta","id":"p1","delta":"hello"}\n\n')
+    routes._live_note_chunk(
+        cid,
+        agent,
+        'data: {"type":"data-harness-permission","id":"perm-1",'
+        '"data":{"id":"perm-1","conv_id":"conv-live",'
+        '"agent_id":"agentX","status":"pending","options":[]}}\n\n',
+    )
 
     frames = routes._live_resume_frames(cid)
     assert any('"type": "data-agent-status"' in f for f in frames)
@@ -70,7 +77,10 @@ def test_live_resume_replays_status_retry_notice_and_stream() -> None:
     assert "自动重试中(1/5)" in retry
     resume = next(f for f in frames if '"type": "data-stream-resume"' in f)
     assert "msg-live" in resume
+    assert "turn-live" in resume
     assert "hello" in resume
+    permission = next(f for f in frames if '"type": "data-harness-permission"' in f)
+    assert "perm-1" in permission
 
     routes._live_clear_retry_notice(cid, agent)
     frames = routes._live_resume_frames(cid)
@@ -122,6 +132,7 @@ async def test_error_persists_and_emits_with_matching_id(fresh_db) -> None:
         message="401 unauthorized",
         reason="turn_failed",
         retryable=True,
+        turn_id="turn-error-1",
     )
 
     # 1) a data-error frame went out live
@@ -137,11 +148,13 @@ async def test_error_persists_and_emits_with_matching_id(fresh_db) -> None:
     assert errs[0]["payload"]["reason"] == "turn_failed"
     assert errs[0]["payload"]["retryable"] is True
     assert errs[0]["sender_id"] == "agentX"
+    assert errs[0]["turn_id"] == "turn-error-1"
 
     # 3) live frame id == persisted message id → dedup on reconnect-then-hydrate
     body = json.loads(live[0][len("data: ") :].strip())
     assert body["id"] == errs[0]["id"]
     assert body["data"]["agent_id"] == "agentX"
+    assert body["turn_id"] == "turn-error-1"
 
 
 @pytest.mark.asyncio

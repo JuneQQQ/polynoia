@@ -158,7 +158,11 @@ export function extractWriteFields(payload: ToolCallPayload): {
 	// Codex app-server delivers parsed MCP arguments atomically; if we prefer
 	// `input.content` while still running, a large write pops in as one block.
 	// During running state, preview is the display contract for progressive write UI.
-	if (!(payload.state === "running" && raw) && inp && typeof inp.content === "string") {
+	if (
+		!(payload.state === "running" && raw) &&
+		inp &&
+		typeof inp.content === "string"
+	) {
 		return {
 			path: typeof inp.path === "string" ? inp.path : "",
 			content: inp.content,
@@ -219,7 +223,8 @@ function WriteStreamCard({ payload }: { payload: ToolCallPayload }) {
 
 	useEffect(() => {
 		const el = bodyRef.current;
-		if (el && open && visibleContent.length >= 0) el.scrollTop = el.scrollHeight;
+		if (el && open && visibleContent.length >= 0)
+			el.scrollTop = el.scrollHeight;
 	}, [visibleContent, open]);
 	// Same chrome as the read / terminal cards: chevron + icon + name + summary +
 	// status pill. Expanded while the model streams the file content; once the
@@ -304,6 +309,7 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 	const isWriteFamily =
 		lname === "write" || lname === "filewrite" || lname === "apply_patch";
 	const isBashFamily = lname === "bash" || lname === "shell";
+	const isHarnessNative = payload.execution_surface === "harness-native";
 	const hasInput = payload.input && Object.keys(payload.input).length > 0;
 	const prevStreaming = useRef(streamingArgs);
 	useEffect(() => {
@@ -342,13 +348,16 @@ export function ToolCallPart({ payload }: { payload: ToolCallPayload }) {
 
 	// `bash` has a live `terminal` card → hide the raw tool-call card (except on
 	// error, so failures stay visible).
-	if (isBashFamily && !isError) return null;
+	if (isBashFamily && !isError && !isHarnessNative) return null;
 	// `write` family: stream the code into the file live while the model is still
 	// generating the content, then hand off to the canonical `diff` card once the
 	// write completes. (Keep the tool-call card on error.)
 	if (isWriteFamily && !isError) {
-		if (payload.state === "completed") return null;
-		return <WriteStreamCard payload={payload} />;
+		if (payload.state === "completed") {
+			if (!isHarnessNative) return null;
+		} else {
+			return <WriteStreamCard payload={payload} />;
+		}
 	}
 
 	return (

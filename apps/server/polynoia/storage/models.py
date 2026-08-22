@@ -12,6 +12,7 @@ SQL-specific concerns:
 Naming convention: ``XxxRow`` (e.g. ``AgentRow``) to keep them distinct from
 the Pydantic ``Xxx`` business models — converters live in ``polynoia.storage.repo``.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -84,7 +85,9 @@ class AgentRow(Base):
     # the adapter resolves the effective role from conversation structure.
     # Values: orchestrator | group_member | generalist.
     tool_role: Mapped[str] = mapped_column(
-        String(16), default="generalist", nullable=False,
+        String(16),
+        default="generalist",
+        nullable=False,
     )
     # NOTE: network proxy is NOT a per-contact knob. Egress (HTTP_PROXY) follows
     # the adapter's LLM endpoint, which is host/adapter-level (~/.claude/settings
@@ -134,9 +137,7 @@ class WorkspaceRow(Base):
     # Default merge mode inherited by new convs in this workspace.
     # "auto"   → orchestrator runs git_merge after sub-tasks finish
     # "manual" → every edit_file is gated by user approval (per-edit)
-    default_merge_mode: Mapped[str] = mapped_column(
-        String(16), default="auto", nullable=False
-    )
+    default_merge_mode: Mapped[str] = mapped_column(String(16), default="auto", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
 
     conversations: Mapped[list["ConversationRow"]] = relationship(
@@ -207,9 +208,7 @@ class PinRow(Base):
     ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
 
-    conversation: Mapped[ConversationRow] = relationship(
-        "ConversationRow", back_populates="pins"
-    )
+    conversation: Mapped[ConversationRow] = relationship("ConversationRow", back_populates="pins")
 
 
 # ── Message ──────────────────────────────────────────────────────────
@@ -238,9 +237,7 @@ class MessageRow(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Reply-to threading: message id being replied to (no FK to keep
     # cascade-delete on the conv simple). Frontend renders a "回复 @X" header.
-    in_reply_to: Mapped[str | None] = mapped_column(
-        String(MESSAGE_ID_MAX_LENGTH), nullable=True
-    )
+    in_reply_to: Mapped[str | None] = mapped_column(String(MESSAGE_ID_MAX_LENGTH), nullable=True)
     # Code checkpoint: the workspace main HEAD sha at the moment this message was
     # created (only stamped for workspace convs). Lets「回到这个对话」restore the
     # code to the state at this point (Cursor-checkpoint style). Null = DM / no
@@ -289,17 +286,77 @@ class ProcessRunRow(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class TurnEventRow(Base):
-    """Append-only log of every streamed chunk (the missing half of event
-    sourcing): chunks were previously folded into mutable Message payloads and
-    lost. One row per chunk (consecutive text/reasoning deltas coalesced by the
-    flusher), ordered by a per-conversation ``seq``. Written as a side-effect
-    of the emit() choke point (api/event_log.py) — forensics, replay, and the
-    agent quality profile all read from here."""
+# ── Canonical domain streams ────────────────────────────────────────
 
-    __tablename__ = "turn_events"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+class PolynoiaTurnRow(Base):
+    """One retryable Polynoia agent turn.
+
+    Retries reference this row, never an arbitrary message/tool-card id.
+    """
+
+    __tablename__ = "polynoia_turns"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_turn_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    retry_of_turn_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="running", nullable=False, index=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    start_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    end_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class HarnessSessionRow(Base):
+    """Durable binding between one Polynoia agent lane and provider session."""
+
+    __tablename__ = "harness_sessions"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    conv_id: Mapped[str] = mapped_column(
+        String(26),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    adapter_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    acp_session_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="idle", nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivered_through_seq: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_utcnow,
+        onupdate=_utcnow,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ux_harness_sessions_conv_agent", "conv_id", "agent_id", unique=True),
+    )
+
+
+class ConversationEventRow(Base):
+    """Canonical, append-only Conversation Stream domain event."""
+
+    __tablename__ = "conversation_events"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
     conv_id: Mapped[str] = mapped_column(
         String(26),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -307,13 +364,36 @@ class TurnEventRow(Base):
         index=True,
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    etype: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     turn_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
-    sender_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    data: Mapped[str] = mapped_column(Text, nullable=False)  # raw chunk JSON
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    message_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
 
-    __table_args__ = (Index("ix_turn_events_conv_seq", "conv_id", "seq"),)
+    __table_args__ = (Index("ux_conversation_events_conv_seq", "conv_id", "seq", unique=True),)
+
+
+class WorkspaceEventRow(Base):
+    """Canonical, append-only Workspace Stream domain event."""
+
+    __tablename__ = "workspace_events"
+
+    id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(26), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    conv_id: Mapped[str | None] = mapped_column(String(26), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    message_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    commit_sha: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (Index("ux_workspace_events_ws_seq", "workspace_id", "seq", unique=True),)
 
 
 class BenchmarkRunRow(Base):
@@ -359,9 +439,7 @@ class ConvMemoryRow(Base):
     )
     # Who recorded it ("you" / an agent ULID). Indexed: shared.py's agent-level
     # memory read (list_agent_memory) filters by this across all convs.
-    author_agent_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    author_agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # contract | decision | artifact — drives rendering/grouping in the layer.
     kind: Mapped[str] = mapped_column(String(32), nullable=False, default="decision")
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -382,17 +460,13 @@ class OnboardedAdapterRow(Base):
     __tablename__ = "onboarded_adapters"
 
     adapter_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    enabled_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, nullable=False
-    )
+    enabled_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     # Network egress for this adapter's spawned CLI subprocesses. Shared by all
     # contacts backed by this adapter (they hit the same endpoint).
     # proxy_kind: "system" (inherit host HTTP_PROXY), "direct" (strip all proxy
     # env), "custom" (use `proxy` as HTTP_PROXY/HTTPS_PROXY). See adapters/base.py.
     proxy: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    proxy_kind: Mapped[str] = mapped_column(
-        String(16), default="system", nullable=False
-    )
+    proxy_kind: Mapped[str] = mapped_column(String(16), default="system", nullable=False)
 
 
 # ── PendingEdit ──────────────────────────────────────────────────────
@@ -406,7 +480,8 @@ class PendingEditRow(Base):
     conv_id: Mapped[str] = mapped_column(
         String(26),
         ForeignKey("conversations.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=False,
+        index=True,
     )
     agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # "edit" / "write" / "apply_patch" — matches MCP tool name
@@ -420,11 +495,12 @@ class PendingEditRow(Base):
     # decided (e.g. idle-watchdog killed the turn). Distinct from "rejected"
     # so audit can tell a user 'no' apart from a turn that vanished mid-flight.
     status: Mapped[str] = mapped_column(
-        String(16), default="pending", nullable=False, index=True,
+        String(16),
+        default="pending",
+        nullable=False,
+        index=True,
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -446,11 +522,12 @@ class PendingAccessRow(Base):
     workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # "pending" / "accepted" / "rejected" / "timeout"
     status: Mapped[str] = mapped_column(
-        String(16), default="pending", nullable=False, index=True,
+        String(16),
+        default="pending",
+        nullable=False,
+        index=True,
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -462,7 +539,8 @@ class ConflictRow(Base):
     conv_id: Mapped[str] = mapped_column(
         String(26),
         ForeignKey("conversations.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=False,
+        index=True,
     )
     workspace_id: Mapped[str] = mapped_column(String(26), nullable=False, index=True)
     # The agent branch that failed to merge: agent/{agent_id}/conv-{conv_id}
@@ -471,21 +549,18 @@ class ConflictRow(Base):
     into: Mapped[str] = mapped_column(String(16), default="main", nullable=False)
     # open | resolving | resolved | abandoned
     status: Mapped[str] = mapped_column(
-        String(16), default="open", nullable=False, index=True,
+        String(16),
+        default="open",
+        nullable=False,
+        index=True,
     )
     # Full ConflictFile dicts (per-file ctype + markers + :1:/:2:/:3: blobs).
-    files_json: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSON, default=list, nullable=False
-    )
+    files_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     # agent_id(s) whose changes are ALREADY in main on the conflicting side.
-    base_agents_json: Mapped[list[str]] = mapped_column(
-        JSON, default=list, nullable=False
-    )
+    base_agents_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     resolved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resolved_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     # Stable conflict-card message id → re-emitted with same id to flip state.
     card_msg_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=_utcnow, nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

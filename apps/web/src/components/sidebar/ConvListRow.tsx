@@ -191,6 +191,10 @@ export function ConvListRow({
 							<span className="min-w-0 truncate" style={{ color: ws.color }}>
 								{ws.name}
 							</span>
+						) : showWorkspaceLabel && !ws ? (
+							<span className="min-w-0 truncate">
+								{t("directMessages", lang)}
+							</span>
 						) : null}
 						{showWorkspaceLabel && ws && (
 							<span

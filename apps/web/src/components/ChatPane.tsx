@@ -34,6 +34,7 @@ import {
 import { AskFormsPanel, askResumeMessageId } from "./AskFormsPanel";
 import { Composer } from "./Composer";
 import { FloatingProjectAccessBar } from "./FloatingProjectAccessBar";
+import { HarnessPermissionBar } from "./HarnessPermissionBar";
 import { MessageView, isRenderableMessagePayload } from "./MessageView";
 import { ChatMessagesSkeleton } from "./Skeleton";
 import { sendOptimisticUserMessage } from "./optimisticMessageDelivery";
@@ -52,7 +53,7 @@ type Props = {
 
 type CurrentConversationSocket = Pick<
 	ConvWebSocket,
-	"convId" | "sendUserMessage"
+	"convId" | "sendUserMessage" | "retryTurn"
 >;
 
 export type ChatSendAttempt = {
@@ -175,31 +176,22 @@ export function clearChatPaneSocketIfCurrent<T>(
 	if (ref.current === closing) ref.current = null;
 }
 
-/** Regenerate sends happen after one or more awaited API calls. Resolve and
- * validate the socket at that final call point so conversation A can never be
- * dispatched through a newly-mounted conversation B socket. */
-export function sendRegenerationOnCurrentSocket({
+/** Turn retries happen after one or more awaited UI steps. Resolve and validate
+ * the socket at the final call point so conversation A can never be dispatched
+ * through a newly-mounted conversation B socket. */
+export function retryTurnOnCurrentSocket({
 	convId,
-	text,
-	members,
+	turnId,
 	getWs,
-	options,
 }: {
 	convId: string;
-	text: string;
-	members: string[];
+	turnId: string;
 	getWs: () => CurrentConversationSocket | null;
-	options: {
-		regenerate?: boolean;
-		regenerateMsgId?: string;
-		regenerateSenderId?: string;
-	};
 }): boolean {
 	const currentWs = getWs();
 	if (!currentWs || currentWs.convId !== convId) return false;
 	try {
-		currentWs.sendUserMessage(text, members, undefined, undefined, options);
-		return true;
+		return currentWs.retryTurn(turnId);
 	} catch {
 		return false;
 	}
@@ -438,6 +430,9 @@ export function ChatPane({ convId, members, title }: Props) {
 	const agentStatuses = useStore(
 		useShallow((s) => selectAgentStatuses(s, convId)),
 	);
+	const harnessPermissions = useStore(
+		useShallow((s) => s.harnessPermissionsByConv.get(convId) ?? []),
+	);
 	const hasMoreOlder = useStore(
 		(s) => s.convs.get(convId)?.hasMoreOlder ?? true,
 	);
@@ -460,9 +455,10 @@ export function ChatPane({ convId, members, title }: Props) {
 	const [convSummary, setConvSummary] = useState<ConversationSummary | null>(
 		null,
 	);
-	const [regeneratingTurnId, setRegeneratingTurnId] = useState<string | null>(
-		null,
-	);
+	const [historyLoadError, setHistoryLoadError] = useState(false);
+	const [historyRetrySeed, setHistoryRetrySeed] = useState(0);
+	const [hasNewProgress, setHasNewProgress] = useState(false);
+	const [retryingTurnId, setRetryingTurnId] = useState<string | null>(null);
 	const refreshConversationSnapshot = useCallback(async () => {
 		const [convRes] = await Promise.allSettled([
 			api.getConv(convId),
@@ -630,6 +626,41 @@ export function ChatPane({ convId, members, title }: Props) {
 								st.openPreview("code");
 							}
 						}
+					} else if (chunk.type === "data-harness-permission") {
+						const permission = (chunk as any).data;
+						if (permission?.id && permission?.conv_id && permission?.agent_id) {
+							useStore.getState().upsertHarnessPermission(permission);
+						}
+					} else if (chunk.type === "data-harness-permission-resolved") {
+						const resolved = chunk.data;
+						const permissionId = resolved?.permission_id;
+						if (typeof permissionId === "string") {
+							useStore.getState().removeHarnessPermission(convId, permissionId);
+						}
+					} else if (chunk.type === "data-harness-plan") {
+						// Plan events are useful status, not durable chat prose. The
+						// dedicated plan surface is added after the permission UX.
+					} else if (chunk.type === "data-agent-status") {
+						const anyChunk = chunk as any;
+						const status = anyChunk.data?.status;
+						const agentId = anyChunk.data?.agent_id ?? anyChunk.sender_id;
+						applyChunkToConv(convId, {
+							kind: "card",
+							cardKind: "agent-status",
+							payload: { kind: "agent-status", ...anyChunk.data },
+							messageId: anyChunk.id ?? `agent-status-${agentId}`,
+							senderId: agentId ?? null,
+						});
+						if (["idle", "aborted", "error"].includes(status) && agentId) {
+							const state = useStore.getState();
+							for (const request of state.harnessPermissionsByConv.get(
+								convId,
+							) ?? []) {
+								if (request.agent_id === agentId) {
+									state.removeHarnessPermission(convId, request.id);
+								}
+							}
+						}
 					} else if (chunk.type === "data-pending-access") {
 						// ADR-020: agent requested project access. Route to the approval
 						// card (project picker + 批准/拒绝); not a regular message bubble.
@@ -690,13 +721,18 @@ export function ChatPane({ convId, members, title }: Props) {
 							const conflictsByConv = new Map(s.conflictsByConv);
 							const pendingEditsByConv = new Map(s.pendingEditsByConv);
 							const pendingAccessByConv = new Map(s.pendingAccessByConv);
+							const harnessPermissionsByConv = new Map(
+								s.harnessPermissionsByConv,
+							);
 							conflictsByConv.delete(convId);
 							pendingEditsByConv.delete(convId);
 							pendingAccessByConv.delete(convId);
+							harnessPermissionsByConv.delete(convId);
 							return {
 								conflictsByConv,
 								pendingEditsByConv,
 								pendingAccessByConv,
+								harnessPermissionsByConv,
 							};
 						});
 					} else if (chunk.type === "data-conv-updated") {
@@ -716,6 +752,9 @@ export function ChatPane({ convId, members, title }: Props) {
 							applyChunkToConv(convId, {
 								kind: "stream-resume",
 								senderId: d.agent_id,
+								messageId:
+									typeof d.message_id === "string" ? d.message_id : null,
+								turnId: typeof d.turn_id === "string" ? d.turn_id : null,
 								parts: d.parts,
 							});
 						}
@@ -809,7 +848,14 @@ export function ChatPane({ convId, members, title }: Props) {
 		// via data-stream-resume on the fresh socket.
 		let mounted = true;
 		let backoff = 800;
+		let disconnectedSince: number | null = null;
 		let timer: ReturnType<typeof setTimeout> | null = null;
+		const reconcileDurableSnapshot = () => {
+			void refreshConversationSnapshot();
+			window.setTimeout(() => {
+				if (mounted) void refreshConversationSnapshot();
+			}, 1000);
+		};
 		const schedule = () => {
 			if (!mounted || timer) return;
 			timer = setTimeout(async () => {
@@ -818,11 +864,19 @@ export function ChatPane({ convId, members, title }: Props) {
 				const reconnectAt = Date.now();
 				await ws.reconnect();
 				if (mounted && ws.isDisconnected()) {
+					if (
+						disconnectedSince !== null &&
+						Date.now() - disconnectedSince >= 15_000
+					) {
+						useStore.getState().setConnectionStatus("offline");
+					}
 					backoff = Math.min(backoff * 2, 15000);
 					schedule();
 				} else {
 					backoff = 800;
+					disconnectedSince = null;
 					useStore.getState().setConnectionStatus("online");
+					reconcileDurableSnapshot();
 					// Reconnected. Give stream-resume + the agent-status snapshot
 					// (queryAgentStatus fires inside reconnect()) a moment to land,
 					// then retire any write/edit card still stuck on「准备写入…」whose
@@ -841,13 +895,17 @@ export function ChatPane({ convId, members, title }: Props) {
 		};
 		ws.onClose(() => {
 			if (mounted) {
+				disconnectedSince ??= Date.now();
 				useStore.getState().setConnectionStatus("reconnecting");
 				schedule();
 			}
 		});
 		ws.connect()
 			.then(() => {
-				if (mounted) useStore.getState().setConnectionStatus("online");
+				if (mounted) {
+					useStore.getState().setConnectionStatus("online");
+					reconcileDurableSnapshot();
+				}
 			})
 			.catch((e) => {
 				// Filter out the React 18 Strict-Mode double-mount false alarm:
@@ -891,6 +949,7 @@ export function ChatPane({ convId, members, title }: Props) {
 	// sentinel below.
 	useEffect(() => {
 		let cancelled = false;
+		setHistoryLoadError(false);
 		setLoadingOlder(convId, true);
 		hydrateLatestMessagesFromRequest(convId, () =>
 			api.convMessages(convId, { limit: 50 }),
@@ -899,7 +958,10 @@ export function ChatPane({ convId, members, title }: Props) {
 				if (cancelled) return;
 			})
 			.catch(() => {
-				if (!cancelled) setLoadingOlder(convId, false);
+				if (!cancelled) {
+					setLoadingOlder(convId, false);
+					setHistoryLoadError(true);
+				}
 			});
 		// Hydrate open merge conflicts so they survive a refresh.
 		api
@@ -911,7 +973,7 @@ export function ChatPane({ convId, members, title }: Props) {
 		return () => {
 			cancelled = true;
 		};
-	}, [convId, hydrateMessages, setLoadingOlder]);
+	}, [convId, hydrateMessages, setLoadingOlder, historyRetrySeed]);
 
 	// ─── Scroll-up lazy-load older messages ─────────────────────────
 	// When user scrolls within 200px of the top AND we have older messages
@@ -1016,6 +1078,7 @@ export function ChatPane({ convId, members, title }: Props) {
 		const onScroll = () => {
 			const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 			wasAtBottomRef.current = distFromBottom < 80;
+			if (wasAtBottomRef.current) setHasNewProgress(false);
 		};
 		el.addEventListener("scroll", onScroll, { passive: true });
 		return () => el.removeEventListener("scroll", onScroll);
@@ -1032,6 +1095,9 @@ export function ChatPane({ convId, members, title }: Props) {
 			const el = bodyRef.current;
 			if (el && wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
 		});
+	}, [messages.length, streamTick]);
+	useEffect(() => {
+		if (!wasAtBottomRef.current) setHasNewProgress(true);
 	}, [messages.length, streamTick]);
 	// Catch-all stick-to-bottom: the streamTick rAF above pins at delta time, but
 	// content that grows AFTER that frame — burst lanes, the discussion round-table,
@@ -1079,26 +1145,23 @@ export function ChatPane({ convId, members, title }: Props) {
 		};
 	}, [messages.length]);
 
-	// Listen for "regenerate" events fired by MessageView's action button.
-	// The event carries (convId, msgId, senderId, text). Regenerate reuses the
-	// prior user prompt without adding another user bubble, and asks the server
-	// to stream the replacement into the clicked agent message id.
+	// Listen for turn-retry events fired by MessageView's action button. The
+	// clicked message is resolved to its exact persisted Polynoia turn; the
+	// backend reuses that turn's stored input without changing chat or Git.
 	// Using a window event avoids threading wsRef through prop drilling.
 	useEffect(() => {
-		const onRegen = (ev: Event) => {
+		const onRetryTurn = (ev: Event) => {
 			const ce = ev as CustomEvent<{
 				convId: string;
-				msgId: string;
-				senderId: string;
-				text: string;
+				turnId: string;
 			}>;
 			if (!ce.detail || ce.detail.convId !== convId) return;
-			const turn = findAgentTurnByMessageId(ce.detail.msgId);
-			if (turn) void regenerateAgentTurn(turn);
+			void retryPolynoiaTurn(ce.detail.turnId);
 		};
-		window.addEventListener("polynoia:regenerate", onRegen);
-		return () => window.removeEventListener("polynoia:regenerate", onRegen);
-	}, [convId, messages, regeneratingTurnId]);
+		window.addEventListener("polynoia:retry-turn", onRetryTurn);
+		return () =>
+			window.removeEventListener("polynoia:retry-turn", onRetryTurn);
+	}, [convId, retryingTurnId]);
 
 	useEffect(() => {
 		const onEditResend = (ev: Event) => {
@@ -1116,7 +1179,7 @@ export function ChatPane({ convId, members, title }: Props) {
 	}, [convId, members, messages]);
 
 	// Per-lane stop: a burst lane (TasksBurstPart) dispatches this to terminate
-	// just that worker (Agent-level). Same window-event idiom as regenerate to
+	// just that worker (Agent-level). Same window-event idiom as turn retry to
 	// avoid threading wsRef down into the burst card.
 	useEffect(() => {
 		const onAbortAgent = (ev: Event) => {
@@ -1212,6 +1275,10 @@ export function ChatPane({ convId, members, title }: Props) {
 		}
 		return out;
 	}, [agentStatuses]);
+	const waitingPermissionAgentIds = useMemo(
+		() => new Set(harnessPermissions.map((request) => request.agent_id)),
+		[harnessPermissions],
+	);
 
 	const activeBurstAgents = useMemo(() => {
 		const out = new Set<string>();
@@ -1307,11 +1374,8 @@ export function ChatPane({ convId, members, title }: Props) {
 			activeAgents.filter((a) => {
 				if (activeBurstAgents.has(a.id)) return false;
 				if (activeDiscussionAgents.has(a.id)) return false;
-				// A regenerate/resend pre-creates an EMPTY reused agent message and
-				// stamps created_at=now, which made messageIsFreshForAgent true and
-				// SUPPRESSED the typing placeholder while no content was rendering yet
-				// (the "进行中" indicator vanished on regenerate). Only count the agent
-				// as "already replying" — and thus hide the placeholder — once its
+				// A retry/resend can briefly expose an empty agent message. Only count the
+				// agent as "already replying" — and thus hide the placeholder — once its
 				// message has actually started rendering (live stream OR real content),
 				// not merely because an empty row exists.
 				return !messages.some(
@@ -1577,188 +1641,43 @@ export function ChatPane({ convId, members, title }: Props) {
 		};
 	}, []);
 
-	const textFromMessage = (m: Message | undefined): string => {
-		const p = m?.payload as
-			| {
-					kind?: string;
-					body?: Array<{
-						c: string | Array<{ type?: string; text?: string }>;
-					}>;
-			  }
-			| undefined;
-		if (!p || p.kind !== "text" || !Array.isArray(p.body)) return "";
-		return p.body
-			.map((b) => {
-				if (typeof b.c === "string") return b.c;
-				if (Array.isArray(b.c)) {
-					return b.c
-						.map((seg) =>
-							typeof seg === "object" && seg && "text" in seg
-								? (seg.text ?? "")
-								: "",
-						)
-						.join("");
-				}
-				return "";
-			})
-			.join("\n")
-			.trim();
-	};
-
-	const clearAgentTurnForRegenerate = (first: Message, ids: string[]): void => {
-		useStore.getState().invalidateMessageHydrations(convId);
-		useStore.getState().markMessagesMutated(convId, [first.id]);
-		useStore.setState((s) => {
-			const cs = s.convs.get(convId);
-			if (!cs) return {};
-			const remove = new Set(ids.filter((id) => id !== first.id));
-			const nextById = new Map(cs.msgById);
-			for (const id of remove) nextById.delete(id);
-			nextById.set(first.id, {
-				...first,
-				payload: { kind: "text", body: [{ t: "p", c: "" }] },
-				created_at: new Date().toISOString(),
-			});
-			const nextStreaming = new Map(cs.streamingTexts);
-			for (const [key, val] of nextStreaming) {
-				if (remove.has(val.messageId) || val.messageId === first.id) {
-					nextStreaming.delete(key);
-				}
-			}
-			const nextConvs = new Map(s.convs);
-			nextConvs.set(convId, {
-				...cs,
-				messageOrder: cs.messageOrder.filter((id) => !remove.has(id)),
-				msgById: nextById,
-				streamingTexts: nextStreaming,
-			});
-			return { convs: nextConvs };
-		});
-	};
-
-	const regenerateAgentTurn = async (turn: {
-		user: Message;
-		first: Message;
-		ids: string[];
-	}) => {
-		if (regeneratingTurnId) return;
-		const text = textFromMessage(turn.user);
-		if (!text) return;
-		// G: regenerate is now a true FORK — rolling back this turn deletes every
-		// later message AND restores the workspace to before this turn's writes
-		// (irreversible). Gate it behind an explicit red rollback warning.
-		if (!window.confirm(t("rewindResendWarn", lang))) return;
-		setRegeneratingTurnId(turn.first.id);
-		try {
-			// rewind = delete from turn.first onward + restore workspace main; the
-			// server broadcasts data-conv-rewound so the local timeline truncates too.
-			// MUST succeed before we resend: if it fails (e.g. the target was already
-			// rewound away → 404), the rollback did NOT happen, so re-running here
-			// would carry the old context/files forward (the「回滚失败却照样重发 →
-			// 上下文还在」bug). Abort with a visible error instead of silently
-			// proceeding, and don't touch local state until the rollback lands.
-			const rewind = await api.rewindConv(convId, turn.first.id);
-			useStore
-				.getState()
-				.truncateMessagesFrom(convId, turn.first.id, rewind.rewind_id);
-		} catch (e) {
-			console.warn("rewind (regenerate) failed", e);
-			setRegeneratingTurnId(null);
-			window.alert(t("rewindFailed", lang));
-			return;
-		}
+	const retryPolynoiaTurn = async (turnId: string) => {
+		if (retryingTurnId || !turnId) return;
+		if (!window.confirm("重试这个 Polynoia turn？不会回退消息或代码，原 turn 会保留。")) return;
+		setRetryingTurnId(turnId);
 		if (wsRef.current?.convId !== convId) {
-			setRegeneratingTurnId(null);
-			window.alert("会话连接已切换，未发送重新生成请求。");
+			setRetryingTurnId(null);
+			window.alert("会话连接已切换，未发送 turn 重试请求。");
 			void refreshConversationSnapshot();
 			return;
 		}
-		clearAgentTurnForRegenerate(turn.first, turn.ids);
-		if (
-			!sendRegenerationOnCurrentSocket({
-				convId,
-				text,
-				members,
-				getWs: () => wsRef.current,
-				options: {
-					regenerate: true,
-					regenerateMsgId: turn.first.id,
-					regenerateSenderId: turn.first.sender_id,
-				},
-			})
-		) {
-			window.alert("会话连接已切换，未发送重新生成请求。");
-			setRegeneratingTurnId(null);
+		if (!retryTurnOnCurrentSocket({ convId, turnId, getWs: () => wsRef.current })) {
+			window.alert("会话连接已切换，未发送 turn 重试请求。");
+			setRetryingTurnId(null);
 			void refreshConversationSnapshot();
 			return;
 		}
-		window.setTimeout(() => setRegeneratingTurnId(null), 1500);
-	};
-
-	const findAgentTurnByMessageId = (msgId: string) => {
-		const idx = messages.findIndex((m) => m.id === msgId);
-		if (idx < 0) return null;
-		const current = messages[idx];
-		if (current.sender_id === "you" || current.sender_id === "system")
-			return null;
-		let user: Message | null = null;
-		for (let i = idx - 1; i >= 0; i--) {
-			if (messages[i].sender_id === "you") {
-				user = messages[i];
-				break;
-			}
-		}
-		if (!user) return null;
-		let start = idx;
-		for (let i = idx - 1; i >= 0; i--) {
-			if (messages[i].sender_id === "you") break;
-			if (messages[i].sender_id !== "system") start = i;
-		}
-		const ids: string[] = [];
-		let first: Message | null = null;
-		for (let i = start; i < messages.length; i++) {
-			const m = messages[i];
-			if (m.sender_id === "you") break;
-			if (m.sender_id === "system") continue;
-			first ??= m;
-			ids.push(m.id);
-		}
-		return first && ids.length ? { user, first, ids } : null;
+		window.setTimeout(() => setRetryingTurnId(null), 1500);
 	};
 
 	const resendEditedUserMessage = async (msgId: string, text: string) => {
 		const idx = messages.findIndex((m) => m.id === msgId);
 		const user = messages[idx];
 		if (idx < 0 || !user || user.sender_id !== "you" || !text.trim()) return;
-		const ids: string[] = [];
-		let first: Message | null = null;
-		for (let i = idx + 1; i < messages.length; i++) {
-			const m = messages[i];
-			if (m.sender_id === "you") break;
-			if (m.sender_id === "system") continue;
-			first ??= m;
-			ids.push(m.id);
-		}
-		// G: resend is a true FORK — only warn/rollback when there's a later reply
-		// to delete (else it's just a re-run of the last message).
-		if (first && !window.confirm(t("rewindResendWarn", lang))) return;
-		// Roll back FIRST, before any optimistic local mutation. If the rewind
-		// fails (target already gone → 404), the rollback did NOT happen, so we must
-		// NOT resend — that would re-run with the old context/files intact (the
-		//「回滚失败却照样重发 → 上下文还在」bug). Abort with a visible error and leave
-		// the UI untouched. (rewind starts at the first REPLY, so the edited user
-		// message itself survives and is updated below.)
-		if (first) {
-			try {
-				const rewind = await api.rewindConv(convId, first.id);
-				useStore
-					.getState()
-					.truncateMessagesFrom(convId, first.id, rewind.rewind_id);
-			} catch (e) {
-				console.warn("rewind (resend) failed", e);
-				window.alert(t("rewindFailed", lang));
-				return;
-			}
+		const hasLaterMessages = idx + 1 < messages.length;
+		if (hasLaterMessages && !window.confirm(t("rewindResendWarn", lang))) return;
+		// Revert is anchored exclusively to the USER message. The original user
+		// row and everything after it are removed/restored first; the edited text
+		// then enters as an ordinary new user/message (new id + new Polynoia turn).
+		try {
+			const rewind = await api.rewindConv(convId, msgId);
+			useStore
+				.getState()
+				.truncateMessagesFrom(convId, msgId, rewind.rewind_id);
+		} catch (e) {
+			console.warn("rewind (edited user message) failed", e);
+			window.alert(t("rewindFailed", lang));
+			return;
 		}
 		if (wsRef.current?.convId !== convId) {
 			window.alert("会话连接已切换，未执行重发。");
@@ -1766,67 +1685,13 @@ export function ChatPane({ convId, members, title }: Props) {
 			return;
 		}
 		useStore.getState().invalidateMessageHydrations(convId);
-		useStore
-			.getState()
-			.markMessagesMutated(convId, [msgId, ...(first ? [first.id] : [])]);
-		useStore.setState((s) => {
-			const cs = s.convs.get(convId);
-			if (!cs) return {};
-			const msg = cs.msgById.get(msgId);
-			if (!msg) return {};
-			const remove = new Set(ids.filter((id) => id !== first?.id));
-			const msgById = new Map(cs.msgById);
-			msgById.set(msgId, {
-				...msg,
-				payload: { kind: "text", body: [{ t: "p", c: text.trim() }] },
-			});
-			for (const id of remove) msgById.delete(id);
-			if (first) {
-				msgById.set(first.id, {
-					...first,
-					payload: { kind: "text", body: [{ t: "p", c: "" }] },
-					created_at: new Date().toISOString(),
-				});
-			}
-			const streamingTexts = new Map(cs.streamingTexts);
-			for (const [key, val] of streamingTexts) {
-				if (remove.has(val.messageId) || val.messageId === first?.id) {
-					streamingTexts.delete(key);
-				}
-			}
-			const convs = new Map(s.convs);
-			convs.set(convId, {
-				...cs,
-				messageOrder: cs.messageOrder.filter((id) => !remove.has(id)),
-				msgById,
-				streamingTexts,
-			});
-			return { convs };
+		sendChatPaneComposerMessage({
+			convId,
+			text: text.trim(),
+			members,
+			inReplyTo: user.in_reply_to ?? undefined,
+			getWs: () => wsRef.current,
 		});
-		try {
-			await api.updateMessage(convId, msgId, text.trim());
-		} catch (error) {
-			console.warn("update message (resend) failed", error);
-			window.alert("消息更新失败，未执行重发。");
-			void refreshConversationSnapshot();
-			return;
-		}
-		if (
-			!sendRegenerationOnCurrentSocket({
-				convId,
-				text: text.trim(),
-				members,
-				getWs: () => wsRef.current,
-				options: {
-					regenerate: true,
-					regenerateMsgId: first?.id,
-					regenerateSenderId: first?.sender_id,
-				},
-			})
-		) {
-			window.alert("会话连接已切换，未执行重发。");
-			void refreshConversationSnapshot();
-		}
 	};
 
 	const senderLabelFor = (m: Message | undefined): string => {
@@ -2013,6 +1878,7 @@ export function ChatPane({ convId, members, title }: Props) {
 			{/* ADR-020 project-access approval strip — when an agent in a private DM
           requests access to a project, the user picks the project + 批准/拒绝. */}
 			<FloatingProjectAccessBar convId={convId} />
+			<HarnessPermissionBar convId={convId} />
 
 			{/* Message stream — relative wrapper so the "running" status pill can
           float on top without displacing content. */}
@@ -2062,8 +1928,20 @@ export function ChatPane({ convId, members, title }: Props) {
               that actually has history but hasn't loaded yet). Keyed on
               messagesHydrated so the first visit (before the fetch effect even
               fires) shows the skeleton, not a one-frame empty flash. */}
-							{!messagesHydrated && messages.length === 0 && (
+							{!messagesHydrated && messages.length === 0 && !historyLoadError && (
 								<ChatMessagesSkeleton />
+							)}
+							{!messagesHydrated && messages.length === 0 && historyLoadError && (
+								<div className="mx-auto my-12 flex max-w-sm flex-col items-center gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] px-5 py-6 text-center text-[12px] text-[var(--color-fg-3)]">
+									<span>{lang === "zh" ? "历史消息加载失败" : "Failed to load message history"}</span>
+									<button
+										type="button"
+										onClick={() => setHistoryRetrySeed((seed) => seed + 1)}
+										className="min-h-10 rounded-lg border border-[var(--color-line)] px-4 text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+									>
+										{t("retryButton", lang)}
+									</button>
+								</div>
 							)}
 							{messagesHydrated && messages.length === 0 && (
 								<div className="text-center text-[var(--color-fg-3)] text-[12px] py-12">
@@ -2165,8 +2043,11 @@ export function ChatPane({ convId, members, title }: Props) {
 									let prevSender = lastRunSender;
 									return pendingAgentPlaceholders.map((a) => {
 										const agent = agents.find((x) => x.id === a.id);
-										const label =
-											a.status === "starting"
+										const label = waitingPermissionAgentIds.has(a.id)
+											? lang === "zh"
+												? "等待你授权"
+												: "Waiting for your approval"
+											: a.status === "starting"
 												? t("startingConversation", lang)
 												: phaseLabel(a.phase, a.tool, lang);
 										const showAvatar = a.id !== prevSender;
@@ -2209,6 +2090,21 @@ export function ChatPane({ convId, members, title }: Props) {
 					</div>
 				</ConvScopeProvider>
 			</div>
+			{hasNewProgress && (
+				<button
+					type="button"
+					onClick={() => {
+						const body = bodyRef.current;
+						if (body) body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+						wasAtBottomRef.current = true;
+						setHasNewProgress(false);
+					}}
+					className="absolute right-4 z-20 min-h-10 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-3 text-[11.5px] text-[var(--color-accent)] shadow-lg hover:bg-[var(--color-accent-soft)]"
+					style={{ bottom: composerH + 12 }}
+				>
+					↓ {lang === "zh" ? "有新进展 · 跳到最新" : "New progress · Jump to latest"}
+				</button>
+			)}
 
 			{/* Floating composer — overlays the bottom of the message area so chat
 			    content scrolls BEHIND it (悬浮在内容之上). The scroll area's matching
@@ -2238,20 +2134,15 @@ export function ChatPane({ convId, members, title }: Props) {
 					<Composer
 						convId={convId}
 						members={members}
-						// A seeded/persisted draft is a *starter* for a pristine conv. Once
-						// the conv has any history (it's been sent — possibly by another
-						// client or an external driver, which clears draft_text server-side
-						// but leaves this client's convSummary snapshot stale), the starter
-						// must NOT re-fill the box. Gating on an empty stream keeps the
-						// seeded prompt from lingering during/after a running turn. Typing a
-						// follow-up uses the composer's own local state, so it's unaffected.
+						// Drafts are independent from message history.  The backend clears
+						// them on successful send, while Composer claims each fetched value
+						// once per conv, so a reload of an established conversation must be
+						// allowed to restore the user's unsent follow-up and attachments.
 						draftText={
-							convSummary?.id === convId && messages.length === 0
-								? convSummary.draft_text
-								: undefined
+							convSummary?.id === convId ? convSummary.draft_text : undefined
 						}
 						draftAttachments={
-							convSummary?.id === convId && messages.length === 0
+							convSummary?.id === convId
 								? convSummary.draft_attachments
 								: undefined
 						}
@@ -2270,20 +2161,21 @@ export function ChatPane({ convId, members, title }: Props) {
 										</span>
 										{activeAgents.map((a) => {
 											const agent = agents.find((x) => x.id === a.id);
-											const label =
-												a.status === "starting"
+											const label = waitingPermissionAgentIds.has(a.id)
+												? lang === "zh"
+													? "等待你授权"
+													: "Waiting for your approval"
+												: a.status === "starting"
 													? t("preparing", lang)
-													: phaseLabel(a.phase, a.tool, lang);
+												: phaseLabel(a.phase, a.tool, lang);
 											return (
-												<button
-													type="button"
+												<div
 													key={a.id}
-													onClick={() => wsRef.current?.abort(a.id)}
-													className="group inline-flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full border border-[var(--color-line)] hover:bg-[var(--color-red-soft)] hover:border-[var(--color-red)] transition"
-													title={`点击中断 ${agent?.name ?? a.id}`}
+													className={`inline-flex items-center gap-1 pl-2 rounded-full border border-[var(--color-line)] ${mobile ? "min-h-11" : "min-h-6"}`}
 													style={{
 														background: agent?.bg ?? "var(--color-surface-2)",
 													}}
+													role="status"
 												>
 													<Loader2
 														size={10}
@@ -2297,18 +2189,20 @@ export function ChatPane({ convId, members, title }: Props) {
 													>
 														{agent?.name ?? a.id}
 													</span>
-													<span className="relative inline-flex items-center">
-														<span className="text-[var(--color-fg-3)] transition-opacity group-hover:opacity-0">
-															· {label}
-														</span>
+													<span className="text-[var(--color-fg-3)]">· {label}</span>
+													<button
+														type="button"
+														onClick={() => wsRef.current?.abort(a.id)}
+														className={`${mobile ? "h-11 w-11" : "h-6 w-6"} ml-0.5 inline-flex items-center justify-center rounded-full text-[var(--color-red)] hover:bg-[var(--color-red-soft)] transition`}
+														aria-label={`${lang === "zh" ? "停止" : "Stop"} ${agent?.name ?? a.id}`}
+														title={`${lang === "zh" ? "停止" : "Stop"} ${agent?.name ?? a.id}`}
+													>
 														<Square
-															size={10}
+															size={mobile ? 14 : 10}
 															aria-hidden
-															className="absolute left-1/2 -translate-x-1/2 opacity-0 transition-opacity group-hover:opacity-100"
-															style={{ color: "var(--color-red)" }}
 														/>
-													</span>
-												</button>
+													</button>
+												</div>
 											);
 										})}
 										{activeAgents.length > 1 && (

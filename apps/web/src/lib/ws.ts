@@ -54,6 +54,7 @@ export type DeliveryResult =
 	  };
 
 type PendingSend = {
+	convId: string;
 	frame: string;
 	sequence: number;
 	outboxes: Set<PendingOutbox>;
@@ -80,8 +81,98 @@ type ConnectAttempt = {
 };
 
 const CONNECT_HANDSHAKE_TIMEOUT_MS = 10_000;
+const OUTBOX_STORAGE_PREFIX = "polynoia:pending-outbox:";
 let nextPendingSequence = 0;
 let nextParticipantGeneration = 0;
+
+type PersistedPendingSend = {
+	id: string;
+	frame: string;
+	sequence: number;
+};
+
+function outboxStorage(): Storage | null {
+	try {
+		return typeof window !== "undefined"
+			? (window.sessionStorage ?? null)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function readPersistedOutbox(convId: string): PersistedPendingSend[] {
+	const storage = outboxStorage();
+	if (!storage) return [];
+	try {
+		const parsed = JSON.parse(
+			storage.getItem(`${OUTBOX_STORAGE_PREFIX}${convId}`) ?? "[]",
+		);
+		if (!Array.isArray(parsed)) return [];
+		return parsed
+			.filter(
+				(item): item is PersistedPendingSend =>
+					typeof item?.id === "string" &&
+					typeof item?.frame === "string" &&
+					Number.isSafeInteger(item?.sequence),
+			)
+			.slice(0, 100);
+	} catch {
+		return [];
+	}
+}
+
+function writePersistedOutbox(convId: string, pending: PersistedPendingSend[]) {
+	const storage = outboxStorage();
+	if (!storage) return;
+	try {
+		const key = `${OUTBOX_STORAGE_PREFIX}${convId}`;
+		const ordered = pending
+			.sort((left, right) => left.sequence - right.sequence)
+			.slice(0, 100);
+		if (ordered.length) storage.setItem(key, JSON.stringify(ordered));
+		else storage.removeItem(key);
+	} catch {
+		// Storage may be disabled/full. Delivery remains live-session reliable.
+	}
+}
+
+function persistPendingSend(convId: string, id: string, pending: PendingSend) {
+	const merged = new Map(
+		readPersistedOutbox(convId).map((item) => [item.id, item] as const),
+	);
+	merged.set(id, { id, frame: pending.frame, sequence: pending.sequence });
+	writePersistedOutbox(convId, [...merged.values()]);
+}
+
+function removePersistedSend(convId: string, id: string) {
+	writePersistedOutbox(
+		convId,
+		readPersistedOutbox(convId).filter((item) => item.id !== id),
+	);
+}
+
+function pendingFromStorage(
+	convId: string,
+	item: PersistedPendingSend,
+): PendingSend {
+	let resolve!: (result: DeliveryResult) => void;
+	const promise = new Promise<DeliveryResult>((settle) => {
+		resolve = settle;
+	});
+	return {
+		convId,
+		frame: item.frame,
+		sequence: item.sequence,
+		outboxes: new Set(),
+		sentAtLeastOnce: false,
+		sentSockets: new Set(),
+		sentOn: null,
+		retryOn: null,
+		promise,
+		resolve,
+	};
+}
 
 function settlePending(
 	id: string,
@@ -93,6 +184,7 @@ function settlePending(
 	}
 	pending.outboxes.clear();
 	pending.sentSockets.clear();
+	removePersistedSend(pending.convId, id);
 	pending.resolve(result);
 }
 
@@ -122,8 +214,15 @@ export class ConvWebSocket {
 	constructor(public readonly convId: string) {
 		let coordinator = outboxCoordinators.get(convId);
 		if (!coordinator) {
+			const restored: PendingOutbox = new Map();
+			for (const item of readPersistedOutbox(convId)) {
+				const pending = pendingFromStorage(convId, item);
+				pending.outboxes.add(restored);
+				restored.set(item.id, pending);
+				nextPendingSequence = Math.max(nextPendingSequence, item.sequence + 1);
+			}
 			coordinator = {
-				outbox: new Map(),
+				outbox: restored,
 				owner: null,
 				participants: new Map(),
 				settledFrames: new Map(),
@@ -605,13 +704,8 @@ export class ConvWebSocket {
 		members: string[],
 		inReplyTo?: string,
 		msgId?: string,
-		options?: {
-			regenerate?: boolean;
-			regenerateMsgId?: string;
-			regenerateSenderId?: string;
-		},
 	): Promise<DeliveryResult> | undefined {
-		if (this._intentionallyClosed && msgId && !options?.regenerate) {
+		if (this._intentionallyClosed && msgId) {
 			throw new Error(
 				"cannot send a stable user message after WebSocket has closed",
 			);
@@ -622,17 +716,10 @@ export class ConvWebSocket {
 			members,
 			...(inReplyTo ? { in_reply_to: inReplyTo } : {}),
 			...(msgId ? { msg_id: msgId } : {}),
-			...(options?.regenerate ? { regenerate: true } : {}),
-			...(options?.regenerateMsgId
-				? { regenerate_msg_id: options.regenerateMsgId }
-				: {}),
-			...(options?.regenerateSenderId
-				? { regenerate_sender_id: options.regenerateSenderId }
-				: {}),
 		});
-		// Regeneration creates no user row/receipt. No-id sends retain the previous
-		// best-effort behavior; neither belongs in the durable-append outbox.
-		if (!msgId || options?.regenerate) {
+		// No-id sends retain the previous best-effort behavior and do not belong in
+		// the durable user-message outbox.
+		if (!msgId) {
 			this.ws?.send(frame);
 			return undefined;
 		}
@@ -657,6 +744,7 @@ export class ConvWebSocket {
 			resolve = settle;
 		});
 		const pending: PendingSend = {
+			convId: this.convId,
 			frame,
 			sequence: nextPendingSequence++,
 			outboxes: new Set([this.pendingSends]),
@@ -668,6 +756,7 @@ export class ConvWebSocket {
 			resolve,
 		};
 		this.pendingSends.set(msgId, pending);
+		persistPendingSend(this.convId, msgId, pending);
 		if (this.ws) this.flushPending(this.ws);
 		const owner = this.outboxCoordinator.owner;
 		if (
@@ -678,6 +767,17 @@ export class ConvWebSocket {
 			owner.flushPending(owner.ws);
 		}
 		return promise;
+	}
+
+	/** Retry exactly one persisted Polynoia turn. This is intentionally a
+	 * separate protocol operation from `user_message`: it creates no user
+	 * message, performs no rewind, and cannot target a message/tool-card id. */
+	retryTurn(turnId: string): boolean {
+		if (!turnId.trim()) throw new Error("turnId is required");
+		const socket = this.ws;
+		if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+		socket.send(JSON.stringify({ kind: "retry_turn", turn_id: turnId }));
+		return true;
 	}
 
 	/**

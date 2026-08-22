@@ -200,19 +200,29 @@ const STR = {
 	},
 };
 
-const ENGINES = ["OpenCode", "Claude Code", "Codex"] as const;
+const ENGINES = [
+	"OpenCode",
+	"Claude Code",
+	"Codex",
+	"Qwen Code",
+	"DeepSeek Harness",
+] as const;
 const ADAPTER_PREF_KEY = "polynoia-default-adapter";
 /** 旧值(显示名)→ 后端 adapter id,用于迁移历史 localStorage。 */
 const ADAPTER_ID: Record<string, string> = {
 	"Claude Code": "claudeCode",
 	Codex: "codex",
 	OpenCode: "opencoder",
+	"Qwen Code": "qwenCode",
+	"DeepSeek Harness": "deepseek",
 };
 /** 后端 adapter id → 友好显示名。 */
 const FRIENDLY: Record<string, string> = {
 	claudeCode: "Claude Code",
 	codex: "Codex",
 	opencoder: "OpenCode",
+	qwenCode: "Qwen Code",
+	deepseek: "DeepSeek Harness",
 };
 function friendlyAdapter(id: string): string {
 	return FRIENDLY[id] ?? id;
@@ -227,7 +237,9 @@ function engineOf(a: Agent): string {
 	if (id.includes("claude")) return "Claude Code";
 	if (id.includes("codex")) return "Codex";
 	if (id.includes("opencod")) return "OpenCode";
-	return "Claude Code";
+	if (id.includes("qwen")) return "Qwen Code";
+	if (id.includes("deepseek")) return "DeepSeek Harness";
+	return friendlyAdapter(a.setup?.adapter_id ?? a.provider ?? "Agent");
 }
 
 /* ── context ── */
@@ -1604,8 +1616,8 @@ function AdapterManager() {
 					lineHeight: 1.5,
 				}}
 			>
-				自动复用本机已登录的 CLI 凭证(Claude Code Pro / Codex /
-				OpenCode)。点「启用」后对应 agent 进入联系人。
+				自动复用本机已登录的 CLI 凭证(Claude Code Pro / Codex / Qwen Code /
+				DeepSeek Harness)。启用后再创建联系人并选择模型。
 			</div>
 			{err && (
 				<div
@@ -1634,7 +1646,7 @@ function AdapterManager() {
 				</div>
 			)}
 			{probes?.map((p) => {
-				const ready = p.installed && p.authenticated;
+				const ready = p.ready ?? (p.installed && p.authenticated);
 				const isBusy = busy === p.id;
 				return (
 					<div
@@ -1750,12 +1762,14 @@ function AdapterManager() {
 								}
 							/>
 							<StatusLine
-								ok={p.authenticated}
-								label={tr("loggedIn", lang)}
+								ok={p.authenticated || !!p.contact_endpoint}
+								label={p.contact_endpoint ? "凭证方式" : tr("loggedIn", lang)}
 								value={
 									p.authenticated && p.auth_path
 										? p.auth_path
-										: tr("noCredentialsDetected", lang)
+										: p.contact_endpoint
+											? "创建联系人时填写 API Key 和 endpoint"
+											: tr("noCredentialsDetected", lang)
 								}
 								mono={!!(p.authenticated && p.auth_path)}
 								icon={
@@ -1770,9 +1784,12 @@ function AdapterManager() {
 									cmd={p.install_hint}
 								/>
 							)}
-							{p.installed && !p.authenticated && p.login_cmd && (
-								<CmdHint title={tr("loginCommand", lang)} cmd={p.login_cmd} />
-							)}
+							{p.installed &&
+								!p.authenticated &&
+								!p.contact_endpoint &&
+								p.login_cmd && (
+									<CmdHint title={tr("loginCommand", lang)} cmd={p.login_cmd} />
+								)}
 						</div>
 					</div>
 				);

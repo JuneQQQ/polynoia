@@ -899,6 +899,7 @@ class ClaudeCodeSession:
         allow: bool,
         updated_input: dict[str, Any] | None = None,
         reason: str | None = None,
+        option_id: str | None = None,
     ) -> None:
         # P0 stub: 自动 allow,真正的 can_use_tool 回调 P1+ 接
         return

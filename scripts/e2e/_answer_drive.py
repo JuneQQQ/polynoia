@@ -93,9 +93,19 @@ async def drive(case):
     # clear for a clean run
     its = get(f"/api/conversations/{cid}/messages?limit=300")
     its = its if isinstance(its, list) else its.get("messages", its.get("items", []))
-    if its:
+    anchor = next(
+        (
+            item
+            for item in its
+            if item.get("sender_id") == "you"
+            and isinstance(item.get("payload"), dict)
+            and item["payload"].get("kind") == "text"
+        ),
+        None,
+    )
+    if anchor:
         try:
-            post(f"/api/conversations/{cid}/rewind", {"from_msg_id": its[0]["id"]})
+            post(f"/api/conversations/{cid}/rewind", {"from_msg_id": anchor["id"]})
         except Exception:
             pass
     answered_ids = set()
@@ -127,7 +137,11 @@ async def drive(case):
                         rounds += 1
                         last_event = loop.time()
                         if res.get("orphaned"):
-                            await w.send(json.dumps({"kind": "user_message", "text": ans, "members": members, "regenerate": True}))
+                            await w.send(
+                                json.dumps(
+                                    {"kind": "user_message", "text": ans, "members": members}
+                                )
+                            )
                     except Exception:
                         pass
             try:

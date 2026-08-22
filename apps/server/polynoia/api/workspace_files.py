@@ -33,6 +33,7 @@ from polynoia.api._fs_paths import (
     _workspace_root,
 )
 from polynoia.sandbox import Sandbox, workspace_merge_lock
+from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import WorkspaceRow
 
@@ -63,7 +64,7 @@ async def list_workspace_files(ws_id: str, path: str = ""):
     # first agent turn. Bootstrap it on first BROWSE too, so opening a DM's 工作区
     # before any artifact exists shows an empty tree, not "无工作区" / 404.
     if ws_id.startswith("conv:"):
-        await Sandbox.create(ws_id[len("conv:"):])
+        await Sandbox.create(ws_id[len("conv:") :])
     root = _workspace_root(ws_id)
     target = _resolve_safe_path(root, path)
     if not target.exists() or not target.is_dir():
@@ -80,12 +81,14 @@ async def list_workspace_files(ws_id: str, path: str = ""):
             # User can still reach via direct path if needed.
             continue
         stat = child.stat()
-        entries.append({
-            "name": child.name,
-            "type": "dir" if child.is_dir() else "file",
-            "size": stat.st_size if child.is_file() else None,
-            "modified": stat.st_mtime,
-        })
+        entries.append(
+            {
+                "name": child.name,
+                "type": "dir" if child.is_dir() else "file",
+                "size": stat.st_size if child.is_file() else None,
+                "modified": stat.st_mtime,
+            }
+        )
     return {"path": path, "entries": entries}
 
 
@@ -143,7 +146,10 @@ async def read_workspace_file_blob(ws_id: str, path: str):
 
 @router.get("/api/workspaces/{ws_id}/commits")
 async def list_workspace_commits(
-    ws_id: str, ref: str = "main", limit: int = 80, skip: int = 0,
+    ws_id: str,
+    ref: str = "main",
+    limit: int = 80,
+    skip: int = 0,
     graph: bool = False,
 ):
     """List commits on ``ref`` (newest first) for the commit-history browser.
@@ -162,7 +168,9 @@ async def list_workspace_commits(
     if sandbox is None:
         return {"commits": []}
     commits = await sandbox.workspace_commits(
-        ref=ref, limit=max(1, min(limit, 500)), skip=max(0, skip),
+        ref=ref,
+        limit=max(1, min(limit, 500)),
+        skip=max(0, skip),
         include_all=graph,
     )
     return {"commits": commits}
@@ -190,21 +198,6 @@ async def get_workspace_working_diff(ws_id: str):
     if sandbox is None:
         return {"sha": "__working__", "parent": "HEAD", "files": [], "truncated": False}
     return await sandbox.working_tree_diff()
-
-
-@router.post("/api/workspaces/{ws_id}/discard-working")
-async def discard_workspace_working(ws_id: str):
-    """「丢弃工作区改动」: drop uncommitted root changes (tracked restored,
-    untracked removed; ignored paths incl. .polynoia/ untouched; worktrees
-    untouched). Takes the workspace merge lock; 409 while a merge is open."""
-    _workspace_root(ws_id)
-    sandbox = Sandbox.open_workspace_if_exists(ws_id)
-    if sandbox is None:
-        raise HTTPException(404, "workspace not found")
-    res = await sandbox.discard_working_changes()
-    if not res.get("ok"):
-        raise HTTPException(409, res.get("error") or "discard failed")
-    return res
 
 
 @router.put("/api/workspaces/{ws_id}/files/raw")
@@ -237,10 +230,31 @@ async def write_workspace_file(ws_id: str, path: str, request: Request):
         rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
         if rc != 0:
             return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
-        rc, _o, _e = await ws_sandbox._workspace_run([
-            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
-        ])
+        rc, _o, _e = await ws_sandbox._workspace_run(
+            [
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                f"polynoia: user edit {path}",
+            ]
+        )
         sha = await ws_sandbox.main_head_sha() if rc == 0 else None
+        if sha:
+            await storage_repo.record_workspace_event(
+                workspace_id=ws_id,
+                event_type="commit",
+                commit_sha=sha,
+                actor_id="you",
+                payload={"path": path, "source": "workspace_file_api"},
+            )
+            await storage_repo.record_workspace_event(
+                workspace_id=ws_id,
+                event_type="main_updated",
+                commit_sha=sha,
+                actor_id="you",
+                payload={"reason": "user_edit", "path": path},
+            )
     return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
 
 
@@ -265,10 +279,31 @@ async def write_workspace_file_blob(ws_id: str, path: str, request: Request):
         rc, _o, _e = await ws_sandbox._workspace_run(["git", "add", path])
         if rc != 0:
             return {"ok": True, "sha": None, "note": "git add failed (untracked dir?)"}
-        rc, _o, _e = await ws_sandbox._workspace_run([
-            "git", "commit", "-q", "-m", f"polynoia: user edit {path}",
-        ])
+        rc, _o, _e = await ws_sandbox._workspace_run(
+            [
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                f"polynoia: user edit {path}",
+            ]
+        )
         sha = await ws_sandbox.main_head_sha() if rc == 0 else None
+        if sha:
+            await storage_repo.record_workspace_event(
+                workspace_id=ws_id,
+                event_type="commit",
+                commit_sha=sha,
+                actor_id="you",
+                payload={"path": path, "source": "workspace_blob_api"},
+            )
+            await storage_repo.record_workspace_event(
+                workspace_id=ws_id,
+                event_type="main_updated",
+                commit_sha=sha,
+                actor_id="you",
+                payload={"reason": "user_edit", "path": path},
+            )
     return {"ok": True, "sha": sha, "modified": target.stat().st_mtime}
 
 
@@ -314,8 +349,12 @@ async def preview_workspace_html(ws_id: str, file: str = "index.html"):
 
 
 _ARCHIVE_SKIP_DIRS = {
-    "node_modules", "__pycache__", ".venv",
-    ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
     "worktrees",  # per-agent branches — recreated on demand
 }
 
@@ -337,7 +376,7 @@ async def download_workspace_file(ws_id: str, path: str):
         filename=target.name,
         media_type="application/octet-stream",
         # Workspace files are live — an agent rewriting a same-name file
-        # (regenerate pptx, edit .md) must show fresh content on the next
+        # (replace pptx, edit .md) must show fresh content on the next
         # fetch. Browser heuristic cache would otherwise serve the previous
         # bytes from memory cache because the URL is unchanged.
         headers={"Cache-Control": "no-store"},
@@ -413,6 +452,7 @@ def _stream_spooled(buf, chunk: int = 65536):
 
 def _zip_response(buf, display_name: str) -> StreamingResponse:
     from urllib.parse import quote
+
     ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", display_name).strip("._-") or "workspace"
     utf8_name = quote(display_name + ".zip")
     return StreamingResponse(
@@ -420,8 +460,7 @@ def _zip_response(buf, display_name: str) -> StreamingResponse:
         media_type="application/zip",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="{ascii_name}.zip"; '
-                f"filename*=UTF-8''{utf8_name}"
+                f"attachment; filename=\"{ascii_name}.zip\"; filename*=UTF-8''{utf8_name}"
             ),
         },
     )
@@ -429,10 +468,11 @@ def _zip_response(buf, display_name: str) -> StreamingResponse:
 
 async def _workspace_display_name(ws_id: str) -> str:
     from sqlalchemy import select as _select
+
     async with SessionLocal() as session:
-        row = (await session.execute(
-            _select(WorkspaceRow).where(WorkspaceRow.id == ws_id)
-        )).scalar_one_or_none()
+        row = (
+            await session.execute(_select(WorkspaceRow).where(WorkspaceRow.id == ws_id))
+        ).scalar_one_or_none()
         if row and row.name:
             return row.name
     return ws_id

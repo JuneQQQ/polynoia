@@ -20,6 +20,7 @@ env) or a local directory (copied).
 At agent spawn the bound skill folders are placed into the sandbox's
 adapter-native skills dir so the underlying CLI discovers them.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -100,7 +101,7 @@ def read_skill_instructions(name: str) -> dict | None:
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
-            body = text[end + 4:].lstrip()
+            body = text[end + 4 :].lstrip()
     return {**_parse_skill_md(folder), "instructions": body.strip(), "path": str(folder)}
 
 
@@ -124,7 +125,8 @@ def _iter_skill_dirs(root: Path) -> list[Path]:
     if not root.exists():
         return []
     return [
-        d for d in sorted(root.iterdir())
+        d
+        for d in sorted(root.iterdir())
         if d.is_dir() and not d.name.startswith(".") and (d / "SKILL.md").is_file()
     ]
 
@@ -202,7 +204,8 @@ def _find_skill_dirs(root: Path) -> list[Path]:
         if dirs:
             return dirs
     dirs = [
-        d for d in sorted(root.iterdir())
+        d
+        for d in sorted(root.iterdir())
         if d.is_dir() and not d.name.startswith(".") and (d / "SKILL.md").is_file()
     ]
     if dirs:
@@ -214,7 +217,12 @@ def _install_one(skill_dir: Path, *, fallback_name: str) -> dict:
     """Copy a single skill folder into skills_dir under a sanitized name (from
     SKILL.md frontmatter, else the folder name, else fallback). De-dups names."""
     meta = _parse_skill_md(skill_dir)
-    name = _safe_name(meta.get("name") or "") or _safe_name(skill_dir.name) or _safe_name(fallback_name) or "skill"
+    name = (
+        _safe_name(meta.get("name") or "")
+        or _safe_name(skill_dir.name)
+        or _safe_name(fallback_name)
+        or "skill"
+    )
     dest = settings.skills_dir / name
     # Validate the source before replacing an existing installed package.
     _validate_skill_package(skill_dir)
@@ -248,10 +256,17 @@ async def install_skill(source: str, name: str | None = None) -> list[dict]:
             # Proxy for the clone: explicit setting, else the ambient env the
             # backend was launched with (how it reaches the net behind a GFW).
             if settings.git_proxy:
-                argv += ["-c", f"http.proxy={settings.git_proxy}", "-c", f"https.proxy={settings.git_proxy}"]
+                argv += [
+                    "-c",
+                    f"http.proxy={settings.git_proxy}",
+                    "-c",
+                    f"https.proxy={settings.git_proxy}",
+                ]
             argv += ["clone", "--depth", "1", source, str(tmp)]
             proc = await asyncio.create_subprocess_exec(
-                *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
             )
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
@@ -268,9 +283,7 @@ async def install_skill(source: str, name: str | None = None) -> list[dict]:
 
         skill_dirs = _find_skill_dirs(fetched)
         if not skill_dirs:
-            raise ValueError(
-                f"no SKILL.md found in {source!r} — not a skill or skill collection"
-            )
+            raise ValueError(f"no SKILL.md found in {source!r} — not a skill or skill collection")
         installed = [_install_one(d, fallback_name=repo_name) for d in skill_dirs]
         # de-dup by name (keep last) while preserving order
         seen: dict[str, dict] = {}

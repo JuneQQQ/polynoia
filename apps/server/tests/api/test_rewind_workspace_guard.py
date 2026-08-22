@@ -52,6 +52,14 @@ async def _anchor(conv_id: str, *, code_sha: str | None) -> str:
         if code_sha is not None:
             (await db.get(MessageRow, mid)).code_sha = code_sha
         await db.commit()
+    await storage_repo.record_conversation_event(
+        conv_id=conv_id,
+        event_type="user/message",
+        turn_id=f"turn-{mid}"[:40],
+        actor_id="you",
+        message_id=mid,
+        commit_sha=code_sha,
+    )
     return mid
 
 

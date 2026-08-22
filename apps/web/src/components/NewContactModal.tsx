@@ -1,24 +1,34 @@
 /** NewContactModal — 用户从已接入的适配器里建一个新的"联系人"
  *
- * Adapter ≠ 联系人。Adapter 是凭证 + CLI 探测层 (claudeCode / codex / opencoder);
+ * Adapter ≠ 联系人。Adapter 是凭证 + CLI 探测层;
  * 联系人是 (adapter, model, name, persona) 的具体实例。一个 adapter 可以衍生
  * 多个联系人(e.g. "Claude-Fast" haiku + "Claude-架构师" opus + ...).
  *
  * 入口:Sidebar 顶部 "+ 新建联系人"。
  * 底部 footer 链接 → 打开 AdapterManager(原 OnboardingModal)。
  */
-import { Check, ChevronDown, Sparkles, Trash2, Wrench, X } from "lucide-react";
+import {
+	Check,
+	ChevronDown,
+	Loader2,
+	Sparkles,
+	Trash2,
+	Wifi,
+	Wrench,
+	X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../lib/api";
+import { type EnabledAdapter, api } from "../lib/api";
 import { t } from "../lib/i18n";
 import type { Agent } from "../lib/types";
 import { useStore } from "../store";
 
-type EnabledAdapter = {
-	id: string;
-	models: string[];
-	default_model: string | null;
-	model_hint: string | null;
+const ADAPTER_LABELS: Record<string, string> = {
+	claudeCode: "Claude Code (ACP)",
+	codex: "Codex (ACP)",
+	qwenCode: "Qwen Code (原生 ACP)",
+	deepseek: "DeepSeek Harness (官方 ACP)",
+	opencoder: "OpenCode (原生 ACP)",
 };
 
 const COLOR_OPTIONS = [
@@ -31,17 +41,6 @@ const COLOR_OPTIONS = [
 	"#F2C94C", // yellow
 	"#E74C3C", // red
 ];
-
-// Context-window ceiling presets. No model→context guessing table (it
-// mis-guessed third-party / proxy models) — the user picks one explicitly.
-// "custom" reveals a free number input. Default = 200k (Claude 4.x / Kimi).
-const CONTEXT_PRESETS: { label: string; value: number }[] = [
-	{ label: "128K", value: 128_000 },
-	{ label: "200K", value: 200_000 },
-	{ label: "256K", value: 256_000 },
-	{ label: "1M", value: 1_000_000 },
-];
-const DEFAULT_CONTEXT = 200_000;
 
 // A contact is persona-only: name, model, system prompt, color. Tools are NOT
 // configured here — they follow one structural fact at runtime (the convo's
@@ -93,23 +92,13 @@ export function NewContactModal({
 	const [apiBaseUrl, setApiBaseUrl] = useState(
 		editing?.setup?.api_base_url ?? "",
 	);
-	// Context-window ceiling — required, chosen from presets (or 自定义). The
-	// dropdown value is the preset number as a string, or "custom"; customCtx
-	// holds the free-typed number when "custom". Seeds from the editing value:
-	// matches a preset → that preset, else → custom.
-	const _initCtx = editing?.setup?.max_context_tokens ?? null;
-	const _presetHit =
-		_initCtx != null && CONTEXT_PRESETS.some((p) => p.value === _initCtx);
-	const [ctxMode, setCtxMode] = useState<string>(
-		_initCtx == null
-			? String(DEFAULT_CONTEXT)
-			: _presetHit
-				? String(_initCtx)
-				: "custom",
-	);
-	const [customCtx, setCustomCtx] = useState<string>(
-		_initCtx != null && !_presetHit ? String(_initCtx) : "",
-	);
+	const [endpointProbe, setEndpointProbe] = useState<
+		| { state: "idle" }
+		| { state: "testing" }
+		| { state: "ok"; message: string }
+		| { state: "error"; message: string }
+	>({ state: "idle" });
+	const [useHostCredentials, setUseHostCredentials] = useState(false);
 	const [useCustomModel, setUseCustomModel] = useState(false);
 	const [name, setName] = useState(editing?.name ?? pf?.name ?? "");
 	const [systemPrompt, setSystemPrompt] = useState(
@@ -234,6 +223,7 @@ export function NewContactModal({
 	);
 	useEffect(() => {
 		if (!adapterChoice) return;
+		setUseHostCredentials(false);
 		// Edit mode: keep the model that's already saved on the contact;
 		// promote to "custom" if it doesn't appear in the preset list.
 		if (isEdit) {
@@ -269,8 +259,37 @@ export function NewContactModal({
 	const isForcedManual = (adapterChoice?.models.length ?? 0) === 0;
 
 	const finalModel = useCustomModel ? customModel.trim() : model;
+	const requiresContactEndpoint =
+		!isEdit && !!adapterChoice?.requires_contact_endpoint;
 	const canSubmit =
-		!!adapterId && !!finalModel && name.trim().length > 0 && !busy;
+		!!adapterId &&
+		!!finalModel &&
+		name.trim().length > 0 &&
+		(!requiresContactEndpoint ||
+			useHostCredentials ||
+			(!!apiKey.trim() && !!apiBaseUrl.trim())) &&
+		!busy;
+
+	const testEndpoint = async () => {
+		if (!apiKey.trim() || !apiBaseUrl.trim() || !finalModel) return;
+		setEndpointProbe({ state: "testing" });
+		try {
+			const result = await api.probeContactEndpoint(adapterId, {
+				api_key: apiKey.trim(),
+				api_base_url: apiBaseUrl.trim(),
+				model: finalModel,
+			});
+			setEndpointProbe({
+				state: result.model_found ? "ok" : "error",
+				message: result.message,
+			});
+		} catch (cause) {
+			setEndpointProbe({
+				state: "error",
+				message: cause instanceof Error ? cause.message : String(cause),
+			});
+		}
+	};
 
 	// Warn if name conflicts with existing contact
 	const nameConflict = useMemo(
@@ -283,14 +302,6 @@ export function NewContactModal({
 		setBusy(true);
 		setErr(null);
 		try {
-			// Context ceiling: preset value, or the custom number when "custom".
-			// Custom non-numeric → fall back to the 200k default (never null/0).
-			const parsedMaxCtx = (() => {
-				if (ctxMode !== "custom") return Number.parseInt(ctxMode, 10);
-				const n = Number.parseInt(customCtx.trim(), 10);
-				return Number.isFinite(n) && n > 0 ? n : DEFAULT_CONTEXT;
-			})();
-
 			if (isEdit && editing) {
 				// Edit mode — adapter is locked, only persona-level fields move.
 				// No tool_role/tools_whitelist: governance lives in the project now.
@@ -300,7 +311,6 @@ export function NewContactModal({
 					system_prompt: systemPrompt.trim(),
 					tagline: tagline.trim(),
 					color,
-					max_context_tokens: parsedMaxCtx,
 					...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
 					api_base_url: apiBaseUrl.trim() || null,
 					skills: cleanSkills(),
@@ -313,9 +323,9 @@ export function NewContactModal({
 					system_prompt: systemPrompt.trim() || undefined,
 					tagline: tagline.trim() || undefined,
 					color,
-					max_context_tokens: parsedMaxCtx ?? undefined,
 					api_key: apiKey.trim() || undefined,
 					api_base_url: apiBaseUrl.trim() || undefined,
+					use_host_credentials_unverified: useHostCredentials || undefined,
 					skills: cleanSkills(),
 				});
 			}
@@ -412,7 +422,7 @@ export function NewContactModal({
 								>
 									{adapters.map((a) => (
 										<option key={a.id} value={a.id}>
-											{a.id}
+											{ADAPTER_LABELS[a.id] ?? a.id}
 										</option>
 									))}
 								</select>
@@ -471,43 +481,15 @@ export function NewContactModal({
 								</div>
 							</Field>
 
-							<Field label={t("maxContextLength", lang)} required>
-								<div className="space-y-1.5">
-									<select
-										value={ctxMode}
-										onChange={(e) => setCtxMode(e.target.value)}
-										className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
-									>
-										{CONTEXT_PRESETS.map((p) => (
-											<option key={p.value} value={String(p.value)}>
-												{p.label}
-											</option>
-										))}
-										<option value="custom">{t("custom", lang)}</option>
-									</select>
-									{ctxMode === "custom" && (
-										<input
-											type="number"
-											min={1024}
-											step={1024}
-											value={customCtx}
-											onChange={(e) => setCustomCtx(e.target.value)}
-											placeholder={t("customTokenCount", lang)}
-											className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
-										/>
-									)}
-									<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
-										{t("contextLengthHint", lang)}
-									</div>
-								</div>
-							</Field>
-
 							<Field label={t("apiKey", lang)}>
 								<input
 									type="password"
 									autoComplete="new-password"
 									value={apiKey}
-									onChange={(e) => setApiKey(e.target.value)}
+									onChange={(e) => {
+										setApiKey(e.target.value);
+										setEndpointProbe({ state: "idle" });
+									}}
 									placeholder={isEdit ? "••••••••" : "sk-…"}
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
 								/>
@@ -520,13 +502,67 @@ export function NewContactModal({
 								<input
 									type="url"
 									value={apiBaseUrl}
-									onChange={(e) => setApiBaseUrl(e.target.value)}
+									onChange={(e) => {
+										setApiBaseUrl(e.target.value);
+										setEndpointProbe({ state: "idle" });
+									}}
 									placeholder="https://api.example.com/v1"
 									className="w-full text-[13px] px-3 py-2 rounded border border-[var(--color-line-strong)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] font-mono outline-none focus:border-[var(--color-accent)]"
 								/>
 								<div className="text-[10.5px] text-[var(--color-fg-3)] leading-relaxed">
 									{t("apiBaseUrlHint", lang)}
 								</div>
+								<div className="flex items-center gap-2 pt-1">
+									<button
+										type="button"
+										onClick={testEndpoint}
+										disabled={
+											endpointProbe.state === "testing" ||
+											!apiKey.trim() ||
+											!apiBaseUrl.trim() ||
+											!finalModel
+										}
+										className="inline-flex items-center gap-1.5 rounded border border-[var(--color-line-strong)] px-2.5 py-1 text-[11px] hover:bg-[var(--color-surface-2)] disabled:opacity-40"
+									>
+										{endpointProbe.state === "testing" ? (
+											<Loader2 size={11} className="animate-spin" />
+										) : (
+											<Wifi size={11} />
+										)}
+										测试连接
+									</button>
+									{endpointProbe.state === "ok" && (
+										<span className="text-[11px] text-green-600">
+											✓ {endpointProbe.message}
+										</span>
+									)}
+									{endpointProbe.state === "error" && (
+										<span className="text-[11px] text-red-500">
+											✗ {endpointProbe.message}
+										</span>
+									)}
+								</div>
+								{requiresContactEndpoint &&
+									(!apiKey.trim() || !apiBaseUrl.trim()) && (
+										<div className="space-y-1.5 text-[10.5px] text-amber-600">
+											<div>
+												未检测到凭证：填写 API Key +
+												endpoint，或确认主机已登录。
+											</div>
+											{adapterChoice?.allows_unverified_host_login && (
+												<label className="inline-flex cursor-pointer items-center gap-1.5 text-[var(--color-fg-2)]">
+													<input
+														type="checkbox"
+														checked={useHostCredentials}
+														onChange={(event) =>
+															setUseHostCredentials(event.target.checked)
+														}
+													/>
+													我已在运行 Polynoia 后端的主机登录，直接尝试
+												</label>
+											)}
+										</div>
+									)}
 							</Field>
 
 							<Field label={t("contactName", lang)} required>
@@ -608,9 +644,9 @@ export function NewContactModal({
 											<button
 												type="button"
 												onClick={() => {
-												setSkillQuery("");
-												setSkillMenuOpen((v) => !v);
-											}}
+													setSkillQuery("");
+													setSkillMenuOpen((v) => !v);
+												}}
 												aria-label={
 													skillMenuOpen
 														? t("collapseSkillList", lang)
@@ -634,7 +670,14 @@ export function NewContactModal({
 													/>
 													<div className="absolute bottom-full z-[62] mb-1 w-full max-h-72 flex flex-col rounded border border-[var(--color-line-strong)] bg-[var(--color-surface)] shadow-[var(--shadow-lg)]">
 														<div className="p-1.5 border-b border-[var(--color-line)]">
-															<input autoFocus type="text" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} placeholder={t("searchSkills", lang)} className="w-full text-[12px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]" />
+															<input
+																autoFocus
+																type="text"
+																value={skillQuery}
+																onChange={(e) => setSkillQuery(e.target.value)}
+																placeholder={t("searchSkills", lang)}
+																className="w-full text-[12px] px-2 py-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-fg)] placeholder:text-[var(--color-fg-3)] outline-none focus:border-[var(--color-accent)]"
+															/>
 														</div>
 														{filteredSkills.length > 0 ? (
 															<div className="flex-1 min-h-0 overflow-y-auto py-1">
@@ -704,8 +747,8 @@ export function NewContactModal({
 														) : (
 															<p className="px-2.5 py-2 text-[11.5px] text-[var(--color-fg-3)]">
 																{installedSkills.length === 0
-														? t("noInstalledSkills", lang)
-														: t("noMatchingSkills", lang)}
+																	? t("noInstalledSkills", lang)
+																	: t("noMatchingSkills", lang)}
 															</p>
 														)}
 													</div>

@@ -5,8 +5,9 @@ import pytest
 
 from polynoia.api import role_presets
 from polynoia.api.role_presets import get_preset, hire_preset, list_presets, parse_preset
+from polynoia.storage import repo as storage_repo
 from polynoia.storage.bootstrap import bootstrap_db
-from polynoia.storage.db import Base, engine
+from polynoia.storage.db import Base, SessionLocal, engine
 
 PRESET_MD = """---
 name: Frontend Developer
@@ -32,6 +33,9 @@ async def catalog(tmp_path, monkeypatch):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await bootstrap_db()
+    async with SessionLocal() as db:
+        await storage_repo.add_onboarded_adapter(db, "opencoder")
+        await db.commit()
     root = role_presets.catalog_dir()
     (root / ".git").mkdir(parents=True)  # marks "synced"
     eng = root / "engineering"

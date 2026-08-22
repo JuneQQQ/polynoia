@@ -53,9 +53,20 @@ export function mergeTerminalPayload(
 	prev: MessagePayload | undefined,
 	next: MessagePayload,
 ): MessagePayload {
-	const p = prev as { kind?: string; running?: boolean } | undefined;
-	const n = next as { running?: boolean };
-	if (p?.kind === "terminal" && p.running === false && n.running === true) {
+	const p = prev as
+		| { kind?: string; running?: boolean; mode?: "blocking" | "background" }
+		| undefined;
+	const n = next as {
+		running?: boolean;
+		mode?: "blocking" | "background";
+	};
+	if (
+		p?.kind === "terminal" &&
+		p.running === false &&
+		n.running === true &&
+		p.mode !== "background" &&
+		n.mode !== "background"
+	) {
 		return prev as MessagePayload;
 	}
 	return next;
@@ -102,18 +113,24 @@ export function flipSupersededRunningTools(
 	return patched;
 }
 
-/** When a turn ends (idle/aborted/error), any of that agent's tool-call /
- * terminal cards still stuck at pending/running never received a `completed`
- * chunk (the turn died mid-tool). Flip them to a terminal state so they stop
- * showing "进行中" forever. Returns a NEW patched map, or null if nothing
- * changed (caller skips the state write). */
+export type TurnEndStatus = "idle" | "aborted" | "error";
+
+/** When a turn ends, retire unfinished *blocking* cards without inventing a
+ * successful result. `idle` is the one successful terminal signal and keeps
+ * the legacy completed/exit-0 fallback for blocking tools whose final frame
+ * lagged. `aborted` and `error` are failures: they can never paint a green tool
+ * or a zero exit code. Background terminals are process-scoped rather than
+ * turn-scoped, so an idle agent must leave them running for their heartbeat /
+ * final process event to update later. Returns a NEW patched map, or null if
+ * nothing changed (caller skips the state write). */
 export function flipStuckCardsOnTurnEnd(
 	messageOrder: readonly string[],
 	msgById: ReadonlyMap<string, Message>,
 	agentId: string,
-	isError: boolean,
+	status: TurnEndStatus,
 ): Map<string, Message> | null {
-	const terminal = isError ? "error" : "completed";
+	const failed = status === "aborted" || status === "error";
+	const terminal = failed ? "error" : "completed";
 	let patched: Map<string, Message> | null = null;
 	for (const mid of messageOrder) {
 		const msg = msgById.get(mid);
@@ -121,7 +138,9 @@ export function flipStuckCardsOnTurnEnd(
 		const p = msg.payload as {
 			kind?: string;
 			state?: string;
+			is_error?: boolean;
 			running?: boolean;
+			mode?: "blocking" | "background";
 			exit_code?: number | null;
 		};
 		if (
@@ -131,18 +150,31 @@ export function flipStuckCardsOnTurnEnd(
 			if (!patched) patched = new Map(msgById);
 			patched.set(mid, {
 				...msg,
-				payload: { ...p, state: terminal } as MessagePayload,
+				payload: {
+					...p,
+					state: terminal,
+					...(failed ? { is_error: true } : {}),
+				} as MessagePayload,
 			});
 		}
-		if (p?.kind === "terminal" && p.running === true) {
+		if (
+			p?.kind === "terminal" &&
+			p.running === true &&
+			p.mode !== "background"
+		) {
 			if (!patched) patched = new Map(msgById);
+			const knownNonZeroExit =
+				typeof p.exit_code === "number" && p.exit_code !== 0
+					? p.exit_code
+					: null;
 			patched.set(mid, {
 				...msg,
 				payload: {
 					...p,
 					running: false,
-					exit_code:
-						typeof p.exit_code === "number" ? p.exit_code : isError ? 1 : 0,
+					exit_code: failed
+						? (knownNonZeroExit ?? (status === "aborted" ? -1 : 1))
+						: (p.exit_code ?? 0),
 				} as MessagePayload,
 			});
 		}

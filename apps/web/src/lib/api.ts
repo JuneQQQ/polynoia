@@ -17,6 +17,9 @@ export type AdapterProbe = {
 	installed: boolean;
 	version: string | null;
 	authenticated: boolean;
+	credential_source?: "cli-login" | "server-endpoint" | null;
+	contact_endpoint?: boolean;
+	ready?: boolean;
 	auth_path: string | null;
 	login_cmd: string;
 	install_hint: string;
@@ -35,6 +38,11 @@ export type EnabledAdapter = {
 	model_hint: string | null;
 	proxy: string | null;
 	proxy_kind: ProxyKind;
+	credential_ready: boolean;
+	credential_source: "cli-login" | "server-endpoint" | null;
+	supports_contact_endpoint: boolean;
+	requires_contact_endpoint: boolean;
+	allows_unverified_host_login: boolean;
 };
 
 function apiUrl(path: string): string {
@@ -66,6 +74,30 @@ export type PendingAccess = {
 	status: "pending" | "accepted" | "rejected" | "timeout";
 	created_at: string | null;
 	decided_at: string | null;
+};
+
+export type HarnessPermission = {
+	id: string;
+	conv_id: string;
+	agent_id: string;
+	provider: string;
+	tool_name: string;
+	tool_input: Record<string, unknown>;
+	title: string;
+	description: string;
+	options: Array<{
+		optionId: string;
+		name: string;
+		kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
+	}>;
+	status: "pending" | "resolved";
+};
+
+export type EndpointProbeResult = {
+	ok: boolean;
+	model_found: boolean;
+	models: string[];
+	message: string;
 };
 
 export type Conflict = {
@@ -145,6 +177,18 @@ export type ProcessRunItem = {
 /** Back-compat alias for older imports; semantically this is now ProcessRun. */
 export type ServiceItem = ProcessRunItem;
 
+async function responseError(res: Response): Promise<Error> {
+	const text = await res.text().catch(() => "");
+	let detail = text;
+	try {
+		const payload = JSON.parse(text) as { detail?: unknown; error?: unknown };
+		detail = String(payload.detail ?? payload.error ?? text);
+	} catch {
+		// Plain-text errors are already actionable.
+	}
+	return new Error(detail || `${res.status} ${res.statusText}`);
+}
+
 async function getJSON<T>(path: string, timeoutMs = 12000): Promise<T> {
 	// Abortable timeout: without it a stalled backend (e.g. a read stuck behind a
 	// write-lock under burst load) leaves the caller spinning forever. With it the
@@ -153,7 +197,7 @@ async function getJSON<T>(path: string, timeoutMs = 12000): Promise<T> {
 	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 	try {
 		const res = await fetch(apiUrl(path), { signal: ctrl.signal });
-		if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+		if (!res.ok) throw await responseError(res);
 		return (await res.json()) as T;
 	} catch (e) {
 		if (e instanceof DOMException && e.name === "AbortError") {
@@ -171,7 +215,7 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
 		headers: { "content-type": "application/json" },
 		body: body !== undefined ? JSON.stringify(body) : undefined,
 	});
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await responseError(res);
 	return res.json() as Promise<T>;
 }
 
@@ -182,16 +226,13 @@ async function patchJSON<T>(path: string, body?: unknown): Promise<T> {
 		body: body !== undefined ? JSON.stringify(body) : undefined,
 	});
 	// surface the server's error detail (e.g. "cannot remove the orchestrator")
-	if (!res.ok)
-		throw new Error(
-			(await res.text().catch(() => "")) || `${res.status} ${res.statusText}`,
-		);
+	if (!res.ok) throw await responseError(res);
 	return res.json() as Promise<T>;
 }
 
 async function deleteJSON<T>(path: string): Promise<T> {
 	const res = await fetch(apiUrl(path), { method: "DELETE" });
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw await responseError(res);
 	return res.json() as Promise<T>;
 }
 
@@ -383,19 +424,6 @@ export const api = {
 		patchJSON<ConversationSummary>(`/api/conversations/${convId}/title`, {
 			title,
 		}),
-	deleteMessage: (
-		convId: string,
-		msgId: string,
-		options?: { silent?: boolean },
-	) =>
-		deleteJSON<{ ok: boolean }>(
-			`/api/conversations/${convId}/messages/${msgId}${options?.silent ? "?silent=true" : ""}`,
-		),
-	updateMessage: (convId: string, msgId: string, text: string) =>
-		patchJSON<{ ok: boolean }>(
-			`/api/conversations/${convId}/messages/${msgId}`,
-			{ text },
-		),
 	interruptStuckWrite: (convId: string, msgId: string) =>
 		patchJSON<{ ok: boolean; updated: boolean }>(
 			`/api/conversations/${convId}/messages/${msgId}/interrupt-stuck-write`,
@@ -599,15 +627,16 @@ export const api = {
 		tagline?: string;
 		tool_role?: string;
 		tools_whitelist?: string[];
-		max_context_tokens?: number | null;
 		api_key?: string;
 		api_base_url?: string | null;
+		use_host_credentials_unverified?: boolean;
 		skills?: { name: string; instructions: string; description?: string }[];
 	}) => postJSON<{ contact: Agent }>("/api/contacts", body),
-	/**「回到这个对话」dry-run: what reverting workspace main to `sha` would undo. */
-	restorePreview: (wsId: string, sha: string, convId?: string) =>
+	/** Preview a rewind anchored to one persisted user message. */
+	rewindPreview: (convId: string, fromMsgId: string) =>
 		getJSON<{
 			ok: boolean;
+			code_restore: boolean;
 			commits: number;
 			files: string[];
 			authors: string[];
@@ -615,27 +644,17 @@ export const api = {
 			blocked: boolean;
 			error?: string;
 		}>(
-			`/api/workspaces/${wsId}/restore-preview?sha=${encodeURIComponent(sha)}${
-				convId ? `&conv_id=${encodeURIComponent(convId)}` : ""
-			}`,
-		),
-	/**「回到这个对话」: hard-reset workspace main to `sha` (records undo ref). */
-	restoreWorkspace: (wsId: string, sha: string, convId?: string) =>
-		postJSON<{ ok: boolean; restored: string; undo_sha: string }>(
-			`/api/workspaces/${wsId}/restore`,
-			{ sha, conv_id: convId },
+			`/api/conversations/${convId}/rewind-preview?from_msg_id=${encodeURIComponent(fromMsgId)}`,
 		),
 	/**「从此处重来」: delete `fromMsgId` + every later msg in this conv, AND (if
 	 * the conv has a workspace) restore main to that msg's code_sha. Returns
-	 * `deleted` count; `restored` + `undo_sha` only set when a code restore
-	 * happened. Refused (409) while an agent is running in this conv. */
+	 * `deleted` count and the restored commit when code changed. */
 	rewindConv: (convId: string, fromMsgId: string) =>
 		postJSON<{
 			ok: boolean;
 			rewind_id: string;
 			deleted: number;
 			restored: string | null;
-			undo_sha: string | null;
 		}>(`/api/conversations/${convId}/rewind`, {
 			from_msg_id: fromMsgId,
 		}),
@@ -663,7 +682,6 @@ export const api = {
 			tagline: string;
 			tool_role: string;
 			tools_whitelist: string[];
-			max_context_tokens: number | null;
 			api_key: string | null;
 			api_base_url: string | null;
 			skills: { name: string; instructions: string; description?: string }[];
@@ -708,10 +726,6 @@ export const api = {
 		file: string;
 		hunks: Array<{ header: string; lines: Array<[string, number, string]> }>;
 		message_id?: string;
-		/** true → `git apply --reverse`: undo an already-committed edit. */
-		reverse?: boolean;
-		/** Editing agent (worker ULID) — revert targets THAT agent's worktree. */
-		agent_id?: string;
 	}) =>
 		postJSON<{ ok: boolean; sha?: string; error?: string; note?: string }>(
 			"/api/diff/apply",
@@ -971,22 +985,6 @@ export const api = {
 			}>;
 		}>(`/api/benchmark/runs${qs ? `?${qs}` : ""}`);
 	},
-	/** Append-only turn-event log for one conversation (forensics/replay). */
-	convEvents: (convId: string, after = 0, limit = 500) =>
-		getJSON<{
-			events: Array<{
-				seq: number;
-				etype: string;
-				turn_id: string | null;
-				sender_id: string | null;
-				ts: string;
-				data: Record<string, unknown>;
-			}>;
-			next: number;
-		}>(`/api/conversations/${convId}/events?after=${after}&limit=${limit}`),
-	workspaceDiscardWorking: (wsId: string) =>
-		postJSON<{ ok: boolean }>(`/api/workspaces/${wsId}/discard-working`),
-
 	/** Trigger a browser download of a single workspace file (any type/size). */
 	downloadWorkspaceFile: (wsId: string, path: string) => {
 		const url = `/api/workspaces/${wsId}/files/download?path=${encodeURIComponent(path)}`;
@@ -1031,6 +1029,23 @@ export const api = {
 		postJSON<PendingEdit>(`/api/pending-edits/${id}/decide`, {
 			decision: "reject",
 		}),
+	decideHarnessPermission: (
+		permission: HarnessPermission,
+		decision: "allow" | "deny",
+		optionId?: string,
+	) =>
+		postJSON<{ ok: boolean; permission_id: string; decision: string }>(
+			`/api/conversations/${permission.conv_id}/agents/${permission.agent_id}/permissions/${permission.id}`,
+			{ decision, option_id: optionId },
+		),
+	probeContactEndpoint: (
+		adapterId: string,
+		input: { api_key: string; api_base_url: string; model: string },
+	) =>
+		postJSON<EndpointProbeResult>(
+			`/api/adapters/${encodeURIComponent(adapterId)}/probe-endpoint`,
+			input,
+		),
 	/** Hydrate pending edits for a conv on page load (active conv). */
 	listPendingEdits: (convId: string, status?: string) => {
 		const qs = status ? `?status=${encodeURIComponent(status)}` : "";

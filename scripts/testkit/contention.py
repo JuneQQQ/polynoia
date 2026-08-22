@@ -14,7 +14,7 @@
         INV12 conflict 卡终态、INV2 turn_id 齐全)
 
 反复跑 N 轮(同一群聊累积,既压竞争也压 aging),抓竞态。失败时导出该轮 conv 的
-turn_events 切片 + git 状态做取证。
+Conversation Stream 切片 + git 状态做取证。
 
 用法:
   python3 scripts/testkit/contention.py --rounds 10 [--workers 3] [--base http://127.0.0.1:7780]
@@ -162,7 +162,7 @@ def main() -> int:
             # forensic dump
             dump = REPO / ".tmp" / f"contention-r{n}-forensics.json"
             dump.parent.mkdir(exist_ok=True)
-            ev = req(args.base, "GET", f"/api/conversations/{conv_id}/events?after=0&limit=5000")
+            ev = req(args.base, "GET", f"/api/conversations/{conv_id}/stream?after=0&limit=5000")
             dump.write_text(json.dumps({"git": gbad, "events_inv": ev_bad, "stream": ev["events"]}, ensure_ascii=False, indent=2))
             print(f"      取证 → {dump}")
 
@@ -198,7 +198,7 @@ async def _send_and_settle(base: str, conv_id: str, orch_id: str, text: str, tim
                 convs = req(base, "GET", "/api/conversations")
                 conv = next((c for c in convs if c["id"] == conv_id), None)
                 running = bool(conv and conv.get("running_agents"))
-                ev = req(base, "GET", f"/api/conversations/{conv_id}/events?after={last_seq}&limit=50")
+                ev = req(base, "GET", f"/api/conversations/{conv_id}/stream?after={last_seq}&limit=50")
                 if ev["next"] != last_seq:
                     last_seq, last_change = ev["next"], time.monotonic()
                 idle = time.monotonic() - last_change

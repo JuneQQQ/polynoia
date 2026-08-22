@@ -13,8 +13,7 @@ yield AdapterEvent instances from `AdapterSession.send()`.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
-from typing import Annotated, Any, Literal, Protocol, Union
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -53,7 +52,20 @@ class AdapterMeta(BaseModel):
 # ── Event types (judgement union via top-level `type`) ─────────────
 
 
-class SessionStartedEvent(BaseModel):
+class AdapterEventBase(BaseModel):
+    """Common provenance carried by every normalized PAP event.
+
+    ``metadata`` preserves protocol extensions that Polynoia understands or
+    may understand later. ``raw`` is a bounded, redacted copy of the source
+    protocol object and is never required for the normal UI path.
+    """
+
+    provider: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] | None = None
+
+
+class SessionStartedEvent(AdapterEventBase):
     type: Literal["session.started"] = "session.started"
     session_id: str
     cwd: str
@@ -61,19 +73,19 @@ class SessionStartedEvent(BaseModel):
     model: str | None = None
 
 
-class SessionEndedEvent(BaseModel):
+class SessionEndedEvent(AdapterEventBase):
     type: Literal["session.ended"] = "session.ended"
     session_id: str
     reason: Literal["complete", "aborted", "error"]
 
 
-class TurnStartedEvent(BaseModel):
+class TurnStartedEvent(AdapterEventBase):
     type: Literal["turn.started"] = "turn.started"
     turn_id: str
     task_id: str  # Orchestrator-assigned;single chat uses session_id as fallback
 
 
-class TurnCompletedEvent(BaseModel):
+class TurnCompletedEvent(AdapterEventBase):
     type: Literal["turn.completed"] = "turn.completed"
     turn_id: str
     task_id: str
@@ -83,14 +95,14 @@ class TurnCompletedEvent(BaseModel):
     stop_reason: str = "complete"
 
 
-class TurnFailedEvent(BaseModel):
+class TurnFailedEvent(AdapterEventBase):
     type: Literal["turn.failed"] = "turn.failed"
     turn_id: str
     task_id: str
     error: dict[str, Any]
 
 
-class PartStartedEvent(BaseModel):
+class PartStartedEvent(AdapterEventBase):
     """A new MessagePayload starts(text-start for text;single-shot for cards)."""
 
     type: Literal["part.started"] = "part.started"
@@ -101,7 +113,7 @@ class PartStartedEvent(BaseModel):
     part: MessagePayload  # initial state(text 时 body 可能为空待 delta 填)
 
 
-class PartDeltaEvent(BaseModel):
+class PartDeltaEvent(AdapterEventBase):
     """Incremental update (mostly for text streaming)."""
 
     type: Literal["part.delta"] = "part.delta"
@@ -110,7 +122,7 @@ class PartDeltaEvent(BaseModel):
     delta: dict[str, Any]  # 形如 {"text": "..."}
 
 
-class PartCompletedEvent(BaseModel):
+class PartCompletedEvent(AdapterEventBase):
     """A part finishes; for cards this is the only event emitted (no start+delta+end)."""
 
     type: Literal["part.completed"] = "part.completed"
@@ -119,7 +131,7 @@ class PartCompletedEvent(BaseModel):
     part: MessagePayload
 
 
-class PermissionRequestedEvent(BaseModel):
+class PermissionRequestedEvent(AdapterEventBase):
     type: Literal["permission.requested"] = "permission.requested"
     task_id: str
     permission_id: str
@@ -127,9 +139,38 @@ class PermissionRequestedEvent(BaseModel):
     tool_input: dict[str, Any]
     title: str
     description: str
+    options: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class HookTriggeredEvent(BaseModel):
+class PlanUpdatedEvent(AdapterEventBase):
+    """Provider-neutral plan/checklist snapshot or incremental operation."""
+
+    type: Literal["plan.updated"] = "plan.updated"
+    task_id: str
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    operation: Literal["replace", "update", "remove"] = "replace"
+
+
+class SessionUsageUpdatedEvent(AdapterEventBase):
+    """Current context-window and cumulative cost state."""
+
+    type: Literal["session.usage"] = "session.usage"
+    session_id: str | None = None
+    used: int
+    size: int
+    cost: dict[str, Any] | None = None
+
+
+class ExtensionEvent(AdapterEventBase):
+    """A lossless escape hatch for non-standard ACP notifications."""
+
+    type: Literal["extension.event"] = "extension.event"
+    name: str
+    task_id: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class HookTriggeredEvent(AdapterEventBase):
     type: Literal["hook.triggered"] = "hook.triggered"
     hook: Literal[
         "pre_tool",
@@ -146,26 +187,27 @@ class HookTriggeredEvent(BaseModel):
     data: dict[str, Any]
 
 
-class RateLimitEvent(BaseModel):
+class RateLimitEvent(AdapterEventBase):
     type: Literal["rate_limit"] = "rate_limit"
     status: Literal["allowed", "warning", "rejected"]
     retry_after_s: int | None = None
 
 
 AdapterEvent = Annotated[
-    Union[
-        SessionStartedEvent,
-        SessionEndedEvent,
-        TurnStartedEvent,
-        TurnCompletedEvent,
-        TurnFailedEvent,
-        PartStartedEvent,
-        PartDeltaEvent,
-        PartCompletedEvent,
-        PermissionRequestedEvent,
-        HookTriggeredEvent,
-        RateLimitEvent,
-    ],
+    SessionStartedEvent
+    | SessionEndedEvent
+    | TurnStartedEvent
+    | TurnCompletedEvent
+    | TurnFailedEvent
+    | PartStartedEvent
+    | PartDeltaEvent
+    | PartCompletedEvent
+    | PermissionRequestedEvent
+    | PlanUpdatedEvent
+    | SessionUsageUpdatedEvent
+    | ExtensionEvent
+    | HookTriggeredEvent
+    | RateLimitEvent,
     Field(discriminator="type"),
 ]
 
@@ -193,6 +235,7 @@ class AdapterSession(Protocol):
         allow: bool,
         updated_input: dict[str, Any] | None = None,
         reason: str | None = None,
+        option_id: str | None = None,
     ) -> None: ...
 
     async def interrupt(self, task_id: str | None = None) -> None: ...

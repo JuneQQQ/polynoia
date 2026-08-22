@@ -31,6 +31,18 @@ _ROLE_TOOLS_DESC: dict[str, str] = {
     "group_member": "你是**群聊成员**:能读写文件、改代码、跑命令;完成后用 `report` 交付,不要自己 `present`。",
 }
 
+_QWEN_MCP_DISCIPLINE = """# Qwen ACP 工具纪律(平台规则,自动注入)
+
+你当前只使用 ACP 会话注入的 Polynoia MCP 工具。工具在线上可能带
+`mcp__polynoia__` / `polynoia_` 等前缀;**以本次请求里真实 tool-call schema
+的名称和 description 为准**,不要凭正文简称臆造一个裸 `write` / `bash` 名称。
+
+- 第一次需要工具时,先真实调用 `tool_search` 搜索 `Polynoia write/read/bash/present/dispatch` 等能力;再调用搜索结果返回的精确工具名。
+- 要写文件:选择 description 明确表示 Polynoia 文件写入的真实工具;成功后再选择真实读取工具核对。
+- 要跑命令:选择 Polynoia 命令/测试工具;不要调用 Qwen 原生 Shell、Computer Use、WebFetch 等工具。
+- `present` / `dispatch` / `discuss` / `report` 同理:只调用实际 schema 中对应的 Polynoia MCP 工具。
+- 没有真实工具结果就不能声称已经落盘、测试通过或派活成功。"""
+
 _TOOL_CALL_FORMAT_RULE = """## 工具调用格式(平台强制)
 
 工具调用必须走系统注入的真实 tool-call schema,**不要**在普通回复里打印、模拟或解释工具调用 JSON / XML / 伪命令。
@@ -117,18 +129,16 @@ def build_identity_layer(
     pool uses to gate the real toolset — NOT the persona-label ``agent.tool_role``,
     so the prompt can't drift from the actual toolset."""
     from polynoia.tool_policy import effective_tool_role
+
     setup = agent.setup
     adapter_id = setup.adapter_id if setup else None
     model = setup.model if setup else None
+    uses_qwen_mcp = adapter_id == "qwenCode"
 
     parts: list[str] = ["# 身份"]
-    parts.append(
-        f"你是 **{agent.name}**(handle:`{agent.handle}`,id:`{agent.id}`)。"
-    )
+    parts.append(f"你是 **{agent.name}**(handle:`{agent.handle}`,id:`{agent.id}`)。")
     if adapter_id and model:
-        parts.append(
-            f"由 `{adapter_id}` 后端驱动,model = `{model}`。"
-        )
+        parts.append(f"由 `{adapter_id}` 后端驱动,model = `{model}`。")
     elif adapter_id:
         parts.append(f"由 `{adapter_id}` 后端驱动。")
 
@@ -146,15 +156,18 @@ def build_identity_layer(
     # we don't double it. New user-created agents (one-line personas) get it free.
     persona_raw = agent.system_prompt or ""
     if "工具使用纪律" not in persona_raw:
-        role = effective_tool_role(
-            is_orchestrator=is_orchestrator,
-            is_group=is_group,
-        )
         parts.append("")
-        parts.append("## 工具与纪律")
-        parts.append(_ROLE_TOOLS_DESC.get(role, _ROLE_TOOLS_DESC["generalist"]))
-        parts.append("")
-        parts.append(_DISCIPLINE_COMMON)
+        if uses_qwen_mcp:
+            parts.append(_QWEN_MCP_DISCIPLINE)
+        else:
+            role = effective_tool_role(
+                is_orchestrator=is_orchestrator,
+                is_group=is_group,
+            )
+            parts.append("## 工具与纪律")
+            parts.append(_ROLE_TOOLS_DESC.get(role, _ROLE_TOOLS_DESC["generalist"]))
+            parts.append("")
+            parts.append(_DISCIPLINE_COMMON)
 
     # Per-project role (R2): only present in a project conv. Sits above the
     # global persona so the project responsibility is the first role-level
@@ -189,9 +202,7 @@ def build_identity_layer(
             # Explicit per-contact overrides remain inline. Package instructions
             # are otherwise left to native progressive disclosure; only future
             # adapters or non-portable packages receive the full fallback.
-            native = supports_native_skills(adapter_id) and bool(
-                native_skill_package_name(s.name)
-            )
+            native = supports_native_skills(adapter_id) and bool(native_skill_package_name(s.name))
             instructions = (s.instructions or "").strip()
             if not instructions and not native:
                 instructions = fallback.get("instructions", "")
@@ -204,7 +215,5 @@ def build_identity_layer(
     return ContextLayer.make(
         kind="identity",
         content="\n".join(parts),
-        priority=100,
-        hard=True,  # agent MUST know who it is — never truncate
         meta={"agent_id": agent.id},
     )

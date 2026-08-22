@@ -151,7 +151,7 @@ def main() -> int:
     p.add_argument(
         "--agent",
         required=True,
-        help="agent id (e.g. claudeCode, opencoder, codex)",
+        help="agent id (e.g. claudeCode, opencoder, codex, qwenCode, deepseek)",
     )
     p.add_argument("--conv", help="conv id (default: cli-<timestamp>)")
     p.add_argument(

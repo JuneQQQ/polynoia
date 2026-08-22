@@ -1,6 +1,8 @@
 """Unit tests for Polynoia MCP tools."""
+
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -20,9 +22,9 @@ async def ctx(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_write_then_read(ctx):
-    write_res = await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "hello.txt", "content": "world\n"
-    })
+    write_res = await TOOL_REGISTRY["write"].execute(
+        ctx, {"path": "hello.txt", "content": "world\n"}
+    )
     assert write_res["kind"] == "wrote"
     assert write_res["created"] is True
     assert write_res["commit_sha"]
@@ -34,12 +36,10 @@ async def test_write_then_read(ctx):
 
 @pytest.mark.asyncio
 async def test_edit_targeted_replace(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "m.py", "content": "a = 1\nb = 2\nc = 3\n"
-    })
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "m.py", "old_string": "b = 2", "new_string": "b = 22"
-    })
+    await TOOL_REGISTRY["write"].execute(ctx, {"path": "m.py", "content": "a = 1\nb = 2\nc = 3\n"})
+    res = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "m.py", "old_string": "b = 2", "new_string": "b = 22"}
+    )
     assert res["kind"] == "edited"
     assert res["replacements"] == 1
     assert res["commit_sha"]
@@ -51,26 +51,24 @@ async def test_edit_targeted_replace(ctx):
 @pytest.mark.asyncio
 async def test_edit_not_found(ctx):
     await TOOL_REGISTRY["write"].execute(ctx, {"path": "m.py", "content": "x = 1\n"})
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "m.py", "old_string": "nope", "new_string": "y"
-    })
+    res = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "m.py", "old_string": "nope", "new_string": "y"}
+    )
     assert res["kind"] == "error"
 
 
 @pytest.mark.asyncio
 async def test_edit_non_unique_requires_replace_all(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "m.py", "content": "v\nv\nv\n"
-    })
+    await TOOL_REGISTRY["write"].execute(ctx, {"path": "m.py", "content": "v\nv\nv\n"})
     # Ambiguous match → fail loudly.
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "m.py", "old_string": "v", "new_string": "w"
-    })
+    res = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "m.py", "old_string": "v", "new_string": "w"}
+    )
     assert res["kind"] == "error"
     # replace_all → all occurrences replaced.
-    res2 = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "m.py", "old_string": "v", "new_string": "w", "replace_all": True
-    })
+    res2 = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "m.py", "old_string": "v", "new_string": "w", "replace_all": True}
+    )
     assert res2["kind"] == "edited"
     assert res2["replacements"] == 3
     read_res = await TOOL_REGISTRY["read"].execute(ctx, {"path": "m.py"})
@@ -80,21 +78,21 @@ async def test_edit_non_unique_requires_replace_all(ctx):
 @pytest.mark.asyncio
 async def test_edit_rejects_empty_and_identical(ctx):
     await TOOL_REGISTRY["write"].execute(ctx, {"path": "m.py", "content": "k = 1\n"})
-    empty = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "m.py", "old_string": "", "new_string": "z"
-    })
+    empty = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "m.py", "old_string": "", "new_string": "z"}
+    )
     assert empty["kind"] == "error"
-    same = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "m.py", "old_string": "k = 1", "new_string": "k = 1"
-    })
+    same = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "m.py", "old_string": "k = 1", "new_string": "k = 1"}
+    )
     assert same["kind"] == "error"
 
 
 @pytest.mark.asyncio
 async def test_edit_missing_file(ctx):
-    res = await TOOL_REGISTRY["edit"].execute(ctx, {
-        "path": "nope.py", "old_string": "a", "new_string": "b"
-    })
+    res = await TOOL_REGISTRY["edit"].execute(
+        ctx, {"path": "nope.py", "old_string": "a", "new_string": "b"}
+    )
     assert res["kind"] == "error"
 
 
@@ -107,18 +105,49 @@ async def test_bash(ctx):
 
 
 @pytest.mark.asyncio
+async def test_bash_drains_large_single_line_and_spills_full_output(ctx):
+    """A no-newline payload larger than StreamReader's line limit must neither
+    deadlock the child nor lie about truncation.  The model gets bounded
+    head/tail windows and an exact path to the complete bytes."""
+    res = await asyncio.wait_for(
+        TOOL_REGISTRY["bash"].execute(
+            ctx,
+            {
+                "command": (
+                    'python3 -c "import sys; '
+                    "sys.stdout.buffer.write(b'HEAD_CANARY\\n' + "
+                    "b'X' * 1200000 + b'\\nTAIL_CANARY\\n')\""
+                ),
+                "timeout": 10,
+            },
+        ),
+        timeout=20,
+    )
+    assert res["kind"] == "completed"
+    assert res["exit_code"] == 0
+    assert res["stdout_truncated"] is True
+    assert res["stdout_bytes"] > 1_200_000
+    assert "HEAD_CANARY" in res["stdout_head"]
+    assert "TAIL_CANARY" in res["stdout"]
+    spill = ctx.sandbox.root / res["stdout_file"]
+    assert spill.exists()
+    raw = spill.read_bytes()
+    assert raw.startswith(b"HEAD_CANARY\n")
+    assert raw.endswith(b"\nTAIL_CANARY\n")
+
+
+@pytest.mark.asyncio
 async def test_bash_timeout(ctx):
-    res = await TOOL_REGISTRY["bash"].execute(ctx, {
-        "command": "sleep 5", "timeout": 0.5
-    })
+    res = await TOOL_REGISTRY["bash"].execute(ctx, {"command": "sleep 5", "timeout": 0.5})
     assert res["kind"] == "timeout"
+    assert res["timed_out"] is True
 
 
 @pytest.mark.asyncio
 async def test_grep(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "a.txt", "content": "needle\nhaystack\nneedle again\n"
-    })
+    await TOOL_REGISTRY["write"].execute(
+        ctx, {"path": "a.txt", "content": "needle\nhaystack\nneedle again\n"}
+    )
     res = await TOOL_REGISTRY["grep"].execute(ctx, {"pattern": "needle"})
     assert res["kind"] == "results"
     assert len(res["matches"]) == 2
@@ -138,9 +167,14 @@ async def test_glob(ctx):
 async def test_audit_log_records_tool_calls(ctx):
     """Every tool call appends to .polynoia/audit.jsonl."""
     import json as _json
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "a.txt", "content": "hi",
-    })
+
+    await TOOL_REGISTRY["write"].execute(
+        ctx,
+        {
+            "path": "a.txt",
+            "content": "hi",
+        },
+    )
     audit_path = ctx.sandbox.root / ".polynoia" / "audit.jsonl"
     assert audit_path.exists()
     entries = [_json.loads(line) for line in audit_path.read_text().splitlines() if line]
@@ -160,9 +194,13 @@ async def test_path_escape_rejected(ctx):
 
 @pytest.mark.asyncio
 async def test_commit_carries_agent_identity(ctx):
-    await TOOL_REGISTRY["write"].execute(ctx, {
-        "path": "foo.txt", "content": "hello",
-    })
+    await TOOL_REGISTRY["write"].execute(
+        ctx,
+        {
+            "path": "foo.txt",
+            "content": "hello",
+        },
+    )
     commits = await ctx.sandbox.git_log()
     # Most recent commit should be by test-agent
     assert commits[0]["author"] == "test-agent <test-agent@polynoia.local>"
@@ -254,9 +292,7 @@ def test_is_concurrent_safe_surfaces_as_readonly_hint() -> None:
     for name, tool in TOOL_REGISTRY.items():
         hint = tool.spec().annotations.readOnlyHint
         assert hint == tool.is_concurrent_safe, f"{name}: spec hint != flag"
-        assert hint is (name in SAFE), (
-            f"{name}: is_concurrent_safe={hint}, expected {name in SAFE}"
-        )
+        assert hint is (name in SAFE), f"{name}: is_concurrent_safe={hint}, expected {name in SAFE}"
     # The mutating tools must NOT be marked safe (they'd run concurrently + clobber).
     for unsafe in ("write", "edit", "bash", "dispatch", "ask_user", "remember"):
         assert TOOL_REGISTRY[unsafe].is_concurrent_safe is False

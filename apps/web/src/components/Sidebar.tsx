@@ -362,14 +362,14 @@ export function Sidebar({
 	// expired). Custom agents and `you`/`orchestrator` aren't probed.
 	// Also tracks "how many adapters has the user explicitly onboarded".
 	const [adapterReady, setAdapterReady] = useState<Record<string, boolean>>({});
-	/** total=3 is the known count of candidates (claudeCode/codex/opencoder),
+	/** total=5 is the known count of adapter candidates,
 	 * baked in so the first-run card can render *before* the probe completes
 	 * or even when the probe fails (e.g. immediately after a DB reset where
 	 * onboarded_adapters table doesn't exist). */
 	const [adapterStatus, setAdapterStatus] = useState<{
 		enabled: number;
 		total: number;
-	}>({ enabled: 0, total: 3 });
+	}>({ enabled: 0, total: 5 });
 	/** True once we've successfully fetched adapter status at least once.
 	 * Card guards use this instead of `total > 0` so a failed probe doesn't
 	 * permanently hide the first-run card. */
@@ -388,7 +388,7 @@ export function Sidebar({
 			const enabled = await api.listEnabledAdapters();
 			setAdapterStatus((prev) => ({
 				enabled: enabled.length,
-				total: prev.total || 3,
+				total: prev.total || 5,
 			}));
 			setAdapterStatusLoaded(true);
 		} catch {
@@ -399,10 +399,24 @@ export function Sidebar({
 		try {
 			const probes = await api.probeAdapters();
 			const map: Record<string, boolean> = {};
+			const probeById = new Map(probes.map((probe) => [probe.id, probe]));
 			for (const p of probes) {
-				map[p.id] = p.installed && p.authenticated;
+				map[p.id] = p.enabled && p.installed;
 			}
 			setAdapterReady(map);
+			useStore.setState((state) => ({
+				agents: state.agents.map((agent) => {
+					const adapterId = agent.setup?.adapter_id;
+					if (!adapterId || !(adapterId in map)) return agent;
+					const probe = probeById.get(adapterId);
+					const credentialReady = Boolean(
+						probe?.authenticated ||
+							agent.setup?.has_api_key ||
+							agent.setup?.use_host_credentials_unverified,
+					);
+					return { ...agent, online: map[adapterId] && credentialReady };
+				}),
+			}));
 			setAdapterStatus({
 				enabled: probes.filter((p) => p.enabled).length,
 				total: probes.length,

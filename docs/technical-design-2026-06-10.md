@@ -235,21 +235,20 @@ Agent CLI 侧看到的工具名带 MCP 标准前缀:`mcp__polynoia__${name}`。�
 
 ### 7.1 入口与分层
 
-入口是 `assembler.build_context_for_turn(db, agent_id, conv_id, user_text) -> str`,五层拼装。设计原则是服务端全自管(ADR-002),不让 LLM 自己管理上下文:
+入口是 `assembler.build_session_bootstrap(...)`。新 Harness Session 只注入一次身份、项目规则和恢复快照;普通轮次只追加新增输入与该 Agent 尚未见过的 canonical delta(ADR-012):
 
-| 层 | 模块 | 内容 | 超额策略 |
+| 层 | 模块 | 内容 | 投递时机 |
 |---|---|---|---|
-| L1 Identity | identity.py | system_prompt + persona + 平台规则 | 截末尾(Hard) |
-| L2 Briefs | briefs.py | 当前 workspace 详情;其他只列名 | 不展开,≤10 项 |
-| L3 Ledger | ledger.py | 跨 conv 事件:本 Agent 参与的 conv 消息 + 同 workspace git commit(`git log --since=7d --format="[%h] %an: %s"`,commit author 即 agent_id) | 倒序 fill |
-| L4 History | history.py + window.py | 当前 conv 滚动窗口(30 条;P1 cheap-model 摘要) | 丢旧 |
-| L5 User Turn | — | 本轮输入 + shared_memory 注入(按 kind 分层,契约/决策优先,预算上限 0.08,ADR-019) | 不动(Hard) |
+| L1 Identity | identity.py | system_prompt + persona + 平台规则 | Session 创建/恢复 |
+| L2 Briefs | briefs.py | 当前 workspace 详情;其他只列名 | Session 创建/恢复 |
+| L3 Ledger | ledger.py | 跨 conv 活动摘要 | Session 创建/恢复 |
+| L4 History | history.py + window.py | 当前 conv 恢复快照 | Session 创建/恢复 |
+| Delta | Conversation Stream | 未投递的外部 user/assistant/task 事实 | 每轮按 seq 追加一次 |
+| User Turn | — | 本轮新增输入 | 每轮追加一次 |
 
-### 7.2 预算公式(ADR-012)
+### 7.2 Session 与资源边界(ADR-012)
 
-![上下文预算瀑布](<../assets/tecpic/上下文预算瀑布.png>)
-
-Token 估算在 P0 用 `len(text) // 3` 粗估(CJK 乘 1.5 修正),长消息做 per-message cap,保头尾、折叠中间;P1 接真 tokenizer。
+模型 Context 截断/压缩由 Harness 管理。Polynoia 只保留与模型窗口无关的资源边界:消息/附件、工具输出 spill、事件大小与 WebSocket 背压。恢复快照中的单条超大内容仍保头尾折叠,避免资源耗尽。
 
 ### 7.3 隐私规则
 

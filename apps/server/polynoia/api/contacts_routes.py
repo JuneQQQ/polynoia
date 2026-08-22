@@ -14,16 +14,123 @@ defines ``router = APIRouter()``; ``main.py`` includes it.
 from __future__ import annotations
 
 import contextlib
+import json
+import shutil
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, HTTPException
 
-from polynoia.sandbox import Sandbox
+from polynoia.api.execution import RUNTIME
+from polynoia.sandbox import Sandbox, agent_subprocess_path
 from polynoia.settings import settings
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 
 router = APIRouter()
+
+
+@router.post("/api/conversations/{conv_id}/agents/{agent_id}/permissions/{permission_id}")
+async def decide_harness_permission(
+    conv_id: str,
+    agent_id: str,
+    permission_id: str,
+    body: dict,
+):
+    """Resolve a blocking ACP permission request on its live session."""
+
+    decision = str(body.get("decision") or "").strip().lower()
+    if decision not in {"allow", "deny"}:
+        raise HTTPException(400, "decision must be 'allow' or 'deny'")
+    option_id = body.get("option_id")
+    if option_id is not None and not isinstance(option_id, str):
+        raise HTTPException(400, "option_id must be a string")
+    from polynoia.adapters.pool import get_pool
+
+    resolved = await get_pool().respond_permission(
+        agent_id,
+        conv_id,
+        permission_id,
+        allow=decision == "allow",
+        option_id=option_id,
+    )
+    if not resolved:
+        raise HTTPException(409, "permission request expired or session is no longer active")
+    live_entry = (RUNTIME.live.get(conv_id) or {}).get(agent_id)
+    if live_entry is not None:
+        live_entry.get("harness_permissions", {}).pop(permission_id, None)
+    # Resolve every open tab, not only the tab that made the HTTP decision.
+    # Without this tombstone another tab keeps a stale approval bar until idle
+    # and receives a confusing 409 when clicked.
+    from polynoia.api.routes import _broadcast_to_conv
+
+    await _broadcast_to_conv(
+        conv_id,
+        "data: "
+        + json.dumps(
+            {
+                "type": "data-harness-permission-resolved",
+                "id": permission_id,
+                "data": {
+                    "permission_id": permission_id,
+                    "agent_id": agent_id,
+                    "decision": decision,
+                },
+                "sender_id": agent_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n\n",
+    )
+    return {"ok": True, "permission_id": permission_id, "decision": decision}
+
+
+@router.post("/api/adapters/{adapter_id}/probe-endpoint")
+async def probe_contact_endpoint(adapter_id: str, body: dict):
+    """Validate a write-only contact endpoint before the user saves it."""
+
+    if adapter_id not in {"claudeCode", "codex", "qwenCode", "deepseek", "opencoder"}:
+        raise HTTPException(404, "unknown adapter")
+    api_key = str(body.get("api_key") or "").strip()
+    base_url = _optional_api_base_url(body.get("api_base_url"))
+    model = str(body.get("model") or "").strip()
+    if not api_key or not base_url:
+        raise HTTPException(400, "API Key 和 endpoint 都需要填写")
+    url = base_url.rstrip("/") + "/models"
+    headers = {"authorization": f"Bearer {api_key}"}
+    if adapter_id == "claudeCode":
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"无法连接 endpoint: {exc}") from exc
+    if not response.is_success:
+        hint = response.text.strip()[:300]
+        raise HTTPException(response.status_code, f"endpoint 返回 {response.status_code}: {hint}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(502, "endpoint /models 没有返回 JSON") from exc
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    model_ids = [
+        str(row.get("id"))
+        for row in rows if isinstance(row, dict) and row.get("id")
+    ] if isinstance(rows, list) else []
+    model_found = not model or not model_ids or model in model_ids
+    message = "连接成功" if model_found else "连接成功, 但模型不在 /models 清单中"
+    if adapter_id == "codex":
+        message += ";这里只验证了 /models，Codex 实际还要求 endpoint 支持 /responses"
+    return {
+        "ok": True,
+        "model_found": model_found,
+        "models": model_ids[:100],
+        "message": message,
+    }
 
 
 # ── Seed data endpoints (P0) ───────────────────────────────────
@@ -40,10 +147,33 @@ async def list_providers():
 async def list_agents():
     async with SessionLocal() as session:
         rows = await storage_repo.list_agents(session)
+        onboarded = set(await storage_repo.list_onboarded_adapters(session))
         # Frontend expects "you" in the seed too (virtual sender)
         from polynoia.api.seed import seed_agents
+        from polynoia.api.onboarding import credential_state
+
         you = next((a for a in seed_agents() if a.id == "you"), None)
-        result = [r.model_dump() for r in rows]
+        result = []
+        for row in rows:
+            item = row.model_dump()
+            setup = row.setup
+            adapter_id = setup.adapter_id if setup else None
+            if adapter_id:
+                credentials = credential_state(adapter_id)
+                cli = setup.cli_command if setup else None
+                installed = bool(
+                    cli and shutil.which(cli, path=agent_subprocess_path())
+                )
+                item["online"] = bool(
+                    adapter_id in onboarded
+                    and installed
+                    and (
+                        credentials["credential_ready"]
+                        or setup.has_api_key
+                        or setup.use_host_credentials_unverified
+                    )
+                )
+            result.append(item)
         if you:
             result.insert(0, you.model_dump())
         return result
@@ -79,7 +209,7 @@ async def enable_adapter(agent_id: str):
     from polynoia.api.agent_templates import ADAPTER_AGENT_TEMPLATES
 
     if agent_id not in ADAPTER_AGENT_TEMPLATES:
-        return {"error": f"unknown adapter id: {agent_id}"}, 404
+        raise HTTPException(404, f"unknown adapter id: {agent_id}")
     async with SessionLocal() as session:
         await storage_repo.add_onboarded_adapter(session, agent_id)
         await session.commit()
@@ -96,13 +226,26 @@ async def disable_adapter(agent_id: str):
     """
     async with SessionLocal() as session:
         ok = await storage_repo.remove_onboarded_adapter(session, agent_id)
+        contacts = [
+            row
+            for row in await storage_repo.list_agents(session)
+            if row.setup and row.setup.adapter_id == agent_id
+        ]
         await session.commit()
+    from polynoia.adapters.pool import get_pool
+
+    for contact in contacts:
+        await get_pool().close_sessions_for_agent(contact.id)
     return {"adapter_id": agent_id, "enabled": False, "removed": ok}
 
 
-_VALID_TOOL_ROLES = frozenset({
-    "orchestrator", "group_member", "generalist",
-})
+_VALID_TOOL_ROLES = frozenset(
+    {
+        "orchestrator",
+        "group_member",
+        "generalist",
+    }
+)
 
 
 def _validate_tool_role(raw: object) -> str:
@@ -142,6 +285,7 @@ def _validate_tools_whitelist(raw: object) -> list[str]:
 def _caps_from_tools(tool_role: str, tools: list[str]) -> list[str]:
     """Display capability tags derived from the role's visible tool set."""
     from polynoia.mcp.tools import tools_for_role
+
     eff = set(tools_for_role(tool_role, set(tools) or None).keys())
     caps: list[str] = []
     if "write" in eff:
@@ -175,6 +319,7 @@ async def list_enabled_adapters():
         ADAPTER_MODEL_HINT,
         ADAPTER_MODELS,
     )
+    from polynoia.api.onboarding import credential_state
 
     async with SessionLocal() as session:
         rows = await storage_repo.list_onboarded_adapter_rows(session)
@@ -195,18 +340,32 @@ async def list_enabled_adapters():
                 return probed
         return ADAPTER_MODELS.get(adapter_id, [])
 
-    return [
-        {
-            "id": adapter_id,
-            "models": await _models_for(adapter_id),
-            "default_model": ADAPTER_DEFAULT_MODEL.get(adapter_id),
-            "model_hint": ADAPTER_MODEL_HINT.get(adapter_id),
-            "proxy": proxy_by_id.get(adapter_id, (None, "system"))[0],
-            "proxy_kind": proxy_by_id.get(adapter_id, (None, "system"))[1],
-        }
-        for adapter_id in ids
-        if adapter_id in ADAPTER_AGENT_TEMPLATES
-    ]
+    result = []
+    for adapter_id in ids:
+        if adapter_id not in ADAPTER_AGENT_TEMPLATES:
+            continue
+        credentials = credential_state(adapter_id)
+        result.append(
+            {
+                "id": adapter_id,
+                "models": await _models_for(adapter_id),
+                "default_model": ADAPTER_DEFAULT_MODEL.get(adapter_id),
+                "model_hint": ADAPTER_MODEL_HINT.get(adapter_id),
+                "proxy": proxy_by_id.get(adapter_id, (None, "system"))[0],
+                "proxy_kind": proxy_by_id.get(adapter_id, (None, "system"))[1],
+                "credential_ready": credentials["credential_ready"],
+                "credential_source": credentials["credential_source"],
+            "supports_contact_endpoint": credentials["contact_endpoint"],
+            "allows_unverified_host_login": credentials[
+                "allows_unverified_host_login"
+            ],
+                "requires_contact_endpoint": bool(
+                    credentials["contact_endpoint"]
+                    and not credentials["credential_ready"]
+                ),
+            }
+        )
+    return result
 
 
 @router.put("/api/adapters/{adapter_id}/proxy")
@@ -232,7 +391,16 @@ async def set_adapter_proxy(adapter_id: str, body: dict):
                 status_code=404,
                 detail=f"adapter not onboarded: {adapter_id}",
             )
+        contacts = [
+            row
+            for row in await storage_repo.list_agents(session)
+            if row.setup and row.setup.adapter_id == adapter_id
+        ]
         await session.commit()
+    from polynoia.adapters.pool import get_pool
+
+    for contact in contacts:
+        await get_pool().close_sessions_for_agent(contact.id)
     return {"adapter_id": adapter_id, "proxy": proxy, "proxy_kind": kind}
 
 
@@ -249,7 +417,7 @@ async def suggest_contact(body: dict):
 
     desc = (body.get("description") or "").strip()
     if not desc:
-        return {"error": "description required"}, 400
+        raise HTTPException(400, "description required")
     low = desc.lower()
 
     def has(*kw: str) -> bool:
@@ -264,11 +432,11 @@ async def suggest_contact(body: dict):
 
     tools_whitelist: list[str] = []
 
-    # Pick adapter: prefer an onboarded one (claudeCode > codex > opencoder).
+    # Pick adapter: prefer an onboarded one in the stable product order.
     async with SessionLocal() as session:
         onboarded = set(await storage_repo.list_onboarded_adapters(session))
     adapter_id = next(
-        (a for a in ("claudeCode", "codex", "opencoder") if a in onboarded),
+        (a for a in ("claudeCode", "codex", "opencoder", "qwenCode", "deepseek") if a in onboarded),
         "claudeCode",
     )
     visuals = ADAPTER_VISUAL_DEFAULTS.get(adapter_id, {})
@@ -314,7 +482,7 @@ def _parse_skills(raw) -> list:
     from polynoia.domain.entities import AgentSkill
 
     out: list = []
-    for s in (raw or []):
+    for s in raw or []:
         if not isinstance(s, dict):
             continue
         nm = (s.get("name") or "").strip()
@@ -330,6 +498,7 @@ def _parse_skills(raw) -> list:
 async def list_skills_endpoint():
     """Installed skill packages: [{name, description, path}]."""
     from polynoia import skills as _skills
+
     return _skills.list_skills()
 
 
@@ -340,6 +509,7 @@ async def install_skill_endpoint(body: dict):
     Body: { "source": "https://…/foo-skill.git" | "/abs/local/skill", "name"? }
     """
     from polynoia import skills as _skills
+
     try:
         return await _skills.install_skill(body.get("source") or "", body.get("name"))
     except ValueError as e:
@@ -349,6 +519,7 @@ async def install_skill_endpoint(body: dict):
 @router.delete("/api/skills/{name}")
 async def delete_skill_endpoint(name: str):
     from polynoia import skills as _skills
+
     return {"ok": _skills.remove_skill(name)}
 
 
@@ -377,16 +548,53 @@ async def create_contact(body: dict):
     name = (body.get("name") or "").strip()
     model = (body.get("model") or "").strip()
     if not adapter_id or adapter_id not in ADAPTER_AGENT_TEMPLATES:
-        return {"error": f"unknown adapter_id: {adapter_id}"}, 400
+        raise HTTPException(400, f"unknown adapter_id: {adapter_id}")
     if not name:
-        return {"error": "name required"}, 400
+        raise HTTPException(400, "name required")
     if not model:
-        return {"error": "model required"}, 400
+        raise HTTPException(400, "model required")
+
+    from polynoia.api.onboarding import credential_state
+
+    credentials = credential_state(adapter_id)
+    contact_api_key = _optional_api_key(body.get("api_key"))
+    contact_base_url = _optional_api_base_url(body.get("api_base_url"))
+    try_unverified_host_login = False
+    if not credentials["credential_ready"]:
+        has_contact_endpoint = bool(contact_api_key and contact_base_url)
+        try_unverified_host_login = bool(
+            credentials["allows_unverified_host_login"]
+            and body.get("use_host_credentials_unverified") is True
+        )
+        if (
+            not try_unverified_host_login
+            and (not credentials["contact_endpoint"] or not has_contact_endpoint)
+        ):
+            raise HTTPException(
+                400,
+                "未检测到可用凭证；请先登录 Harness、填写 API Key + endpoint，"
+                "或明确选择尝试主机登录",
+            )
+
+    async with SessionLocal() as session:
+        onboarded = set(await storage_repo.list_onboarded_adapters(session))
+    if adapter_id not in onboarded:
+        raise HTTPException(409, "请先在适配器管理中启用这个 Harness")
 
     tmpl = ADAPTER_AGENT_TEMPLATES[adapter_id]
+    cli_command = tmpl.setup.cli_command if tmpl.setup else None
+    cli_path = (
+        shutil.which(cli_command, path=agent_subprocess_path()) if cli_command else None
+    )
+    if not cli_path:
+        raise HTTPException(409, f"Harness 命令未安装或不在 PATH: {cli_command}")
     visuals = ADAPTER_VISUAL_DEFAULTS.get(adapter_id, {})
 
-    initials = (body.get("initials") or "").strip() or _default_initials(name) or visuals.get("initials", "?")
+    initials = (
+        (body.get("initials") or "").strip()
+        or _default_initials(name)
+        or visuals.get("initials", "?")
+    )
     color = body.get("color") or visuals.get("color") or "#7A5AE0"
     bg = visuals.get("bg") or "#EFE9FB"
     tagline = body.get("tagline") or tmpl.tagline
@@ -416,25 +624,21 @@ async def create_contact(body: dict):
         tool_role=tool_role,
         tools_whitelist=tools_whitelist,
         setup=AgentSetup(
-            cli_command=tmpl.setup.cli_command if tmpl.setup else None,
-            detected=True,
+            cli_command=cli_command,
+            detected=bool(cli_path),
             auth_kinds=list(tmpl.setup.auth_kinds) if tmpl.setup else [],
             docs=tmpl.setup.docs if tmpl.setup else None,
             adapter_id=adapter_id,
             model=model,
-            max_context_tokens=body.get("max_context_tokens"),
-            api_key=_optional_api_key(body.get("api_key")),
-            api_base_url=_optional_api_base_url(body.get("api_base_url")),
+            api_key=contact_api_key,
+            has_api_key=bool(contact_api_key),
+            use_host_credentials_unverified=bool(try_unverified_host_login),
+            api_base_url=contact_base_url,
         ),
     )
 
     async with SessionLocal() as session:
         await storage_repo.upsert_agent(session, contact)
-        # Implicit onboarding: creating a contact on adapter X means the user
-        # is committing to using X — auto-mark it as onboarded so the sidebar
-        # first-run guide card disappears and footer pill flips to "connected".
-        # Idempotent — safe to call when already onboarded.
-        await storage_repo.add_onboarded_adapter(session, adapter_id)
         await session.commit()
     return {"contact": contact.model_dump()}
 
@@ -447,12 +651,12 @@ async def update_contact(contact_id: str, body: dict):
     The `you` builtin cannot be edited.
     """
     if contact_id == "you":
-        return {"error": f"cannot edit builtin: {contact_id}"}, 400
+        raise HTTPException(400, f"cannot edit builtin: {contact_id}")
     async with SessionLocal() as session:
         rows = await storage_repo.list_agents(session)
         existing = next((r for r in rows if r.id == contact_id), None)
         if existing is None:
-            return {"error": "not found"}, 404
+            raise HTTPException(404, "not found")
         # Mutate fields in-place
         if (name := body.get("name")) is not None:
             existing.name = name.strip()
@@ -468,46 +672,41 @@ async def update_contact(contact_id: str, body: dict):
         if (tr := body.get("tool_role")) is not None:
             existing.tool_role = _validate_tool_role(tr)
         if "tools_whitelist" in body:
-            existing.tools_whitelist = _validate_tools_whitelist(
-                body["tools_whitelist"]
-            )
+            existing.tools_whitelist = _validate_tools_whitelist(body["tools_whitelist"])
         if "skills" in body:
             existing.skills = _parse_skills(body["skills"])
         # Re-derive capability tags whenever the tool set / role may have changed,
         # so the contact card stays honest. Keep any non-derived (domain) tags.
         if "tool_role" in body or "tools_whitelist" in body:
-            _derived = set(_caps_from_tools(
-                existing.tool_role, existing.tools_whitelist
-            ))
+            _derived = set(_caps_from_tools(existing.tool_role, existing.tools_whitelist))
             _all_derived = {"写代码", "跑命令/测试", "派活", "讨论", "只读"}
             kept = [c for c in (existing.caps or []) if c not in _all_derived]
             existing.caps = list(dict.fromkeys([*kept, *sorted(_derived)]))
         if (model := body.get("model")) is not None:
             if existing.setup is None:
                 from polynoia.domain.entities import AgentSetup
+
                 existing.setup = AgentSetup(model=model)
             else:
                 existing.setup.model = model
-        # max_context_tokens — allow setting (int) or clearing (null/None)
-        if "max_context_tokens" in body:
-            from polynoia.domain.entities import AgentSetup
-            if existing.setup is None:
-                existing.setup = AgentSetup()
-            existing.setup.max_context_tokens = body["max_context_tokens"]
         if "api_key" in body:
             if existing.setup is None:
                 from polynoia.domain.entities import AgentSetup
+
                 existing.setup = AgentSetup()
             existing.setup.api_key = _optional_api_key(body["api_key"])
+            existing.setup.has_api_key = existing.setup.api_key is not None
         if "api_base_url" in body:
             if existing.setup is None:
                 from polynoia.domain.entities import AgentSetup
+
                 existing.setup = AgentSetup()
             existing.setup.api_base_url = _optional_api_base_url(body["api_base_url"])
         await storage_repo.upsert_agent(session, existing)
         await session.commit()
     # Invalidate cached sessions so the next turn re-spawns with new model/prompt.
     from polynoia.adapters.pool import get_pool
+
     await get_pool().close_sessions_for_agent(contact_id)
     return {"contact": existing.model_dump()}
 
@@ -528,13 +727,12 @@ async def delete_contact(contact_id: str):
                 "ok": False,
                 "kind": "in_workspace",
                 "workspaces": in_ws,
-                "error": (
-                    f"该联系人还在项目「{names}」里,得先删掉这些项目,再删联系人。"
-                ),
+                "error": (f"该联系人还在项目「{names}」里,得先删掉这些项目,再删联系人。"),
             }
         ok = await storage_repo.delete_agent(session, contact_id)
         await session.commit()
     from polynoia.adapters.pool import get_pool
+
     await get_pool().close_sessions_for_agent(contact_id)
     return {"ok": ok}
 
@@ -577,6 +775,7 @@ async def refresh_adapter_credentials():
                     refreshed += 1
 
     from polynoia.adapters.pool import get_pool
+
     pool = get_pool()
     evicted = len(pool._sessions)  # count before clearing (for UI feedback)
     await pool.close_all()

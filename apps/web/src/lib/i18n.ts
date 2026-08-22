@@ -37,15 +37,15 @@ const STR = {
 		en: "No contacts yet · + New Contact",
 	},
 	noAdaptersHint: {
-		zh: "还没有接入任何适配器 · 先接入 Claude Code / Codex / OpenCode",
-		en: "No adapters connected yet · onboard Claude Code / Codex / OpenCode first",
+		zh: "还没有接入任何适配器 · 先接入一个 ACP Harness",
+		en: "No adapters connected yet · onboard an ACP harness first",
 	},
 	/* First-run guide card */
 	firstRunStep: { zh: "第一步", en: "Step 01" },
 	firstRunTitle: { zh: "接入适配器", en: "Connect Adapters" },
 	firstRunBody: {
-		zh: "连接你已经登录过的 Claude Code / Codex / OpenCode,Polynoia 自动复用主机凭证。",
-		en: "Connect your already-logged-in Claude Code / Codex / OpenCode CLI. Polynoia reuses host credentials automatically.",
+		zh: "接入 Claude、Codex、Qwen Code 或 DeepSeek Harness。可复用主机登录，也可按联系人填写 endpoint。",
+		en: "Connect Claude, Codex, Qwen Code, or DeepSeek Harness using host login or a per-contact endpoint.",
 	},
 	firstRunCta: { zh: "立刻接入", en: "Connect now" },
 	/* Step 2 guide — visible after first adapter enabled but zero custom contacts */
@@ -257,18 +257,26 @@ const STR = {
 	quoteAction: { zh: "引用", en: "Quote" },
 	copiedAgent: { zh: "已复制", en: "Copied" },
 	copyAgent: { zh: "复制", en: "Copy" },
-	regenerateThisTurn: { zh: "重做这一轮", en: "Redo this turn" },
+	retryThisTurn: { zh: "重试这一轮", en: "Retry this turn" },
+	permissionRegion: { zh: "等待用户授权", en: "Waiting for approval" },
+	permissionWaiting: {
+		zh: "正在等待你的授权",
+		en: "Waiting for your approval",
+	},
+	permissionDetails: { zh: "查看详情", en: "View details" },
+	permissionReject: { zh: "拒绝", en: "Reject" },
+	permissionAllowOnce: { zh: "仅允许这一次", en: "Allow once" },
+	permissionAllowSession: {
+		zh: "本会话内允许",
+		en: "Allow for this session",
+	},
+	permissionFailed: { zh: "授权失败", en: "Approval failed" },
 	pinMessageAction: { zh: "置顶消息", en: "Pin message" },
 	copyContent: { zh: "复制内容", en: "Copy content" },
-	rewindWithWorkspace: {
-		zh: "从此处重来:删除这条及之后的对话,代码回退到此刻",
-		en: "Rewind from here: delete this and later messages, code reverts to now",
-	},
-	rewindNoWorkspace: {
+	rewindFromHere: {
 		zh: "从此处重来:删除这条及之后的对话",
 		en: "Rewind from here: delete this and later messages",
 	},
-	undoRevert: { zh: "撤销回退", en: "Undo revert" },
 	workspace: { zh: "工作区", en: "Workspace" },
 	privateConv: {
 		zh: "私有对话 · 不接入",
@@ -335,8 +343,8 @@ const STR = {
 		en: "No adapters connected yet",
 	},
 	contactRequiresAdapter: {
-		zh: "联系人必须基于已接入的 CLI(Claude Code / Codex / OpenCode)创建",
-		en: "Contacts must be created on top of an onboarded CLI (Claude Code / Codex / OpenCode)",
+		zh: "联系人必须基于已启用的 ACP Harness 创建",
+		en: "Contacts must be created on top of an enabled ACP harness",
 	},
 	openAdapterManager: { zh: "打开适配器管理", en: "Manage adapters" },
 	cannotChangeAdapterInEdit: {
@@ -359,18 +367,6 @@ const STR = {
 	apiBaseUrlHint: {
 		zh: "例如 https://api.example.com/v1。联系人配置优先于全局配置和环境变量。",
 		en: "For example, https://api.example.com/v1. Contact configuration overrides global settings and environment variables.",
-	},
-	maxContextLength: {
-		zh: "模型最大上下文长度",
-		en: "Model max context length",
-	},
-	customTokenCount: {
-		zh: "自定义 token 总数,如 262144",
-		en: "Custom token count, e.g., 262144",
-	},
-	contextLengthHint: {
-		zh: "必填,且必须手动指定 ——\n不再按模型名猜(对第三方/代理模型经常不准)。\n选你这个模型的真实上下文上限;Polynoia 会扣掉 Claude Code\n的固定开销(≈35k) 再分给历史/会话/项目几层。",
-		en: "Required, must specify manually — no longer guessing by model name (inaccurate for third-party/proxy models). Select the true context ceiling for your model; Polynoia deducts Claude Code's fixed overhead (~35k) before allocating to history/session/project layers.",
 	},
 	contactName: { zh: "联系人名称", en: "Contact name" },
 	contactNameHint: {
@@ -468,8 +464,8 @@ const STR = {
 	},
 	close: { zh: "关闭", en: "Close" },
 	onboardingIntro: {
-		zh: "Polynoia 会自动复用你本机已登录的 CLI 凭证(Claude Code Pro / Codex / OpenCode)。下方卡片显示当前主机的检测结果 —— 点启用后,对应 agent 进入左侧联系人列表。",
-		en: "Polynoia automatically reuses your logged-in CLI credentials (Claude Code Pro / Codex / OpenCode). Cards below show this host's detection results — after clicking Enable, the agent appears in the left contacts list.",
+		zh: "下方展示运行 Polynoia 后端的主机检测结果。启用 Harness 后，再创建一个联系人并选择模型；endpoint 型 Harness 会在下一步填写 API Key。",
+		en: "These results come from the machine running the Polynoia backend. Enable a harness, then create a contact and choose its model; endpoint-based harnesses ask for an API key in the next step.",
 	},
 	detectingCLI: { zh: "正在探测本机 CLI...", en: "Detecting local CLI..." },
 	enabled: { zh: "已启用", en: "Enabled" },
@@ -663,6 +659,11 @@ const STR = {
 	reconnectingHelpText: {
 		zh: "正在尝试恢复实时连接…",
 		en: "Attempting to restore live connection…",
+	},
+	connectionRestored: { zh: "连接已恢复", en: "Connection restored" },
+	connectionRestoredHelp: {
+		zh: "实时消息已重新同步。",
+		en: "Live messages are synchronized again.",
 	},
 	retryButton: { zh: "重试", en: "Retry" },
 	localDefaultServer: {
@@ -897,49 +898,12 @@ const STR = {
 		en: "Cannot locate conversation context",
 	},
 	applyFailed: { zh: "应用失败", en: "Apply failed" },
-	noChangesToRevert: {
-		zh: "无改动可撤销(文件可能已变化)",
-		en: "No changes to revert (file may have changed)",
-	},
-	revertFailed: { zh: "撤销失败", en: "Revert failed" },
 	committedSha: { zh: "已提交 {payload.commit_sha}", en: "Committed {sha}" },
 	changed: { zh: "已改", en: "Changed" },
-	revertThisHunk: {
-		zh: "撤销此块(反向 apply)",
-		en: "Revert this hunk (reverse apply)",
-	},
-	revert: { zh: "撤销", en: "Revert" },
-	reverted: { zh: "已撤销", en: "Reverted" },
 	committed: { zh: "已提交", en: "Committed" },
-	confirmRevertEntireChange: {
-		zh: "确认:反向 apply 撤销整次改动(在 main 上新增一次提交)",
-		en: "Confirm: reverse apply to revert entire change (creates new commit on main)",
-	},
-	confirmRevert: { zh: "确认撤销?", en: "Confirm revert?" },
-	revertOnlyThisFile: {
-		zh: "仅撤销此文件(本轮共改多个文件,单独撤销可能造成不一致)",
-		en: "Revert only this file (multiple files changed this round, reverting alone may cause inconsistency)",
-	},
-	revertEntireChange: {
-		zh: "撤销整次改动(反向 apply,会在 main 上新增一次提交)",
-		en: "Revert entire change (reverse apply, creates new commit on main)",
-	},
 	applied: { zh: "已应用", en: "Applied" },
-	reset: { zh: "重置", en: "Reset" },
-	resetStateWarning: {
-		zh: "重置状态(撤销文件改动需手动 git revert)",
-		en: "Reset state (manual 'git revert' needed to undo file changes)",
-	},
 	applying: { zh: "应用中…", en: "Applying…" },
 	apply: { zh: "应用", en: "Apply" },
-	divergedRevertExplanation: {
-		zh: "冲突合并等后续改动让该文件偏离了这笔 diff,反向 apply 无法精确撤销",
-		en: "File diverged from this diff due to subsequent changes (conflict merge, etc.); reverse apply cannot revert precisely",
-	},
-	overwrittenByLaterChanges: {
-		zh: "该笔已被后续改动覆盖",
-		en: "Overwritten by later changes",
-	},
 	discussion: { zh: "讨论", en: "Discussion" },
 	people: { zh: "人", en: "people" },
 	roundIndicator: {
@@ -977,7 +941,7 @@ const STR = {
 	aborted: { zh: "已中断", en: "Aborted" },
 	depthLimitReached: { zh: "已达上限", en: "Limit reached" },
 	queued: { zh: "排队中", en: "Queued" },
-	retryableHint: { zh: "· 可重试(再发一次)", en: "· Retryable (send again)" },
+	retryableHint: { zh: "· 可重试", en: "· Retryable" },
 	fileLabel: { zh: "文件 {payload.name}", en: "File {name}" },
 	clickToPreview: { zh: "点击打开预览", en: "Click to preview" },
 	file: { zh: "文件", en: "File" },
@@ -1042,6 +1006,28 @@ const STR = {
 	deployPreview: { zh: "部署预览", en: "Deploy preview" },
 	fullscreenPreview: { zh: "全屏预览", en: "Fullscreen preview" },
 	parallelTasks: { zh: "并行任务", en: "Parallel tasks" },
+	burstHeader: { zh: "并行 · 批次 {index}", en: "Parallel · Burst {index}" },
+	burstAgentTabs: { zh: "Agent 任务泳道", en: "Agent task lanes" },
+	burstStateWaiting: { zh: "等待", en: "Waiting" },
+	burstStateRunning: { zh: "执行中", en: "Running" },
+	burstStateDone: { zh: "已完成", en: "Done" },
+	burstStateFailed: { zh: "失败", en: "Failed" },
+	burstProgressFailed: {
+		zh: "{done}/{total} 完成 · {failed} 失败",
+		en: "{done}/{total} done · {failed} failed",
+	},
+	burstProgressDone: {
+		zh: "{done}/{total} 全部完成",
+		en: "{done}/{total} all done",
+	},
+	burstProgressRunning: {
+		zh: "{done}/{total} 完成 · 进行中",
+		en: "{done}/{total} done · running",
+	},
+	burstRunningEmpty: { zh: "执行中…", en: "Running…" },
+	burstDoneNoOutput: { zh: "已完成 · 无输出", en: "Done · no output" },
+	burstFailedEmpty: { zh: "执行失败", en: "Failed" },
+	burstWaitingEmpty: { zh: "等待开始…", en: "Waiting to start…" },
 	contractLabel: { zh: "契约 · Contract", en: "Contract" },
 	viewAgentDetails: {
 		zh: "查看 {agentName} 详情",
@@ -1115,11 +1101,6 @@ const STR = {
 		zh: "找不到该对话(可能已删除)。",
 		en: "Conversation not found (may have been deleted).",
 	},
-	cannotPreviewRestore: { zh: "无法预览回退", en: "Cannot preview restore" },
-	agentRunning: {
-		zh: "有 agent 正在该工作区运行,等它完成或取消后再回退。",
-		en: "An agent is running in this workspace. Wait for it to complete or cancel, then try restoring.",
-	},
 	graphModeInfo: {
 		zh: "提交树 · 线色 = 所属 agent(绿 = main)",
 		en: "Commit tree · line color = owning agent (green = main)",
@@ -1129,21 +1110,11 @@ const STR = {
 		en: "No commits yet. Agent changes will appear here after merging into main.",
 	},
 	noMatchingCommits: { zh: "没有匹配的提交。", en: "No matching commits." },
-	discardAllChangesTitle: {
-		zh: "丢弃工作区根目录的全部未提交改动",
-		en: "Discard all uncommitted changes in workspace root",
-	},
-	discardChanges: { zh: "丢弃改动", en: "Discard changes" },
 	jumpToConvTitle: {
 		zh: "跳到产生这笔提交的对话",
 		en: "Jump to conversation that produced this commit",
 	},
 	viewInConv: { zh: "在对话中查看", en: "View in conversation" },
-	restoreToCommitTitle: {
-		zh: "把工作区 main 回退到这个提交(会记录撤销点)",
-		en: "Restore workspace main to this commit (records undo point)",
-	},
-	restoreHere: { zh: "回到这里", en: "Restore here" },
 	switchToTimeline: { zh: "切换为时间线", en: "Switch to timeline" },
 	switchToGraph: {
 		zh: "切换为提交树(graph)",
@@ -1176,12 +1147,6 @@ const STR = {
 		zh: "文件过多,仅显示前 200 个。",
 		en: "Too many files, showing first 200.",
 	},
-	restore2: { zh: "回退", en: "Restore" },
-	discardChangesConfirmTitle: {
-		zh: "丢弃工作区改动?",
-		en: "Discard workspace changes?",
-	},
-	discard: { zh: "丢弃", en: "Discard" },
 	noConflicts: { zh: "没有待解决的冲突", en: "No conflicts to resolve" },
 	noConflictsHint: {
 		zh: "多个 Agent 改了同一处代码、合并 main 失败时,这里显示冲突并让你解决。",

@@ -262,13 +262,9 @@ export function AskFormsPanel({ convId, members, getWs }: Props) {
 			// ORPHANED case: if the backend restarted after the form was raised, the
 			// suspended turn is gone — `answerAsk` returns `{orphaned:true}` and nothing
 			// would resume. answer_ask has already STAMPED the answer onto the card, so
-			// re-run the turn SILENTLY: `regenerate:true` makes the backend dispatch the
-			// turn with persist_user=false → NO separate `you` bubble. This mirrors the
-			// live blocking case exactly (the card is the only surface for the answer);
-			// the orchestrator reads the stamped answer from the card and continues.
-			// (A normal sendUserMessage here would persist the answer as a `you` bubble
-			// — the exact duplicate #8 forbids, which it isn't positioned to hide once
-			// the card is already stamped + the agent's narration sits between them.)
+			// continue with a normal user turn. The suspended Polynoia turn no longer
+			// exists, so it cannot be retried; the stable ask-resume id keeps this
+			// recovery append idempotent.
 			void submitBlockingAskFormAnswer({
 				convId,
 				members,

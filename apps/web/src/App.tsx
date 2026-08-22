@@ -22,7 +22,7 @@ import { type ConversationSummary, api } from "./lib/api";
 import { resolveMobileGate } from "./lib/connectionGate";
 import { t } from "./lib/i18n";
 import { onBackButton, onNetworkChange, onResume } from "./lib/native";
-import { isDesktopApp, isMobile } from "./lib/platform";
+import { isDesktopApp, useMobileLayout } from "./lib/platform";
 import {
 	getDesktopBackendInfo,
 	getServerOverride,
@@ -50,6 +50,7 @@ export function App() {
 	const openMembersList = useStore((s) => s.openMembersList);
 	const resetCenterTabs = useStore((s) => s.resetCenterTabs);
 	const lang = useStore((s) => s.lang);
+	const mobile = useMobileLayout();
 	const [editingRolesConv, setEditingRolesConv] =
 		useState<ConversationSummary | null>(null);
 	const [activeConv, setActiveConv] = useState<{
@@ -57,10 +58,9 @@ export function App() {
 		members: string[];
 		title: string;
 	} | null>(() => {
-		// Mobile always boots to the contacts/projects list (home), never straight
-		// into the last chat. Desktop/web restores the conv you were in so a
-		// refresh lands back there, not on home.
-		if (isMobile()) return null;
+		// Every layout restores the conversation the user was reading.  On mobile,
+		// only the explicit Back action returns home; a browser/native reload must
+		// not silently discard location and scroll-recovery context.
 		try {
 			const raw = window.localStorage.getItem("polynoia:active-conv");
 			return raw ? JSON.parse(raw) : null;
@@ -71,7 +71,6 @@ export function App() {
 	// Mobile: the contacts/projects list is the full-screen home; selecting a
 	// conversation pushes the chat over it (back button returns). Desktop:
 	// sidebar is a permanent left column.
-	const mobile = isMobile();
 	const activeConvRef = useRef(activeConv);
 
 	useEffect(() => {

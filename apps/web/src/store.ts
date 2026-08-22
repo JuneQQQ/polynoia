@@ -149,7 +149,12 @@ export type AgentStatusValue =
 	| "aborted"
 	| "error";
 /** Fine-grained phase WITHIN "streaming" (what the agent is doing right now). */
-export type AgentPhase = "thinking" | "generating" | "executing" | "replying";
+export type AgentPhase =
+	| "thinking"
+	| "generating"
+	| "executing"
+	| "waiting_permission"
+	| "replying";
 
 export type AgentStatus = {
 	status: AgentStatusValue;
@@ -229,6 +234,9 @@ export function phaseLabel(
 		if (en) return name ? `Running ${name}` : "Running";
 		return name ? `正在执行 ${name}` : "正在执行任务";
 	}
+	if (phase === "waiting_permission") {
+		return en ? "Waiting for your approval" : "等待你的授权";
+	}
 	if (phase === "replying") return en ? "Replying" : "正在回复";
 	return en ? "Running" : "运行中";
 }
@@ -288,6 +296,11 @@ type Store = {
 	/** ADR-020 project-access requests, keyed by conv_id. Server pushes via
 	 * `data-pending-access`; UI renders an approval card with a project picker. */
 	pendingAccessByConv: Map<string, import("./lib/api").PendingAccess[]>;
+	/** Blocking ACP permission requests emitted by any Harness. */
+	harnessPermissionsByConv: Map<
+		string,
+		import("./lib/api").HarnessPermission[]
+	>;
 
 	/** Multi-agent merge conflicts, keyed by conv_id. Server pushes via
 	 * `data-conflict`; PreviewPane renders ConflictResolvePane when any is open. */
@@ -399,6 +412,10 @@ type Store = {
 		convId: string,
 		reqs: import("./lib/api").PendingAccess[],
 	) => void;
+	upsertHarnessPermission: (
+		permission: import("./lib/api").HarnessPermission,
+	) => void;
+	removeHarnessPermission: (convId: string, permissionId: string) => void;
 	upsertConflict: (c: import("./lib/api").Conflict) => void;
 	hydrateConflicts: (
 		convId: string,
@@ -453,7 +470,7 @@ type Store = {
 	/** Capture the causal boundary for one newest-page REST request. */
 	captureMessageHydration: (convId: string) => MessageHydrationRequest;
 	/** Invalidate every REST message page that started before a local clear,
-	 * rewind, regenerate, or edited resend mutation. */
+	 * rewind, turn retry, or edited resend mutation. */
 	invalidateMessageHydrations: (convId: string) => void;
 	markMessagesMutated: (convId: string, msgIds: Iterable<string>) => void;
 	protectMessageDelivery: (convId: string, msgId: string) => void;
@@ -470,7 +487,6 @@ type Store = {
 			sender_id: string;
 			payload: Record<string, unknown>;
 			in_reply_to?: string | null;
-			code_sha?: string | null;
 			created_at: string;
 		}>,
 		options: {
@@ -598,6 +614,8 @@ export type ChunkAction =
 	| {
 			kind: "stream-resume";
 			senderId: string;
+			messageId?: string | null;
+			turnId?: string | null;
 			parts: {
 				id: string;
 				kind: "text" | "reasoning";
@@ -642,6 +660,7 @@ export const useStore = create<Store>((set, get) => ({
 	failedComposerDraftsByConv: new Map(),
 	pendingEditsByConv: new Map(),
 	pendingAccessByConv: new Map(),
+	harnessPermissionsByConv: new Map(),
 	conflictsByConv: new Map(),
 	askFormsByConv: new Map(),
 	retiredAskFormIdsByConv: new Map(),
@@ -695,6 +714,62 @@ export const useStore = create<Store>((set, get) => ({
 		const m = new Map(get().pendingAccessByConv);
 		m.set(convId, [...reqs]);
 		set({ pendingAccessByConv: m });
+	},
+	upsertHarnessPermission: (permission) => {
+		const map = new Map(get().harnessPermissionsByConv);
+		const current = map.get(permission.conv_id) ?? [];
+		map.set(permission.conv_id, [
+			...current.filter((item) => item.id !== permission.id),
+			permission,
+		]);
+		const convs = new Map(get().convs);
+		const conv = convs.get(permission.conv_id);
+		if (conv && permission.status === "pending") {
+			const agentStatus = new Map(conv.agentStatus);
+			agentStatus.set(permission.agent_id, {
+				status: "streaming",
+				phase: "waiting_permission",
+				tool: permission.tool_name,
+				message: permission.description || permission.title,
+				ts: Date.now(),
+			});
+			convs.set(permission.conv_id, { ...conv, agentStatus });
+		}
+		set({
+			harnessPermissionsByConv: map,
+			...(conv ? { convs } : {}),
+		});
+	},
+	removeHarnessPermission: (convId, permissionId) => {
+		const map = new Map(get().harnessPermissionsByConv);
+		const current = map.get(convId) ?? [];
+		const removed = current.find((item) => item.id === permissionId);
+		const remaining = current.filter((item) => item.id !== permissionId);
+		map.set(convId, remaining);
+		const convs = new Map(get().convs);
+		const conv = convs.get(convId);
+		if (conv && removed) {
+			const prior = conv.agentStatus.get(removed.agent_id);
+			if (prior?.phase === "waiting_permission") {
+				const next = remaining.find(
+					(item) =>
+						item.status === "pending" && item.agent_id === removed.agent_id,
+				);
+				const agentStatus = new Map(conv.agentStatus);
+				agentStatus.set(removed.agent_id, {
+					...prior,
+					phase: next ? "waiting_permission" : "executing",
+					tool: next?.tool_name ?? prior.tool,
+					message: next ? next.description || next.title : undefined,
+					ts: Date.now(),
+				});
+				convs.set(convId, { ...conv, agentStatus });
+			}
+		}
+		set({
+			harnessPermissionsByConv: map,
+			...(conv ? { convs } : {}),
+		});
 	},
 	upsertConflict: (c) => {
 		const m = new Map(get().conflictsByConv);
@@ -1090,7 +1165,6 @@ export const useStore = create<Store>((set, get) => ({
 							sender_id: m.sender_id,
 							payload: m.payload as Message["payload"],
 							in_reply_to: m.in_reply_to ?? null,
-							code_sha: (m as { code_sha?: string | null }).code_sha ?? null,
 							created_at: m.created_at,
 						},
 			);
@@ -1472,7 +1546,9 @@ export const useStore = create<Store>((set, get) => ({
 			for (const part of action.parts) {
 				const partKind = part.kind === "reasoning" ? "reasoning" : "text";
 				const messageId =
-					partKind === "reasoning" ? `rsn-${part.id}` : `msg-${part.id}`;
+					partKind === "reasoning"
+						? `rsn-${part.id}`
+						: (action.messageId ?? `msg-${part.id}`);
 				const streamKey = `${senderId}::${part.id}`;
 				const msg: Message = {
 					id: messageId,
@@ -1485,6 +1561,7 @@ export const useStore = create<Store>((set, get) => ({
 							? { discussion_id: part.discussion_id }
 							: {}),
 					} as Message["payload"],
+					turn_id: action.turnId ?? null,
 					created_at: new Date().toISOString(),
 				};
 				if (!nextById.has(messageId)) order.push(messageId);
@@ -1604,7 +1681,7 @@ export const useStore = create<Store>((set, get) => ({
 								cur.messageOrder,
 								cur.msgById,
 								agentId,
-								status === "error",
+								status,
 							)
 						: null;
 				convs.set(convId, {

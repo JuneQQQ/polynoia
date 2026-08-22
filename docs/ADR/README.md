@@ -30,7 +30,7 @@
 | 009 | [Manual mode: HTTP long-poll vs asyncio.Future](ADR-009-manual-mode-long-poll.md) | accepted | 2026-05-28 |
 | 010 | [Workspace file API + path safety](ADR-010-workspace-file-api.md) | accepted | 2026-05-28 |
 | 011 | [Right-side slide-in Drawer pattern](ADR-011-right-drawer-pattern.md) | accepted | 2026-05-29 |
-| 012 | [Context budget = max_context − Claude Code 35k overhead](ADR-012-context-budget-overhead.md) | accepted | 2026-05-29 |
+| 012 | [Stateful ACP Session owns model context](ADR-012-stateful-acp-session-context.md) | accepted | 2026-08-21 |
 | 013 | [Role-based MCP tool exposure](ADR-013-role-based-mcp-tools.md) | accepted | 2026-05-29 |
 | 014 | [Handoff contract + conv-scoped shared memory](ADR-014-handoff-contract-and-shared-memory.md) | accepted | 2026-05-29 |
 | 015 | [Closed-loop collaboration: recall / report / critic](ADR-015-closed-loop-collaboration.md) | accepted | 2026-05-30 |

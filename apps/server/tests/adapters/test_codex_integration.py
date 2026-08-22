@@ -173,6 +173,7 @@ async def test_start_session_preserves_user_config_with_inline_token(
         'wire_api = "responses"\n'
     )
     monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("POLYNOIA_CRED_HOME", raising=False)
     monkeypatch.setattr("polynoia.settings.settings.sandbox_root", tmp_path / "sb")
     from polynoia.adapters.codex import CodexAdapter
 

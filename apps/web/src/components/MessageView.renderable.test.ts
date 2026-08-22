@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { MessagePayload } from "../lib/types";
-import { isRenderableMessagePayload } from "./MessageView";
+import {
+	isRenderableMessagePayload,
+	retryableErrorTurnId,
+} from "./MessageView";
 
 describe("isRenderableMessagePayload", () => {
 	it("hides completed empty reasoning/text shells", () => {
@@ -90,5 +93,31 @@ describe("isRenderableMessagePayload", () => {
 				true,
 			),
 		).toBe(true);
+	});
+});
+
+describe("retryableErrorTurnId", () => {
+	it("returns only an exact persisted turn id for retryable errors", () => {
+		expect(
+			retryableErrorTurnId({
+				payload: { kind: "error", message: "boom", retryable: true },
+				turn_id: "turn-123",
+			}),
+		).toBe("turn-123");
+	});
+
+	it("never falls back to retrying without a turn id", () => {
+		expect(
+			retryableErrorTurnId({
+				payload: { kind: "error", message: "boom", retryable: true },
+				turn_id: null,
+			}),
+		).toBeNull();
+		expect(
+			retryableErrorTurnId({
+				payload: { kind: "error", message: "boom", retryable: false },
+				turn_id: "turn-123",
+			}),
+		).toBeNull();
 	});
 });

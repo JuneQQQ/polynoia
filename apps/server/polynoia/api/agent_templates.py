@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from polynoia.domain.entities import Agent, AgentSetup
 
-
 # Known model presets per adapter — populates the "+ 新建联系人" dropdown.
 # An EMPTY list means the user must type the model id manually (no presets).
 #
@@ -35,6 +34,8 @@ from polynoia.domain.entities import Agent, AgentSetup
 ADAPTER_MODELS: dict[str, list[str]] = {
     "claudeCode": [],
     "opencoder": [],
+    "qwenCode": ["qwen3.6-flash", "qwen3-coder-plus", "qwen3.7-plus"],
+    "deepseek": ["deepseek-v4-flash-0731", "deepseek-v4-flash", "deepseek-v4-pro"],
     # Fallback only — the runtime route prefers ``CodexAdapter.list_models()``
     # which probes the actual backend (laogou8 by default). These ids match
     # what laogou8 verifiably exposes today; if the probe is reachable, the
@@ -54,9 +55,11 @@ ADAPTER_MODELS: dict[str, list[str]] = {
 # Independent from ADAPTER_MODELS — user-facing dropdown may be empty (forced
 # manual entry) while bootstrap still needs *something* to spawn orchestrator.
 ADAPTER_DEFAULT_MODEL: dict[str, str] = {
-    "claudeCode": "claude-sonnet-4-6",
+    "claudeCode": "claude-haiku-4-5",
     "opencoder": "anthropic/claude-sonnet-4-6",
-    "codex": "gpt-5.5",
+    "codex": "gpt-5.4-mini",
+    "qwenCode": "qwen3.6-flash",
+    "deepseek": "deepseek-v4-flash-0731",
 }
 
 
@@ -78,6 +81,18 @@ ADAPTER_MODEL_HINT: dict[str, str] = {
         "这是后端**广告**的清单,不保证每个都有可用 channel。"
         "若选了某 model 出现 503 / 'no available channel',换一个;"
         "若整个清单都不对,在 ~/.codex/config.toml 改 model_provider。"
+        "联系人级自定义 endpoint 必须实现 OpenAI Responses API (`/responses`);"
+        "仅有 Chat Completions 不够。"
+    ),
+    "qwenCode": (
+        "Qwen Code 通过 ACP 接入。可填写 Qwen Code 支持的模型 id; "
+        "自定义 OpenAI-compatible endpoint 可在联系人设置里配置。"
+    ),
+    "deepseek": (
+        "DeepSeek Harness 使用官方 automation ACP。token-plan endpoint 推荐 "
+        "`deepseek-v4-flash-0731`;官方 DeepSeek endpoint 可选 `deepseek-v4-flash`。"
+        "自定义兼容 endpoint 可在联系人设置里配置。当前官方桥接只提交最终文本，"
+        "工具/推理过程不会流式展示，工具兼容性还取决于 endpoint。"
     ),
 }
 
@@ -97,9 +112,10 @@ CLAUDE_CODE_TEMPLATE = Agent(
     enabled=True,
     system_prompt=None,
     setup=AgentSetup(
-        cli_command="claude",
+        cli_command="claude-agent-acp",
         detected=True,
-        auth_kinds=["cli-login", "api-key"],
+        auth_kinds=["cli-login", "api-key", "llm-endpoint"],
+        docs="https://github.com/agentclientprotocol/claude-agent-acp",
         adapter_id="claudeCode",
         model=ADAPTER_DEFAULT_MODEL["claudeCode"],
     ),
@@ -126,10 +142,10 @@ CODEX_TEMPLATE = Agent(
         "直接给最简的、可立即跑的代码。不寒暄,不教学。"
     ),
     setup=AgentSetup(
-        cli_command="codex",
+        cli_command="codex-acp",
         detected=True,
-        auth_kinds=["cli-login", "api-key"],
-        docs="https://platform.openai.com/docs/codex",
+        auth_kinds=["cli-login", "api-key", "llm-endpoint"],
+        docs="https://github.com/agentclientprotocol/codex-acp",
         adapter_id="codex",
         model=ADAPTER_DEFAULT_MODEL["codex"],
     ),
@@ -159,11 +175,61 @@ OPENCODER_TEMPLATE = Agent(
     ),
 )
 
+QWEN_CODE_TEMPLATE = Agent(
+    id="qwenCode",
+    name="Qwen Code",
+    role="Qwen 代码 Agent",
+    provider="qwen",
+    handle="@qwen-code",
+    initials="Qw",
+    color="#635BFF",
+    bg="#E9E7FF",
+    tagline="Qwen · ACP 代码 Agent",
+    caps=["代码", "工具", "MCP"],
+    online=True,
+    enabled=True,
+    system_prompt=None,
+    setup=AgentSetup(
+        cli_command="qwen",
+        detected=True,
+        auth_kinds=["cli-login", "api-key", "llm-endpoint"],
+        docs="https://qwenlm.github.io/qwen-code-docs/",
+        adapter_id="qwenCode",
+        model=ADAPTER_DEFAULT_MODEL["qwenCode"],
+    ),
+)
+
+DEEPSEEK_TEMPLATE = Agent(
+    id="deepseek",
+    name="DeepSeek Harness",
+    role="DeepSeek 代码 Agent",
+    provider="deepseek",
+    handle="@deepseek",
+    initials="Ds",
+    color="#4D6BFE",
+    bg="#E3E9FF",
+    tagline="DeepSeek · 实验性官方 ACP",
+    caps=["文本", "ACP", "实验性"],
+    online=True,
+    enabled=True,
+    system_prompt=None,
+    setup=AgentSetup(
+        cli_command="dsh-acp-demo",
+        detected=True,
+        auth_kinds=["api-key", "llm-endpoint"],
+        docs="https://github.com/deepseek-ai/deepseek-harness",
+        adapter_id="deepseek",
+        model=ADAPTER_DEFAULT_MODEL["deepseek"],
+    ),
+)
+
 
 ADAPTER_AGENT_TEMPLATES: dict[str, Agent] = {
     "claudeCode": CLAUDE_CODE_TEMPLATE,
     "codex": CODEX_TEMPLATE,
     "opencoder": OPENCODER_TEMPLATE,
+    "qwenCode": QWEN_CODE_TEMPLATE,
+    "deepseek": DEEPSEEK_TEMPLATE,
 }
 
 
@@ -173,4 +239,6 @@ ADAPTER_VISUAL_DEFAULTS: dict[str, dict[str, str]] = {
     "claudeCode": {"color": "#D2691E", "bg": "#F7E5D2", "initials": "Cc"},
     "codex": {"color": "#2E9F73", "bg": "#DFEFE6", "initials": "Cx"},
     "opencoder": {"color": "#3D7FD1", "bg": "#DCEAF8", "initials": "Op"},
+    "qwenCode": {"color": "#635BFF", "bg": "#E9E7FF", "initials": "Qw"},
+    "deepseek": {"color": "#4D6BFE", "bg": "#E3E9FF", "initials": "Ds"},
 }

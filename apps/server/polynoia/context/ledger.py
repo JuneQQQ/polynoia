@@ -19,7 +19,7 @@ Output format:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,9 +36,7 @@ from polynoia.storage.models import (
 )
 
 
-async def _pull_git_log_for_conv(
-    conv_id: str, limit: int = 8
-) -> list[dict[str, str]]:
+async def _pull_git_log_for_conv(conv_id: str, limit: int = 8) -> list[dict[str, str]]:
     """Read recent commits from a conv's sandbox repo, or [] if no sandbox.
 
     Returns list of dicts (sha, author, date, subject) — same shape as
@@ -96,10 +94,7 @@ def _format_message_body(payload: dict, *, include_reasoning: bool = False) -> s
         # history layer (which is how a persisted tool-call row silently
         # killed the orchestrator's summary turn).
         summary = (
-            payload.get("summary")
-            or payload.get("output_text")
-            or payload.get("output")
-            or ""
+            payload.get("summary") or payload.get("output_text") or payload.get("output") or ""
         )
         if not isinstance(summary, str):
             summary = str(summary)
@@ -163,7 +158,7 @@ def _format_message_body(payload: dict, *, include_reasoning: bool = False) -> s
 
 def _relative_time(then: datetime) -> str:
     """Friendly Chinese relative time. P0 best-effort."""
-    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    now = datetime.now(tz=UTC).replace(tzinfo=None)
     delta = now - then
     secs = int(delta.total_seconds())
     if secs < 60:
@@ -206,12 +201,11 @@ async def build_activity_ledger_layer(
 
     workspaces_q = await db.execute(select(WorkspaceRow))
     all_workspaces = list(workspaces_q.scalars().all())
-    member_workspaces = {
-        w.id for w in all_workspaces if agent_id in (w.members or [])
-    }
+    member_workspaces = {w.id for w in all_workspaces if agent_id in (w.members or [])}
 
     visible_convs = [
-        c for c in all_convs
+        c
+        for c in all_convs
         if c.id != exclude_conv_id
         and (
             agent_id in (c.members or [])
@@ -241,9 +235,7 @@ async def build_activity_ledger_layer(
 
     # 4. Resolve sender names
     sender_ids: set[str] = {m.sender_id for m in messages}
-    agents_q = await db.execute(
-        select(AgentRow).where(AgentRow.id.in_(sender_ids))
-    )
+    agents_q = await db.execute(select(AgentRow).where(AgentRow.id.in_(sender_ids)))
     senders_by_id: dict[str, Agent] = {a.id: a for a in agents_q.scalars().all()}
 
     def _sender_label(sender_id: str) -> str:
@@ -279,9 +271,7 @@ async def build_activity_ledger_layer(
         commits = commits_by_conv.get(conv.id, [])
         if not msgs and not commits:
             return 0
-        conv_label = (
-            "DM" if conv.direct else "群聊" if conv.group else "对话"
-        )
+        conv_label = "DM" if conv.direct else "群聊" if conv.group else "对话"
         lines.append("")
         lines.append(f"### {conv.title} ({conv_label})")
         for m in reversed(msgs):
@@ -314,7 +304,8 @@ async def build_activity_ledger_layer(
     # Sort each bucket by last activity desc
     for k in by_ws:
         by_ws[k].sort(
-            key=lambda c: c.last_message_at or c.updated_at, reverse=True,
+            key=lambda c: c.last_message_at or c.updated_at,
+            reverse=True,
         )
 
     lines: list[str] = ["# 你的近期活动"]
@@ -326,7 +317,7 @@ async def build_activity_ledger_layer(
         (k for k in by_ws if k is not None),
         key=lambda wid: visible_ws_by_id.get(wid).name if visible_ws_by_id.get(wid) else "",
     )
-    for ws_id in (ws_ids_sorted if in_project else []):
+    for ws_id in ws_ids_sorted if in_project else []:
         if rendered >= limit:
             break
         ws = visible_ws_by_id.get(ws_id)
@@ -363,7 +354,6 @@ async def build_activity_ledger_layer(
     return ContextLayer.make(
         kind="activity",
         content="\n".join(lines),
-        priority=40,
         meta={
             "agent_id": agent_id,
             "events": str(rendered),
