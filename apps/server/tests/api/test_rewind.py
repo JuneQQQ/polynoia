@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi import HTTPException
 
+from polynoia.api import routes as routes_module
 from polynoia.api.routes import rewind_conversation, rewind_preview
+from polynoia.domain.entities import Conversation
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.bootstrap import bootstrap_db
 from polynoia.storage.db import Base, SessionLocal, engine
@@ -93,13 +95,31 @@ async def test_rewind_rejects_agent_message_boundary(fresh_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rewind_trims_conv_memory_recorded_during_rewound_turns(fresh_db) -> None:
+async def test_rewind_trims_conv_memory_recorded_during_rewound_turns(
+    fresh_db,
+    monkeypatch,
+) -> None:
     """Rewind must drop the curated shared-memory (ADR-014) recorded at/after the
     rewind point — else the agent still "remembers" decisions/artifacts from the
     rolled-back work (the「重发携带不该有的记忆 / 上下文还在」bug). Memory recorded
     BEFORE the rewind point survives."""
+    retired: list[tuple[str | None, set[str]]] = []
+
+    class _Pool:
+        async def close_sessions_for_conv(self, _conv_id: str) -> None:
+            return None
+
+        async def retire_memory_context_sessions(self, *, conv_id, agent_ids) -> int:
+            retired.append((conv_id, set(agent_ids)))
+            return 1
+
+    monkeypatch.setattr(routes_module, "get_pool", lambda: _Pool())
     conv_id = "mem-rewind"
     async with SessionLocal() as db:
+        await storage_repo.create_conversation(
+            db,
+            Conversation(id=conv_id, title="memory rewind", members=["you", "agent-a"]),
+        )
         m_before = await storage_repo.add_conv_memory(
             db,
             conv_id=conv_id,
@@ -140,6 +160,7 @@ async def test_rewind_trims_conv_memory_recorded_during_rewound_turns(fresh_db) 
     assert res["ok"] is True
     assert res["deleted"] == 2
     assert res["memory_deleted"] == 1
+    assert retired == [(conv_id, {"agent-a"})]
     async with SessionLocal() as db:
         mem = await storage_repo.list_conv_memory(db, conv_id)
     # only the pre-rewind memory survives; the artifact from the rewound turn is gone

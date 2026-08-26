@@ -114,6 +114,30 @@ _STARLETTE_DISCONNECT_RUNTIME_ERRORS = frozenset(
 )
 
 
+async def _persist_dispatch_contract(
+    db,
+    *,
+    conv_id: str,
+    author_agent_id: str,
+    contract: str,
+    source_ref: str,
+) -> str | None:
+    """Persist the exact contract projection used by the dispatch drain."""
+
+    content = contract.strip()
+    if not content:
+        return None
+    return await storage_repo.add_conv_memory(
+        db,
+        conv_id=conv_id,
+        author_agent_id=author_agent_id,
+        kind="contract",
+        content=content,
+        origin="dispatch",
+        source_ref=source_ref,
+    )
+
+
 async def _write_streamed_tool_part(
     *,
     conv_id: str,
@@ -930,16 +954,26 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 payload=payload,
                 msg_id=card_msg_id,
             )
-            await storage_repo.add_conv_memory(
+            memory_id = await storage_repo.add_conv_memory(
                 db,
                 conv_id=conv_id,
                 author_agent_id=author,
-                kind="conflict",
+                kind="decision",
                 content=(
                     f"分支 `{branch}` 合并 main 冲突,{len(files)} 个文件待解决(conflict {cid})。"
                 ),
+                origin="agent",
+                source_ref=f"conflict:{cid}",
             )
             await db.commit()
+        from polynoia.api.conversations_routes import _finish_memory_mutation
+
+        await _finish_memory_mutation(
+            conv_id=conv_id,
+            affected_agent_ids={author},
+            memory_id=memory_id,
+            action="created",
+        )
         await emit(
             'data: {"type":"data-conflict","data":'
             + json.dumps(payload, ensure_ascii=False)
@@ -2739,6 +2773,18 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                 # must honor verbatim (ADR-014). Injected into each worker's
                 # prompt + shown on the card + checked at summary time.
                 contract = (batch.get("contract") or "").strip()
+                if len(contract) > storage_repo.MAX_MEMORY_CONTENT_CHARS:
+                    await _persist_and_emit_error(
+                        emit,
+                        conv_id=conv_id,
+                        sender_id=agent_id,
+                        message=(
+                            "派发契约超过 "
+                            f"{storage_repo.MAX_MEMORY_CONTENT_CHARS} 字符,本批次未执行。"
+                        ),
+                        reason="dispatch_contract_too_large",
+                    )
+                    continue
                 # The orchestrator who owns this burst = the agent whose turn is
                 # draining the batch (`agent_id`). We deliberately DO NOT trust
                 # the MCP-supplied `author_agent_id`: it comes from the adapter's
@@ -2813,15 +2859,25 @@ async def ws_conv(websocket: WebSocket, conv_id: str):
                     # Seed the contract into shared memory (ADR-014) so EVERY
                     # subsequent turn — workers AND the summary — sees it via the
                     # shared-memory layer, not just this batch's spawn prompts.
+                    contract_memory_id = None
                     if contract:
-                        await storage_repo.add_conv_memory(
+                        contract_memory_id = await _persist_dispatch_contract(
                             _db,
                             conv_id=conv_id,
                             author_agent_id=batch_author,
-                            kind="contract",
-                            content=contract,
+                            contract=contract,
+                            source_ref=tp_id,
                         )
                     await _db.commit()
+                if contract_memory_id:
+                    from polynoia.api.conversations_routes import _finish_memory_mutation
+
+                    await _finish_memory_mutation(
+                        conv_id=conv_id,
+                        affected_agent_ids={batch_author},
+                        memory_id=contract_memory_id,
+                        action="created",
+                    )
                 # Register the burst so worker completions can flip lane state
                 # + merge to main once all land. workspace_id drives the merge.
                 _ws_id = None

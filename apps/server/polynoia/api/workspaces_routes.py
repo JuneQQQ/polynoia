@@ -117,6 +117,11 @@ async def delete_workspace(ws_id: str):
         # Snapshot the conv ids before deletion so we can evict their sessions.
         convs = await storage_repo.list_conversations(session, workspace_id=ws_id)
         conv_ids = [c.id for c in convs]
+        affected_memory_authors: set[str] = set()
+        for conv_id in conv_ids:
+            affected_memory_authors.update(
+                await storage_repo.list_conv_memory_authors(session, conv_id)
+            )
         ok = await storage_repo.delete_workspace(session, ws_id)
         await session.commit()
     if not ok:
@@ -124,6 +129,11 @@ async def delete_workspace(ws_id: str):
     pool = get_pool()
     for conv_id in conv_ids:
         await pool.close_sessions_for_conv(conv_id)
+    if affected_memory_authors:
+        await pool.retire_memory_context_sessions(
+            conv_id=None,
+            agent_ids=affected_memory_authors,
+        )
     # Best-effort sandbox worktree cleanup — DB delete already succeeded, so a
     # leftover dir is non-fatal (the next same-id workspace would reuse it).
     # CRITICAL: only ever rmtree INSIDE the auto-managed sandbox root. A custom

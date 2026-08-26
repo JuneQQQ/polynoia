@@ -12,6 +12,7 @@ import pytest
 from polynoia.adapters import acp as acp_runtime
 from polynoia.adapters import pool
 from polynoia.adapters.acp import (
+    AcpContextInvalidatedError,
     AcpLaunchContext,
     AcpProvider,
     GenericAcpAdapter,
@@ -444,6 +445,54 @@ async def test_generic_acp_resumes_durable_session_without_reinjecting_bootstrap
     assert session._sent_system is True
     assert bound == [("durable-session", True)]
     await session.close()
+
+
+@pytest.mark.asyncio
+async def test_generic_acp_aborts_before_prompt_when_pool_rejects_stale_binding(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reject_stale_binding(
+        _session_id: str,
+        _capabilities: dict[str, Any],
+        _resumed: bool,
+    ) -> bool:
+        return False
+
+    sandbox = SimpleNamespace(
+        conv_id="conv-stale",
+        root=tmp_path,
+        workspace_root=None,
+        workspace_id=None,
+        env_for_agent=lambda env: dict(env),
+    )
+    session = GenericAcpSession(
+        provider=_provider(),
+        sandbox=sandbox,
+        conv_id="conv-stale",
+        cwd=str(tmp_path),
+        model=None,
+        system_prompt="STALE SNAPSHOT",
+        env={},
+        agent_id="demo-acp",
+        on_session_bound=reject_stale_binding,
+    )
+    connection = _Connection()
+    process = _FakeProcess()
+
+    @asynccontextmanager
+    async def _spawn(*_args: Any, **_kwargs: Any):
+        yield connection, process
+
+    monkeypatch.setattr(acp_runtime, "spawn_agent_process", _spawn)
+    monkeypatch.setattr(acp_runtime.shutil, "which", lambda *_a, **_k: "demo-acp")
+
+    with pytest.raises(AcpContextInvalidatedError):
+        await session._ensure_subprocess()
+
+    assert len(connection.new_session_calls) == 1
+    assert session._acp_session_id is None
+    assert session._connection is None
 
 
 @pytest.mark.asyncio

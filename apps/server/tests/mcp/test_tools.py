@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from polynoia.mcp import tools as tools_module
 from polynoia.mcp.tools import TOOL_REGISTRY, ToolContext
 
 
@@ -102,6 +105,99 @@ async def test_bash(ctx):
     assert res["kind"] == "completed"
     assert res["exit_code"] == 0
     assert "hello" in res["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_internal_callback_capability_is_not_inherited_by_tool_children(
+    ctx,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("POLYNOIA_INTERNAL_CALLBACK_TOKEN", "scoped-secret")
+    monkeypatch.setenv("POLYNOIA_API_BASE", "http://127.0.0.1:7780")
+    monkeypatch.setenv("POLYNOIA_CONV_ID", "private-conversation")
+    command = subprocess.list2cmdline(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; print('|'.join("
+                "os.environ.get(key, 'ABSENT') for key in "
+                "['POLYNOIA_INTERNAL_CALLBACK_TOKEN','POLYNOIA_API_BASE',"
+                "'POLYNOIA_CONV_ID']))"
+            ),
+        ]
+    )
+    result = await TOOL_REGISTRY["bash"].execute(ctx, {"command": command})
+    assert result["exit_code"] == 0
+    assert result["stdout"].strip() == "ABSENT|ABSENT|ABSENT"
+
+    rc, stdout, _ = await ctx._run_in_sandbox(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; print('|'.join("
+                "os.environ.get(key, 'ABSENT') for key in "
+                "['POLYNOIA_INTERNAL_CALLBACK_TOKEN','POLYNOIA_API_BASE',"
+                "'POLYNOIA_CONV_ID']))"
+            ),
+        ]
+    )
+    assert rc == 0
+    assert stdout.strip() == "ABSENT|ABSENT|ABSENT"
+
+
+@pytest.mark.asyncio
+async def test_remember_forwards_immutable_supersede_compatibility(ctx, monkeypatch) -> None:
+    captured: dict = {}
+
+    async def callback(path, **kwargs):
+        captured.update({"path": path, **kwargs})
+        return {"kind": "remembered", "id": "new-memory"}
+
+    monkeypatch.setattr(tools_module, "_callback_server", callback)
+    result = await TOOL_REGISTRY["remember"].execute(
+        ctx,
+        {"content": "replacement", "supersedes_id": "01ABCDEFGHIJKLMNOPQRSTUVWX"},
+    )
+
+    assert result["id"] == "new-memory"
+    assert captured["path"] == f"/api/internal/conversations/{ctx.conv_id}/memory"
+    assert captured["json"] == {
+        "kind": None,
+        "content": "replacement",
+        "supersedes_id": "01ABCDEFGHIJKLMNOPQRSTUVWX",
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_producer_tools_enforce_resource_bounds(ctx, monkeypatch) -> None:
+    async def should_not_call(*_args, **_kwargs):
+        raise AssertionError("oversized producer must fail before HTTP callback")
+
+    monkeypatch.setattr(tools_module, "_callback_server", should_not_call)
+    remembered = await TOOL_REGISTRY["remember"].execute(
+        ctx,
+        {"content": "x" * 8_001},
+    )
+    dispatched = await TOOL_REGISTRY["dispatch"].execute(
+        ctx,
+        {
+            "contract": "x" * 8_001,
+            "tasks": [{"agent": "alice", "note": "work"}],
+        },
+    )
+    reported = await TOOL_REGISTRY["report"].execute(
+        ctx,
+        {
+            "status": "ok",
+            "deliverables": "x" * 6_001,
+            "contract_ok": True,
+        },
+    )
+    assert remembered["kind"] == "error"
+    assert dispatched["kind"] == "error"
+    assert reported["kind"] == "error"
 
 
 @pytest.mark.asyncio

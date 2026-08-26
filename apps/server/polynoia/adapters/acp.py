@@ -100,6 +100,10 @@ from polynoia.settings import settings
 log = logging.getLogger(__name__)
 
 
+class AcpContextInvalidatedError(RuntimeError):
+    """A durable context mutation won a race with ACP session startup."""
+
+
 # Sentinel passed through the notification queue to stop the translator
 # once the session/prompt JSON-RPC response has been received.
 _SENTINEL: Any = object()
@@ -280,7 +284,9 @@ class GenericAcpAdapter:
         proxy_kind: str = "system",
         skills: list[str] | None = None,
         resume_session_id: str | None = None,
-        on_session_bound: Callable[[str, dict[str, Any], bool], Awaitable[None]] | None = None,
+        on_session_bound: (
+            Callable[[str, dict[str, Any], bool], Awaitable[bool | None]] | None
+        ) = None,
         bootstrap_factory: Callable[[str | None], Awaitable[str]] | None = None,
     ) -> GenericAcpSession:
         del allowed_tools, merge_mode
@@ -1215,7 +1221,9 @@ class GenericAcpSession:
         proxy: str | None = None,
         proxy_kind: str = "system",
         resume_session_id: str | None = None,
-        on_session_bound: Callable[[str, dict[str, Any], bool], Awaitable[None]] | None = None,
+        on_session_bound: (
+            Callable[[str, dict[str, Any], bool], Awaitable[bool | None]] | None
+        ) = None,
         bootstrap_factory: Callable[[str | None], Awaitable[str]] | None = None,
     ) -> None:
         self.session_id = _new_id()  # Polynoia-internal session id
@@ -1334,6 +1342,8 @@ class GenericAcpSession:
         therefore cannot observe the model endpoint credential.
         """
 
+        from polynoia.api.execution import RUNTIME
+
         server_pkg_root = str(Path(__file__).parent.parent.parent)
         tool_env: dict[str, str] = {
             "POLYNOIA_CONV_ID": self._conv_id,
@@ -1343,6 +1353,12 @@ class GenericAcpSession:
             "POLYNOIA_AGENT_TOOLS": ",".join(self._tools_whitelist),
             "POLYNOIA_API_BASE": os.environ.get(
                 "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
+            ),
+            "POLYNOIA_INTERNAL_CALLBACK_TOKEN": (
+                RUNTIME.issue_internal_callback_capability(
+                    self._conv_id,
+                    self.turn_agent_id or self.agent_id,
+                )
             ),
             "POLYNOIA_SANDBOX_ROOT": str(self._sandbox.root.parent),
             "PYTHONPATH": server_pkg_root,
@@ -1698,11 +1714,20 @@ class GenericAcpSession:
         self._resume_session_id = bound_session_id
         self._sent_system = resumed
         if self._on_session_bound is not None:
-            await self._on_session_bound(
-                bound_session_id,
-                dict(self._agent_capabilities),
-                resumed,
-            )
+            try:
+                accepted = await self._on_session_bound(
+                    bound_session_id,
+                    dict(self._agent_capabilities),
+                    resumed,
+                )
+            except Exception:
+                await self._reset_subprocess()
+                raise
+            if accepted is False:
+                await self._reset_subprocess()
+                raise AcpContextInvalidatedError(
+                    "ACP context changed while the provider session was starting"
+                )
         self._has_bound_once = True
 
     def set_recovery_boundary(self, message_id: str | None) -> None:
@@ -1830,6 +1855,11 @@ class GenericAcpSession:
             )
             try:
                 await self._ensure_subprocess()
+            except AcpContextInvalidatedError:
+                # No prompt reached the provider. Let the WS no-output retry
+                # rebuild a fresh bootstrap instead of persisting a false turn
+                # failure or resuming the stale provider session.
+                raise
             except Exception as exc:
                 message, retryable = self._error_message(exc)
                 if "Authentication required" in message:

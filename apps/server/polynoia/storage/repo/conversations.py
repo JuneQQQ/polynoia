@@ -52,6 +52,17 @@ async def delete_conversation(session: AsyncSession, conv_id: str) -> bool:
     row = await session.get(ConversationRow, conv_id)
     if row is None:
         return False
+    # Deleting this ledger changes every author's ADR-019 own-memory projection,
+    # including provider sessions in other conversations. Persistently retire
+    # those bindings in the same transaction as the delete so a restart cannot
+    # resume context that still contains the removed conversation's facts.
+    from polynoia.storage.repo.conv_memory import list_conv_memory_authors
+
+    memory_authors = await list_conv_memory_authors(session, conv_id)
+    if memory_authors:
+        from polynoia.storage.repo.harness_sessions import invalidate_harness_sessions
+
+        await invalidate_harness_sessions(session, agent_ids=memory_authors)
     # Delete ALL conv-scoped child rows explicitly. DB-level ondelete=CASCADE is
     # now enforced (foreign_keys=ON, db.py), but we don't rely on it alone:
     # pending_access has no conv FK, and dev DBs predate some FKs — so deterministic

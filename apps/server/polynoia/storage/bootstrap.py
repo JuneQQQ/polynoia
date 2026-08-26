@@ -107,6 +107,33 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
         "base_agents_json",
         "ALTER TABLE merge_conflicts ADD COLUMN base_agents_json JSON NOT NULL DEFAULT '[]'",
     ),
+    (
+        "conv_memory",
+        "status",
+        "ALTER TABLE conv_memory ADD COLUMN status VARCHAR(16) "
+        "NOT NULL DEFAULT 'active'",
+    ),
+    (
+        "conv_memory",
+        "origin",
+        "ALTER TABLE conv_memory ADD COLUMN origin VARCHAR(16) "
+        "NOT NULL DEFAULT 'legacy'",
+    ),
+    (
+        "conv_memory",
+        "source_ref",
+        "ALTER TABLE conv_memory ADD COLUMN source_ref VARCHAR(64)",
+    ),
+    (
+        "conv_memory",
+        "supersedes_id",
+        "ALTER TABLE conv_memory ADD COLUMN supersedes_id VARCHAR(26)",
+    ),
+    (
+        "conv_memory",
+        "status_changed_at",
+        "ALTER TABLE conv_memory ADD COLUMN status_changed_at DATETIME",
+    ),
 ]
 
 
@@ -115,6 +142,13 @@ _SCHEMA_PATCHES: list[tuple[str, str, str]] = [
 # and a no-op on fresh DBs where create_all already built the index from the model.
 _INDEX_PATCHES: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_messages_turn_id ON messages (turn_id)",
+    "CREATE INDEX IF NOT EXISTS ix_conv_memory_status ON conv_memory (status)",
+    "CREATE INDEX IF NOT EXISTS ix_conv_memory_conv_status_created "
+    "ON conv_memory (conv_id, status, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_conv_memory_author_status_created "
+    "ON conv_memory (author_agent_id, status, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_conv_memory_supersedes_id "
+    "ON conv_memory (supersedes_id) WHERE supersedes_id IS NOT NULL",
 ]
 
 
@@ -130,6 +164,34 @@ async def _apply_schema_patches() -> None:
                 await conn.execute(text(sql))
         for sql in _INDEX_PATCHES:
             await conn.execute(text(sql))
+
+
+async def _normalize_legacy_memory_kinds() -> None:
+    """Map pre-ledger free-form kinds into the governed three-kind vocabulary.
+
+    Older builds wrote ``kind='conflict'`` and accepted arbitrary user strings.
+    Leaving those rows untouched would silently exclude active facts from the
+    new context selector and make their kind impossible to preserve through the
+    typed inspector.  Content and row identity stay immutable; only legacy
+    classification/provenance is normalized.  The predicate makes this fully
+    idempotent.
+    """
+
+    async with engine.begin() as conn:
+        columns = {
+            row[1]
+            for row in (
+                await conn.execute(text("PRAGMA table_info(conv_memory)"))
+            ).fetchall()
+        }
+        if not {"kind", "origin"} <= columns:
+            return
+        await conn.execute(
+            text(
+                "UPDATE conv_memory SET kind='decision', origin='legacy' "
+                "WHERE kind NOT IN ('contract', 'decision', 'artifact')"
+            )
+        )
 
 
 async def _apply_column_drops() -> None:
@@ -220,6 +282,8 @@ async def bootstrap_db() -> None:
     await init_db()
     # Step 1b: patch existing tables with any new columns (dev-only).
     await _apply_schema_patches()
+    # Step 1b.0: old builds allowed free-form kinds (notably `conflict`).
+    await _normalize_legacy_memory_kinds()
     # Step 1b.1: drop columns the model has un-mapped (else NOT NULL bites INSERTs).
     await _apply_column_drops()
     # Step 1b.2: remove obsolete compatibility tables after create_all.

@@ -12,9 +12,13 @@ relocation + a named home, not a behaviour change. The 🔴 load-bearing
 `bursts` registry keeps its exact key structure (see conflict-closed-loop-CHARTER
 §2); wrapping the dict does not reshape it.
 """
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import secrets
 from dataclasses import dataclass, field
 
 
@@ -103,6 +107,50 @@ class ConversationRuntime:
     dispatchers: dict[str, set[asyncio.Task]] = field(default_factory=dict)
     user_message_locks: dict[str, ConversationIngressLock] = field(default_factory=dict)
     live: dict[str, dict[str, dict]] = field(default_factory=dict)
+    # Root secret for scoped MCP→FastAPI callback capabilities.  The secret is
+    # never exported.  Adapters receive only an HMAC bound to one
+    # (conversation, agent), so even a leaked MCP capability cannot be replayed
+    # as another contact or against another conversation.
+    internal_callback_secret: bytes = field(
+        default_factory=lambda: secrets.token_bytes(32),
+        repr=False,
+    )
+
+    @staticmethod
+    def _callback_scope(conv_id: str, agent_id: str) -> bytes:
+        # Length-prefix both untrusted strings so distinct pairs cannot produce
+        # an ambiguous concatenation ("ab"+"c" vs "a"+"bc").
+        conv_bytes = conv_id.encode()
+        agent_bytes = agent_id.encode()
+        return (
+            f"v1:{len(conv_bytes)}:".encode()
+            + conv_bytes
+            + f":{len(agent_bytes)}:".encode()
+            + agent_bytes
+        )
+
+    def issue_internal_callback_capability(self, conv_id: str, agent_id: str) -> str:
+        """Mint a process-local capability scoped to exactly one MCP actor."""
+
+        return hmac.new(
+            self.internal_callback_secret,
+            self._callback_scope(conv_id, agent_id),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def verify_internal_callback_capability(
+        self,
+        capability: str,
+        *,
+        conv_id: str,
+        agent_id: str,
+    ) -> bool:
+        """Constant-time verification of a scoped callback capability."""
+
+        if not capability or not conv_id or not agent_id:
+            return False
+        expected = self.issue_internal_callback_capability(conv_id, agent_id)
+        return hmac.compare_digest(capability, expected)
 
     def user_message_lock(self, conv_id: str) -> ConversationIngressLock:
         """Serialize durable user-message ingress for one conversation."""
