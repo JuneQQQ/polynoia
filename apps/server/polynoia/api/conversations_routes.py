@@ -16,12 +16,17 @@ Mirrors the legacy router pattern (``api/workspace_files.py`` /
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
+from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from polynoia.adapters.pool import get_pool
+from polynoia.api.execution import RUNTIME
 from polynoia.storage import repo as storage_repo
 from polynoia.storage.db import SessionLocal
 from polynoia.storage.models import MessageRow
@@ -49,6 +54,166 @@ def _promote_lock() -> asyncio.Lock:
 MAX_DRAFT_ATTACHMENTS = 12
 MAX_DRAFT_ATTACHMENTS_JSON_BYTES = 80_000
 MAX_DRAFT_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+
+class MemoryCreateRequest(BaseModel):
+    kind: Literal["contract", "decision", "artifact"] | None = None
+    content: str = Field(min_length=1, max_length=storage_repo.MAX_MEMORY_CONTENT_CHARS)
+    # Accepted for wire compatibility only. Public calls are always attributed
+    # to the user; controlled MCP calls use the authenticated internal route.
+    author_agent_id: str | None = Field(default=None, max_length=64)
+    source_ref: str | None = Field(default=None, max_length=64)
+    supersedes_id: str | None = Field(default=None, max_length=26)
+
+
+class MemorySupersedeRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=storage_repo.MAX_MEMORY_CONTENT_CHARS)
+    kind: Literal["contract", "decision", "artifact"] | None = None
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _memory_entry(row) -> dict:
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "content": row.content,
+        "author_agent_id": row.author_agent_id,
+        "status": row.status,
+        "origin": row.origin,
+        "source_ref": row.source_ref,
+        "supersedes_id": row.supersedes_id,
+        "created_at": _utc_iso(row.created_at),
+        "status_changed_at": _utc_iso(row.status_changed_at),
+    }
+
+
+def _conv_has_busy_memory_session(conv_id: str) -> bool:
+    return any(not task.done() for task in (RUNTIME.agent_tasks.get(conv_id) or {}).values())
+
+
+async def _finish_memory_mutation(
+    *,
+    conv_id: str,
+    affected_agent_ids: set[str],
+    memory_id: str,
+    action: str,
+) -> None:
+    # The ledger + durable Session invalidation are already committed. These
+    # process-local/UI side effects are best-effort: never turn a successful,
+    # non-idempotent mutation into an ambiguous 500 that a caller may retry.
+    with contextlib.suppress(Exception):
+        await get_pool().retire_memory_context_sessions(
+            conv_id=conv_id,
+            agent_ids=affected_agent_ids,
+        )
+    # Live invalidation only: canonical Conversation Stream intentionally keeps
+    # its compact five-event vocabulary. Every tab simply reloads the ledger.
+    from polynoia.api.routes import _broadcast_to_conv
+
+    with contextlib.suppress(Exception):
+        await _broadcast_to_conv(
+            conv_id,
+            "data: "
+            + json.dumps(
+                {
+                    "type": "data-memory-changed",
+                    "id": f"memory-{memory_id}",
+                    "data": {"conv_id": conv_id, "memory_id": memory_id, "action": action},
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\n",
+        )
+
+
+def _require_internal_memory_actor(request: Request, conv_id: str) -> str:
+    token = request.headers.get("X-Polynoia-Internal-Token", "")
+    if request.headers.get("X-Polynoia-Conv-ID") != conv_id:
+        raise HTTPException(status_code=403, detail="callback conversation mismatch")
+    actor = request.headers.get("X-Polynoia-Agent-ID", "").strip()
+    if not actor or len(actor) > 64:
+        raise HTTPException(status_code=403, detail="callback agent identity missing")
+    if not RUNTIME.verify_internal_callback_capability(
+        token,
+        conv_id=conv_id,
+        agent_id=actor,
+    ):
+        raise HTTPException(status_code=403, detail="invalid internal callback identity")
+    return actor
+
+
+async def _append_or_supersede_memory(
+    session,
+    *,
+    conv,
+    body: MemoryCreateRequest,
+    author: str,
+    origin: Literal["agent", "user"],
+    may_replace_contract: bool,
+) -> tuple[str, str, set[str]]:
+    """Apply the compatibility POST as append-or-CAS-supersede.
+
+    Identity and contract authority are supplied by the authenticated caller,
+    never by ``body.author_agent_id``.  The returned agent set is the complete
+    cross-conversation context footprint that must be retired after commit.
+    """
+
+    affected_agents = {author} if author != "you" else set()
+    if not body.supersedes_id:
+        if body.kind == "contract" and not may_replace_contract:
+            raise HTTPException(
+                status_code=403,
+                detail="only the user or conversation orchestrator can create a contract",
+            )
+        mid = await storage_repo.add_conv_memory(
+            session,
+            conv_id=conv.id,
+            author_agent_id=author,
+            kind=body.kind or "decision",
+            content=body.content,
+            origin=origin,
+            source_ref=body.source_ref,
+        )
+        return mid, "created", affected_agents
+
+    target = await storage_repo.get_conv_memory(
+        session,
+        conv_id=conv.id,
+        memory_id=body.supersedes_id,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+    next_kind = body.kind or target.kind
+    # Prevent kind escalation from bypassing the contract gate: replacing a
+    # decision *with* a contract is just as privileged as replacing a contract.
+    if (target.kind == "contract" or next_kind == "contract") and not may_replace_contract:
+        raise HTTPException(
+            status_code=403,
+            detail="only the user or conversation orchestrator can replace a contract",
+        )
+    successor_id = await storage_repo.supersede_conv_memory(
+        session,
+        conv_id=conv.id,
+        memory_id=target.id,
+        author_agent_id=author,
+        kind=next_kind,
+        content=body.content,
+        origin=origin,
+        source_ref=body.source_ref or target.id,
+    )
+    if successor_id is None:
+        raise HTTPException(status_code=409, detail="memory is no longer active")
+    if target.author_agent_id != "you":
+        affected_agents.add(target.author_agent_id)
+    return successor_id, "superseded", affected_agents
 
 
 def _sanitize_draft_attachments(value: object) -> list[dict]:
@@ -239,40 +404,250 @@ async def update_conv_draft_attachments(conv_id: str, body: dict):
 
 
 @router.post("/api/conversations/{conv_id}/memory")
-async def record_conv_memory(conv_id: str, body: dict):
-    """Persist one shared-memory entry (ADR-014).
+async def record_conv_memory(conv_id: str, body: MemoryCreateRequest):
+    """Append user-governed work memory; legacy author input is not trusted."""
 
-    Called by the `remember` MCP tool (agents recording a decision/artifact)
-    and by the dispatch drain auto-seeding the locked contract. The entry is
-    injected into every subsequent turn's prompt via the shared-memory layer.
-    """
-    content = (body.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="content required")
-    kind = (body.get("kind") or "decision").strip()
-    author = (body.get("author_agent_id") or "").strip() or "agent"
+    if _conv_has_busy_memory_session(conv_id):
+        raise HTTPException(status_code=409, detail="agent turn is running")
     async with SessionLocal() as session:
-        mid = await storage_repo.add_conv_memory(
-            session, conv_id=conv_id, author_agent_id=author,
-            kind=kind, content=content,
+        conv = await storage_repo.get_conversation(session, conv_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        try:
+            mid, action, affected_agents = await _append_or_supersede_memory(
+                session,
+                conv=conv,
+                body=body,
+                author="you",
+                origin="user",
+                may_replace_contract=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await storage_repo.invalidate_harness_sessions(
+            session,
+            conv_id=conv_id,
+            agent_ids=affected_agents,
         )
         await session.commit()
+    await _finish_memory_mutation(
+        conv_id=conv_id,
+        affected_agent_ids=affected_agents,
+        memory_id=mid,
+        action=action,
+    )
+    return {"kind": "remembered", "id": mid}
+
+
+@router.post("/api/internal/conversations/{conv_id}/memory")
+async def record_agent_conv_memory(
+    conv_id: str,
+    body: MemoryCreateRequest,
+    request: Request,
+):
+    """Authenticated MCP callback; actor comes from a server capability."""
+
+    actor = _require_internal_memory_actor(request, conv_id)
+    async with SessionLocal() as session:
+        conv = await storage_repo.get_conversation(session, conv_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        if actor not in set(conv.members or []):
+            raise HTTPException(status_code=403, detail="agent is not a conversation member")
+        try:
+            mid, action, affected_agents = await _append_or_supersede_memory(
+                session,
+                conv=conv,
+                body=body,
+                author=actor,
+                origin="agent",
+                may_replace_contract=actor == conv.orchestrator_member_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await storage_repo.invalidate_harness_sessions(
+            session,
+            conv_id=conv_id,
+            agent_ids=affected_agents,
+        )
+        await session.commit()
+    await _finish_memory_mutation(
+        conv_id=conv_id,
+        affected_agent_ids=affected_agents,
+        memory_id=mid,
+        action=action,
+    )
     return {"kind": "remembered", "id": mid}
 
 
 @router.get("/api/conversations/{conv_id}/memory")
-async def get_conv_memory(conv_id: str, kind: str | None = None):
+async def get_conv_memory(
+    conv_id: str,
+    kind: Literal["contract", "decision", "artifact"] | None = None,
+    include_inactive: bool = False,
+    view: Literal["context", "active", "history"] = "context",
+    limit: int = 100,
+    before_created_at: datetime | None = None,
+    before_id: str | None = None,
+):
     """Read shared memory (ADR-014) — backs the `recall` MCP tool so an agent can
     consult the locked contract / teammates' decisions+artifacts MID-task without
     waiting for its next turn. Optional ?kind= filter (contract/decision/artifact)."""
+    limit = max(1, min(limit, 200))
+    if include_inactive:
+        view = "history"
     async with SessionLocal() as session:
-        rows = await storage_repo.list_conv_memory(session, conv_id, limit=100)
-    entries = [
-        {"id": r.id, "kind": r.kind, "content": r.content, "author_agent_id": r.author_agent_id}
-        for r in rows
-        if not kind or r.kind == kind
-    ]
-    return {"conv_id": conv_id, "entries": entries, "count": len(entries)}
+        if await storage_repo.get_conversation(session, conv_id) is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        if view == "context" and before_created_at is None:
+            rows = (
+                await storage_repo.list_conv_memory(
+                    session,
+                    conv_id,
+                    limit=limit,
+                    kind=kind,
+                    status="active",
+                )
+                if kind
+                else await storage_repo.list_context_memory(session, conv_id, limit=limit)
+            )
+            total = await storage_repo.count_conv_memory(
+                session,
+                conv_id,
+                kind=kind,
+                status="active",
+            )
+            return {
+                "conv_id": conv_id,
+                "entries": [_memory_entry(row) for row in rows],
+                "count": len(rows),
+                "total": total,
+                "has_more": total > len(rows),
+                "next_cursor": None,
+            }
+        status = None if view == "history" else "active"
+        try:
+            rows, has_more = await storage_repo.list_conv_memory_page(
+                session,
+                conv_id,
+                limit=limit,
+                kind=kind,
+                status=status,
+                before_created_at=before_created_at,
+                before_id=before_id,
+            )
+            total = await storage_repo.count_conv_memory(
+                session,
+                conv_id,
+                kind=kind,
+                status=status,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cursor = None
+    if has_more and rows:
+        cursor = {
+            "before_created_at": _utc_iso(rows[-1].created_at),
+            "before_id": rows[-1].id,
+        }
+    return {
+        "conv_id": conv_id,
+        "entries": [_memory_entry(row) for row in rows],
+        "count": len(rows),
+        "total": total,
+        "has_more": has_more,
+        "next_cursor": cursor,
+    }
+
+
+@router.post("/api/conversations/{conv_id}/memory/{memory_id}/supersede")
+async def supersede_conv_memory(
+    conv_id: str,
+    memory_id: str,
+    body: MemorySupersedeRequest,
+):
+    """User replacement: append one successor and retain immutable history."""
+
+    if _conv_has_busy_memory_session(conv_id):
+        raise HTTPException(status_code=409, detail="agent turn is running")
+    async with SessionLocal() as session:
+        target = await storage_repo.get_conv_memory(
+            session,
+            conv_id=conv_id,
+            memory_id=memory_id,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        try:
+            successor_id = await storage_repo.supersede_conv_memory(
+                session,
+                conv_id=conv_id,
+                memory_id=memory_id,
+                author_agent_id="you",
+                kind=body.kind or target.kind,
+                content=body.content,
+                origin="user",
+                source_ref=memory_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if successor_id is None:
+            raise HTTPException(status_code=409, detail="memory is no longer active")
+        await storage_repo.invalidate_harness_sessions(
+            session,
+            conv_id=conv_id,
+            agent_ids={target.author_agent_id},
+        )
+        await session.commit()
+        successor = await storage_repo.get_conv_memory(
+            session,
+            conv_id=conv_id,
+            memory_id=successor_id,
+        )
+    if successor is None:
+        raise HTTPException(status_code=500, detail="memory successor was not persisted")
+    await _finish_memory_mutation(
+        conv_id=conv_id,
+        affected_agent_ids={target.author_agent_id},
+        memory_id=successor_id,
+        action="superseded",
+    )
+    return {"kind": "superseded", "entry": _memory_entry(successor)}
+
+
+@router.delete("/api/conversations/{conv_id}/memory/{memory_id}")
+async def revoke_conv_memory(conv_id: str, memory_id: str):
+    """User revocation removes one active fact from every future Session."""
+
+    if _conv_has_busy_memory_session(conv_id):
+        raise HTTPException(status_code=409, detail="agent turn is running")
+    async with SessionLocal() as session:
+        target = await storage_repo.get_conv_memory(
+            session,
+            conv_id=conv_id,
+            memory_id=memory_id,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        if not await storage_repo.revoke_conv_memory(
+            session,
+            conv_id=conv_id,
+            memory_id=memory_id,
+        ):
+            raise HTTPException(status_code=409, detail="memory is no longer active")
+        await storage_repo.invalidate_harness_sessions(
+            session,
+            conv_id=conv_id,
+            agent_ids={target.author_agent_id},
+        )
+        await session.commit()
+    await _finish_memory_mutation(
+        conv_id=conv_id,
+        affected_agent_ids={target.author_agent_id},
+        memory_id=memory_id,
+        action="revoked",
+    )
+    return {"ok": True, "id": memory_id, "status": "revoked"}
 
 
 @router.get("/api/conversations/{conv_id}/ask-forms")

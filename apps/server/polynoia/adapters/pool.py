@@ -119,6 +119,10 @@ class AdapterPool:
         # logical Harness session. It prevents full-history replay while still
         # forwarding teammate/user facts that this agent has not seen.
         self._delivered_conv_seq: dict[tuple[str, str], int] = {}
+        # Context governance can change while a Harness tool is still inside
+        # its current turn. Busy sessions finish that turn, then close before a
+        # queued/new turn can reuse or resume the stale provider context.
+        self._invalidate_after_turn: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
         self._reaper_task: asyncio.Task | None = None
 
@@ -171,6 +175,7 @@ class AdapterPool:
                 s = self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
                 self._delivered_conv_seq.pop(k, None)
+                self._invalidate_after_turn.discard(k)
                 if s is not None:
                     popped.append((k, s))
         for key, session in popped:
@@ -215,9 +220,33 @@ class AdapterPool:
                 self._sessions.pop(key, None)
                 self._last_used.pop(key, None)
                 self._delivered_conv_seq.pop(key, None)
+                self._invalidate_after_turn.discard(key)
                 with contextlib.suppress(Exception):
                     await sess.close()
                 sess = None
+            if sess is not None:
+                # Memory/config mutations invalidate durable bindings even when
+                # the wrapper is still cached locally (or was detached in a
+                # previous process). Never resume/append to that stale context.
+                from polynoia.storage import repo as storage_repo
+                from polynoia.storage.db import SessionLocal
+
+                async with SessionLocal() as binding_db:
+                    binding = await storage_repo.get_harness_session(
+                        binding_db, conv_id, agent_id
+                    )
+                if binding is not None and binding.state == "invalidated":
+                    if bool(getattr(sess, "is_busy", False)):
+                        self._invalidate_after_turn.add(key)
+                        self._last_used[key] = time.monotonic()
+                        return sess
+                    self._sessions.pop(key, None)
+                    self._last_used.pop(key, None)
+                    self._delivered_conv_seq.pop(key, None)
+                    self._invalidate_after_turn.discard(key)
+                    with contextlib.suppress(Exception):
+                        await sess.close()
+                    sess = None
             if sess is not None:
                 self._last_used[key] = time.monotonic()  # refresh: keep active conv warm
                 return sess
@@ -353,7 +382,10 @@ class AdapterPool:
                         "skills": skill_names,
                         "endpoint": agent.setup.api_base_url,
                         "proxy_kind": proxy_kind,
-                        "policy": "stateful-acp-v1",
+                        # Bump whenever one-time bootstrap security/selection
+                        # semantics change. Old detached ACP sessions must not
+                        # resume with the pre-ledger, unescaped Memory prompt.
+                        "policy": "stateful-acp-memory-ledger-v2",
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -398,27 +430,44 @@ class AdapterPool:
                     )
                 resume_session_id = binding.acp_session_id if can_resume and binding else None
 
+            new_sess: AdapterSession | None = None
+
             async def _on_session_bound(
                 acp_session_id: str,
                 capabilities: dict[str, object],
                 resumed: bool,
-            ) -> None:
-                async with SessionLocal() as binding_db:
-                    await storage_repo.bind_harness_session(
-                        binding_db,
-                        conv_id=conv_id,
-                        agent_id=agent_id,
-                        adapter_id=agent.setup.adapter_id or "",
-                        model=agent.setup.model,
-                        workspace_id=ws_id,
-                        acp_session_id=acp_session_id,
-                        fingerprint=fingerprint,
-                        delivered_through_seq=self._delivered_conv_seq.get(key, delivered_seq),
-                        capabilities=dict(capabilities),
-                        resumed=resumed,
-                        state="running",
-                    )
-                    await binding_db.commit()
+            ) -> bool:
+                # Serialize provider binding with Memory retirement. If a
+                # mutation marked this wrapper stale while ACP was starting,
+                # refuse the binding before any prompt is sent; Generic ACP
+                # resets and the WS no-output path retries from a fresh
+                # bootstrap. Holding the pool lock through the DB commit also
+                # prevents retire() from being overwritten by a late bind.
+                async with self._lock:
+                    if (
+                        key in self._invalidate_after_turn
+                        or self._sessions.get(key) is not new_sess
+                    ):
+                        return False
+                    async with SessionLocal() as binding_db:
+                        await storage_repo.bind_harness_session(
+                            binding_db,
+                            conv_id=conv_id,
+                            agent_id=agent_id,
+                            adapter_id=agent.setup.adapter_id or "",
+                            model=agent.setup.model,
+                            workspace_id=ws_id,
+                            acp_session_id=acp_session_id,
+                            fingerprint=fingerprint,
+                            delivered_through_seq=self._delivered_conv_seq.get(
+                                key, delivered_seq
+                            ),
+                            capabilities=dict(capabilities),
+                            resumed=resumed,
+                            state="running",
+                        )
+                        await binding_db.commit()
+                    return True
 
             async def _bootstrap_factory(boundary_message_id: str | None) -> str:
                 async with SessionLocal() as bootstrap_db:
@@ -594,6 +643,23 @@ class AdapterPool:
                 delivered_through_seq=delivered_through_seq,
             ):
                 await state_db.commit()
+        stale_session: AdapterSession | None = None
+        was_stale = False
+        async with self._lock:
+            if key in self._invalidate_after_turn:
+                was_stale = True
+                self._invalidate_after_turn.discard(key)
+                stale_session = self._sessions.pop(key, None)
+                self._last_used.pop(key, None)
+                self._delivered_conv_seq.pop(key, None)
+        if stale_session is not None:
+            with contextlib.suppress(Exception):
+                await stale_session.close()
+        if was_stale:
+            # Reassert after every possible late on_session_bound callback. The
+            # conditional repo update cannot revive an invalidated row later.
+            with contextlib.suppress(Exception):
+                await self._set_binding_state(key, "invalidated")
 
     async def close_session(self, agent_id: str, conv_id: str) -> None:
         key = (agent_id, conv_id)
@@ -601,6 +667,7 @@ class AdapterPool:
             sess = self._sessions.pop(key, None)
             self._last_used.pop(key, None)
             self._delivered_conv_seq.pop(key, None)
+            self._invalidate_after_turn.discard(key)
         await self._set_binding_state(key, "invalidated")
         if sess is not None:
             await sess.close()
@@ -630,6 +697,56 @@ class AdapterPool:
             return False
         return True
 
+    async def retire_memory_context_sessions(
+        self,
+        *,
+        conv_id: str | None,
+        agent_ids: set[str] | None = None,
+    ) -> int:
+        """Retire cached sessions affected by a committed Memory mutation.
+
+        The caller invalidates durable bindings in the same DB transaction as
+        the ledger write. Idle wrappers close immediately; busy wrappers are
+        allowed to finish their already-started turn and are closed by
+        ``commit_context_delivery`` before any later turn reuses them.
+        """
+
+        affected_agents = {a for a in (agent_ids or set()) if a != "you"}
+        to_close: list[AdapterSession] = []
+        marked = 0
+        from polynoia.storage import repo as storage_repo
+        from polynoia.storage.db import SessionLocal
+
+        async with self._lock:
+            # The Memory transaction invalidates first, but an ACP
+            # on_session_bound callback may have started earlier and committed
+            # afterward. Reassert while sharing this same pool lock with that
+            # callback, closing the bind-vs-retire race.
+            with contextlib.suppress(Exception):
+                async with SessionLocal() as db:
+                    if await storage_repo.invalidate_harness_sessions(
+                        db,
+                        conv_id=conv_id,
+                        agent_ids=affected_agents,
+                    ):
+                        await db.commit()
+            for key, session in list(self._sessions.items()):
+                if (conv_id is None or key[1] != conv_id) and key[0] not in affected_agents:
+                    continue
+                marked += 1
+                if bool(getattr(session, "is_busy", False)):
+                    self._invalidate_after_turn.add(key)
+                    continue
+                self._sessions.pop(key, None)
+                self._last_used.pop(key, None)
+                self._delivered_conv_seq.pop(key, None)
+                self._invalidate_after_turn.discard(key)
+                to_close.append(session)
+        for session in to_close:
+            with contextlib.suppress(Exception):
+                await session.close()
+        return marked
+
     async def close_sessions_for_agent(self, agent_id: str) -> None:
         """Drop all cached sessions for a given agent_id (across all convs).
 
@@ -643,11 +760,18 @@ class AdapterPool:
                 self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
                 self._delivered_conv_seq.pop(k, None)
+                self._invalidate_after_turn.discard(k)
         for _, s in to_close:
             with contextlib.suppress(Exception):
                 await s.close()
         for key, _ in to_close:
             await self._set_binding_state(key, "invalidated")
+        from polynoia.storage import repo as storage_repo
+        from polynoia.storage.db import SessionLocal
+
+        async with SessionLocal() as db:
+            if await storage_repo.invalidate_harness_sessions(db, agent_ids={agent_id}):
+                await db.commit()
 
     async def close_sessions_for_conv(self, conv_id: str) -> None:
         """Drop all cached sessions (across all agents) for a conversation.
@@ -661,11 +785,18 @@ class AdapterPool:
                 self._sessions.pop(k, None)
                 self._last_used.pop(k, None)
                 self._delivered_conv_seq.pop(k, None)
+                self._invalidate_after_turn.discard(k)
         for _, s in to_close:
             with contextlib.suppress(Exception):
                 await s.close()
         for key, _ in to_close:
             await self._set_binding_state(key, "invalidated")
+        from polynoia.storage import repo as storage_repo
+        from polynoia.storage.db import SessionLocal
+
+        async with SessionLocal() as db:
+            if await storage_repo.invalidate_harness_sessions(db, conv_id=conv_id):
+                await db.commit()
 
     async def close_all(self) -> None:
         if self._reaper_task is not None:
@@ -678,6 +809,7 @@ class AdapterPool:
             self._sessions.clear()
             self._last_used.clear()
             self._delivered_conv_seq.clear()
+            self._invalidate_after_turn.clear()
         for s in sessions:
             with contextlib.suppress(Exception):
                 await s.close()
@@ -705,6 +837,7 @@ class AdapterPool:
             self._sessions.clear()
             self._last_used.clear()
             self._delivered_conv_seq.clear()
+            self._invalidate_after_turn.clear()
         for key, session in items:
             with contextlib.suppress(Exception):
                 await self._set_binding_state(

@@ -258,6 +258,7 @@ class ToolContext:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(self.sandbox.root),
+            env=_tool_child_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -623,6 +624,23 @@ def _bash_safety_block(cmd: str) -> str | None:
     return None
 
 
+def _tool_child_env() -> dict[str, str]:
+    """Environment for model-controlled shell children.
+
+    ``POLYNOIA_*`` values describe the controlled MCP process (callback
+    capability, API address, conversation/agent identity and workspace
+    internals), never arbitrary project commands. Strip the whole namespace so
+    shell/git hooks cannot inherit the control-plane coordinates by accident.
+    """
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("POLYNOIA_")
+    }
+    return env
+
+
 _LISTEN_PORT_RE = re.compile(r":(\d+)\s*\(LISTEN\)")
 
 
@@ -673,6 +691,7 @@ async def _pgid_listening_ports(pgid: int) -> list[int]:
             str(pgid),
             "-iTCP",
             "-sTCP:LISTEN",
+            env=_tool_child_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -767,6 +786,7 @@ class _BashTool(_ToolBase):
         proc = await asyncio.create_subprocess_shell(
             cmd,
             cwd=str(ctx.sandbox.root),
+            env=_tool_child_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # New session/process group so a kill takes down the WHOLE tree
@@ -1129,6 +1149,7 @@ class _RunBackgroundTool(_ToolBase):
         proc = await asyncio.create_subprocess_shell(
             wrapped,
             cwd=str(ctx.sandbox.root),
+            env=_tool_child_env(),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             stdin=asyncio.subprocess.DEVNULL,
@@ -1305,10 +1326,24 @@ async def _callback_server(
     # corrects rather than looping.
     attempts = 3 if method.upper() == "GET" else 1
     last_err = ""
+    headers = {
+        "X-Polynoia-Internal-Token": os.environ.get(
+            "POLYNOIA_INTERNAL_CALLBACK_TOKEN", ""
+        ),
+        "X-Polynoia-Conv-ID": os.environ.get("POLYNOIA_CONV_ID", ""),
+        "X-Polynoia-Agent-ID": os.environ.get("POLYNOIA_TURN_AGENT_ID", "")
+        or os.environ.get("POLYNOIA_AGENT_ID", ""),
+    }
     for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(base_url=base, timeout=30.0, trust_env=False) as client:
-                r = await client.request(method, path, json=json, params=params)
+                r = await client.request(
+                    method,
+                    path,
+                    json=json,
+                    params=params,
+                    headers=headers,
+                )
             if r.status_code == 200:
                 return r.json()
             if r.status_code < 500:
@@ -1424,6 +1459,7 @@ class _DispatchTool(_ToolBase):
             },
             "contract": {
                 "type": "string",
+                "maxLength": 8000,
                 "description": (
                     "Optional shared contract ALL sub-tasks must honor verbatim: "
                     "interface / field names / routes / ports / data shapes. "
@@ -1477,6 +1513,12 @@ class _DispatchTool(_ToolBase):
         tasks = args.get("tasks") or []
         if not isinstance(tasks, list) or not tasks:
             return {"kind": "error", "error": "tasks must be a non-empty array of {agent, note}"}
+        contract = str(args.get("contract") or "").strip()
+        if len(contract) > 8_000:
+            return {
+                "kind": "error",
+                "error": "contract must be <= 8000 characters",
+            }
         caller = ctx.turn_agent_id or ctx.agent_id
         ctx.append_audit(
             "agent.dispatch",
@@ -1490,7 +1532,7 @@ class _DispatchTool(_ToolBase):
             f"/api/conversations/{ctx.conv_id}/dispatch",
             json={
                 "title": args.get("title") or "",
-                "contract": args.get("contract") or "",
+                "contract": contract,
                 "tasks": tasks,
                 # True ⇒ this isn't the final phase; the post-burst turn should be
                 # allowed to dispatch again (multi-phase auto-advance).
@@ -1647,26 +1689,56 @@ class _RememberTool(_ToolBase):
             },
             "content": {
                 "type": "string",
+                "maxLength": 8000,
                 "description": "The fact, 1-2 lines. Decision / interface, not implementation.",
+            },
+            "supersedes_id": {
+                "type": "string",
+                "maxLength": 26,
+                "description": (
+                    "Optional active memory id returned by recall. Replaces it "
+                    "immutably; omit kind to inherit the original kind."
+                ),
             },
         },
         "required": ["content"],
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        content = (args.get("content") or "").strip()
+        raw_content = args.get("content")
+        content = raw_content.strip() if isinstance(raw_content, str) else ""
         if not content:
             return {"kind": "error", "error": "content must be a non-empty string"}
-        kind = (args.get("kind") or "decision").strip()
+        if len(content) > 8_000:
+            return {"kind": "error", "error": "content must be <= 8000 characters"}
+        raw_kind = args.get("kind")
+        kind = raw_kind.strip() if isinstance(raw_kind, str) and raw_kind.strip() else None
+        raw_supersedes_id = args.get("supersedes_id")
+        supersedes_id = (
+            raw_supersedes_id.strip() if isinstance(raw_supersedes_id, str) else ""
+        )
+        if len(supersedes_id) > 26:
+            return {"kind": "error", "error": "supersedes_id must be <= 26 characters"}
         # Attribute to the WORKER ULID (turn_agent_id), not the static adapter id
         # ("claudeCode") — agent-level recall (ADR-019 list_agent_memory) filters
         # by the contact's real id, so rows authored as the adapter id were
         # invisible to every cross-conversation memory read.
         author = ctx.turn_agent_id or ctx.agent_id
-        ctx.append_audit("memory.remember", {"author": author, "kind": kind})
+        ctx.append_audit(
+            "memory.remember",
+            {
+                "author": author,
+                "kind": kind or ("inherit" if supersedes_id else "decision"),
+                "supersedes_id": supersedes_id or None,
+            },
+        )
         return await _callback_server(
-            f"/api/conversations/{ctx.conv_id}/memory",
-            json={"kind": kind, "content": content, "author_agent_id": author},
+            f"/api/internal/conversations/{ctx.conv_id}/memory",
+            json={
+                "kind": kind,
+                "content": content,
+                "supersedes_id": supersedes_id or None,
+            },
             label="remember",
         )
 
@@ -1725,6 +1797,7 @@ class _ReportTool(_ToolBase):
             },
             "deliverables": {
                 "type": "string",
+                "maxLength": 6000,
                 "description": "What you actually produced — file names + one line each.",
             },
             "contract_ok": {
@@ -1733,6 +1806,7 @@ class _ReportTool(_ToolBase):
             },
             "notes": {
                 "type": "string",
+                "maxLength": 1500,
                 "description": "(optional) caveats, risks, or what's still missing.",
             },
         },
@@ -1740,20 +1814,31 @@ class _ReportTool(_ToolBase):
     }
 
     async def execute(self, ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        deliverables = (args.get("deliverables") or "").strip()
+        raw_deliverables = args.get("deliverables")
+        deliverables = (
+            raw_deliverables.strip() if isinstance(raw_deliverables, str) else ""
+        )
         if not deliverables:
             return {"kind": "error", "error": "deliverables must be a non-empty string"}
-        status = (args.get("status") or "ok").strip()
+        if len(deliverables) > 6_000:
+            return {"kind": "error", "error": "deliverables must be <= 6000 characters"}
+        raw_notes = args.get("notes")
+        notes = raw_notes.strip() if isinstance(raw_notes, str) else ""
+        if len(notes) > 1_500:
+            return {"kind": "error", "error": "notes must be <= 1500 characters"}
+        raw_status = args.get("status")
+        status = raw_status.strip() if isinstance(raw_status, str) else "ok"
+        if status not in {"ok", "partial", "failed"}:
+            return {"kind": "error", "error": "invalid report status"}
         author = ctx.turn_agent_id or ctx.agent_id
         ctx.append_audit("handoff.report", {"author": author, "status": status})
         return await _callback_server(
-            f"/api/conversations/{ctx.conv_id}/report",
+            f"/api/internal/conversations/{ctx.conv_id}/report",
             json={
-                "author_agent_id": author,
                 "status": status,
                 "deliverables": deliverables,
                 "contract_ok": bool(args.get("contract_ok", False)),
-                "notes": (args.get("notes") or "").strip(),
+                "notes": notes,
             },
             label="report",
         )

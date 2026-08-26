@@ -934,10 +934,19 @@ async def _kill_conv_process_runs(conv_id: str) -> int:
 async def delete_conv(conv_id: str):
     """Hard-delete a conversation + its messages and pins."""
     await _kill_conv_process_runs(conv_id)  # don't leak this conv's bg servers
-    await get_pool().close_sessions_for_conv(conv_id)
+    pool = get_pool()
+    await pool.close_sessions_for_conv(conv_id)
     async with SessionLocal() as session:
+        affected_memory_authors = await storage_repo.list_conv_memory_authors(
+            session, conv_id
+        )
         ok = await storage_repo.delete_conversation(session, conv_id)
         await session.commit()
+    if ok and affected_memory_authors:
+        await pool.retire_memory_context_sessions(
+            conv_id=conv_id,
+            agent_ids=affected_memory_authors,
+        )
     return {"ok": ok}
 
 
@@ -1050,6 +1059,28 @@ async def record_dispatch(conv_id: str, body: dict):
     raw_tasks = body.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise HTTPException(status_code=400, detail="tasks must be a non-empty array")
+    contract = str(body.get("contract") or "").strip()
+    if len(contract) > storage_repo.MAX_MEMORY_CONTENT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"contract exceeds {storage_repo.MAX_MEMORY_CONTENT_CHARS} characters",
+        )
+    if contract:
+        prior_contracts = [
+            str(batch.get("contract") or "").strip()
+            for batch in _pending_dispatches.get(conv_id, [])
+        ]
+        unique_contracts = [value for value in prior_contracts if value]
+        if contract not in unique_contracts:
+            unique_contracts.append(contract)
+        if len("\n\n".join(unique_contracts)) > storage_repo.MAX_MEMORY_CONTENT_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "combined dispatch contract exceeds "
+                    f"{storage_repo.MAX_MEMORY_CONTENT_CHARS} characters"
+                ),
+            )
     # Discussion finalization has its own lifecycle: the coordinator first
     # writes a conclusion into the discussion card, then the websocket runner
     # starts a separate normal coordinator turn where dispatch is allowed.
@@ -1090,7 +1121,7 @@ async def record_dispatch(conv_id: str, body: dict):
     _pending_dispatches.setdefault(conv_id, []).append(
         {
             "title": (body.get("title") or "").strip(),
-            "contract": (body.get("contract") or "").strip(),
+            "contract": contract,
             # True ⇒ orchestrator intends to keep going after this burst → its
             # post-burst turn is allowed to dispatch the next phase.
             "need_continue": bool(body.get("need_continue")),
@@ -1467,8 +1498,7 @@ async def answer_ask(conv_id: str, ask_id: str, body: dict):
             RUNTIME.maybe_prune_conv(conv_id)
 
 
-@router.post("/api/conversations/{conv_id}/report")
-async def record_handoff_report(conv_id: str, body: dict):
+async def _record_handoff_report(conv_id: str, body: dict, *, author: str):
     """Worker's closed-loop completion ACK + self-verdict (RuFlo handoff).
 
     Called by the `report` MCP tool at the end of a dispatched subtask. We record
@@ -1477,17 +1507,38 @@ async def record_handoff_report(conv_id: str, body: dict):
     shared-memory context layer) and verifies against it instead of guessing —
     and it survives a refresh. Returns the parsed verdict.
     """
-    author = (body.get("author_agent_id") or "").strip() or "agent"
-    deliverables = (body.get("deliverables") or "").strip()
+    raw_deliverables = body.get("deliverables")
+    if not isinstance(raw_deliverables, str):
+        raise HTTPException(status_code=400, detail="deliverables must be a string")
+    deliverables = raw_deliverables.strip()
     if not deliverables:
         raise HTTPException(status_code=400, detail="deliverables required")
-    status = (body.get("status") or "ok").strip()
+    if len(deliverables) > 6_000:
+        raise HTTPException(status_code=400, detail="deliverables exceeds 6000 characters")
+    raw_status = body.get("status", "ok")
+    if not isinstance(raw_status, str) or raw_status.strip() not in {
+        "ok",
+        "partial",
+        "failed",
+    }:
+        raise HTTPException(status_code=400, detail="invalid report status")
+    status = raw_status.strip()
     contract_ok = bool(body.get("contract_ok", False))
-    notes = (body.get("notes") or "").strip()
+    raw_notes = body.get("notes", "")
+    if not isinstance(raw_notes, str):
+        raise HTTPException(status_code=400, detail="notes must be a string")
+    notes = raw_notes.strip()
+    if len(notes) > 1_500:
+        raise HTTPException(status_code=400, detail="notes exceeds 1500 characters")
     line = (
         f"[{author} 自评:{status} · {'契约符合' if contract_ok else '契约未确认'}] "
         f"{deliverables}" + (f" — {notes}" if notes else "")
     )
+    if len(line) > storage_repo.MAX_MEMORY_CONTENT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"report memory exceeds {storage_repo.MAX_MEMORY_CONTENT_CHARS} characters",
+        )
     async with SessionLocal() as session:
         mid = await storage_repo.add_conv_memory(
             session,
@@ -1495,8 +1546,18 @@ async def record_handoff_report(conv_id: str, body: dict):
             author_agent_id=author,
             kind="artifact",
             content=line,
+            origin="agent",
+            source_ref="report",
         )
         await session.commit()
+    from polynoia.api.conversations_routes import _finish_memory_mutation
+
+    await _finish_memory_mutation(
+        conv_id=conv_id,
+        affected_agent_ids={author},
+        memory_id=mid,
+        action="created",
+    )
     log.info(
         "handoff report by %s in %s: status=%s contract_ok=%s", author, conv_id, status, contract_ok
     )
@@ -1505,6 +1566,26 @@ async def record_handoff_report(conv_id: str, body: dict):
         "id": mid,
         "verdict": {"status": status, "contract_ok": contract_ok},
     }
+
+
+@router.post("/api/internal/conversations/{conv_id}/report")
+async def record_handoff_report(conv_id: str, body: dict, request: Request):
+    from polynoia.api.conversations_routes import _require_internal_memory_actor
+
+    author = _require_internal_memory_actor(request, conv_id)
+    async with SessionLocal() as session:
+        conv = await storage_repo.get_conversation(session, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    if author not in set(conv.members or []):
+        raise HTTPException(status_code=403, detail="agent is not a conversation member")
+    return await _record_handoff_report(conv_id, body, author=author)
+
+
+@router.post("/api/conversations/{conv_id}/report")
+async def reject_unauthenticated_handoff_report(conv_id: str, body: dict):
+    del conv_id, body
+    raise HTTPException(status_code=403, detail="report requires an internal MCP identity")
 
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
@@ -2963,12 +3044,14 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
                     resolved_by=resolved_by,
                     resolved_sha=sha,
                 )
-                await storage_repo.add_conv_memory(
+                memory_id = await storage_repo.add_conv_memory(
                     session,
                     conv_id=row.conv_id,
                     author_agent_id=resolved_by,
                     kind="decision",
                     content=f"{resolved_by} 解决了 `{row.branch}` 的冲突 → main@{sha}。",
+                    origin="user" if resolved_by == "you" else "agent",
+                    source_ref=f"conflict:{conflict_id}",
                 )
                 await session.commit()
                 fresh = await storage_repo.get_conflict(session, conflict_id)
@@ -2987,6 +3070,14 @@ async def resolve_conflict_endpoint(conflict_id: str, body: dict):
                     c.branch == row.branch and c.status in ("open", "resolving")
                     for c in await storage_repo.list_conflicts(session, row.conv_id)
                 )
+            from polynoia.api.conversations_routes import _finish_memory_mutation
+
+            await _finish_memory_mutation(
+                conv_id=row.conv_id,
+                affected_agent_ids={resolved_by},
+                memory_id=memory_id,
+                action="created",
+            )
             if not others_open:
                 with suppress(Exception):
                     await Sandbox.reset_worktree_to_main(
@@ -3017,15 +3108,25 @@ async def abandon_conflict_endpoint(conflict_id: str):
         if row.status in ("resolved", "abandoned"):
             return _conflict_to_dict(row)
         await storage_repo.set_conflict_status(session, conflict_id, "abandoned")
-        await storage_repo.add_conv_memory(
+        memory_id = await storage_repo.add_conv_memory(
             session,
             conv_id=row.conv_id,
             author_agent_id="you",
             kind="decision",
             content=f"分支 `{row.branch}` 的冲突被放弃,未合并进 main。",
+            origin="user",
+            source_ref=f"conflict:{conflict_id}",
         )
         await session.commit()
         fresh = await storage_repo.get_conflict(session, conflict_id)
+    from polynoia.api.conversations_routes import _finish_memory_mutation
+
+    await _finish_memory_mutation(
+        conv_id=row.conv_id,
+        affected_agent_ids=set(),
+        memory_id=memory_id,
+        action="created",
+    )
     await _broadcast_conflict_card(fresh)
     return _conflict_to_dict(fresh)
 
@@ -3213,6 +3314,7 @@ async def rewind_conversation(conv_id: str, body: dict):
                 payload={"reason": "revert"},
             )
 
+    affected_memory_authors: set[str] = set()
     async with SessionLocal() as session:
         deleted = await storage_repo.delete_messages_from(
             session,
@@ -3226,12 +3328,22 @@ async def rewind_conversation(conv_id: str, body: dict):
         # Boundary = the target message's created_at (same clock as memory rows).
         mem_deleted = 0
         if target_created_at is not None:
+            affected_memory_authors = await storage_repo.list_conv_memory_authors_from(
+                session,
+                conv_id=conv_id,
+                from_created_at=target_created_at,
+            )
             mem_deleted = await storage_repo.delete_conv_memory_from(
                 session,
                 conv_id=conv_id,
                 from_created_at=target_created_at,
             )
         await session.commit()
+    if affected_memory_authors:
+        await get_pool().retire_memory_context_sessions(
+            conv_id=conv_id,
+            agent_ids=affected_memory_authors,
+        )
 
     # One successful rewind is one distinct destructive operation. The response
     # and WS broadcast share this id so the initiating tab can deduplicate only

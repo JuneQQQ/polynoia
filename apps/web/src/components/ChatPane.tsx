@@ -637,6 +637,12 @@ export function ChatPane({ convId, members, title }: Props) {
 						if (typeof permissionId === "string") {
 							useStore.getState().removeHarnessPermission(convId, permissionId);
 						}
+					} else if (chunk.type === "data-memory-changed") {
+						window.dispatchEvent(
+							new CustomEvent("polynoia:memory-changed", {
+								detail: { convId: chunk.data?.conv_id ?? convId },
+							}),
+						);
 					} else if (chunk.type === "data-harness-plan") {
 						// Plan events are useful status, not durable chat prose. The
 						// dedicated plan surface is added after the permission UX.

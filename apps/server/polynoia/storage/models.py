@@ -429,6 +429,18 @@ class ConvMemoryRow(Base):
     """
 
     __tablename__ = "conv_memory"
+    __table_args__ = (
+        Index("ix_conv_memory_conv_status_created", "conv_id", "status", "created_at"),
+        Index(
+            "ix_conv_memory_author_status_created",
+            "author_agent_id",
+            "status",
+            "created_at",
+        ),
+        # A memory row can have at most one immutable successor. The conditional
+        # UPDATE in the repo handles ordinary races; this is the final DB guard.
+        Index("ux_conv_memory_supersedes_id", "supersedes_id", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(26), primary_key=True)  # ULID
     conv_id: Mapped[str] = mapped_column(
@@ -443,6 +455,13 @@ class ConvMemoryRow(Base):
     # contract | decision | artifact — drives rendering/grouping in the layer.
     kind: Mapped[str] = mapped_column(String(32), nullable=False, default="decision")
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", index=True
+    )
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="legacy")
+    source_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    supersedes_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=_utcnow, nullable=False, index=True
     )

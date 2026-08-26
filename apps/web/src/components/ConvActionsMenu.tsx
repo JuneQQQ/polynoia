@@ -15,6 +15,7 @@
  */
 import {
 	Archive,
+	BrainCircuit,
 	MoreVertical,
 	Pencil,
 	Pin,
@@ -29,6 +30,11 @@ import { type ConversationSummary, api } from "../lib/api";
 import { t } from "../lib/i18n";
 import { useStore } from "../store";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { MemoryInspectorModal } from "./MemoryInspectorModal";
+
+export function conversationActionMenuHeight(group: boolean, coarse: boolean) {
+	return coarse ? (group ? 288 : 244) : group ? 232 : 198;
+}
 
 export function ConvActionsMenu({
 	conv,
@@ -42,6 +48,7 @@ export function ConvActionsMenu({
 	const [open, setOpen] = useState(false);
 	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 	const [renaming, setRenaming] = useState(false);
+	const [inspectingMemory, setInspectingMemory] = useState(false);
 	const [confirming, setConfirming] = useState<"delete" | "archive" | null>(
 		null,
 	);
@@ -66,7 +73,8 @@ export function ConvActionsMenu({
 		const r = btnRef.current?.getBoundingClientRect();
 		if (r) {
 			const W = 172;
-			const H = conv.group ? 200 : 166;
+			const coarse = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+			const H = conversationActionMenuHeight(conv.group, coarse);
 			setPos({
 				left: Math.max(8, Math.min(r.right - W, window.innerWidth - W - 8)),
 				top: Math.max(8, Math.min(r.bottom + 4, window.innerHeight - H - 8)),
@@ -159,7 +167,7 @@ export function ConvActionsMenu({
 				aria-expanded={open}
 				aria-label={t("convActionsLabel", lang)}
 				title={t("convActionsLabel", lang)}
-				className={`flex-shrink-0 p-1 rounded transition-opacity focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-[var(--color-accent)] [@media(hover:none)]:opacity-100 ${
+				className={`flex-shrink-0 grid min-h-7 min-w-7 place-items-center rounded transition-opacity focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-[var(--color-accent)] [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 [@media(hover:none)]:opacity-100 ${
 					open ? "opacity-100" : "opacity-0 group-hover:opacity-100"
 				} hover:bg-[var(--color-sidebar-active)]`}
 			>
@@ -172,7 +180,7 @@ export function ConvActionsMenu({
 						role="menu"
 						onClick={(e) => e.stopPropagation()}
 						style={{ position: "fixed", left: pos.left, top: pos.top }}
-						className="z-[100] min-w-[172px] rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] shadow-lg py-1 anim-modal-in"
+						className="z-[100] max-h-[calc(100vh-16px)] min-w-[172px] overflow-y-auto rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] py-1 shadow-lg anim-modal-in"
 					>
 						<MenuItem
 							icon={conv.pinned ? <PinOff size={13} /> : <Pin size={13} />}
@@ -194,6 +202,14 @@ export function ConvActionsMenu({
 								onClick={editRoles}
 							/>
 						)}
+						<MenuItem
+							icon={<BrainCircuit size={13} />}
+							label={t("memoryInspector", lang)}
+							onClick={() => {
+								setOpen(false);
+								setInspectingMemory(true);
+							}}
+						/>
 						<MenuItem
 							icon={<Archive size={13} />}
 							label={t("convArchive", lang)}
@@ -256,6 +272,15 @@ export function ConvActionsMenu({
 					}}
 				/>
 			)}
+			{inspectingMemory && (
+				<MemoryInspectorModal
+					conv={conv}
+					onClose={() => {
+						setInspectingMemory(false);
+						requestAnimationFrame(() => btnRef.current?.focus());
+					}}
+				/>
+			)}
 		</>
 	);
 }
@@ -276,7 +301,7 @@ function MenuItem({
 			type="button"
 			role="menuitem"
 			onClick={onClick}
-			className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] text-left transition ${
+			className={`w-full min-h-8 [@media(pointer:coarse)]:min-h-11 flex items-center gap-2.5 px-3 py-1.5 text-[12.5px] text-left transition ${
 				danger
 					? "text-[var(--color-red)] hover:bg-[var(--color-red-soft)]/40"
 					: "text-[var(--color-fg-2)] hover:bg-[var(--color-sidebar-hover)]"

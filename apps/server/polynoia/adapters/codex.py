@@ -229,6 +229,7 @@ def _polynoia_mcp_block(
     workspace_root: str = "",
     turn_agent_id: str = "",
     workspace_id: str = "",
+    internal_callback_token: str = "",
 ) -> str:
     """Build the ``[mcp_servers.polynoia]`` TOML block.
 
@@ -260,6 +261,7 @@ POLYNOIA_TURN_AGENT_ID = "{turn_agent_id}"
 POLYNOIA_AGENT_ROLE = "{tool_role}"
 POLYNOIA_AGENT_TOOLS = "{tools}"
 POLYNOIA_API_BASE = "{api_base}"
+POLYNOIA_INTERNAL_CALLBACK_TOKEN = "{internal_callback_token}"
 POLYNOIA_SANDBOX_ROOT = "{sandbox_root}"
 {worktree_lines}PYTHONPATH = "{pythonpath}"
 
@@ -455,6 +457,8 @@ class CodexAdapter:
         from pathlib import Path as _Path
 
         server_pkg_root = str(_Path(__file__).parent.parent.parent)
+        from polynoia.api.execution import RUNTIME
+
         mcp_block = _polynoia_mcp_block(
             conv_id=conv_id,
             agent_id=self.meta.agent_id,
@@ -467,6 +471,10 @@ class CodexAdapter:
             worktree_root=(str(sandbox.root) if sandbox.workspace_root else ""),
             workspace_root=(str(sandbox.workspace_root) if sandbox.workspace_root else ""),
             workspace_id=(sandbox.workspace_id or ""),
+            internal_callback_token=RUNTIME.issue_internal_callback_capability(
+                conv_id,
+                agent_id or self.meta.agent_id,
+            ),
         )
         config_path.write_text(_merge_mcp_into_config(existing, mcp_block), encoding="utf-8")
 
@@ -523,6 +531,12 @@ class CodexSession:
         self._as_proc: asyncio.subprocess.Process | None = None
         self._as_thread_id: str | None = None
         self._active_turn_id: str | None = None
+
+    @property
+    def is_busy(self) -> bool:
+        """True while either Codex transport owns the per-session turn lock."""
+
+        return self._lock.locked()
 
     def _maybe_prepend_system(self, prompt: str) -> str:
         if self._first_turn and self._system_prompt:

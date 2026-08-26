@@ -174,6 +174,36 @@ export type ProcessRunItem = {
 	last_heartbeat_at?: string | null;
 };
 
+export type MemoryKind = "contract" | "decision" | "artifact";
+export type MemoryStatus = "active" | "superseded" | "revoked";
+
+export type MemoryEntry = {
+	id: string;
+	/** The server keeps legacy/future kinds inspectable; narrow with a runtime guard. */
+	kind: string;
+	content: string;
+	author_agent_id: string;
+	status: MemoryStatus;
+	/** Unknown future origins must remain visible instead of being mislabeled. */
+	origin: string;
+	source_ref: string | null;
+	supersedes_id: string | null;
+	created_at: string | null;
+	status_changed_at: string | null;
+};
+
+export type MemoryPage = {
+	conv_id: string;
+	entries: MemoryEntry[];
+	count: number;
+	total: number;
+	has_more: boolean;
+	next_cursor: {
+		before_created_at: string;
+		before_id: string;
+	} | null;
+};
+
 /** Back-compat alias for older imports; semantically this is now ProcessRun. */
 export type ServiceItem = ProcessRunItem;
 
@@ -209,31 +239,48 @@ async function getJSON<T>(path: string, timeoutMs = 12000): Promise<T> {
 	}
 }
 
-async function postJSON<T>(path: string, body?: unknown): Promise<T> {
-	const res = await fetch(apiUrl(path), {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: body !== undefined ? JSON.stringify(body) : undefined,
-	});
-	if (!res.ok) throw await responseError(res);
-	return res.json() as Promise<T>;
+async function mutationJSON<T>(
+	method: "POST" | "PATCH" | "DELETE",
+	path: string,
+	body?: unknown,
+	timeoutMs?: number,
+): Promise<T> {
+	const ctrl = timeoutMs ? new AbortController() : null;
+	const timer = timeoutMs ? setTimeout(() => ctrl?.abort(), timeoutMs) : null;
+	try {
+		const res = await fetch(apiUrl(path), {
+			method,
+			headers:
+				body !== undefined ? { "content-type": "application/json" } : undefined,
+			body: body !== undefined ? JSON.stringify(body) : undefined,
+			signal: ctrl?.signal,
+		});
+		if (!res.ok) throw await responseError(res);
+		return (await res.json()) as T;
+	} catch (e) {
+		if (timeoutMs && e instanceof DOMException && e.name === "AbortError") {
+			throw new Error(`timeout after ${Math.round(timeoutMs / 1000)}s`);
+		}
+		throw e;
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
+async function postJSON<T>(
+	path: string,
+	body?: unknown,
+	timeoutMs?: number,
+): Promise<T> {
+	return mutationJSON("POST", path, body, timeoutMs);
 }
 
 async function patchJSON<T>(path: string, body?: unknown): Promise<T> {
-	const res = await fetch(apiUrl(path), {
-		method: "PATCH",
-		headers: { "content-type": "application/json" },
-		body: body !== undefined ? JSON.stringify(body) : undefined,
-	});
-	// surface the server's error detail (e.g. "cannot remove the orchestrator")
-	if (!res.ok) throw await responseError(res);
-	return res.json() as Promise<T>;
+	return mutationJSON("PATCH", path, body);
 }
 
-async function deleteJSON<T>(path: string): Promise<T> {
-	const res = await fetch(apiUrl(path), { method: "DELETE" });
-	if (!res.ok) throw await responseError(res);
-	return res.json() as Promise<T>;
+async function deleteJSON<T>(path: string, timeoutMs?: number): Promise<T> {
+	return mutationJSON("DELETE", path, undefined, timeoutMs);
 }
 
 /** Same-origin GET-download via a transient <a download>. The server sets
@@ -528,6 +575,39 @@ export const api = {
 		postJSON<{ ok: boolean }>(`/api/conversations/${convId}/unpin`),
 	markConvRead: (convId: string) =>
 		postJSON<{ ok: boolean }>(`/api/conversations/${convId}/read`),
+	convMemory: (
+		convId: string,
+		opts: {
+			view?: "context" | "active" | "history";
+			limit?: number;
+			beforeCreatedAt?: string | null;
+			beforeId?: string | null;
+		} = {},
+	) => {
+		const qs = new URLSearchParams();
+		qs.set("view", opts.view ?? "context");
+		qs.set("limit", String(opts.limit ?? 100));
+		if (opts.beforeCreatedAt) qs.set("before_created_at", opts.beforeCreatedAt);
+		if (opts.beforeId) qs.set("before_id", opts.beforeId);
+		return getJSON<MemoryPage>(
+			`/api/conversations/${convId}/memory?${qs.toString()}`,
+		);
+	},
+	supersedeMemory: (
+		convId: string,
+		memoryId: string,
+		body: { content: string; kind?: MemoryKind },
+	) =>
+		postJSON<{ kind: "superseded"; entry: MemoryEntry }>(
+			`/api/conversations/${convId}/memory/${memoryId}/supersede`,
+			body,
+			12_000,
+		),
+	revokeMemory: (convId: string, memoryId: string) =>
+		deleteJSON<{ ok: boolean; id: string; status: "revoked" }>(
+			`/api/conversations/${convId}/memory/${memoryId}`,
+			12_000,
+		),
 	setConvDraft: (convId: string, draftText: string) =>
 		patchJSON<{ ok: boolean }>(`/api/conversations/${convId}/draft`, {
 			draft_text: draftText,

@@ -174,6 +174,8 @@ class ClaudeCodeAdapter:
         api_base = os.environ.get(
             "POLYNOIA_API_BASE", f"http://127.0.0.1:{settings.port}"
         )
+        from polynoia.api.execution import RUNTIME
+
         polynoia_mcp = McpStdioServerConfig(
             type="stdio",
             # sys.executable, NOT bare "python": the MCP subprocess must run on
@@ -215,6 +217,12 @@ class ClaudeCodeAdapter:
                     else {}
                 ),
                 "POLYNOIA_API_BASE": api_base,
+                "POLYNOIA_INTERNAL_CALLBACK_TOKEN": (
+                    RUNTIME.issue_internal_callback_capability(
+                        conv_id,
+                        agent_id or self.meta.agent_id,
+                    )
+                ),
                 "PYTHONPATH": server_pkg_root,
             },
         )
@@ -799,6 +807,12 @@ class ClaudeCodeSession:
         # up in start_session. Used to enrich exceptions so the UI/log shows
         # the actual CLI complaint instead of the SDK's "Check stderr" stub.
         self._stderr_buf = stderr_buf if stderr_buf is not None else []
+
+    @property
+    def is_busy(self) -> bool:
+        """True while a turn owns the SDK session (including MCP callbacks)."""
+
+        return self._lock.locked()
 
     def _stderr_tail(self, max_chars: int = 800) -> str:
         if not self._stderr_buf:
