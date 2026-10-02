@@ -1,6 +1,7 @@
 # Polynoia(AgentHub) — Claude 协作规范
 
 > 这份文件是项目级 AI 协作规范。每个新 Claude 会话启动时优先读它。
+> 术语:`CONTEXT.md`(定义 + 反例)/ `CONTEXT-MAP.md`(上下文地图)
 > Spec:`docs/superpowers/specs/2026-05-23-polynoia-design.md`
 > 调研基线:`docs/research/00-SYNTHESIS.md`
 
@@ -118,6 +119,7 @@ make build          # 前后端都 build
 
 按重要性排序,新会话首次接触代码前必读:
 
+0. `CONTEXT.md` / `CONTEXT-MAP.md` — 统一语言:每个概念叫什么、不叫什么。**术语没对齐就别往下读**——同一个词在三份文档里指三件事时,后面全是返工(现有 6 组冲突见 `CONTEXT.md` §已知冲突)
 1. `docs/superpowers/specs/2026-05-23-polynoia-design.md` — 完整 spec
 2. `docs/research/00-SYNTHESIS.md` — 调研综合(20 个库 + UI 设计)
 3. `docs/research/01-ui-design-notes.md` — UI 设计稿解读
